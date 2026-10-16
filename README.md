@@ -21,6 +21,7 @@ The same contract then carries over to other CLIs, Antigravity next. A new provi
 ## Docs
 
 - [Setup](docs/setup.md): requirements, install, configuration, verification, troubleshooting.
+- [Cursor provider](docs/providers/cursor.md): how `cursor-cli/<model>` runs and how it compares with `claude-cli`.
 
 ## References
 

@@ -1,0 +1,223 @@
+/**
+ * Core ports: the only module adapters and transports may import from the core (AD-2).
+ * It holds no OpenClaw import and names no CLI.
+ */
+
+// ---------------------------------------------------------------------------
+// Events (AD-3)
+// ---------------------------------------------------------------------------
+
+/** Token counts for one turn. Only the fields a CLI reports are set. */
+export type NormalizedUsage = {
+  input?: number;
+  output?: number;
+  cacheRead?: number;
+  cacheWrite?: number;
+  total?: number;
+};
+
+/**
+ * The one event language every adapter speaks.
+ * - `text` and `thinking` are deltas.
+ * - `usage` is per turn.
+ * - `sessionId` is the native session ID to resume.
+ * - `result` closes the turn exactly once; `text` is the full reply.
+ * - `error` closes the turn exactly once, instead of `result`.
+ * - Native tool events are display-only: the host never treats them as tool execution.
+ */
+export type NormalizedEvent =
+  | { kind: "text"; text: string }
+  | { kind: "thinking"; text: string }
+  | { kind: "toolStart"; toolCallId: string; name: string; args?: Record<string, unknown> }
+  | { kind: "toolResult"; toolCallId: string; name?: string; isError?: boolean; result?: unknown }
+  | { kind: "usage"; usage: NormalizedUsage }
+  | { kind: "sessionId"; sessionId: string }
+  | { kind: "result"; text: string; stopReason: string }
+  | { kind: "error"; error: CliErrorInfo };
+
+// ---------------------------------------------------------------------------
+// Errors (AD-11)
+// ---------------------------------------------------------------------------
+
+/** OpenClaw's failover reasons, mirrored here so adapters need no OpenClaw import. */
+export const FAILOVER_REASONS = [
+  "auth",
+  "auth_permanent",
+  "format",
+  "rate_limit",
+  "overloaded",
+  "billing",
+  "server_error",
+  "timeout",
+  "tls_certificate",
+  "context_overflow",
+  "model_not_found",
+  "session_expired",
+  "empty_response",
+  "no_error_details",
+  "unclassified",
+  "unknown",
+] as const;
+export type FailoverReason = (typeof FAILOVER_REASONS)[number];
+
+/** Codes the architecture adds on top of the failover reasons (AD-10, AD-14, binary lookup). */
+export const EXTRA_ERROR_CODES = ["capability_mismatch", "unsupported_version", "cli_not_found"] as const;
+
+export type CliErrorCode = FailoverReason | (typeof EXTRA_ERROR_CODES)[number];
+
+/** How each code reaches OpenClaw's failover logic. The extra codes map to the nearest reason. */
+export const FAILOVER_REASON_BY_CODE: Record<CliErrorCode, FailoverReason> = {
+  ...Object.fromEntries(FAILOVER_REASONS.map((reason) => [reason, reason])),
+  capability_mismatch: "format",
+  unsupported_version: "format",
+  cli_not_found: "unclassified",
+} as Record<CliErrorCode, FailoverReason>;
+
+export type CliErrorInfo = {
+  code: CliErrorCode;
+  /** False once any tool call started in the turn: a retry could repeat a side effect. */
+  retryable: boolean;
+  message: string;
+};
+
+/** The only error adapters throw. */
+export class CliError extends Error implements CliErrorInfo {
+  readonly code: CliErrorCode;
+  readonly retryable: boolean;
+
+  constructor(info: { code: CliErrorCode; message: string; retryable?: boolean }, options?: { cause?: unknown }) {
+    super(info.message, options);
+    this.name = "CliError";
+    this.code = info.code;
+    this.retryable = info.retryable ?? false;
+  }
+
+  toInfo(): CliErrorInfo {
+    return { code: this.code, retryable: this.retryable, message: this.message };
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Capability manifest (AD-10)
+// ---------------------------------------------------------------------------
+
+/** The parity rows of `claude-cli-parity.md`. */
+export const PARITY_ROWS = [
+  "P1",
+  "P2",
+  "P3",
+  "P4",
+  "P5",
+  "P6",
+  "P7",
+  "P8",
+  "P9",
+  "P10",
+  "P11",
+  "P12",
+  "P13",
+  "P14",
+  "P15",
+  "P16",
+  "P17",
+  "P18",
+  "P19",
+] as const;
+export type ParityRowId = (typeof PARITY_ROWS)[number];
+
+/** `match` and `approx` and `gap` are decisions; `spike` and `tbd` are open questions. */
+export type ParityStatus = "match" | "approx" | "gap" | "spike" | "tbd";
+
+export type ParityRow = { status: ParityStatus; note: string };
+
+export type CapabilityManifest = {
+  /** Lowest CLI version the adapter supports. */
+  minVersion: string;
+  rows: Record<ParityRowId, ParityRow>;
+};
+
+/** Builds a manifest where every row is undecided; an adapter overrides the rows it knows. */
+export function createManifest(
+  minVersion: string,
+  overrides: Partial<Record<ParityRowId, ParityRow>>,
+): CapabilityManifest {
+  const rows = Object.fromEntries(
+    PARITY_ROWS.map((id) => [id, overrides[id] ?? { status: "tbd", note: "not researched" }]),
+  ) as CapabilityManifest["rows"];
+  return { minVersion, rows };
+}
+
+// ---------------------------------------------------------------------------
+// Adapter port (AD-11)
+// ---------------------------------------------------------------------------
+
+export type PermissionRequest = {
+  /** What the CLI wants to do, as the CLI names it. */
+  title: string;
+  /** The CLI's tool kind, for example `execute` or `edit`. */
+  kind?: string;
+  toolCallId?: string;
+};
+
+/** The core's answer to a CLI permission request. */
+export type PermissionDecision = "allow_once" | "reject_once" | "cancelled";
+
+export type OpenParams = {
+  /** The CLI binary, absolute or on PATH. */
+  command: string;
+  /** The adapter's `launchArgs`, as OpenClaw passes them back. */
+  args: readonly string[];
+  /** Working directory of the turn. OpenClaw's. */
+  cwd: string;
+  env: Record<string, string>;
+  modelId: string;
+  /** The native session ID to resume. Set only when OpenClaw says to resume. */
+  resumeSessionId?: string;
+  /** Answers a CLI permission request. */
+  onPermissionRequest: (request: PermissionRequest) => Promise<PermissionDecision>;
+  signal?: AbortSignal;
+};
+
+/** One live conversation with a CLI process. */
+export interface CliSession {
+  /** The native session ID. */
+  readonly sessionId: string;
+  /** False once the process exited or the session was closed. */
+  readonly alive: boolean;
+  /** Sends one prompt and yields the turn's events. The last event is `result` or `error`. */
+  prompt(text: string): AsyncIterable<NormalizedEvent>;
+  /** Asks the CLI to stop the running turn and answers pending permission requests `cancelled`. */
+  cancel(): Promise<void>;
+  /** Ends the process. Safe to call twice. */
+  close(): Promise<void>;
+  /** Resolves when the process has exited. */
+  waitForExit(): Promise<void>;
+}
+
+export type AuthStatus = "available" | "missing" | "unreadable";
+
+export type AuthProbeParams = {
+  command: string;
+  env: Record<string, string | undefined>;
+  signal?: AbortSignal;
+};
+
+/** What one CLI provider supplies to the core. Adapters import only this module and transports. */
+export interface CliAdapter {
+  /** Short CLI name, for example `acme`. The backend ID is `<id>-cli`. */
+  readonly id: string;
+  readonly displayName: string;
+  /** Default binary name. */
+  readonly command: string;
+  /** Arguments that start the CLI in its session mode, for example `["acp"]`. */
+  readonly launchArgs: readonly string[];
+  /** The model ref to use for a quick check, for example `acme-cli/auto`. */
+  readonly defaultModel: string;
+  /** Maps an OpenClaw model ID onto a CLI model ID where they differ. */
+  readonly modelAliases?: Readonly<Record<string, string>>;
+  readonly manifest: CapabilityManifest;
+  /** Asks the CLI whether its own login works, without reading token material. */
+  probeAuth(params: AuthProbeParams): Promise<AuthStatus>;
+  /** Starts the process and the native session. Throws `CliError` only. */
+  open(params: OpenParams): Promise<CliSession>;
+}

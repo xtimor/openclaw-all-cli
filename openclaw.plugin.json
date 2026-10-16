@@ -1,0 +1,40 @@
+{
+  "id": "openclaw-all-cli",
+  "name": "OpenClaw All CLI",
+  "description": "Run local coding CLIs as OpenClaw models. Cursor first.",
+  "providers": [
+    "cursor-cli"
+  ],
+  "cliBackends": [
+    "cursor-cli"
+  ],
+  "setup": {
+    "cliBackends": [
+      "cursor-cli"
+    ],
+    "requiresRuntime": false
+  },
+  "syntheticAuthRefs": [
+    "cursor-cli"
+  ],
+  "nonSecretAuthMarkers": [
+    "openclaw:cursor-cli-native-auth"
+  ],
+  "providerCatalogEntry": "./dist/provider-discovery.js",
+  "configSchema": {
+    "type": "object",
+    "properties": {
+      "cursor-cli": {
+        "type": "object",
+        "properties": {
+          "command": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "additionalProperties": false
+      }
+    },
+    "additionalProperties": false
+  }
+}

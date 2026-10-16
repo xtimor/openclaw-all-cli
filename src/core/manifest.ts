@@ -1,0 +1,18 @@
+import type { CapabilityManifest, ParityRowId } from "./ports.ts";
+
+/** Backend flags the core derives from a manifest, and nothing else (AD-10). */
+export type DerivedFlags = {
+  /** P4: the adapter keeps one warm process per conversation. */
+  liveSession: boolean;
+  /** P5: the adapter resumes a native session. */
+  resume: boolean;
+};
+
+function decided(manifest: CapabilityManifest, id: ParityRowId): boolean {
+  const status = manifest.rows[id].status;
+  return status === "match" || status === "approx";
+}
+
+export function deriveFlags(manifest: CapabilityManifest): DerivedFlags {
+  return { liveSession: decided(manifest, "P4"), resume: decided(manifest, "P5") };
+}

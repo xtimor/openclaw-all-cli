@@ -1,0 +1,47 @@
+import { describe, expect, it } from "vitest";
+import { parseJsonlEvent, toRecord } from "./events.ts";
+import type { NormalizedEvent } from "./ports.ts";
+
+const line = (event: NormalizedEvent, summary = {}) => JSON.stringify(toRecord(event, summary));
+
+describe("core records", () => {
+  it("round-trips streaming events", () => {
+    expect(parseJsonlEvent(line({ kind: "text", text: "hi" }))).toEqual({ kind: "text", text: "hi" });
+    expect(parseJsonlEvent(line({ kind: "thinking", text: "hm" }))).toEqual({ kind: "thinking", text: "hm" });
+    expect(parseJsonlEvent(line({ kind: "sessionId", sessionId: "s1" }))).toEqual({ kind: "sessionId", sessionId: "s1" });
+    expect(parseJsonlEvent(line({ kind: "toolStart", toolCallId: "t", name: "grep" }))).toMatchObject({
+      kind: "toolStart",
+      name: "grep",
+    });
+  });
+
+  it("closes a turn with a result record that carries usage and the session ID", () => {
+    const record = toRecord(
+      { kind: "result", text: "done", stopReason: "end_turn" },
+      { usage: { input: 1, output: 2 }, sessionId: "s1" },
+    );
+    expect(record).toMatchObject({ type: "result", is_error: false, subtype: "success" });
+    expect(parseJsonlEvent(JSON.stringify(record))).toEqual({
+      kind: "result",
+      text: "done",
+      sessionId: "s1",
+      usage: { input: 1, output: 2 },
+    });
+  });
+
+  it("closes a failed turn with an error result", () => {
+    const record = toRecord({ kind: "error", error: { code: "auth", retryable: false, message: "log in" } });
+    expect(record).toMatchObject({ type: "result", is_error: true });
+    expect(parseJsonlEvent(JSON.stringify(record))).toEqual({ kind: "result", errorText: "log in" });
+  });
+
+  it("reports usage only on the result", () => {
+    expect(parseJsonlEvent(line({ kind: "usage", usage: { input: 1 } }))).toEqual([]);
+  });
+
+  it("leaves lines it does not own to OpenClaw's parsers", () => {
+    expect(parseJsonlEvent('{"type":"assistant"}')).toBeNull();
+    expect(parseJsonlEvent("not json openclaw-all-cli")).toBeNull();
+    expect(parseJsonlEvent('{"oac":"other","event":{}}')).toBeNull();
+  });
+});

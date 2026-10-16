@@ -1,0 +1,59 @@
+{
+  "name": "openclaw-all-cli",
+  "version": "0.0.0",
+  "private": true,
+  "description": "OpenClaw plugin that exposes local coding CLIs (Cursor first) as models",
+  "license": "MIT",
+  "type": "module",
+  "engines": {
+    "node": ">=24.16 <25 || >=26.1"
+  },
+  "scripts": {
+    "build": "rm -rf dist && tsc -p tsconfig.build.json",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "test:live": "OPENCLAW_ALL_CLI_LIVE=1 vitest run test/live",
+    "dev:setup": "scripts/dev-openclaw.sh setup",
+    "dev:install": "scripts/dev-openclaw.sh install",
+    "dev:openclaw": "scripts/dev-openclaw.sh run",
+    "package": "npm run build && npm pack"
+  },
+  "openclaw": {
+    "extensions": [
+      "./src/plugin.ts"
+    ],
+    "compat": {
+      "pluginApi": ">=2026.10.3",
+      "minGatewayVersion": "2026.10.3"
+    },
+    "runtimeExtensions": [
+      "./dist/plugin.js"
+    ]
+  },
+  "peerDependencies": {
+    "openclaw": ">=2026.10.3"
+  },
+  "dependencies": {
+    "@agentclientprotocol/sdk": "1.8.0",
+    "zod": "4.6.7"
+  },
+  "devDependencies": {
+    "@types/node": "24.19.2",
+    "typescript": "7.0.2",
+    "vitest": "5.0.5"
+  },
+  "peerDependenciesMeta": {
+    "openclaw": {
+      "optional": true
+    }
+  },
+  "files": [
+    "dist",
+    "src",
+    "!src/**/*.test.ts",
+    "openclaw.plugin.json",
+    "docs",
+    "README.md",
+    "LICENSE"
+  ]
+}
