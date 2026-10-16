@@ -29,8 +29,9 @@ persistent_facts = [
   "file:{project-root}/MEMORY.md",
 ]
 
-# --- Model per step ---
+# --- Model per step (Cursor) ---
 #
+# These slugs are for Cursor's sub-agent tool. Claude Code uses [agent.claude].
 # Pass the primary verbatim. If the runtime rejects it as unavailable, retry once
 # with that step's `_fallback` and name both models in the boundary line and run
 # log. Slugs must be in the runtime's allowed list.
@@ -86,3 +87,21 @@ blocked_policy = "stop"
 # Mark a ticket `done` once its last review is clean (`done`), or leave it at
 # `built` for a person to close (`built`).
 ticket_done_at = "done"
+
+# Claude Code Agent tool. Aliases only: sonnet, opus, haiku, fable.
+# Same roles as the Cursor slugs above. There is no second vendor, so review
+# and rework use a different alias from build. effort is passed on every
+# dispatch; the Agent tool applies it only when the skill asks, and the skill does.
+# This table stays last: keys after it would belong to it, not to [agent].
+[agent.claude]
+model_build = "sonnet"
+model_build_fallback = "opus"
+model_rework = "sonnet"
+model_rework_fallback = "opus"
+model_review = "opus"
+model_review_fallback = "sonnet"
+model_consult = "opus"
+model_consult_fallback = "sonnet"
+model_brainstorm = "opus"
+model_brainstorm_fallback = "sonnet"
+effort = "high"

@@ -97,7 +97,18 @@ Every capability runs on the contracts below. They are stated once here and neve
 - Plan files beside each epic's `tickets.toml`, at the path `tickets.py find <ref>` returns as `plan`. A plan's frontmatter `status` (`draft` → `ready-for-dev` → `in-progress` → `in-review` → `built`, or `blocked`, then `done` from you) is the status of record; `tickets.py status` reads it for every ticket.
 - Run log `{agent.run_log_output_path}/run-<YYYY-MM-DD>-<scope>.md`, where `<scope>` is the requested tokens joined by `-`, with everything outside `a-z0-9-` replaced by `-` and runs of `-` collapsed (so `1.3` gives `1-3`, `next:3` gives `next-3`, and `epic-1..2` gives `epic-1-2`). The log lives on the run branch, which is never merged, so a second run of the same scope on the same day cannot see the first log from `main`. Before choosing the name, list local and remote branches with `git branch -a --list 'dev/run-*'`. If `dev/<stem>` already exists, take the next free `-2`, `-3` suffix. That filename stem is the `run_id`. A dry run writes no log at all. The log's frontmatter never carries a `ticket` or `type` key, so `tickets.py` never mistakes it for a plan. It does carry `tickets`, the refs the scope resolved to, and that list is the scope from then on: a resume re-derives steps for those refs and never expands `next:N` again.
 
+**Which model map**
+
+Pick once, before the first dispatch, and use that map for every `model_*` name in this skill and its references.
+
+- Claude Code, when the sub-agent `model` argument is `sonnet`, `opus`, `haiku`, or `fable`: the map is `{agent.claude}`. Pass `effort: {agent.claude.effort}` on every dispatch. This sentence is the instruction that makes the Agent tool apply that effort.
+- Cursor, when the sub-agent model is a slug such as `gpt-5.3-codex-high`: the map is the top-level `model_*` keys. Do not pass a separate effort; the slug already carries it.
+
+Do not send a Cursor slug to Claude Code, and do not send a Claude alias to Cursor.
+
 **Step to sub-agent map**
+
+`{agent.model_*}` in this table means that key on the chosen map.
 
 | Step | What runs | Primary | Fallback |
 | --- | --- | --- | --- |
@@ -114,7 +125,7 @@ Every capability runs on the contracts below. They are stated once here and neve
 **Dispatch rules**
 
 - Launch every worker and every consult as a `generalPurpose` sub-agent with its primary model, and await it in the same turn. Never background or detach one: nothing resumes a yielded turn in an unattended run, so a detached sub-agent stalls the run silently. A worker launches its own sub-agents inside `bmad-build-auto`; that is expected.
-- Pass the primary model verbatim. A work-failure retry of `build` uses `{agent.model_rework}` (fallback `{agent.model_rework_fallback}`) instead of the build model. If the runtime rejects the model as unavailable before work starts, retry once with that step's configured fallback — same brief, same await. Log both models on the boundary line and in the journal. If the fallback is empty, identical to the primary, or also rejected, halt and name what failed. Never invent a third model.
+- Pass the chosen map's primary verbatim. A work-failure retry of `build` uses that map's `model_rework` (fallback `model_rework_fallback`) instead of the build model. If the runtime rejects the model as unavailable before work starts, retry once with that step's configured fallback — same brief, same await. Log both models on the boundary line and in the journal. If the fallback is empty, identical to the primary, or also rejected, halt and name what failed. Never invent a third model. On Claude Code, include the map's `effort` on the primary and on the fallback retry.
 - Brief each worker with all of the following. Read `{project-root}/.agents/skills/bmad-build-auto/SKILL.md` and follow it; the invocation is `ticket <ref>`, plus `thorough` when this step's review depth is `thorough`, plus `Halt after planning.` on a `plan` step. Read `{project-root}/AGENTS.md`, `{project-root}/MEMORY.md`, and `{project-root}/docs/` first. The branch `dev/<run_id>` is this run's branch and covers every epic in the run; do not switch, and do not treat a run that spans epics as a branch mismatch. Do not push, and do not edit `tickets.toml`, ticket files, or anything under the runs directory. The one `tickets.py mark` you do run is the HALT protocol's `mark <ref> blocked --blocked <reason>`; no other. Files under the runs directory are the orchestrator's journal: a review finding about them is out of scope, so reject it and do not modify them. A command that runs `cursor-agent` or reads the Cursor login has to run outside the sandbox; if it stops on an approval prompt, halt and report that rather than waiting. Report to the orchestrator, never to the user, and end with the result fields below, re-read from the plan file, plus whether you reverted code or re-derived the implementation.
 
 **Result you require back from a worker**
