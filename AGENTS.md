@@ -7,6 +7,7 @@ OpenClaw plugin that exposes local coding CLIs as models. Chat, the agent, and `
 - Write short, without losing meaning.
 - Edit `AGENTS.md` only with the user's permission.
 - When something should be remembered, write it in `MEMORY.md`.
+- Before work on the plugin, `.spike/`, or OpenClaw, read `MEMORY.md`.
 - Keep the project in English: code, comments, docs, commits, and names.
 - In chat, answer in the user's language. If the user writes in russian, answer in Ukrainian.
 - User docs live in `docs/` and are linked from `README.md`. Update them in the same change that alters setup, config, or behavior.
