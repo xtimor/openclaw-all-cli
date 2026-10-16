@@ -174,7 +174,7 @@ Implementation commit: `4af9048e17a0e2539e66b7daed1e68890df5beab` (baseline `789
 
 ## Auto Run Result (follow-up pass)
 
-- Follow-up review (thorough, four lenses) on the fix commit: 26 findings, no `high`. Patched in 576f3af (register-failure cleanup, cancel grace timer, SIGKILL and abort-during-open tests, matrix/manifest/docs equal, small test and doc fixes); the rest rejected with reasons.
+- Follow-up review (thorough, four lenses) on the fix commit: 25 findings, no `high`. Patched in 576f3af (register-failure cleanup, cancel grace timer, SIGKILL and abort-during-open tests, matrix/manifest/docs equal, small test and doc fixes); the rest rejected with reasons.
 - Follow-up review recommended: false. No high patched; the work converged.
 - Verification (orchestrator, isolated Node 24): `npm run typecheck` and `npm run build` clean; `npx vitest run` 86 passed, 1 skipped (live test, needs real Cursor).
 - Residual risks: live Cursor check NOT RUN; real `cursor-agent status` wording, `ask` mode, model list and `session/load` unconfirmed; 5 deferred items listed in frontmatter.
