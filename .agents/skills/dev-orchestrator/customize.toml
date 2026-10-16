@@ -1,0 +1,88 @@
+# Agent customization surface for dev-orchestrator.
+# Team overrides:     {project-root}/_bmad/custom/dev-orchestrator.toml
+# Personal overrides: {project-root}/_bmad/custom/dev-orchestrator.user.toml
+
+[agent]
+
+# --- Metadata (install-time roster contract) ---
+
+code = "dev-orchestrator"
+name = "Orion"
+title = "Dev Run Orchestrator"
+icon = "🛰️"
+description = "Runs a scope of tickets or epics end to end through bmad-build-auto workers, escalating only strategic calls."
+agent_type = "stateless"
+
+# --- Configurable below. Overrides merge per BMad structural rules: ---
+#   scalars: override wins • arrays (persistent_facts, activation_steps_*): append
+
+# Steps to run before the standard activation (config load, greet).
+activation_steps_prepend = []
+
+# Steps to run after greet but before the agent accepts user input.
+activation_steps_append = []
+
+# Facts the agent carries for the whole session. Entries prefixed `file:` are
+# loaded as content (globs supported); all others are literal facts.
+persistent_facts = [
+  "file:{project-root}/AGENTS.md",
+  "file:{project-root}/MEMORY.md",
+]
+
+# --- Model per step ---
+#
+# Pass the primary verbatim. If the runtime rejects it as unavailable, retry once
+# with that step's `_fallback` and name both models in the boundary line and run
+# log. Slugs must be in the runtime's allowed list.
+#
+#   model_build      -- the bmad-build-auto worker: plans, implements, runs its own review
+#   model_rework     -- a build retried after a work failure, a different family from the build
+#   model_review     -- cross-family follow-up review pass, deliberately not the build's family
+#   model_consult    -- PM / architect / analyst / UX consults
+#   model_brainstorm -- bmad-brainstorming on open calls
+
+model_build = "gpt-5.3-codex-high"
+model_build_fallback = "grok-4.7-xhigh"
+model_rework = "claude-sonnet-5-5-high"
+model_rework_fallback = "grok-4.7-xhigh"
+model_review = "claude-sonnet-5-5-high"
+model_review_fallback = "grok-4.7-xhigh"
+model_consult = "claude-opus-5-5-high"
+model_consult_fallback = "grok-4.7-xhigh"
+model_brainstorm = "claude-opus-5-5-high"
+model_brainstorm_fallback = "grok-4.7-xhigh"
+
+# --- Run policy ---
+
+# Where the per-run log is written. `{output_folder}` and `{active_initiative}`
+# come from the BMad config.
+run_log_output_path = "{output_folder}/{active_initiative}/runs"
+
+# Completion-email addresses for the Resend MCP `send-email` tool. Empty means
+# unset: resolve from docs/config, ask once if still missing, then persist the
+# answer to `{project-root}/_bmad/custom/dev-orchestrator.user.toml` (gitignored).
+report_email = ""
+report_from = ""
+
+# Build dispatches allowed per ticket after a work failure (verification failed,
+# patch verification failed, matrix test audit failed) before the ticket is escalated.
+rework_limit = 3
+
+# Cross-family review passes per ticket while the pass keeps recommending
+# another one; the pass after the limit is an escalation.
+review_limit = 2
+
+# Run a cross-family review pass on `model_review` after each build.
+cross_review = true
+
+# Lowest ticket risk whose build runs bmad-build-auto's `thorough` review
+# instead of `quick`: "low", "medium", "high", or "never".
+thorough_review_at = "high"
+
+# `stop` halts the run at the first blocked ticket; `continue` moves on to the
+# next ticket that does not wait on it.
+blocked_policy = "stop"
+
+# Mark a ticket `done` once its last review is clean (`done`), or leave it at
+# `built` for a person to close (`built`).
+ticket_done_at = "done"
