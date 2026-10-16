@@ -3,9 +3,7 @@ title: "Walking skeleton: one cursor-cli reply in an isolated OpenClaw"
 type: 'feature'
 ticket: 1
 created: '2026-10-16'
-status: blocked
-blocked_at: "2026-10-16"
-blocked_reason: "no subagents"
+status: in-review
 baseline_revision: '789bc963dfd4c60182f4aab681fa052455d6872c'
 route: 'full'
 route_source: 'auto'
