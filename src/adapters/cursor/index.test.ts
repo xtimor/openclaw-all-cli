@@ -1,3 +1,6 @@
+import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { FAKE_CURSOR_AGENT, fakeEnv } from "../../../test/fixtures/paths.ts";
 import type { CliSession, NormalizedEvent } from "../../core/ports.ts";
@@ -15,6 +18,10 @@ describe("cursor adapter", () => {
     expect(parseStatusOutput("Logged in as me@example.com")).toBe("available");
     expect(parseStatusOutput("Logged in (unable to fetch user details)")).toBe("available");
     expect(parseStatusOutput("Not logged in")).toBe("missing");
+    expect(parseStatusOutput("You are not currently logged in")).toBe("missing");
+    expect(parseStatusOutput("You have been logged out")).toBe("missing");
+    expect(parseStatusOutput("Not authenticated. Run cursor-agent login")).toBe("missing");
+    expect(parseStatusOutput("Signed out")).toBe("missing");
     expect(parseStatusOutput("something else")).toBe("unreadable");
   });
 
@@ -62,6 +69,29 @@ describe("cursor adapter", () => {
     const events: NormalizedEvent[] = [];
     for await (const event of session.prompt("hello")) events.push(event);
     expect(events.at(-1)).toMatchObject({ kind: "result", text: expect.stringContaining("model fake-fast") });
+  });
+
+  it("sends no model change for cursor-cli/auto, even when the session starts on another model", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "oac-cursor-"));
+    try {
+      const file = join(dir, "requests.jsonl");
+      const session = await cursorAdapter.open({
+        command: FAKE_CURSOR_AGENT,
+        args: cursorAdapter.launchArgs,
+        cwd: process.cwd(),
+        env: fakeEnv({ FAKE_CURSOR_LOG: file, FAKE_CURSOR_DEFAULT_MODEL: "fake-fast" }),
+        modelId: "auto",
+        onPermissionRequest: async () => "reject_once",
+      });
+      open.push(session);
+      const methods = readFileSync(file, "utf8")
+        .trim()
+        .split("\n")
+        .map((line) => JSON.parse(line).method);
+      expect(methods).not.toContain("session/set_config_option");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 
   it("refuses to run without Cursor's read-only mode", async () => {

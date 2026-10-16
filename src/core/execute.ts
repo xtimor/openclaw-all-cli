@@ -86,6 +86,7 @@ export function createExecute(adapter: CliAdapter, options: ExecuteOptions): Cli
       onPermissionRequest: rejectPermission,
       ...(ctx.abortSignal ? { signal: ctx.abortSignal } : {}),
     });
+    let closing = false;
     const entry: LiveEntry = {
       session,
       key: reuseKey(ctx),
@@ -95,6 +96,8 @@ export function createExecute(adapter: CliAdapter, options: ExecuteOptions): Cli
         fingerprint: live?.fingerprint ?? randomUUID(),
         isIdle: () => !entry.busy && session.alive,
         close: () => {
+          if (closing) return;
+          closing = true;
           clearTimeout(entry.idleTimer);
           live?.remove(entry.handle);
           void session.close();
@@ -113,12 +116,11 @@ export function createExecute(adapter: CliAdapter, options: ExecuteOptions): Cli
     const live = ctx.liveSession;
 
     let entry = reusable(ctx, live);
+    if (!entry && live) await live.restart();
+    // A superseded run must throw, not turn into an error record.
+    ctx.assertCurrent?.();
     try {
-      if (!entry) {
-        if (live) await live.restart();
-        ctx.assertCurrent?.();
-        entry = await openEntry(ctx, live);
-      }
+      entry ??= await openEntry(ctx, live);
     } catch (error) {
       if (ctx.abortSignal?.aborted) throw error;
       yield errorRecord(error);

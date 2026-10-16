@@ -6,9 +6,12 @@
 //   FAKE_CURSOR_LOGGED_IN=0     `status` reports "Not logged in"
 //   FAKE_CURSOR_NO_ASK_MODE=1   the agent lists no "ask" mode
 //   FAKE_CURSOR_LOG=<file>      append one JSON line per request the agent receives
+//   FAKE_CURSOR_DEFAULT_MODEL=m the model a new session starts with (default "auto")
+//   FAKE_CURSOR_IGNORE_CANCEL=1 session/cancel does nothing
+//   FAKE_CURSOR_IGNORE_TERM=1   SIGTERM does nothing (only SIGKILL stops the process)
 //
 // Prompt text steers a turn: "[[ask-permission]]" requests a shell permission, "[[hang]]" never
-// finishes until cancelled, "[[crash]]" exits, "say:<text>" replies with <text>.
+// finishes until cancelled, "[[refuse]]" ends with stopReason refusal, "[[crash]]" exits, "say:<text>" replies with <text>.
 import { appendFileSync } from "node:fs";
 import { createInterface } from "node:readline";
 
@@ -33,6 +36,8 @@ if (args[0] !== "acp") {
   console.error(`fake-cursor-agent: unsupported arguments ${args.join(" ")}`);
   process.exit(2);
 }
+
+if (process.env.FAKE_CURSOR_IGNORE_TERM === "1") process.on("SIGTERM", () => {});
 
 const sessions = new Map();
 let nextSession = 1;
@@ -74,6 +79,7 @@ async function runPrompt(id, params) {
   session.prompts += 1;
   update(params.sessionId, { sessionUpdate: "agent_thought_chunk", content: { type: "text", text: "thinking" } });
   if (text.includes("[[crash]]")) process.exit(3);
+  if (text.includes("[[refuse]]")) return reply(id, { stopReason: "refusal" });
   if (text.includes("[[hang]]")) {
     await new Promise((resolve) => {
       const timer = setInterval(() => {
@@ -138,7 +144,7 @@ rl.on("line", (line) => {
       return reply(id, {});
     case "session/new": {
       const sessionId = `fake-session-${nextSession++}`;
-      const session = { model: "auto", mode: "agent", prompts: 0 };
+      const session = { model: process.env.FAKE_CURSOR_DEFAULT_MODEL ?? "auto", mode: "agent", prompts: 0 };
       sessions.set(sessionId, session);
       return reply(id, { sessionId, modes: modes(), configOptions: configOptions(session) });
     }
@@ -158,7 +164,7 @@ rl.on("line", (line) => {
     case "session/prompt":
       return void runPrompt(id, params);
     case "session/cancel":
-      return void cancelled.add(params.sessionId);
+      return void (process.env.FAKE_CURSOR_IGNORE_CANCEL === "1" || cancelled.add(params.sessionId));
     default:
       if (id !== undefined) fail(id, -32601, `method not found: ${method}`);
   }

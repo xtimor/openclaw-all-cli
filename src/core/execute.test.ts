@@ -243,6 +243,60 @@ describe("createExecute", () => {
     expect(sessions[0]?.closed).toBe(1);
   });
 
+  it("closes the process after the abort grace when the CLI ignores the cancel", async () => {
+    const stubborn: Script = async function* (_prompt, session) {
+      while (session.alive) await new Promise((resolve) => setTimeout(resolve, 5));
+    };
+    const { adapter, sessions } = makeAdapter(stubborn);
+    const controller = new AbortController();
+    const turn = run(createExecute(adapter, { abortGraceMs: 20 }), makeCtx({ abortSignal: controller.signal }));
+    const outcome = expect(turn).rejects.toThrow();
+    await new Promise((resolve) => setTimeout(resolve, 30));
+    controller.abort(new Error("stop"));
+    await outcome;
+    expect(sessions[0]?.cancelled).toBe(1);
+    expect(sessions[0]?.closed).toBe(1);
+  });
+
+  it("opens a new process when the warm one died", async () => {
+    const { adapter, sessions, opens } = makeAdapter();
+    const { live } = makeLive();
+    const execute = createExecute(adapter, {});
+    await run(execute, makeCtx({ liveSession: live }));
+    sessions[0]!.alive = false;
+    await run(execute, makeCtx({ liveSession: live, useResume: true, sessionId: "native-1" }));
+    expect(opens).toHaveLength(2);
+    expect(opens[1]?.resumeSessionId).toBe("native-1");
+  });
+
+  it("opens a new process and restarts when the host's fingerprint changed", async () => {
+    const { adapter, opens } = makeAdapter();
+    const { live, calls } = makeLive();
+    const execute = createExecute(adapter, {});
+    await run(execute, makeCtx({ liveSession: live }));
+    const changed = { ...live, fingerprint: "other" } as LiveSessionCapability;
+    await run(execute, makeCtx({ liveSession: changed, useResume: true, sessionId: "native-1" }));
+    expect(opens).toHaveLength(2);
+    expect(calls.restart).toBe(2);
+  });
+
+  it("throws, not an error record, when the run was superseded during the restart", async () => {
+    const { adapter, opens } = makeAdapter();
+    const { live } = makeLive();
+    let current = true;
+    const ctx = makeCtx({
+      liveSession: live,
+      assertCurrent: () => {
+        if (!current) throw new Error("superseded");
+      },
+    });
+    live.restart = async () => {
+      current = false;
+    };
+    await expect(run(createExecute(adapter, {}), ctx)).rejects.toThrow("superseded");
+    expect(opens).toHaveLength(0);
+  });
+
   it("does not start a turn that is already aborted", async () => {
     const { adapter, opens } = makeAdapter();
     const controller = new AbortController();

@@ -43,5 +43,6 @@ describe("core records", () => {
     expect(parseJsonlEvent('{"type":"assistant"}')).toBeNull();
     expect(parseJsonlEvent("not json openclaw-all-cli")).toBeNull();
     expect(parseJsonlEvent('{"oac":"other","event":{}}')).toBeNull();
+    expect(parseJsonlEvent('{"oac":"openclaw-all-cli","event":null}')).toBeNull();
   });
 });

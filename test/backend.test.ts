@@ -3,7 +3,7 @@ import { describe, expect, it } from "vitest";
 import { ADAPTERS } from "../src/registry.ts";
 import { cursorAdapter } from "../src/adapters/cursor/index.ts";
 import { backendIdFor, buildCliBackend, nativeAuthMarkerFor } from "../src/core/backend.ts";
-import { registerAdapters } from "../src/core/register.ts";
+import { createConfigValidator, registerAdapters } from "../src/core/register.ts";
 import provider from "../src/provider-discovery.ts";
 import { FAKE_CURSOR_AGENT, fakeEnv } from "./fixtures/paths.ts";
 
@@ -72,6 +72,24 @@ describe("plugin registration", () => {
       ADAPTERS,
     );
     expect(registered).toEqual(["cursor-cli:/x/cursor-agent"]);
+  });
+});
+
+describe("plugin config validator", () => {
+  const validator = createConfigValidator(ADAPTERS);
+
+  it("accepts no config and a valid one", () => {
+    expect(validator.safeParse(undefined)).toEqual({ success: true, data: {} });
+    expect(validator.safeParse({ "cursor-cli": { command: "/x/cursor-agent" } })).toEqual({
+      success: true,
+      data: { "cursor-cli": { command: "/x/cursor-agent" } },
+    });
+  });
+
+  it("rejects an empty command with its path", () => {
+    const result = validator.safeParse({ "cursor-cli": { command: "" } });
+    expect(result.success).toBe(false);
+    if (!result.success) expect(result.error.issues[0]?.path).toEqual(["cursor-cli", "command"]);
   });
 });
 

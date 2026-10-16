@@ -18,15 +18,15 @@ Until per-agent permissions and permission routing land, every session runs in C
 
 | # | Feature | Status | Notes |
 | --- | --- | --- | --- |
-| P1 | Provider in `/model`, model aliases | match | `cursor-cli/<model>`; the model list in `/model` is planned |
+| P1 | Provider in `/model`, model aliases | spike | `cursor-cli/<model>` runs; the model list in `/model` is not built |
 | P2 | Subscription login counts as auth | match | `cursor-agent status` or `CURSOR_API_KEY` |
-| P3 | Streaming text and thinking | match | Text and thinking deltas; tool progress is planned |
-| P4 | Warm process per conversation | match | One `cursor-agent acp` process per conversation |
-| P5 | Resume a session | match | ACP `session/load` |
+| P3 | Streaming text and thinking | approx | Text and thinking deltas; tool progress is not mapped yet |
+| P4 | Warm process per conversation | match | One `cursor-agent acp` process per conversation. No live test yet (live Cursor not run) |
+| P5 | Resume a session | match | ACP `session/load`. No live test yet (live Cursor not run) |
 | P6 | Fork, resume at a checkpoint | gap | `cursor-agent` has no fork or checkpoint flag |
-| P7 | OpenClaw tools as MCP | match (planned) | ACP `session/new` `mcpServers`; not wired yet |
-| P8 | Native shell replaced by OpenClaw `exec` | match (planned) | Shell requests are rejected now |
-| P9 | Tool approvals through OpenClaw | approx (planned) | Shell and MCP ask; native edits do not ask |
+| P7 | OpenClaw tools as MCP | spike | ACP `session/new` `mcpServers` is spiked; the MCP proxy is not wired |
+| P8 | Native shell replaced by OpenClaw `exec` | approx | Shell requests are rejected; OpenClaw `exec` is not offered yet |
+| P9 | Tool approvals through OpenClaw | approx | Shell and MCP ask; native edits do not ask. Routing to OpenClaw is not built |
 | P10 | `tools.allow` and `tools.deny` | spike | |
 | P11 | Skills as a native plugin | spike | |
 | P12 | System prompt every turn | spike | The OpenClaw system prompt is not sent yet |
@@ -35,8 +35,8 @@ Until per-agent permissions and permission routing land, every session runs in C
 | P15 | History reseed | approx | Needs a Cursor API-key profile |
 | P16 | Usage per turn | gap | ACP reports no usage so far |
 | P17 | Clean env, watchdog, timeouts | match | OpenClaw's watchdog and timeouts apply |
-| P18 | Side questions without tools | match | The `ask` mode |
-| P19 | Binary detection, live tests | match | `cursor-agent` on `PATH`, `test/live/` |
+| P18 | Side questions without tools | spike | Every session runs in `ask` mode; side questions are not handled separately |
+| P19 | Binary detection, live tests | approx | OpenClaw finds `cursor-agent` on `PATH`. The minimum version 2026.07.06 is recorded but not enforced yet |
 
 ## Known limits
 

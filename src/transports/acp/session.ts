@@ -1,4 +1,5 @@
 import { spawn, type ChildProcess } from "node:child_process";
+import { statSync } from "node:fs";
 import { Readable, Writable } from "node:stream";
 import * as acp from "@agentclientprotocol/sdk";
 import {
@@ -62,7 +63,7 @@ function toCliError(error: unknown, fallback: CliErrorCode, context: string): Cl
 }
 
 /** The error for a process that is gone: a missing binary, or an exit nobody asked for. */
-function deathError(runtime: Runtime, command: string): CliError {
+function deathError(runtime: Runtime, command: string, retryable = true): CliError {
   if (runtime.spawnError) {
     const missing = (runtime.spawnError as NodeJS.ErrnoException).code === "ENOENT";
     return new CliError({
@@ -76,8 +77,29 @@ function deathError(runtime: Runtime, command: string): CliError {
   return new CliError({
     code: "server_error",
     message: `The CLI process exited unexpectedly${tail ? `: ${tail}` : "."}`,
-    retryable: true,
+    retryable,
   });
+}
+
+/** SIGTERM now, SIGKILL if the process is still there after the grace period. */
+function terminate(runtime: Runtime): void {
+  if (runtime.hasExited) return;
+  runtime.child.kill("SIGTERM");
+  const forceKill = setTimeout(() => runtime.child.kill("SIGKILL"), KILL_GRACE_MS);
+  forceKill.unref();
+  void runtime.exited.then(() => clearTimeout(forceKill));
+}
+
+function assertDirectory(cwd: string): void {
+  let isDirectory = false;
+  try {
+    isDirectory = statSync(cwd).isDirectory();
+  } catch {
+    // Reported below.
+  }
+  if (!isDirectory) {
+    throw new CliError({ code: "unclassified", message: `The working directory "${cwd}" does not exist.` });
+  }
 }
 
 function cancelPermissions(runtime: Runtime): void {
@@ -124,6 +146,7 @@ export class AcpSession implements CliSession {
   /** Spawns the process, negotiates the protocol, and starts or resumes a session. */
   static async open(options: AcpSessionOptions): Promise<AcpSession> {
     options.signal?.throwIfAborted();
+    assertDirectory(options.cwd);
     const child = spawn(options.command, [...options.args], {
       cwd: options.cwd,
       env: options.env,
@@ -196,7 +219,7 @@ export class AcpSession implements CliSession {
     );
     const connection = new acp.ClientSideConnection(() => clientHandler, stream);
 
-    const stopOnAbort = () => child.kill("SIGTERM");
+    const stopOnAbort = () => terminate(runtime);
     options.signal?.addEventListener("abort", stopOnAbort, { once: true });
 
     const died = runtime.exited.then(() => {
@@ -209,7 +232,7 @@ export class AcpSession implements CliSession {
       const sessionId = await Promise.race([setup(connection, options), died]);
       return new AcpSession(sessionId, runtime, connection, options.command);
     } catch (error) {
-      child.kill("SIGTERM");
+      terminate(runtime);
       await runtime.exited;
       options.signal?.throwIfAborted();
       if (runtime.spawnError) throw deathError(runtime, options.command);
@@ -242,8 +265,9 @@ export class AcpSession implements CliSession {
     };
     runtime.turn = queue;
 
+    // A death mid-turn is never retryable: a tool call may already have run (AD-11).
     const died = runtime.exited.then(() => {
-      throw deathError(runtime, this.command);
+      throw deathError(runtime, this.command, false);
     });
     died.catch(() => {});
 
@@ -272,7 +296,7 @@ export class AcpSession implements CliSession {
         // A dead process closes its pipes before `exit` fires; give the exit a moment to land.
         await Promise.race([runtime.exited, new Promise((resolve) => setTimeout(resolve, EXIT_SETTLE_MS))]);
         const failure = runtime.hasExited
-          ? deathError(runtime, this.command)
+          ? deathError(runtime, this.command, false)
           : toCliError(error, "server_error", "The CLI turn failed");
         queue.push({ kind: "error", error: failure.toInfo() });
       } finally {
@@ -298,8 +322,16 @@ export class AcpSession implements CliSession {
       }
     } finally {
       if (!ended) {
-        // The consumer stopped early (abort): stop the turn and let it settle.
+        // The consumer stopped early (abort): stop the turn and let it settle. A CLI that
+        // ignores the cancel gets the kill grace, then the process is closed.
         await this.cancel();
+        let timer: NodeJS.Timeout | undefined;
+        const gaveUp = new Promise<boolean>((resolve) => {
+          timer = setTimeout(() => resolve(true), KILL_GRACE_MS);
+        });
+        const timedOut = await Promise.race([settled.then(() => false), gaveUp]);
+        clearTimeout(timer);
+        if (timedOut) await this.close();
       }
       await settled;
       runtime.turn = undefined;
@@ -320,13 +352,9 @@ export class AcpSession implements CliSession {
     if (this.closed) return this.runtime.exited;
     this.closed = true;
     cancelPermissions(this.runtime);
-    const { child } = this.runtime;
-    child.stdin?.end();
-    child.kill("SIGTERM");
-    const forceKill = setTimeout(() => child.kill("SIGKILL"), KILL_GRACE_MS);
-    forceKill.unref();
+    this.runtime.child.stdin?.end();
+    terminate(this.runtime);
     await this.runtime.exited;
-    clearTimeout(forceKill);
   }
 
   waitForExit(): Promise<void> {

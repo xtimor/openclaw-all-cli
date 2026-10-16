@@ -27,3 +27,4 @@
 - A CLI backend's `execute` yields records; OpenClaw JSON-stringifies them into `parseJsonlEvent`. Records with `type: "result"` end the turn. `useResume` needs non-empty `resumeArgs`; `sessionMode: "existing"` passes only the stored ID.
 - Vitest env makes OpenClaw mute output; strip `VITEST*` when a test spawns it.
 - Host-less checks use `test/fixtures/fake-cursor-agent.mjs` (ACP stand-in; steer with `[[hang]]`, `[[crash]]`, `[[ask-permission]]`, `say:<text>`). It proves wiring only, not Cursor behavior.
+- Plugin startup loading (#148584, OpenClaw 2026.10.3): with no config naming `cursor-cli`, the Gateway loads the plugin on the first turn selecting it; with `agents.defaults.model.primary = cursor-cli/auto` it loads at startup.

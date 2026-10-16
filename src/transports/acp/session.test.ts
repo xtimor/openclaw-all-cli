@@ -124,7 +124,16 @@ describe("AcpSession", () => {
     expect(JSON.stringify(allowed)).toContain('\\"optionId\\":\\"allow\\"');
   });
 
-  it("cancels a running turn and answers a pending permission request as cancelled", async () => {
+  it("answers a pending permission request as cancelled when the turn is cancelled", async () => {
+    const session = await start({ onPermissionRequest: () => new Promise(() => {}) });
+    const turn = collect(session.prompt("[[ask-permission]]"));
+    await new Promise((resolve) => setTimeout(resolve, 200));
+    await session.cancel();
+    const events = await turn;
+    expect(JSON.stringify(events)).toContain('\\"outcome\\":\\"cancelled\\"');
+  });
+
+  it("cancels a running turn", async () => {
     const session = await start();
     const turn = collect(session.prompt("[[hang]]"));
     await new Promise((resolve) => setTimeout(resolve, 200));
@@ -136,11 +145,50 @@ describe("AcpSession", () => {
   it("reports a crash mid-turn as a retryable error and marks the session dead", async () => {
     const session = await start();
     const events = await collect(session.prompt("[[crash]]"));
-    expect(events.at(-1)).toMatchObject({ kind: "error", error: { code: "server_error", retryable: true } });
+    expect(events.at(-1)).toMatchObject({ kind: "error", error: { code: "server_error", retryable: false } });
     await session.waitForExit();
     expect(session.alive).toBe(false);
     const after = await collect(session.prompt("say:again"));
     expect(after).toMatchObject([{ kind: "error", error: { message: "The CLI session is closed." } }]);
+  });
+
+  it("maps a refusal stop reason to an unclassified error", async () => {
+    const session = await start();
+    const events = await collect(session.prompt("[[refuse]]"));
+    expect(events.at(-1)).toMatchObject({ kind: "error", error: { code: "unclassified", retryable: false } });
+  });
+
+  it("cancels the CLI and keeps the session usable when the consumer stops early", async () => {
+    const file = logFile();
+    const session = await start({ env: { FAKE_CURSOR_LOG: file } });
+    for await (const event of session.prompt("[[hang]]")) {
+      if (event.kind === "thinking") break;
+    }
+    expect(requests(file).map((entry) => entry.method)).toContain("session/cancel");
+    expect(session.alive).toBe(true);
+    const next = await collect(session.prompt("say:still here"));
+    expect(next.at(-1)).toMatchObject({ kind: "result", text: "still here" });
+  });
+
+  it("closes a CLI that ignores the cancel after the kill grace", async () => {
+    const session = await start({ env: { FAKE_CURSOR_IGNORE_CANCEL: "1" } });
+    for await (const event of session.prompt("[[hang]]")) {
+      if (event.kind === "thinking") break;
+    }
+    expect(session.alive).toBe(false);
+  }, 10_000);
+
+  it("kills a CLI that ignores SIGTERM when it is closed", async () => {
+    const session = await start({ env: { FAKE_CURSOR_IGNORE_TERM: "1" } });
+    await session.close();
+    expect(session.alive).toBe(false);
+  }, 10_000);
+
+  it("reports a missing working directory instead of a missing binary", async () => {
+    await expect(AcpSession.open(options({ cwd: "/nonexistent/workdir" }))).rejects.toMatchObject({
+      code: "unclassified",
+      message: expect.stringContaining("working directory"),
+    });
   });
 
   it("refuses a second turn while one runs", async () => {

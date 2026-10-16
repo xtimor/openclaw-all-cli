@@ -29,7 +29,7 @@ use_isolated_env() {
 }
 
 install_node() {
-  if [ -x "$NODE_DIR/bin/node" ] && "$NODE_DIR/bin/node" --version | grep -q "^v24\."; then
+  if [ -x "$NODE_DIR/bin/node" ] && [ "$("$NODE_DIR/bin/node" --version)" = "v$NODE_VERSION" ]; then
     return
   fi
   local os arch
@@ -58,7 +58,7 @@ install_node() {
 }
 
 install_openclaw() {
-  if [ -x "$OPENCLAW_BIN" ] && PATH="$NODE_DIR/bin:$PATH" "$OPENCLAW_BIN" --version 2>/dev/null | grep -q "$OPENCLAW_VERSION"; then
+  if [ -x "$OPENCLAW_BIN" ] && [ "$(PATH="$NODE_DIR/bin:$PATH" "$OPENCLAW_BIN" --version 2>/dev/null | awk '{print $2}')" = "$OPENCLAW_VERSION" ]; then
     return
   fi
   echo "Installing OpenClaw $OPENCLAW_VERSION into $OPENCLAW_DIR"

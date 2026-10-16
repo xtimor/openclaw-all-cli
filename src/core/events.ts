@@ -61,7 +61,8 @@ function isCoreRecord(value: unknown): value is CoreRecord {
     typeof value === "object" &&
     value !== null &&
     (value as { oac?: unknown }).oac === RECORD_MARKER &&
-    typeof (value as { event?: unknown }).event === "object"
+    typeof (value as { event?: unknown }).event === "object" &&
+    (value as { event?: unknown }).event !== null
   );
 }
 

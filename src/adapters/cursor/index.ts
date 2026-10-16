@@ -10,8 +10,10 @@ const AUTO_MODEL = "auto";
 
 /** Reads `cursor-agent status` output. Only the logged-in wording is relied on. */
 export function parseStatusOutput(output: string): AuthStatus {
-  if (/not\s+logged\s+in/i.test(output) || /not\s+authenticated/i.test(output)) return "missing";
-  if (/logged\s+in/i.test(output)) return "available";
+  // Negations first: "not logged in", "not currently logged in", "logged out", "not authenticated".
+  if (/\bnot\b[^.\n]*\b(logged\s+in|authenticated|signed\s+in)\b/i.test(output)) return "missing";
+  if (/\b(logged|signed)\s+out\b/i.test(output)) return "missing";
+  if (/\b(logged\s+in|authenticated|signed\s+in)\b/i.test(output)) return "available";
   return "unreadable";
 }
 
