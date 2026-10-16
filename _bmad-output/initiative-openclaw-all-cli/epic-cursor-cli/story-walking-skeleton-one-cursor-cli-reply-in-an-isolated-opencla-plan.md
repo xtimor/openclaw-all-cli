@@ -12,7 +12,7 @@ review: 'thorough'
 review_source: 'pinned'
 lenses_ran: [blind-hunter, edge-case-hunter, verification-gap, intent-alignment]
 review_loop_iteration: 0
-followup_review_recommended: true
+followup_review_recommended: false
 context: []
 warnings: []
 deferred:
@@ -135,6 +135,35 @@ Implementation commit: `4af9048e17a0e2539e66b7daed1e68890df5beab` (baseline `789
   - `low` `reject` Intent: extra composition roots and a lifecycle larger than the minimum scaffold — the plan records the deviation; the scope is a descriptive finding, not a defect
   - Lenses reported grouped findings; rows above merge duplicates from several lenses under the same root cause.
 
+### 2026-10-16 — Review pass (follow-up)
+- verdicts: 25 findings — high 0, medium 5, low 17, false 2, maybe-false 1
+- findings:
+  - `low` `patch` Test title says retryable but expects `retryable: false` — renamed (576f3af)
+  - `false` `reject` Blind/Edge: `live.restart()` moved out of the try is unintended — the host's `restart()`/`register` throw failover errors on purpose (read in the host registry), so propagating them as throws is correct
+  - `medium` `patch` VGap: no test rejects `live.restart()` — added a test that `execute` rejects with the host error and yields no record (576f3af)
+  - `low` `reject` Blind: `KILL_GRACE_MS` reused as the cancel-ignored timeout overlaps `abortGraceMs` — cosmetic; a new option adds surface
+  - `low` `patch` Blind/VGap: `parseStatusOutput` docstring stale and positive wordings untested — docstring updated, two assertions added (576f3af)
+  - `medium` `patch` Blind/Intent: parity matrix not updated with manifest/docs; P4/P5 `match` without live test; P2 wording unconfirmed — matrix, manifest and docs made equal (576f3af)
+  - `low` `patch` Blind: MEMORY.md misses the new fixture controls — listed (576f3af)
+  - `low` `reject` Blind: setup.md should use a pinned devDependency instead of `dev:setup` — design choice already routed in pass 1; docs name the prerequisite
+  - `low` `patch` Blind/Intent: setup.md uses internal wording and misplaces "isolated" (`--local` vs Gateway), vague report line — reworded (576f3af)
+  - `low` `patch` Blind/VGap: isolated-OpenClaw test checks the last `dev:install`, skips silently — docblock note added; rebuild-in-test is a larger harness change and not worth it here
+  - `low` `reject` Blind/Edge: `assertDirectory` message for a file or EACCES — unlikely path; fix adds branches
+  - `low` `reject` Blind: new execute tests leave effects unchecked (restart ran, handle removed, error type) — the behavior is covered by the added restart and register tests
+  - `low` `reject` Blind: process.test pins aborted == timeout and misses cap/cwd cases — negligible
+  - `low` `patch` Blind: fake agent cancel short-circuit hard to read — plain `if` (576f3af)
+  - `low` `reject` Blind: MEMORY.md cites #148584 without a link — the project already uses that form for the OpenClaw issue
+  - `medium` `patch` Edge/VGap: SIGKILL fallback never exercised (fake exits on stdin EOF) and no test aborts `open` — added the stdin-EOF knob, a SIGKILL test, and an abort-during-handshake test (576f3af)
+  - `medium` `patch` Edge: grace timer starts only after `cancel()` resolves, so a stalled cancel write blocks the finally — timer now starts first (576f3af)
+  - `maybe-false` `defer` Edge/Intent: `cursor-cli/auto` keeps a non-auto model — duplicate of the pass-1 deferred item; carried, not re-deferred
+  - `low` `reject` Edge: status wording anchoring ("token not refreshed, authenticated", "logged out" mentioned elsewhere) — speculative wordings; real `status` text unconfirmed
+  - `low` `reject` Edge: `parseJsonlEvent` default branch and array events — carried from pass 1 (writer is this module)
+  - `false` `reject` Edge: `{kind:'error'}` without an error object throws in the parser — the only writer always sets `error`; unreachable
+  - `low` `patch` Edge: setup.md reinstall glob matches several archives — exact archive named (576f3af)
+  - `medium` `patch` VGap: `adapter.open` spawns before `live.register`, which can throw and orphan the process — register failure now closes the session and rethrows; test added (576f3af)
+  - `low` `reject` VGap: `retryable: false` on the `died` promise has no effect — the catch rebuilds the error; behavior is right
+  - `low` `reject` Intent: tests exercise the stand-in, not Cursor — descriptive; live check recorded NOT RUN
+
 ## Auto Run Result (review pass 1)
 
 - Review: thorough, four lenses, 30 findings (high 1, medium 10, low 13, maybe-false 6). Patched in 4ce9618 by the implementing worker; 5 items deferred; low findings rejected with reasons in the triage log.
@@ -142,3 +171,10 @@ Implementation commit: `4af9048e17a0e2539e66b7daed1e68890df5beab` (baseline `789
 - Follow-up review recommended: true. Unverified risk: the new `terminate()`/grace-close paths in `src/transports/acp/session.ts` and the idempotent live-handle close in `src/core/execute.ts` were written after the first review.
 - Verification (orchestrator, isolated Node 24): `npm run typecheck`, `npm run build` clean; `npx vitest run` 83 passed, 1 skipped (live test, needs real Cursor).
 - Residual risk: the live Cursor check (`openclaw agent --model cursor-cli/auto --message 'Say hi'`) is NOT RUN; all Cursor-specific behavior was tested only against the stand-in agent.
+
+## Auto Run Result (follow-up pass)
+
+- Follow-up review (thorough, four lenses) on the fix commit: 26 findings, no `high`. Patched in 576f3af (register-failure cleanup, cancel grace timer, SIGKILL and abort-during-open tests, matrix/manifest/docs equal, small test and doc fixes); the rest rejected with reasons.
+- Follow-up review recommended: false. No high patched; the work converged.
+- Verification (orchestrator, isolated Node 24): `npm run typecheck` and `npm run build` clean; `npx vitest run` 86 passed, 1 skipped (live test, needs real Cursor).
+- Residual risks: live Cursor check NOT RUN; real `cursor-agent status` wording, `ask` mode, model list and `session/load` unconfirmed; 5 deferred items listed in frontmatter.
