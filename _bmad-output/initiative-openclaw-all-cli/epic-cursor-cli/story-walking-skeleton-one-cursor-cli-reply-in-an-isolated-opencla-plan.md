@@ -10,12 +10,47 @@ route_source: 'auto'
 risk: 'high'
 review: 'thorough'
 review_source: 'pinned'
-lenses_ran: []
+lenses_ran: [blind-hunter, edge-case-hunter, verification-gap, intent-alignment]
 review_loop_iteration: 0
 followup_review_recommended: true
 context: []
 warnings: []
-deferred: []
+deferred:
+  - summary: >-
+      Error code and retryable never reach OpenClaw's failover logic; a dead native session is never dropped.
+    evidence: |-
+      Unknown whether the host's result event can carry a failover reason or drop the binding on session_expired. Read the SDK parsed-event type.
+    location: >-
+      src/core/events.ts
+    severity: medium (unverified)
+  - summary: >-
+      Reuse key ignores command, args and env.
+    evidence: |-
+      Settled by checking whether the host live-session fingerprint covers them.
+    location: >-
+      src/core/execute.ts
+    severity: medium (unverified)
+  - summary: >-
+      Handshake has no timeout of its own.
+    evidence: |-
+      Settled by confirming the host watchdog always aborts the turn's signal.
+    location: >-
+      src/transports/acp/session.ts
+    severity: medium (unverified)
+  - summary: >-
+      An agent-sent current_mode_update could lift the read-only ask mode.
+    evidence: |-
+      Needs real Cursor ACP traffic. Entries 2 and 4 add permission routing.
+    location: >-
+      src/transports/acp/session.ts
+    severity: high (unverified)
+  - summary: >-
+      Resuming with cursor-cli/auto may keep the previous session's model.
+    evidence: |-
+      Needs real Cursor session/load behavior.
+    location: >-
+      src/adapters/cursor/index.ts
+    severity: medium (unverified)
 ---
 
 ## Auto Run Result
@@ -62,3 +97,40 @@ Implementation commit: `4af9048e17a0e2539e66b7daed1e68890df5beab` (baseline `789
 - The OpenClaw system prompt, MCP tools, usage, version check (AD-14), concurrency cap, pid lock, and unload close are not in this ticket and are not built.
 - `ClientSideConnection` from the ACP SDK is deprecated in 1.8.0 in favor of `client()`; used for its simpler lifetime.
 - AD-13 reuse key covers model, cwd, and native session ID; mode, home, and auth profile do not exist yet.
+
+## Review Triage Log
+
+### 2026-10-16 — Review pass
+- verdicts: 30 findings — high 1, medium 10, low 13, false 0, maybe-false 6
+- findings:
+  - `medium` `patch` Blind/Edge: `npm run package` fails on a fresh clone (tsconfig paths into `.spike`, `openclaw` not a devDependency) — verified; patch: docs name `npm run dev:setup` as the prerequisite of `package`
+  - `maybe-false` `defer` Blind/Edge/VGap: error `code`/`retryable` dropped by `parseJsonlEvent`, `FAILOVER_REASON_BY_CODE` unused — maybe-false: unknown whether the host's result event can carry a failover reason; settle by reading the SDK's parsed-event type and the architecture's error entry
+  - `maybe-false` `defer` Blind: dead native session never recovered (`session/load` fails every turn) — maybe-false: depends on whether the host drops the binding on `session_expired`; same root cause as the dropped error code
+  - `medium` `patch` Blind: `retryable: true` for a death mid-turn contradicts AD-11 (tool calls are not tracked) — patch: mid-turn process death reports `retryable: false`
+  - `high` `patch` Blind/Edge: `AcpSession.open` has no SIGKILL escalation after SIGTERM, so a CLI that ignores SIGTERM hangs `open` forever — patch: escalate to SIGKILL after `KILL_GRACE_MS` in the failure and abort paths
+  - `medium` `patch` Blind/Edge/VGap: `prompt()` finally awaits `settled` unbounded when the consumer stops early and the CLI ignores `session/cancel` — patch: bound the wait, then close the session; add a test
+  - `low` `reject` Blind: clean cancel still discards the warm process — intended by AD-11 (close after abort); nothing to change
+  - `medium` `patch` Blind/Intent: manifest rows P1, P3, P7, P8, P18, P19 say `match` for unbuilt behavior and disagree with docs (`match (planned)`) — patch: set honest statuses (`approx`/`spike`) in manifest and docs, and the version note
+  - `medium` `patch` Blind: minimum Cursor version (`unsupported_version`, 2026.07.06) is not enforced — patch: P19 and docs state it is not yet enforced; enforcement is a later ticket
+  - `medium` `patch` Blind/Edge: `parseStatusOutput` fails open on wordings like "You are not currently logged in" — patch: broaden the negation check; test the new wordings
+  - `low` `patch` Blind/Edge: `dev-openclaw.sh` version checks (any v24, unanchored grep matches 2026.10.30) — patch: compare exact versions
+  - `low` `patch` Blind: `npm run package` leaves a `.tgz` in the repo root and `.gitignore` lacks `*.tgz` — patch: ignore it
+  - `maybe-false` `defer` Blind: reuse key ignores command/args/env — maybe-false: depends on whether the host fingerprint covers them; settle by reading `live.fingerprint` derivation
+  - `low` `patch` Blind: troubleshooting table lacks rows for errors the code produces — patch: add the rows
+  - `medium` `patch` Blind/VGap/Intent: test gaps (process.ts, createConfigValidator, refusal, no `allow_once` option, "not authenticated" probe, abort-grace kill, reusable() guards, `auto` selection test that cannot fail, early consumer stop, test title overclaim, packaged-plugin load check gated behind the live flag, P4/P5 rows with no live test) — patch: add tests; split the no-login `plugins inspect` check out of the live gate; list P4/P5 live tests as not run
+  - `low` `reject` Blind: `runCommand` decodes chunks separately and reports an aborted signal as timeout — negligible on `cursor-agent status` output; fix would add a decoder and a branch
+  - `medium` `patch` Edge: a missing `cwd` is reported as `cli_not_found` (spawn ENOENT) — patch: check the cwd before blaming the binary
+  - `maybe-false` `defer` Edge: `ctx.timeoutMs` ignored during the handshake — maybe-false: AD-11 gives timers to the host, which aborts via `abortSignal`; settle by confirming the watchdog always aborts
+  - `medium` `patch` Edge: `assertCurrent()` after `restart()` is inside the try, so a superseded run yields an error record instead of throwing — patch: call it outside the try
+  - `maybe-false` `defer` Edge: `current_mode_update` leaving `ask` mid-session would lift the read-only lockdown — maybe-false (high if true): settle with real Cursor traffic; entries 2 and 4 add permission routing
+  - `maybe-false` `defer` Edge: resuming with `cursor-cli/auto` keeps the previous session's model — maybe-false (medium if true): needs real Cursor `session/load` behavior
+  - `low` `patch` Edge: `isCoreRecord` accepts `"event": null` and then throws in `event.kind` — patch: reject null
+  - `low` `reject` Edge: `parseJsonlEvent` switch has no default — the writer is this same module; an unknown kind cannot occur, and a default branch adds code for nothing
+  - `low` `reject` Edge: a later ChildProcess 'error' marks a live process exited — unlikely, and the fix adds branches
+  - `low` `reject` Edge: authMethods without `cursor_login` skips authenticate and later fails as `server_error` — unlikely with Cursor; fix adds a branch
+  - `low` `reject` Edge: only `*_always` permission options are answered as cancelled — Cursor offers `*_once`; fix adds a branch
+  - `low` `reject` Edge: duplicate result after a result — `prompt()` emits one terminal event, so the path is unreachable
+  - `medium` `patch` Intent: live test and the verify command differ (`--local`, weak assertion) and the docs disagree — patch: docs state which form is the verify command and why `--local` is used by the test
+  - `low` `patch` Intent: #148584 finding is in the plan only — patch: add the startup-loading line to MEMORY.md
+  - `low` `reject` Intent: extra composition roots and a lifecycle larger than the minimum scaffold — the plan records the deviation; the scope is a descriptive finding, not a defect
+  - Lenses reported grouped findings; rows above merge duplicates from several lenses under the same root cause.
