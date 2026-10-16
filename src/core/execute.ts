@@ -105,9 +105,18 @@ export function createExecute(adapter: CliAdapter, options: ExecuteOptions): Cli
         waitForExit: () => session.waitForExit(),
       },
     };
-    entries.set(entry.handle, entry);
-    live?.register(entry.handle);
     return entry;
+  }
+
+  /** Hands a new process to the host. A host refusal must not orphan the process. */
+  function registerEntry(entry: LiveEntry, live: LiveSessionCapability | undefined): void {
+    try {
+      live?.register(entry.handle);
+    } catch (error) {
+      void entry.session.close();
+      throw error;
+    }
+    entries.set(entry.handle, entry);
   }
 
   return async function* execute(ctx) {
@@ -119,8 +128,12 @@ export function createExecute(adapter: CliAdapter, options: ExecuteOptions): Cli
     if (!entry && live) await live.restart();
     // A superseded run must throw, not turn into an error record.
     ctx.assertCurrent?.();
+    let opened = false;
     try {
-      entry ??= await openEntry(ctx, live);
+      if (!entry) {
+        entry = await openEntry(ctx, live);
+        opened = true;
+      }
     } catch (error) {
       if (ctx.abortSignal?.aborted) throw error;
       yield errorRecord(error);
@@ -128,6 +141,8 @@ export function createExecute(adapter: CliAdapter, options: ExecuteOptions): Cli
     }
 
     const active = entry;
+    // Host errors from register keep propagating as throws, not error records.
+    if (opened) registerEntry(active, live);
     clearTimeout(active.idleTimer);
     active.busy = true;
 

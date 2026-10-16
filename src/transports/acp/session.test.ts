@@ -142,7 +142,7 @@ describe("AcpSession", () => {
     expect(events.at(-1)).toMatchObject({ kind: "error", error: { message: "The CLI cancelled the turn." } });
   });
 
-  it("reports a crash mid-turn as a retryable error and marks the session dead", async () => {
+  it("reports a crash mid-turn as a non-retryable error and marks the session dead", async () => {
     const session = await start();
     const events = await collect(session.prompt("[[crash]]"));
     expect(events.at(-1)).toMatchObject({ kind: "error", error: { code: "server_error", retryable: false } });
@@ -179,9 +179,18 @@ describe("AcpSession", () => {
   }, 10_000);
 
   it("kills a CLI that ignores SIGTERM when it is closed", async () => {
-    const session = await start({ env: { FAKE_CURSOR_IGNORE_TERM: "1" } });
+    const session = await start({ env: { FAKE_CURSOR_IGNORE_TERM: "1", FAKE_CURSOR_IGNORE_STDIN_EOF: "1" } });
     await session.close();
     expect(session.alive).toBe(false);
+  }, 10_000);
+
+  it("ends the process when the signal aborts a hanging handshake", async () => {
+    const controller = new AbortController();
+    const opening = AcpSession.open(options({ env: { FAKE_CURSOR_NO_INIT: "1" }, signal: controller.signal }));
+    const outcome = expect(opening).rejects.toThrow();
+    await new Promise((resolve) => setTimeout(resolve, 200));
+    controller.abort(new Error("stop"));
+    await outcome;
   }, 10_000);
 
   it("reports a missing working directory instead of a missing binary", async () => {

@@ -9,7 +9,7 @@ export const CURSOR_MIN_VERSION = "2026.07.06";
  */
 export const cursorManifest = createManifest(CURSOR_MIN_VERSION, {
   P1: { status: "spike", note: "cursor-cli/<model> runs; the model list in /model is not built" },
-  P2: { status: "match", note: "synthetic auth from cursor-agent status or CURSOR_API_KEY" },
+  P2: { status: "match", note: "synthetic auth from cursor-agent status or CURSOR_API_KEY; the real status wording is unconfirmed" },
   P3: { status: "approx", note: "text and thinking deltas; tool progress is not mapped yet" },
   P4: { status: "match", note: "one cursor-agent acp process per conversation" },
   P5: { status: "match", note: "ACP session/load" },

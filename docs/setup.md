@@ -36,10 +36,10 @@ cd openclaw-all-cli
 npm install
 npm run dev:setup        # once: the build resolves OpenClaw's types from the toolchain in .spike/
 npm run package          # builds dist/ and writes openclaw-all-cli-<version>.tgz
-openclaw plugins install ./openclaw-all-cli-*.tgz --accept-capabilities
+openclaw plugins install ./openclaw-all-cli-$(node -p "require('./package.json').version").tgz --accept-capabilities
 ```
 
-After `git pull`, run `npm run package` again and reinstall: the plugin runs from `dist/`, which is not rebuilt for you.
+After `git pull`, run `npm run package` again and reinstall with `openclaw plugins install ./openclaw-all-cli-$(node -p "require('./package.json').version").tgz --accept-capabilities`: the plugin runs from `dist/`, which is not rebuilt for you.
 
 OpenClaw warns that the source is outside ClawHub review and asks you to confirm; pass `--force` to confirm without a prompt. Do not install the checkout directory with `--link`: OpenClaw scans the whole directory, and a checkout that also holds a development toolchain fails to load.
 
@@ -62,7 +62,7 @@ openclaw plugins inspect openclaw-all-cli --runtime --json
 openclaw agent --model cursor-cli/auto --message "Say hi"
 ```
 
-The first command must report `"status": "loaded"` and `cursor-cli` under `cliBackendIds`. The second is the ticket's verify command: it runs through your Gateway and prints Cursor's reply. The live test and the isolated OpenClaw below add `--local` to run the agent inside the CLI process, because the isolated setup starts no Gateway.
+The first command must report `"status": "loaded"` and `cursor-cli` under `cliBackendIds`. The second runs through your Gateway and prints Cursor's reply. In the isolated OpenClaw (see Develop) no Gateway is started, so run the command with `--local`; with a Gateway running, drop `--local`.
 
 ## Troubleshooting
 
@@ -76,7 +76,7 @@ The first command must report `"status": "loaded"` and `cursor-cli` under `cliBa
 | `The CLI rejected its login` | `cursor-agent` refused the ACP login | Run `cursor-agent login` and check `cursor-agent status` |
 | `The CLI could not resume the session` / `cannot load a session` | Cursor lost the stored chat, or the build cannot load sessions | Start a new chat with `/reset`; run `cursor-agent update` |
 | `The CLI does not list models` | The `cursor-agent` build reports no model list | Use `cursor-cli/auto`, or run `cursor-agent update` |
-| `A turn is already running in this session` | Two turns reached one Cursor process | Wait for the first turn; report it if it repeats |
+| `A turn is already running in this session` | Two turns reached one Cursor process | Wait for the first turn; if it repeats, report it in the repository issue tracker |
 | `The CLI refused the request` | Cursor declined the prompt | Rephrase the prompt, or check the plan's content rules |
 | `The working directory "<dir>" does not exist` | The agent's workspace was removed | Recreate the directory or change the agent's workspace |
 | A turn hangs with no output | Known `cursor-agent` transport stalls | Update `cursor-agent`; the OpenClaw watchdog ends the turn |

@@ -9,6 +9,8 @@
 //   FAKE_CURSOR_DEFAULT_MODEL=m the model a new session starts with (default "auto")
 //   FAKE_CURSOR_IGNORE_CANCEL=1 session/cancel does nothing
 //   FAKE_CURSOR_IGNORE_TERM=1   SIGTERM does nothing (only SIGKILL stops the process)
+//   FAKE_CURSOR_IGNORE_STDIN_EOF=1  the process stays up when stdin closes
+//   FAKE_CURSOR_NO_INIT=1       `initialize` is never answered (a hanging handshake)
 //
 // Prompt text steers a turn: "[[ask-permission]]" requests a shell permission, "[[hang]]" never
 // finishes until cancelled, "[[refuse]]" ends with stopReason refusal, "[[crash]]" exits, "say:<text>" replies with <text>.
@@ -134,6 +136,7 @@ rl.on("line", (line) => {
   const { id, method, params } = message;
   switch (method) {
     case "initialize":
+      if (process.env.FAKE_CURSOR_NO_INIT === "1") return;
       return reply(id, {
         protocolVersion: Number(process.env.FAKE_CURSOR_PROTOCOL ?? 1),
         agentCapabilities: { loadSession: true, promptCapabilities: { image: true } },
@@ -164,9 +167,12 @@ rl.on("line", (line) => {
     case "session/prompt":
       return void runPrompt(id, params);
     case "session/cancel":
-      return void (process.env.FAKE_CURSOR_IGNORE_CANCEL === "1" || cancelled.add(params.sessionId));
+      if (process.env.FAKE_CURSOR_IGNORE_CANCEL !== "1") cancelled.add(params.sessionId);
+      return;
     default:
       if (id !== undefined) fail(id, -32601, `method not found: ${method}`);
   }
 });
-rl.on("close", () => process.exit(0));
+rl.on("close", () => {
+  if (process.env.FAKE_CURSOR_IGNORE_STDIN_EOF !== "1") process.exit(0);
+});

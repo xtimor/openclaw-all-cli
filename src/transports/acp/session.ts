@@ -324,12 +324,14 @@ export class AcpSession implements CliSession {
       if (!ended) {
         // The consumer stopped early (abort): stop the turn and let it settle. A CLI that
         // ignores the cancel gets the kill grace, then the process is closed.
-        await this.cancel();
         let timer: NodeJS.Timeout | undefined;
         const gaveUp = new Promise<boolean>((resolve) => {
           timer = setTimeout(() => resolve(true), KILL_GRACE_MS);
         });
-        const timedOut = await Promise.race([settled.then(() => false), gaveUp]);
+        const timedOut = await Promise.race([
+          this.cancel().then(() => settled).then(() => false),
+          gaveUp,
+        ]);
         clearTimeout(timer);
         if (timedOut) await this.close();
       }

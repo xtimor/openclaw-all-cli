@@ -5,7 +5,8 @@ import { LIVE_TIMEOUT_MS, openclaw } from "./live/harness.ts";
 
 /**
  * Needs no Cursor login: loads the built plugin in the isolated OpenClaw. It runs only when
- * `npm run dev:install` has put the toolchain and the plugin under .spike/.
+ * `npm run dev:install` has put the toolchain and the plugin under .spike/. It checks the plugin
+ * last installed by `npm run dev:install`, not a fresh build: rerun `dev:install` after changes.
  */
 const spike = (path: string) => fileURLToPath(new URL(`../.spike/${path}`, import.meta.url));
 const installed =

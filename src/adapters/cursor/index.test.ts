@@ -17,6 +17,8 @@ describe("cursor adapter", () => {
   it("reads cursor-agent status output", () => {
     expect(parseStatusOutput("Logged in as me@example.com")).toBe("available");
     expect(parseStatusOutput("Logged in (unable to fetch user details)")).toBe("available");
+    expect(parseStatusOutput("Authenticated as me@example.com")).toBe("available");
+    expect(parseStatusOutput("Signed in as me@example.com")).toBe("available");
     expect(parseStatusOutput("Not logged in")).toBe("missing");
     expect(parseStatusOutput("You are not currently logged in")).toBe("missing");
     expect(parseStatusOutput("You have been logged out")).toBe("missing");

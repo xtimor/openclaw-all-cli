@@ -8,7 +8,7 @@ const PROBE_TIMEOUT_MS = 5_000;
 /** The Cursor model that means "let Cursor choose". The ACP session already starts there. */
 const AUTO_MODEL = "auto";
 
-/** Reads `cursor-agent status` output. Only the logged-in wording is relied on. */
+/** Reads `cursor-agent status` output: negations ("not ...", "logged out") first, then "logged in", "signed in", or "authenticated". */
 export function parseStatusOutput(output: string): AuthStatus {
   // Negations first: "not logged in", "not currently logged in", "logged out", "not authenticated".
   if (/\bnot\b[^.\n]*\b(logged\s+in|authenticated|signed\s+in)\b/i.test(output)) return "missing";

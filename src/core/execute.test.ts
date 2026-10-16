@@ -297,6 +297,32 @@ describe("createExecute", () => {
     expect(opens).toHaveLength(0);
   });
 
+  it("closes the new process and rethrows when the host refuses to register it", async () => {
+    const { adapter, sessions } = makeAdapter();
+    const { live } = makeLive();
+    live.register = () => {
+      throw new Error("host refused");
+    };
+    await expect(run(createExecute(adapter, {}), makeCtx({ liveSession: live }))).rejects.toThrow("host refused");
+    expect(sessions[0]?.closed).toBe(1);
+  });
+
+  it("rethrows a host failover error from restart without yielding an error record", async () => {
+    const { adapter, opens } = makeAdapter();
+    const { live } = makeLive();
+    const hostError = Object.assign(new Error("session expired"), { reason: "session_expired" });
+    live.restart = async () => {
+      throw hostError;
+    };
+    const records: Record<string, unknown>[] = [];
+    const consume = async () => {
+      for await (const record of createExecute(adapter, {})(makeCtx({ liveSession: live }))) records.push(record);
+    };
+    await expect(consume()).rejects.toBe(hostError);
+    expect(records).toEqual([]);
+    expect(opens).toHaveLength(0);
+  });
+
   it("does not start a turn that is already aborted", async () => {
     const { adapter, opens } = makeAdapter();
     const controller = new AbortController();

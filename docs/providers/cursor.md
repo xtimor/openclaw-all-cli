@@ -19,7 +19,7 @@ Until per-agent permissions and permission routing land, every session runs in C
 | # | Feature | Status | Notes |
 | --- | --- | --- | --- |
 | P1 | Provider in `/model`, model aliases | spike | `cursor-cli/<model>` runs; the model list in `/model` is not built |
-| P2 | Subscription login counts as auth | match | `cursor-agent status` or `CURSOR_API_KEY` |
+| P2 | Subscription login counts as auth | match | `cursor-agent status` or `CURSOR_API_KEY`; the real `status` wording is unconfirmed |
 | P3 | Streaming text and thinking | approx | Text and thinking deltas; tool progress is not mapped yet |
 | P4 | Warm process per conversation | match | One `cursor-agent acp` process per conversation. No live test yet (live Cursor not run) |
 | P5 | Resume a session | match | ACP `session/load`. No live test yet (live Cursor not run) |
