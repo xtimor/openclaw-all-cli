@@ -1,4 +1,6 @@
 .spike/
 _bmad/custom/*.user.toml
 _bmad/render/
+__pycache__/
+*.pyc
 node_modules/
