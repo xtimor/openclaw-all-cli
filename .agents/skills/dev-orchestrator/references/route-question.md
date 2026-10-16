@@ -54,4 +54,4 @@ One sentence on what is stuck. One line on what you already tried, so the user c
 
 ## Never
 
-Ask whether to continue after a green step. Make code review a condition on the user's time. Escalate something operational, or something a consult already closed unless its answer collides with a locked artifact. Change the scope on your own. Let a worker talk to the user around you.
+Ask whether to continue after a green step. Make code review a condition on the user's time. Escalate something operational, or something a consult already closed unless its answer collides with a locked artifact. Change the scope on your own. Let a worker talk to the user around you. Escalate a missing `.spike`, a missing `cursor-agent` login, or a host that allows only the current branch: the skill's host rules already settle them.

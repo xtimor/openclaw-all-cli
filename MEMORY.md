@@ -10,6 +10,7 @@
 - Goal: `claude-cli` experience and features for every CLI; Cursor first, Antigravity next.
 - The agent decides design; the user decides strategy only.
 - Work only against the isolated OpenClaw; the user's own Node and OpenClaw (`~/.openclaw`, 2026.2.22) are upgraded at the end (epic entry 18).
+- A host without a Cursor login still develops. It installs Node 24 and OpenClaw 2026.10.3 into `.spike` when they are missing. The live `cursor-agent` check waits for a machine that has the login, and that wait is not a question (user, 2026-10-16).
 - Cursor API key optional. No public release in this initiative.
 - Cursor usage must be found; shipping without it is a last resort.
 

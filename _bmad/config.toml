@@ -1,3 +1,4 @@
 [core]
 project_name = "openclaw-all-cli"
 output_folder = "{project-root}/_bmad-output"
+active_initiative = "initiative-openclaw-all-cli"
