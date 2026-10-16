@@ -1,0 +1,207 @@
+[[entry]]
+id = 1
+type = "story"
+title = "Walking skeleton: one cursor-cli reply in an isolated OpenClaw"
+description = "Scaffolds the repo (package.json, openclaw.plugin.json with configSchema, vitest, gated test/live harness, docs/providers/cursor.md skeleton, dev OpenClaw script) and the core contracts (ports.ts adapter interface, NormalizedEvent, CliError, manifest skeleton P1-P19), then registers cursor-cli with synthetic auth, liveSession, and a custom execute that sends one prompt over the generic ACP session."
+verify = "In the isolated OpenClaw, `openclaw agent --model cursor-cli/auto --message 'Say hi'` prints Cursor's reply; an import-boundary test passes (AD-2); the plan records whether liveSession, synthetic auth, and plugin startup loading (#148584) worked."
+covers = ["CAP-1", "CAP-12"]
+after = []
+hitl = false
+risk = "high"
+references = ["architecture-openclaw-all-cli/architecture-openclaw-all-cli.md#ad-1", "architecture-openclaw-all-cli/architecture-openclaw-all-cli.md#ad-2", "architecture-openclaw-all-cli/architecture-openclaw-all-cli.md#ad-3", "architecture-openclaw-all-cli/architecture-openclaw-all-cli.md#ad-4", "architecture-openclaw-all-cli/architecture-openclaw-all-cli.md#ad-8", "architecture-openclaw-all-cli/architecture-openclaw-all-cli.md#ad-10"]
+
+[[entry]]
+id = 9
+type = "spike"
+title = "Where Cursor usage comes from on ACP"
+description = "Reads raw ACP traffic and Cursor's local files to find a usage source for ACP turns (usage_update or _meta, transcript files, or another documented channel), measures it, and records the choice in the spine; parity row P16."
+verify = "A short write-up beside this entry names the source with a measured sample whose token counts match a -p run of the same prompt, or states that none exists."
+covers = ["CAP-3"]
+after = [1]
+hitl = false
+risk = "high"
+notes = ["нужно попробовать найти способ (я думаю он там есть), идти без usage можно, но в крайнем случае"]
+
+[[entry]]
+id = 2
+type = "story"
+title = "Per-agent Cursor home with static permissions"
+description = "Derives each agent's Cursor home from agentDir, points CURSOR_CONFIG_DIR and CURSOR_DATA_DIR at it, writes the AD-9 static permissions once with atomic rename (allowing MCP server `openclaw`), and rejects every ACP permission request by default until entry 4; parity row P8 (deny side)."
+verify = "Two agents get separate homes with the AD-9 permissions, and a turn asking to write, edit, or delete a file is denied while read and grep still work."
+covers = ["CAP-7", "CAP-8"]
+after = [1]
+hitl = false
+risk = "medium"
+references = ["architecture-openclaw-all-cli/architecture-openclaw-all-cli.md#ad-6", "architecture-openclaw-all-cli/architecture-openclaw-all-cli.md#ad-7", "architecture-openclaw-all-cli/architecture-openclaw-all-cli.md#ad-9"]
+
+[[entry]]
+id = 3
+type = "story"
+title = "OpenClaw tools through the per-session MCP proxy"
+description = "Enables bundleMcp in gemini-system-settings mode, runs the core's stable MCP proxy per live session as server `openclaw`, and forwards each turn to that turn's loopback URL and headers read from the execute env; parity row P7. Uncertain: whether the settings file always carries the URL and headers."
+verify = "A live test calls an OpenClaw tool on two consecutive turns of one warm session and both reach OpenClaw with that turn's token; a call outside a turn is rejected."
+covers = ["CAP-6"]
+after = [2]
+hitl = false
+risk = "high"
+references = ["architecture-openclaw-all-cli/architecture-openclaw-all-cli.md#ad-9", "architecture-openclaw-all-cli/architecture-openclaw-all-cli.md#ad-12"]
+
+[[entry]]
+id = 4
+type = "story"
+title = "Permission routing, tool availability, and abort"
+description = "Replaces entry 2's default rejection by routing ACP permission requests to ctx.requestToolPermission, declares selectable tools with prepare-execution enforcement, answers pending requests cancelled on abort, and updates parity rows P8, P9, P10 (P10's mechanism per AD-9). Uncertain: whether ACP edits can be made to ask."
+verify = "A shell request rejected by OpenClaw makes the model fall back to OpenClaw exec, a tools.deny tool is absent from the model's list, and aborting mid-approval ends the turn cleanly."
+covers = ["CAP-6", "CAP-7"]
+after = [3]
+hitl = false
+risk = "medium"
+references = ["architecture-openclaw-all-cli/architecture-openclaw-all-cli.md#ad-9", "architecture-openclaw-all-cli/architecture-openclaw-all-cli.md#ad-11"]
+
+[[entry]]
+id = 5
+type = "story"
+title = "Normalized events and streaming"
+description = "Maps Cursor ACP updates onto entry 1's NormalizedEvent and implements the core's parseJsonlEvent for text, thinking, tool display, sessionId, result, and errors; parity row P3."
+verify = "A live turn shows text and thinking deltas in the channel before it ends, tool calls render once, and the final text equals Cursor's reply."
+covers = ["CAP-2"]
+after = [1]
+hitl = false
+risk = "medium"
+references = ["architecture-openclaw-all-cli/architecture-openclaw-all-cli.md#ad-3", "architecture-openclaw-all-cli/architecture-openclaw-all-cli.md#ad-11"]
+
+[[entry]]
+id = 6
+type = "story"
+title = "Model catalog and auth readiness"
+description = "On entry 1's synthetic auth, lists the account's Cursor models with aliases in /model and marks them available; parity rows P1 and P2."
+verify = "`/model` in the isolated OpenClaw lists the account's Cursor models as available, and selecting one runs a turn on that model."
+covers = ["CAP-1"]
+after = [1]
+hitl = false
+risk = "medium"
+references = ["architecture-openclaw-all-cli/architecture-openclaw-all-cli.md#ad-1", "architecture-openclaw-all-cli/architecture-openclaw-all-cli.md#ad-10"]
+
+[[entry]]
+id = 7
+type = "story"
+title = "Session resume, live-process reuse, and side questions"
+description = "Resumes from ctx.sessionId and useResume via ACP session/load, emits new native IDs, reuses a live process only when model, mode, cwd, home, auth profile, and session match, and runs side questions in ACP ask mode; parity rows P4, P5, P18. Uncertain: whether two processes can resume one chat (spec Q4)."
+verify = "A follow-up turn answers about the first with only the new prompt sent, also after a Gateway restart; `/reset` starts a fresh chat; another agent cannot resume this agent's chat; a side question runs without tools."
+covers = ["CAP-4", "CAP-8"]
+after = [4]
+hitl = false
+risk = "medium"
+references = ["architecture-openclaw-all-cli/architecture-openclaw-all-cli.md#ad-5", "architecture-openclaw-all-cli/architecture-openclaw-all-cli.md#ad-13"]
+
+[[entry]]
+id = 8
+type = "story"
+title = "Concurrency caps and operations"
+description = "Adds per-backend turn and process caps, binary detection (runtimeArtifact), the version floor and ACP protocol check, clearEnv, honoring timeoutMs and reliability.watchdog, pid lock files with stale reaping, the idle timeout, and close-all on unload; builds AD-8's fallback lane if entry 1 found liveSession rejected; parity rows P17, P19."
+verify = "Two agents run 20 turns each in parallel without error while a second turn in one session waits for the first; a killed Gateway leaves no cursor-agent process after restart; an old cursor-agent fails with unsupported_version."
+covers = ["CAP-9"]
+after = [4, 7]
+hitl = false
+risk = "medium"
+references = ["architecture-openclaw-all-cli/architecture-openclaw-all-cli.md#ad-8", "architecture-openclaw-all-cli/architecture-openclaw-all-cli.md#ad-11", "architecture-openclaw-all-cli/architecture-openclaw-all-cli.md#ad-14"]
+
+[[entry]]
+id = 10
+type = "story"
+title = "Per-turn usage on the transcript"
+description = "Emits the usage event from the source chosen in entry 9 so OpenClaw records input, output, and cache tokens per turn; parity row P16."
+verify = "The assistant transcript entry of a live turn carries input, output, and cache token counts matching Cursor's numbers for that turn."
+covers = ["CAP-3"]
+after = [2, 9]
+hitl = false
+risk = "low"
+
+[[entry]]
+id = 11
+type = "story"
+title = "Chat continuity across a model switch"
+description = "Makes a chat switched from an API model to cursor-cli answer from prior history, through OpenClaw reseed with an optional Cursor API-key profile or the sessions_history tool, and sets parity row P15 (the Cursor-transcript prelude as approx or gap with its reason)."
+verify = "After switching mid-chat from an API model, cursor-cli correctly answers a question about an earlier turn, with and without the API-key profile."
+covers = ["CAP-5"]
+after = [3, 7]
+hitl = false
+risk = "medium"
+
+[[entry]]
+id = 12
+type = "story"
+title = "Capability manifest runtime check"
+description = "Makes the core derive every backend flag from the manifest the earlier entries filled, records gap reasons (P6 fork and checkpoint), and fails a turn with capability_mismatch when the CLI reports otherwise."
+verify = "Unit tests show flags follow the manifest, and a live turn against a CLI reporting a missing capability fails with capability_mismatch."
+covers = ["CAP-11"]
+after = [4, 5, 6, 7, 8]
+hitl = false
+risk = "low"
+references = ["architecture-openclaw-all-cli/architecture-openclaw-all-cli.md#ad-10"]
+
+[[entry]]
+id = 13
+type = "story"
+title = "Skills and system prompt on ACP"
+description = "Delivers OpenClaw skills and the per-turn system prompt to Cursor (plugin dir or prompt catalog); parity rows P11 and P12."
+verify = "A live turn uses an OpenClaw skill and follows an instruction present only in OpenClaw's system prompt."
+covers = ["CAP-6", "CAP-11"]
+after = [12]
+hitl = false
+risk = "medium"
+
+[[entry]]
+id = 14
+type = "story"
+title = "Images and compaction"
+description = "Passes images to Cursor and wires native or manual compaction where Cursor supports them; parity rows P13 and P14."
+verify = "A live turn describes an attached image, and /compact either compacts the Cursor session or the manifest records the gap with its reason."
+covers = ["CAP-11"]
+after = [13]
+hitl = false
+risk = "medium"
+
+[[entry]]
+id = 15
+type = "story"
+title = "Setup docs proven on a clean install"
+description = "Completes docs/setup.md and docs/providers/cursor.md and has an agent follow only them on a clean isolated OpenClaw."
+verify = "A fresh agent session given only the two docs gets a working cursor-cli turn on a new isolated OpenClaw, and every step it needed is in the docs."
+covers = ["CAP-10"]
+after = [6, 8, 11, 13, 14]
+hitl = false
+risk = "low"
+
+[[entry]]
+id = 16
+type = "story"
+title = "Refactor sweep"
+description = "Cleans up what the epic's plans and deferred review findings left, with scope set when it starts."
+verify = "Unit and live tests pass unchanged, and the sweep's plan lists each deferred finding as fixed or dropped with a reason."
+covers = []
+after = [10, 12, 15]
+hitl = false
+risk = "low"
+
+[[entry]]
+id = 17
+type = "story"
+title = "Parity live suite and success-signal demo"
+description = "Collects every row's live test into one suite, adds tests for rows no entry owns, a check that no file is written in the workspace (AD-7), and the spec's success-signal scenario end to end."
+verify = "`OPENCLAW_ALL_CLI_LIVE=1` runs the suite green in the isolated OpenClaw, and the success-signal scenario passes."
+covers = ["CAP-11"]
+after = [16]
+hitl = false
+risk = "medium"
+
+[[entry]]
+id = 18
+type = "story"
+title = "Install into the user's own OpenClaw"
+description = "With the user's go-ahead, upgrades their Node and OpenClaw to supported versions, installs the plugin with `openclaw plugins install`, and runs the success-signal scenario there."
+verify = "In the user's own upgraded OpenClaw, a cursor-cli turn with an OpenClaw tool call succeeds and their existing agents still start."
+covers = ["CAP-1", "CAP-10"]
+after = [17]
+hitl = true
+risk = "high"

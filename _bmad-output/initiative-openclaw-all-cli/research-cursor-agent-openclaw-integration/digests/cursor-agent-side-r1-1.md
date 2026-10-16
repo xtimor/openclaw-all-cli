@@ -1,0 +1,99 @@
+# Digest: cursor-agent side (round 1, researcher 1)
+
+Local build inspected: `2026.04.17-787b533` (`cursor-agent --version`). The latest changelog entry is v2026.10.08, so the local build is about six months behind. Where the two differ, this digest notes it.
+
+## Claims
+
+1. Headless mode uses `-p/--print`. It "has access to all tools, including write and shell". `--output-format text|json|stream-json` works only with `--print`, and the default is `text`. | `cursor-agent --help` (local) + https://cursor.com/docs/cli/reference/parameters | Cursor | unknown | accessed 2026-10-15 | high | api-contract
+2. `--stream-partial-output` emits text deltas and works only with `--print` plus `stream-json`. | local `--help` + https://cursor.com/docs/cli/reference/output-format | Cursor | unknown | accessed 2026-10-15 | high | api-contract
+3. Print mode is also inferred when stdout is not a TTY or stdin is piped. | https://cursor.com/docs/cli/reference/output-format | Cursor | unknown | accessed 2026-10-15 | medium | behavior
+4. The stream-json format is NDJSON. Event types are:
+   - `system`/`init` with `apiKeySource` (env, flag or login), `cwd`, `session_id`, `model` (display name) and `permissionMode`.
+   - `user` with the message content.
+   - `assistant` with `message.content[].text`.
+   - `tool_call` with subtype `started` or `completed`, plus `call_id` and `tool_call.{readToolCall|writeToolCall|function{name,arguments}}`. The `completed` event carries `.result.success`.
+   - A terminal `result` event (`subtype:"success"`) with `duration_ms`, `duration_api_ms`, `is_error`, `result` (full text), `session_id` and an optional `request_id`.
+
+   On failure the process exits non-zero, the stream may end without a `result` event, and the error goes to stderr. `thinking` is suppressed in print mode. | https://cursor.com/docs/cli/reference/output-format | Cursor | unknown | accessed 2026-10-15 | high | api-contract
+5. With `--stream-partial-output`, assistant events come in three kinds:
+   - `timestamp_ms` present and no `model_call_id`: a new delta, so append it.
+   - Both `timestamp_ms` and `model_call_id` present: a duplicate flush before a tool call, so skip it.
+   - Neither field present: the final duplicate flush, so skip it.
+
+   | https://cursor.com/docs/cli/reference/output-format | Cursor | unknown | accessed 2026-10-15 | high | api-contract
+6. `session_id` stays the same throughout one execution. The docs say `tools` and `mcp_servers` fields "may be added" to the init event. Consumers must ignore unknown fields. | same as 4 | Cursor | unknown | accessed 2026-10-15 | high | api-contract
+7. Token usage: the changelog says stream-json output includes per-turn input, output and cache token totals plus a `request_id`, and that headless transcripts are written as Claude Code-compatible JSONL. The entry is undated (it sits in older sections, before v2026.06.09). | https://cursor.com/docs/cli/changelog | Cursor | unknown (pre-2026-06) | accessed 2026-10-15 | medium | version-compat
+8. A Cursor staff member wrote in Feb 2026 that usage "should now be part of the last json output". | https://forum.cursor.com/t/include-token-usage-in-stream-json-output/146980 | Cursor forum | 2026-02 | accessed 2026-10-15 | medium | version-compat
+9. Usage keys are camelCase (`inputTokens`, `outputTokens`, `cacheReadTokens`, `cacheWriteTokens`). A third-party integration found that cursor-agent has emitted usage in several shapes: top-level camelCase on `result`, nested camelCase `usage`, and legacy snake_case. The official output-format page does not document usage at all. | https://github.com/multica-ai/multica/issues/4108 + https://github.com/multica-ai/multica/blob/a48b6f70/server/pkg/agent/cursor.go | multica-ai (GitHub) | 2026 (cursor-agent 2026.06.12 cited) | accessed 2026-10-15 | medium | api-contract
+10. Model selection uses `--model <id>`. Models are listed with `--list-models` or the `models` subcommand. The local help gives example ids `gpt-5`, `sonnet-4` and `sonnet-4-thinking`. | local `--help` + docs parameters page | Cursor | unknown | accessed 2026-10-15 | high | api-contract
+11. In the local `~/.cursor/cli-config.json`, a model is a `modelId` (e.g. `composer-2.5`) plus `parameters` (e.g. `{id:"fast",value:"true"}`) plus `aliases` (`composer-latest`, `composer`, `composer-2-5`) and a `maxMode` flag. Display ids join variants, e.g. `composer-2.5-fast`. | local file (tokens/email redacted) | local | 2026-06 (file mtime) | accessed 2026-10-15 | medium | api-contract
+12. Fresh installs default to Auto routing. Auto is pinned at the top of `/model`. Team admins can restrict models (e.g. Auto only), and a blocked `--model` exits with a restriction message. `--model` now runs the exact id even when it is a prefix of another id (fixed v2026.09.28). The model catalog refetches every 10 minutes. | changelog v2026.07.06, v2026.08.11, v2026.08.26, v2026.09.28, v2026.07.20 | Cursor | 2026-07..2026-09 | accessed 2026-10-15 | high | version-compat
+13. Local `cursor-agent models` returned "No models available for this account." and `status` printed "Logged in (unable to fetch user details)". The cause is unverified: it may be the network or the old build. | local commands | local | 2026-10 | accessed 2026-10-15 | low | behavior
+14. Auth options:
+    - `--api-key` or the `CURSOR_API_KEY` env var.
+    - `CURSOR_AUTH_TOKEN` / `--auth-token`.
+    - `agent login`, a browser flow; `NO_OPEN_BROWSER` disables opening the browser.
+
+    `apiKeySource` in the init event reports which one was used. | local `--help` + https://cursor.com/docs/cli/acp + docs output-format | Cursor | unknown | accessed 2026-10-15 | high | api-contract
+15. On macOS, credentials go to the Keychain by default. `AGENT_CLI_CREDENTIAL_STORE=file` stores them unencrypted in an owner-only file (v2026.06.29). The local bundle's auth-file path on darwin is hardcoded to `homedir()/.cursor/auth.json`, not derived from `CURSOR_CONFIG_DIR`. | changelog v2026.06.29 + local bundle grep (`~/.local/share/cursor-agent/versions/2026.04.17-787b533/*.js`) | Cursor / local | 2026-06 | accessed 2026-10-15 | medium | behavior
+16. Session commands are `--resume [chatId]`, `--continue` (alias for `--resume=-1`), `create-chat` (creates an empty chat and returns its ID), `ls` and `resume`. | local `--help` + docs parameters page | Cursor | unknown | accessed 2026-10-15 | high | api-contract
+17. The config dir is resolved as `CURSOR_CONFIG_DIR`, else `$XDG_CONFIG_HOME/cursor`, else `~/.cursor`. Chat state lives under `<configDir>/chats/<md5(abs cwd)>/<agentId>/store.db`, and ACP sessions under `<configDir>/acp-sessions/<id>/{meta.json,store.db}`. | local bundle grep (functions `O()`/`WI()`, `"chats"`, `store.db`) | local build 2026.04.17 | 2026-04 | accessed 2026-10-15 | medium | behavior
+18. A second state root, `CURSOR_DATA_DIR` (default `~/.cursor`), holds per-workspace `ts/<canonical-path>.json` state and a `ts.lock` marker. The bundle includes `proper-lockfile` for a "spawn lock" of a shared helper/worker process. The install lock is `~/.local/share/cursor-agent/.install.lock`. | local bundle grep | local build 2026.04.17 | 2026-04 | accessed 2026-10-15 | medium | behavior
+19. The bundle references `CURSOR_AGENT_CHAT_ID` and `CURSOR_AGENT_COMPLETED_PATH`. Their semantics are unverified. | local bundle grep | local | 2026-04 | accessed 2026-10-15 | low | behavior
+20. `ls`, `--resume` and `/resume` show chats across all workspaces by default (v2026.07.06). Resuming loads the full conversation. | changelog v2026.07.06 | Cursor | 2026-07 | accessed 2026-10-15 | high | version-compat
+21. Concurrent CLI processes could interleave writes to `cli-config.json` and block later startups. This was fixed in v2026.07.06 with temp-file plus atomic-rename writes, so the local 2026.04.17 build is affected. | changelog v2026.07.06 | Cursor | 2026-07 | accessed 2026-10-15 | high | limitation
+22. The CLI uses MCP servers from project `.cursor/mcp.json` and user `~/.cursor/mcp.json`. The subcommands are `mcp login|list|list-tools|enable|disable`, and `--approve-mcps` auto-approves all servers. Locally, `mcp list` showed `n8n-mcp: not loaded (needs approval)`. | local `mcp --help` + local `mcp list` + docs parameters page | Cursor / local | unknown | accessed 2026-10-15 | high | api-contract
+23. When the same remote MCP server is configured in several scopes, a single instance runs (v2026.07.13). | changelog v2026.07.13 | Cursor | 2026-07 | accessed 2026-10-15 | high | version-compat
+24. Permissions live in `~/.cursor/cli-config.json` (global) or `<project>/.cursor/cli.json`. Tokens are `Shell(cmd[:args])`, `Read(glob)`, `Write(glob)`, `WebFetch(domain)` and `Mcp(server:tool)`, with `allow`/`deny` lists. Deny takes precedence over allow. `--force/--yolo` allows commands unless explicitly denied. | https://cursor.com/docs/cli/reference/permissions + local help | Cursor | unknown | accessed 2026-10-15 | high | api-contract
+25. `--mode plan|ask` (and `--plan`) is read-only: no edits. `--sandbox enabled|disabled` overrides config. `--trust` skips the workspace-trust prompt (headless only in the local build; interactive too since v2026.07.20). The local config has `approvalMode: "allowlist"` and `sandbox.mode: "disabled"`. | local help + docs + changelog v2026.07.20 + local cli-config | Cursor | 2026-07 | accessed 2026-10-15 | high | api-contract
+26. Neither the local help nor the current parameters docs list any flag to disable individual built-in tools or to inject tool definitions per run. The closest extension points are MCP via `mcp.json`, `--plugin-dir <dir>` (current docs only, not in the local help), and `--add-dir` (v2026.06.29). | local help + docs parameters + changelog | Cursor | 2026-10 | accessed 2026-10-15 | medium | limitation
+27. `agent acp` is a hidden ACP server: JSON-RPC 2.0 over stdio, newline-delimited. The flow is `initialize` → `authenticate{methodId:"cursor_login"}` → `session/new{cwd, mcpServers}` or `session/load` → `session/prompt` → `session/update` notifications (`agent_message_chunk`, …) → `session/request_permission` (allow-once / allow-always / reject-once) → `session/cancel`. Permission requests block until answered. | https://cursor.com/docs/cli/acp | Cursor | unknown | accessed 2026-10-15 | high | api-contract
+28. On MCP, the ACP docs only say servers come from project or user `.cursor/mcp.json` and that team-dashboard MCP is unsupported. They do not say whether `session/new.mcpServers` is honored. The sample client passes `mcpServers: []`. | https://cursor.com/docs/cli/acp | Cursor | unknown | accessed 2026-10-15 | medium | limitation
+29. ACP has recent changes: subagents as child sessions (v2026.09.15) and background-shell wakeups (v2026.10.08). The local install has `~/.cursor/acp-sessions/` with about 100 entries. | changelog + local `ls ~/.cursor` | Cursor / local | 2026-09..10 | accessed 2026-10-15 | high | ecosystem
+30. Headless hang fix: `-p` no longer blocks when spawned with an open stdin pipe (Node, Python, CI). The changelog entry is undated (older section). | https://cursor.com/docs/cli/changelog | Cursor | unknown (pre-2026-06) | accessed 2026-10-15 | medium | version-compat
+31. A July 2026 forum report describes `-p` hanging with zero bytes in all formats on 2026.07.01 (macOS Intel). Staff called it "a known cluster of transport issues". Advice was to use `--debug` and `stream-json` to get a `request_id`, try HTTP/1.1, and set `HTTPS_PROXY`. No ETA was given. | https://forum.cursor.com/t/cursor-agent-p-hangs-with-zero-output-on-2026-07-01-41b2de7-macos-intel-all-output-formats-even-trivial-prompts/164841 | Cursor forum | 2026-07 | accessed 2026-10-15 | medium | limitation
+32. A separate forum report traced 10–15 s silent stalls to TCP connections stuck in SYN-SENT. Later changelog fixes add stall detection with retries, HTTP/1 fallback, and wedged-upload retry for long headless HTTP/1.1 sessions (v2026.08.11). | https://forum.cursor.com/t/cursor-agent-p-print-headless-mode-hangs-indefinitely-and-never-returns/150246 + changelog | Cursor forum / Cursor | 2026 | accessed 2026-10-15 | medium | limitation
+33. One CI user saw `--print` run for 5–6 minutes, exit 0 and print nothing on stdout or stderr when the agent had to read files or run git itself. Inlining the data into the prompt fixed it. | https://forum.cursor.com/t/cursor-agent-print-doesnt-exit-after-completing/150296/12 | Cursor forum | 2026 | accessed 2026-10-15 | medium | limitation
+34. GitHub issue #3588 reports that `-p` sometimes fails to exit after output, on macOS and GitHub Actions. The issue is closed and dated "Sep 13" (year not shown). | https://github.com/cursor/cursor/issues/3588 | GitHub | unknown | accessed 2026-10-15 | low | limitation
+35. `/usage` shows included-usage meters with Auto and API breakdowns, on-demand spend versus the limit, and the reset date (v2026.07.13). No numeric rate limits were found. | changelog v2026.07.13 | Cursor | 2026-07 | accessed 2026-10-15 | medium | limitation
+36. Other new features: `agent persist` keeps sessions running after disconnect (v2026.08.26). Skills load in headless mode and `/skill-name` works in `-p`. Headless runs wait for background tasks and emit events for stream-json consumers. | changelog | Cursor | 2026-08 (persist); others undated | accessed 2026-10-15 | medium | ecosystem
+37. `--workspace <path>` sets the workspace and defaults to cwd. `-w/--worktree` uses `~/.cursor/worktrees/<repo>/<name>`, a path fixed under home. | local help + docs | Cursor | unknown | accessed 2026-10-15 | high | api-contract
+38. `-H/--header` adds custom request headers, and `--api-key` is per-process. ACP docs show the endpoint flag `-e https://api2.cursor.sh` and `-k` (TLS insecure). | local help + https://cursor.com/docs/cli/acp | Cursor | unknown | accessed 2026-10-15 | medium | api-contract
+
+## Answers
+
+1. **Headless mode.** Use `-p --output-format stream-json --stream-partial-output`. Events are `system/init`, `user`, `assistant` deltas (filter on `timestamp_ms`/`model_call_id`), `tool_call` started/completed with `call_id`, and a terminal `result` with `session_id`, `request_id` and the full text (claims 1–6). Built-in tool calls show up in the stream as cursor-agent's own `readToolCall`/`writeToolCall`/`function` events, which means cursor-agent runs them itself (claim 4).
+2. **Models and auth.** `--model <id>` selects a model; `models` or `--list-models` lists them. Ids look like `gpt-5`, `sonnet-4-thinking` or `composer-2.5[-fast]`, and Auto is the default for new installs (claims 10–12). Auth works through a subscription login (`agent login`, Keychain by default) or an API key via `--api-key`/`CURSOR_API_KEY` (claims 14–15). The local listing returned no models, which is unexplained (claim 13).
+3. **Sessions.** `create-chat` returns an id; resume with `--resume <id>` or `--continue` (claim 16). The local bundle stores chats as `store.db` under `<configDir>/chats/<md5(cwd)>/<agentId>/` (claim 17). I found nothing on two processes resuming the same chat at once. The only documented concurrency bug is the `cli-config.json` write race, fixed in v2026.07.06 and still present in the local build (claim 21).
+4. **Tools.** MCP is supported via project or user `mcp.json`, the `agent mcp …` subcommands and `--approve-mcps` (claims 22–23). Built-in tools can only be restricted through allow/deny permission tokens, `--mode plan|ask` (read-only) and `--sandbox`. I found no flag to turn off individual built-in tools and no per-run tool injection (claims 24–26). ACP `session/new` takes `mcpServers`, but the docs don't confirm Cursor honors it (claims 27–28).
+5. **Isolation.** `CURSOR_CONFIG_DIR` or `XDG_CONFIG_HOME` relocates config and chats, and `CURSOR_DATA_DIR` relocates `ts` state and locks (claims 17–18). On macOS, auth stays in the Keychain or in a homedir-based `auth.json` (claim 15). The cwd is set with `--workspace` (claim 37). There are locks for spawn, `ts` state and install (claim 18). Concurrent runs corrupted `cli-config.json` before v2026.07.06 (claim 21).
+6. **Usage.** stream-json and json results now include per-turn camelCase token totals and a `request_id`, but the official output-format page doesn't document them and their shape has changed over time (claims 7–9). I found no evidence of a cost field. Subscription limits are visible in `/usage`, but no numeric limits are published (claim 35).
+7. **Known issues.**
+   - Several clusters of silent `-p` hangs have been reported (claims 30–34): the stdin-pipe block (fixed), transport stalls (mitigated in July–August 2026), exit 0 with empty output after agent self-service, and non-termination (#3588, closed).
+   - Documented exit behavior is a non-zero code plus stderr on failure, with no final JSON (claim 4).
+   - Plan to use a timeout and watchdog, close stdin, and pass `--trust`.
+
+## Leads
+
+- **ACP as the driver.** It gives JSON-RPC with permission callbacks (`session/request_permission` lets OpenClaw reject built-in tools per call), `session/load` for resume, and `session/new{cwd, mcpServers}`. Round 2 should check whether `mcpServers` in `session/new` is honored, which would allow per-session tool injection, and how usage is reported over ACP.
+- **Cursor BDK.** It has its own NDJSON event schema (`turn.completed.data.usage`, `actions.requested`, …) at https://cursor.com/docs/bdk/reference/sessions. Its relationship to the CLI is unknown; it could be a better programmatic surface.
+- **Cursor SDK** (`@cursor/sdk`, local runtime) is a possible alternative to spawning the CLI. Not researched.
+- **Contradiction:** usage appears in the changelog and forum but not on the output-format docs page, and the field shape varies (top-level versus nested `usage`). It needs a live capture on the current version.
+- **Auth isolation:** `CURSOR_CONFIG_DIR` may not move credentials (Keychain or homedir `auth.json`). Test whether `HOME` override plus `AGENT_CLI_CREDENTIAL_STORE=file` gives full per-agent isolation.
+- **Shared helper processes:** the "spawn lock", forum mentions of `worker-server` processes, and IPC over unix sockets suggest several cursor-agent processes may share a helper. This needs checking for requirement (e).
+- **Headless permission behavior:** what happens in `-p` without `--force` when a tool isn't allowlisted (auto-reject or block)? Can `deny: ["Shell(*)","Write(**)"]` fully disable the shell and edits?
+- **`CURSOR_AGENT_CHAT_ID` env var:** it may let a caller pin the chat id.
+- **Headless transcripts** are written as Claude Code-compatible JSONL, so we should find their path. This could help seed history for goal (b).
+- **Other new features:** `agent persist`, `--add-dir` and `--plugin-dir`. Plugins might be able to carry OpenClaw skills or MCP config per run.
+- The local build should be updated before any live test. Many fixes, including the config-write race and hang mitigations, came after 2026.04.17.
+
+## Not found
+
+- Any flag or config to inject tool definitions per run in print mode, or to turn off individual built-in tools (beyond permissions and plan/ask mode).
+- Any way to pass prior conversation history (other than embedding it in the prompt) or to import external history into a chat.
+- Any documented behavior for two processes resuming the same `chatId` at once, or per-chat locking.
+- A cost/USD field in json or stream-json output (search summaries mentioned `total_cost_usd`, but no primary source confirmed it).
+- Numeric subscription rate limits.
+- A documented list of env vars for relocating state (`CURSOR_CONFIG_DIR` and `CURSOR_DATA_DIR` come only from the local bundle; no docs page was found).
+- A full documented exit-code table.
+- The cause of the local "No models available" output (not investigated, to stay read-only).

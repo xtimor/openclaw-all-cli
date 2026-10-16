@@ -1,0 +1,23 @@
+# Memory
+
+## Where things are
+
+- Plan of record: `_bmad-output/initiative-openclaw-all-cli/`: spec (`spec-cursor-cli-provider/`), architecture spine (`architecture-openclaw-all-cli/`, AD-1..AD-14), parity matrix (`spec-cursor-cli-provider/claude-cli-parity.md`), tickets (`tickets.toml`, `epic-cursor-cli/tickets.toml`).
+- Spike harness: `.spike/` (gitignored). OpenClaw 2026.10.3 in `.spike/openclaw`, Node 24 in `.spike/node` (system Node 25 is rejected by OpenClaw), test MCP server `.spike/mcp/server.mjs`, ACP probe `.spike/acp-probe.mjs`.
+
+## Decisions (user)
+
+- Goal: `claude-cli` experience and features for every CLI; Cursor first, Antigravity next.
+- The agent decides design; the user decides strategy only.
+- Work only against the isolated OpenClaw; the user's own Node and OpenClaw (`~/.openclaw`, 2026.2.22) are upgraded at the end (epic entry 18).
+- Cursor API key optional. No public release in this initiative.
+- Cursor usage must be found; shipping without it is a last resort.
+
+## Facts learned the hard way
+
+- `cursor-agent -p` reads project `.cursor/mcp.json` only at the workspace's git root, and ignores project `.cursor/cli.json` permissions; permissions work from `CURSOR_CONFIG_DIR/cli-config.json`.
+- `cursor-agent acp` honors `session/new.mcpServers` (HTTP + headers), asks permission for shell, auto-applies edits unless `Write(**)` is denied, and reports no usage.
+- `deny: Read(**)` does not block grep/glob.
+- OpenClaw mints a new loopback MCP token per run; a warm session needs the per-turn MCP proxy (AD-12).
+- OpenClaw owns session binding (`ctx.sessionId`/`useResume`) and per-session lanes with `liveSession`; do not duplicate them.
+- Sandboxed shells can't read the Cursor login from the Keychain; run `cursor-agent` with full permissions.
