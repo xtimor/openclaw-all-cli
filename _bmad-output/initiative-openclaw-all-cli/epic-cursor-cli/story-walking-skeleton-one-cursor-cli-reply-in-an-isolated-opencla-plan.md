@@ -3,7 +3,7 @@ title: "Walking skeleton: one cursor-cli reply in an isolated OpenClaw"
 type: 'feature'
 ticket: 1
 created: '2026-10-16'
-status: in-review
+status: built
 baseline_revision: '789bc963dfd4c60182f4aab681fa052455d6872c'
 route: 'full'
 route_source: 'auto'
@@ -134,3 +134,11 @@ Implementation commit: `4af9048e17a0e2539e66b7daed1e68890df5beab` (baseline `789
   - `low` `patch` Intent: #148584 finding is in the plan only — patch: add the startup-loading line to MEMORY.md
   - `low` `reject` Intent: extra composition roots and a lifecycle larger than the minimum scaffold — the plan records the deviation; the scope is a descriptive finding, not a defect
   - Lenses reported grouped findings; rows above merge duplicates from several lenses under the same root cause.
+
+## Auto Run Result (review pass 1)
+
+- Review: thorough, four lenses, 30 findings (high 1, medium 10, low 13, maybe-false 6). Patched in 4ce9618 by the implementing worker; 5 items deferred; low findings rejected with reasons in the triage log.
+- Patched counts by verdict: high 1 (no SIGKILL escalation in `open`), medium 8, low 4.
+- Follow-up review recommended: true. Unverified risk: the new `terminate()`/grace-close paths in `src/transports/acp/session.ts` and the idempotent live-handle close in `src/core/execute.ts` were written after the first review.
+- Verification (orchestrator, isolated Node 24): `npm run typecheck`, `npm run build` clean; `npx vitest run` 83 passed, 1 skipped (live test, needs real Cursor).
+- Residual risk: the live Cursor check (`openclaw agent --model cursor-cli/auto --message 'Say hi'`) is NOT RUN; all Cursor-specific behavior was tested only against the stand-in agent.
