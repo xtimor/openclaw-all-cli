@@ -65,8 +65,27 @@ describe("buildCursorCatalog", () => {
     ]);
     expect(catalog.map((model) => model.name)).toEqual(["twin", "twin-high", "pair", "pair-y-x", "same", "same-1", "same-b-1"]);
     expect(new Set(catalog.map((model) => model.name)).size).toBe(catalog.length);
-    expect(catalog[0]?.label).toBe("twin");
+    expect(catalog[0]?.label).toBe("twin (effort=low)");
     expect(catalog[1]?.label).toBe("twin (effort=high)");
+  });
+
+  it("numbers names that collide even after the key-value suffix", () => {
+    const catalog = buildCursorCatalog([
+      { id: "tri[a=1]", name: "tri" },
+      { id: "tri[a=1]", name: "tri" },
+      { id: "tri[a=1]", name: "tri" },
+      { id: "tri[a=1]", name: "tri" },
+    ]);
+    expect(catalog.map((model) => model.name)).toEqual(["tri", "tri-1", "tri-a-1", "tri-2"]);
+  });
+
+  it("labels every variant of a shared base with its parameters, the bare-named one included", () => {
+    const catalog = buildCursorCatalog([
+      { id: "solo[effort=high]", name: "solo" },
+      { id: "twin[effort=low]", name: "twin" },
+      { id: "twin[effort=high]", name: "twin" },
+    ]);
+    expect(catalog.map((model) => model.label)).toEqual(["solo", "twin (effort=low)", "twin (effort=high)"]);
   });
 
   it("numbers names that still collide and skips entries with no usable name", () => {

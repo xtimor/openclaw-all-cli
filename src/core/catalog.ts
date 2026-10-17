@@ -14,7 +14,8 @@ export type CatalogParams = {
 export type ModelCatalog = {
   /**
    * The account's models. A failed listing yields the default model alone and is logged; it never
-   * throws. `refresh` skips the cache.
+   * throws for that. It rejects with the caller's own abort reason when `signal` aborts, and a
+   * caller whose signal is already aborted starts no listing. `refresh` skips the cache.
    */
   list(params: CatalogParams, options?: { refresh?: boolean }): Promise<CatalogRow[]>;
 };
@@ -45,8 +46,10 @@ function toRow(model: CliModel): CatalogRow {
 
 /**
  * Remembers the account's model listing (AD-2: it names no CLI). The listing is cached because the
- * host asks for the catalog often and each listing starts a CLI process; it is dropped when the
- * command or the environment changes, which covers a new login or API key. A turn never reads it:
+ * host asks for the catalog often and each listing starts a CLI process. The cache key is the
+ * command and the environment, so a changed API key lists again at once; a new login changes
+ * neither, so it is noticed after the TTL, or at once from a logged-out state, where the caller
+ * never asks and nothing was cached. A turn never reads it:
  * the adapter checks the model against the CLI's own list when it opens the session.
  */
 export function createModelCatalog(adapter: CliAdapter, options: ModelCatalogOptions = {}): ModelCatalog {
@@ -101,6 +104,7 @@ export function createModelCatalog(adapter: CliAdapter, options: ModelCatalogOpt
 
   return {
     async list(params, listOptions = {}) {
+      params.signal?.throwIfAborted();
       const key = keyFor(params);
       if (!listOptions.refresh) {
         const hit = cache.get(key);

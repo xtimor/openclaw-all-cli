@@ -1,4 +1,5 @@
-import { readFileSync } from "node:fs";
+import { existsSync, readdirSync, readFileSync } from "node:fs";
+import { homedir } from "node:os";
 import { join } from "node:path";
 import { afterAll, beforeAll, expect, it } from "vitest";
 import { cursorAdapter } from "../../src/adapters/cursor/index.ts";
@@ -64,6 +65,20 @@ describeLive("model catalog and model selection in the isolated OpenClaw (P1, P2
     // The same models Cursor's own session lists, with exact IDs that carry brackets.
     expect(rows.map((row) => row.id).sort()).toEqual([...exact.keys()].sort());
     expect([...exact.values()].some((id) => id.includes("["))).toBe(true);
+  }, LIVE_TIMEOUT_MS);
+
+  it("leaves Cursor's acp-sessions directory unchanged after a listing", async () => {
+    const env = liveHostEnv();
+    const sessions = join(env.CURSOR_CONFIG_DIR?.trim() || join(env.HOME?.trim() || homedir(), ".cursor"), "acp-sessions");
+    const entries = () => (existsSync(sessions) ? readdirSync(sessions).sort() : []);
+    const before = entries();
+    const listed = await cursorAdapter.listModels({
+      command: process.env.CURSOR_AGENT_BIN ?? cursorAdapter.command,
+      args: cursorAdapter.launchArgs,
+      env,
+    });
+    expect(listed.length).toBeGreaterThan(2);
+    expect(entries()).toEqual(before);
   }, LIVE_TIMEOUT_MS);
 
   it("appears in `openclaw models list --provider cursor-cli`", () => {

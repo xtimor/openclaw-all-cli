@@ -168,7 +168,7 @@ describe("cursor adapter", () => {
           { name: "auto", label: "Auto", id: "default[]" },
           { name: "fake-fast", label: "fake-fast", id: "fake-fast[speed=fast,fast=true]" },
           { name: "fake-slow", label: "fake-slow", id: "fake-slow[context=1m,effort=high]" },
-          { name: "twin", label: "twin", id: "twin[effort=low]" },
+          { name: "twin", label: "twin (effort=low)", id: "twin[effort=low]" },
           { name: "twin-high", label: "twin (effort=high)", id: "twin[effort=high]" },
         ]);
         const methods = readFileSync(file, "utf8")
@@ -207,6 +207,20 @@ describe("cursor adapter", () => {
         expect(readdirSync(sessions)).toEqual(["other-session"]);
       } finally {
         rmSync(dir, { recursive: true, force: true });
+      }
+    });
+
+    it("looks for the session directory under the HOME the child was given when no config dir is set", async () => {
+      const home = mkdtempSync(join(tmpdir(), "oac-cursor-"));
+      try {
+        const sessions = join(home, ".cursor", "acp-sessions");
+        mkdirSync(join(sessions, "fake-session-1"), { recursive: true });
+        mkdirSync(join(sessions, "other-session"), { recursive: true });
+        const { CURSOR_CONFIG_DIR: _unused, ...env } = fakeEnv({ HOME: home });
+        await cursorAdapter.listModels({ command: FAKE_CURSOR_AGENT, args: cursorAdapter.launchArgs, env });
+        expect(readdirSync(sessions)).toEqual(["other-session"]);
+      } finally {
+        rmSync(home, { recursive: true, force: true });
       }
     });
 

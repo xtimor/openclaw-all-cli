@@ -179,7 +179,7 @@ async function listModels(params: ListModelsParams): Promise<readonly CliModel[]
  */
 async function removeListingSession(env: Record<string, string | undefined>, sessionId: string): Promise<void> {
   if (!/^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(sessionId)) return;
-  const configDir = env.CURSOR_CONFIG_DIR?.trim() || join(homedir(), ".cursor");
+  const configDir = env.CURSOR_CONFIG_DIR?.trim() || join(env.HOME?.trim() || homedir(), ".cursor");
   await rm(join(configDir, "acp-sessions", sessionId), { recursive: true, force: true }).catch(() => {});
 }
 

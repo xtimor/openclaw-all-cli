@@ -140,5 +140,6 @@ describe("model catalog", () => {
     const controller = new AbortController();
     controller.abort();
     await expect(catalog.list({ ...params(), signal: controller.signal })).rejects.toThrow();
+    expect(list).not.toHaveBeenCalled();
   });
 });
