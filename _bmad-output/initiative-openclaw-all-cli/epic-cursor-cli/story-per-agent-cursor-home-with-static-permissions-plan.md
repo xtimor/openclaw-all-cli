@@ -16,7 +16,21 @@ followup_review_recommended: false
 context:
   - '{project-root}/_bmad-output/initiative-openclaw-all-cli/architecture-openclaw-all-cli/architecture-openclaw-all-cli.md'
 warnings: []
-deferred: []
+deferred:
+  - summary: >-
+      Read-modify-rename of cli-config.json can lose an update if a running cursor-agent writes it in between.
+    evidence: |-
+      Settled by checking whether Cursor rewrites cli-config.json while running.
+    location: >-
+      src/adapters/cursor/index.ts
+    severity: medium (unverified)
+  - summary: >-
+      probeAuth checks the shared default home while turns use the per-agent home; on Linux hosts whose login lives in the config dir the probe says available and turns start logged out.
+    evidence: |-
+      Needs a logged-in Linux host. CURSOR_API_KEY is the recorded workaround.
+    location: >-
+      src/adapters/cursor/index.ts
+    severity: medium (unverified)
 ---
 
 <intent-contract>
@@ -76,6 +90,17 @@ deferred: []
 ## Plan Change Log
 
 ## Review Triage Log
+
+### 2026-10-17 — Review pass
+- verdicts: 7 findings — high 0, medium 3, low 2, false 0, maybe-false 2
+- findings:
+  - `medium` `patch` P10 reads differently in manifest, matrix and docs (AD-9: adapters never translate tools.allow/deny), and the new live test tags itself P10 — verified in the three files; patch: one wording everywhere, live test tags P8 only
+  - `medium` `patch` AC 2 asks for write, edit and delete denial but the live test only creates a file — patch: also ask to edit and to delete the seed file; assert content unchanged and file present
+  - `medium` `patch` `readJsonObject` turns EACCES/EISDIR/EIO into "start fresh", so unreadable config loses Cursor's keys — patch: only a missing file or invalid JSON starts fresh; other read errors fail the turn with a CliError
+  - `maybe-false` `defer` Read-modify-rename can lose an update if a running cursor-agent writes cli-config.json between read and rename — maybe-false (medium if true): settle by checking whether Cursor rewrites cli-config.json while running
+  - `low` `patch` Rewritten config and the home directory use default modes — patch: temp file 0600, home 0700 (architecture Secrets convention: per-agent home files 0600)
+  - `maybe-false` `defer` `probeAuth` runs `cursor-agent status` against the shared default home while turns use the per-agent CURSOR_CONFIG_DIR; on a Linux host whose login lives in the config dir the probe says available and turns start logged out — maybe-false (medium if true): this host is not logged in, so settle on a logged-in Linux host; API key is the workaround recorded in docs and MEMORY
+  - `low` `reject` Plan task checkboxes are stale — the fix is to edit this build's plan; the orchestrator ticks them when it closes the step
 
 ## Design Notes
 
