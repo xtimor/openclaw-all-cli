@@ -3,14 +3,14 @@ title: 'Per-agent Cursor home with static permissions'
 type: 'feature'
 ticket: '2'
 created: '2026-10-17'
-status: 'in-progress'
+status: 'in-review'
 baseline_revision: 'a5ecca3cf18b141ebf189d0576e2849f29c0cede'
 route: 'full'
 route_source: 'auto'
 risk: 'medium'
-review: ''
-review_source: ''
-lenses_ran: []
+review: 'quick'
+review_source: 'pinned'
+lenses_ran: [quick]
 review_loop_iteration: 0
 followup_review_recommended: false
 context:
