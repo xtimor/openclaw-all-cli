@@ -75,6 +75,23 @@ describe("cursor tool display", () => {
     expect(events.filter((event) => event.kind === "toolResult")).toHaveLength(3);
   });
 
+  it("names a read and a shell call from the title alone, without backticks or escapes in the result", async () => {
+    const events = await turn([
+      announce(1, "Read `/w/a.txt`", "read", undefined),
+      announce(2, "Read /w/b.txt", "read", undefined),
+      announce(3, "`echo \\`x\\` hi`", "execute", undefined),
+      update(1, { status: "completed" }),
+      update(2, { status: "completed" }),
+      update(3, { status: "completed" }),
+    ]);
+    const starts = events.filter((event) => event.kind === "toolStart");
+    expect(starts).toEqual([
+      { kind: "toolStart", toolCallId: id(1), name: "read", args: { path: "/w/a.txt" } },
+      { kind: "toolStart", toolCallId: id(2), name: "read", args: { path: "/w/b.txt" } },
+      { kind: "toolStart", toolCallId: id(3), name: "exec", args: { command: "echo `x` hi" } },
+    ]);
+  });
+
   it("names edits, writes, deletes, and web calls", async () => {
     const events = await turn([
       announce(1, "Edit `/w/a.txt`", "edit", { path: "/w/a.txt" }),

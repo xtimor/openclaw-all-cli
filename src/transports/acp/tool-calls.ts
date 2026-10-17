@@ -8,7 +8,7 @@ import type { NormalizedEvent } from "../../core/ports.ts";
  * knows no CLI: the adapter names and filters calls through `DescribeToolCall`.
  */
 
-/** What the agent has said about a call so far, handed to the adapter at the call's first sight. */
+/** What the agent has said about a call so far, handed to the adapter each time it decides. */
 export type AcpToolCallView = {
   toolCallId: string;
   title: string;
@@ -23,10 +23,12 @@ export type AcpToolCallView = {
 export type AcpToolDisplay = { name: string; args?: Record<string, unknown> };
 
 /**
- * Names a call for display. Returning `undefined` waits for the call's next update, because an
- * agent may announce a call before it knows its title and arguments; the wait is honored once,
- * and `final` is true on the call it must decide (a later update, or the turn's end). Without a
- * hook the call shows at first sight under its name, title, or kind.
+ * Names a call for display; it cannot hide a call. It is called at the call's first update and,
+ * while it returns `undefined`, again at the next one. `undefined` defers the start because an
+ * agent may announce a call before it knows its title and arguments; the deferral is honored
+ * once. `final` is true on the update that must decide (the second, a terminal status, or the
+ * turn's end), and an `undefined` there falls back to the default display: the agent's name,
+ * title, or kind. Without a hook the call shows at its first update that way.
  */
 export type DescribeToolCall = (call: AcpToolCallView, final: boolean) => AcpToolDisplay | undefined;
 

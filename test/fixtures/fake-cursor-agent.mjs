@@ -18,7 +18,7 @@
 // as a `tool_call` update, like Cursor does), "[[hang]]" never
 // finishes until cancelled, "[[refuse]]" ends with stopReason refusal, "[[crash]]" exits, "say:<text>" replies with <text>.
 // "[[updates]]<json array>" sends each item as a `session/update` body, in order, a few ms apart, then ends the
-// turn. An item `{"$":"say","text":"..."}` sends a message chunk, `{"$":"crash"}` exits, `{"$":"hang"}` waits for a
+// turn. An item `{"$":"say","text":"..."}` sends a message chunk, `{"$":"crash"}` exits, `{"$":"ask","toolCall":{...}}` sends a permission request and waits for the answer, `{"$":"hang"}` waits for a
 // cancel and answers `cancelled`, `{"$":"wait","ms":n}` pauses. Use it to script tool calls the way Cursor sends them.
 import { appendFileSync } from "node:fs";
 import { createInterface } from "node:readline";
@@ -115,6 +115,22 @@ async function runPrompt(id, params) {
           }, 20);
         });
         return reply(id, { stopReason: "cancelled" });
+      } else if (item.$ === "ask") {
+        // A permission request for `item.toolCall`, answered before the next item is sent.
+        const requestId = nextRequestId++;
+        send({
+          id: requestId,
+          method: "session/request_permission",
+          params: {
+            sessionId: params.sessionId,
+            toolCall: { status: "pending", ...item.toolCall },
+            options: [
+              { optionId: "allow", name: "Allow", kind: "allow_once" },
+              { optionId: "reject", name: "Reject", kind: "reject_once" },
+            ],
+          },
+        });
+        await new Promise((resolve) => waitingForClient.set(requestId, resolve));
       } else if (item.$ === "say") {
         update(params.sessionId, { sessionUpdate: "agent_message_chunk", content: { type: "text", text: item.text } });
       } else {

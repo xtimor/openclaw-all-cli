@@ -54,7 +54,10 @@ export type AcpSessionOptions = {
   resumeSessionId?: string;
   /** Answers a permission request. Throwing counts as `cancelled`. */
   onPermissionRequest: (request: AcpPermissionRequest) => Promise<PermissionDecision>;
-  /** Names a tool call for display, or hides it. Without it a call shows under the agent's own name. */
+  /**
+   * Names a tool call for display. It cannot hide or filter a call: returning `undefined` only
+   * defers the start by one update, and the final update falls back to the agent's own name.
+   */
   describeToolCall?: DescribeToolCall;
   clientName?: string;
   clientVersion?: string;
@@ -236,6 +239,8 @@ export class AcpSession implements CliSession {
     const clientHandler: acp.Client = {
       requestPermission(params) {
         const call = params.toolCall;
+        // An approved call may run without ever being announced: it still counts as a tool (AD-11).
+        if (runtime.tools) runtime.tools.started = true;
         const known = runtime.toolCalls.get(call.toolCallId);
         const paths = [...(known?.paths ?? [])];
         for (const location of call.locations ?? []) if (!paths.includes(location.path)) paths.push(location.path);

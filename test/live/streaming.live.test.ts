@@ -132,9 +132,13 @@ describeLive("a real OpenClaw run shows each tool once (P3)", () => {
         meta: { toolSummary: { calls: number; tools: string[]; failures: number } };
       };
       const summary = json.meta.toolSummary;
-      expect(summary.tools).toContain("read");
-      expect(summary.tools).toContain("mcp__openclaw__session_status");
-      expect(summary.calls).toBe(2);
+      // `tools` is the set of names the host displayed; the model may call a tool more than once, so
+      // only the names are checked: each expected one appears exactly once, and the proxied tool has
+      // no second entry under another name (a host display next to the plugin's would show here).
+      const count = (name: string) => summary.tools.filter((tool) => tool === name).length;
+      expect(count("read")).toBe(1);
+      expect(count("mcp__openclaw__session_status")).toBe(1);
+      expect(summary.tools.filter((tool) => tool.endsWith("session_status"))).toEqual(["mcp__openclaw__session_status"]);
       expect(summary.failures).toBe(0);
     },
     LIVE_TIMEOUT_MS,

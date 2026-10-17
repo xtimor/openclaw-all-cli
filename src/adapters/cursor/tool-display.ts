@@ -1,3 +1,4 @@
+import { commandFromTitle, quoted } from "./permissions.ts";
 import type { AcpToolCallView, AcpToolDisplay, DescribeToolCall } from "../../transports/acp/session.ts";
 
 /**
@@ -9,7 +10,7 @@ import type { AcpToolCallView, AcpToolDisplay, DescribeToolCall } from "../../tr
  * Shapes seen from `cursor-agent` 2026.10.16: a call is announced as `tool_call` with a generic
  * title and, for search and MCP calls, an empty `rawInput`; the next update carries the real
  * title and input. A search is titled `Find \`*.txt\`` (glob) or `grep "needle"`, a shell call
- * is `` `cmd` `` with `rawInput.command`, a read is `Read path`, and an MCP call is titled
+ * is `` `cmd` `` with `rawInput.command`, a read is `Read path` in the announcement and ``Read `path` `` in permission requests, and an MCP call is titled
  * `<server>: <tool>` with `rawInput: { providerIdentifier, toolName, args }`.
  */
 
@@ -62,11 +63,11 @@ export const describeCursorToolCall: DescribeToolCall = (call, final) => {
 
   switch (call.kind) {
     case "execute": {
-      const command = text(call.rawInput?.command) ?? /^`(.*)`$/s.exec(call.title)?.[1];
+      const command = text(call.rawInput?.command) ?? commandFromTitle(call.title);
       return withArgs("exec", command === undefined ? {} : { command });
     }
     case "read": {
-      const path = pathOf(call) ?? /^Read (.+)$/s.exec(call.title)?.[1];
+      const path = pathOf(call) ?? quoted(call.title, "Read") ?? /^Read (?!`)(.+)$/s.exec(call.title)?.[1];
       return withArgs("read", path === undefined ? {} : { path });
     }
     case "search":

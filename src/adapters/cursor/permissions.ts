@@ -36,7 +36,7 @@ function diffOf(request: AcpPermissionRequest): { path: string; oldText?: string
 }
 
 /** The text inside the backticks of a title such as ``Edit `a/b.txt` ``. */
-function quoted(title: string, prefix: string): string | undefined {
+export function quoted(title: string, prefix: string): string | undefined {
   const match = new RegExp(`^${prefix} \`(.+)\`$`, "s").exec(title);
   return match?.[1]?.replaceAll("\\`", "`");
 }
@@ -46,11 +46,16 @@ function pathOf(request: AcpPermissionRequest, fromTitle: string | undefined): s
   return fromTitle ?? request.paths[0] ?? (typeof raw === "string" ? raw : undefined);
 }
 
+/** The command inside a shell call's title, which wraps it in backticks and escapes inner ones. */
+export function commandFromTitle(title: string): string | undefined {
+  const match = /^`(.*)`$/s.exec(title);
+  return match?.[1]?.replaceAll("\\`", "`");
+}
+
 function shellCommand(request: AcpPermissionRequest): string | undefined {
   const raw = request.rawInput?.command;
   if (typeof raw === "string" && raw.length > 0) return raw;
-  const match = /^`(.*)`$/s.exec(request.title);
-  return match?.[1]?.replaceAll("\\`", "`");
+  return commandFromTitle(request.title);
 }
 
 function mcpRequest(request: AcpPermissionRequest): { toolName: string; toolInput: Record<string, unknown> } | undefined {

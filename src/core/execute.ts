@@ -69,15 +69,15 @@ function composePrompt(ctx: ExecuteContext): string {
 class ToolLedger {
   private readonly calls = new Map<string, { name: string; open: boolean }>();
 
-  /** Whether the event may go to the host. A second start or result for one call is dropped. */
+  /** Whether the event may go to the host. A second start, and a result without an open start, are dropped. */
   admit(event: NormalizedEvent): boolean {
     if (event.kind === "toolStart") {
       if (this.calls.has(event.toolCallId)) return false;
       this.calls.set(event.toolCallId, { name: event.name, open: true });
     } else if (event.kind === "toolResult") {
       const call = this.calls.get(event.toolCallId);
-      if (call && !call.open) return false;
-      if (call) call.open = false;
+      if (!call?.open) return false;
+      call.open = false;
     }
     return true;
   }

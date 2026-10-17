@@ -523,6 +523,14 @@ describe("AcpSession", () => {
       expect(crashed.at(-1)).toMatchObject({ kind: "error", error: { retryable: false } });
     });
 
+    it("counts a call known only from a permission request as a started tool", async () => {
+      const session = await start({ onPermissionRequest: async () => "allow_once" });
+      const events = await collect(
+        session.prompt(script({ $: "ask", toolCall: { toolCallId: "unannounced", title: "`ls`", kind: "execute" } }, { $: "crash" })),
+      );
+      expect(events.at(-1)).toMatchObject({ kind: "error", error: { code: "server_error", retryable: false } });
+    });
+
     it("keeps a tool call from one turn out of the next", async () => {
       const session = await start();
       await collect(session.prompt(script(call("c1"))));

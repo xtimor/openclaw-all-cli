@@ -1172,10 +1172,12 @@ describe("createExecute native tool events (AD-3)", () => {
     yield { kind: "toolStart", toolCallId: "t1", name: "read" };
     yield { kind: "toolResult", toolCallId: "t1", name: "read", result: "ok" };
     yield { kind: "toolResult", toolCallId: "t1", name: "read", result: "again" };
+    yield { kind: "toolResult", toolCallId: "orphan", name: "read", result: "never started" };
+    yield { kind: "toolResult", toolCallId: "orphan", name: "read", result: "still not started" };
     yield { kind: "result", text: "done", stopReason: "end_turn" };
   };
 
-  it("passes tool events to the host with the shapes it reads, one start and one result per call", async () => {
+  it("passes tool events to the host with the shapes it reads, one start and one result per call, and no result without a start", async () => {
     const { adapter } = makeAdapter(toolTurn);
     const records = await run(createExecute(adapter, { home: HOME }), makeCtx());
     expect(parsed(records)).toEqual([
