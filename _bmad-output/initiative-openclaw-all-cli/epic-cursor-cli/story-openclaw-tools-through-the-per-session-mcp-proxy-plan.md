@@ -17,7 +17,42 @@ context:
   - '{project-root}/_bmad-output/initiative-openclaw-all-cli/architecture-openclaw-all-cli/architecture-openclaw-all-cli.md'
   - '{project-root}/MEMORY.md'
 warnings: []
-deferred: []
+deferred:
+  - summary: >-
+      A Cursor MCP GET/SSE stream cut between turns and rejected on reconnect may disable the openclaw server.
+    evidence: |-
+      Observed harmless on 2026.10.3 where every turn restarts; settle on a host with a stable fingerprint.
+    location: >-
+      src/core/mcp-proxy.ts
+    severity: medium (unverified)
+  - summary: >-
+      Mcp-Session-Id from turn 1 reaches turn 2's target.
+    evidence: |-
+      Only matters with warm reuse across host runs, which 2026.10.3 does not do.
+    location: >-
+      src/core/mcp-proxy.ts
+    severity: medium (unverified)
+  - summary: >-
+      Nothing checks without a Cursor login that the real host writes GEMINI_CLI_SYSTEM_SETTINGS_PATH with a loopback mcpServers.openclaw.
+    evidence: |-
+      Checked only by the live tests; needs a fake-agent env log.
+    location: >-
+      test/isolated-openclaw.test.ts
+    severity: medium
+  - summary: >-
+      hostOwnedTools and toolAvailabilityEnforcement are set without enforcement code.
+    evidence: |-
+      Settle by reading how the host treats the value when toolAvailabilityEnforced is not returned; entry 4 owns it.
+    location: >-
+      src/core/backend.ts
+    severity: medium (unverified)
+  - summary: >-
+      No warm reuse in gemini-system-settings mode on 2026.10.3 (per-turn settings path is hashed into the fingerprint); if a host stabilises it, per-turn credentials would get 401 after activate adopts the first turn's token.
+    evidence: |-
+      Cannot happen on this host. Revisit with entries 7 and 8.
+    location: >-
+      src/core/execute.ts
+    severity: medium (unverified)
 ---
 
 <intent-contract>
@@ -90,6 +125,29 @@ Built as planned (`mcp-proxy.ts`, `mcp-target.ts`, wiring in `execute.ts`, `port
 ## Plan Change Log
 
 ## Review Triage Log
+
+### 2026-10-17 — Review pass
+- verdicts: 19 findings — high 0, medium 6, low 9, false 0, maybe-false 4
+- findings:
+  - `medium` `patch` Blind/Edge/VGap: `live.activate` throwing after `live.register` closes only the proxy; the host keeps a registered handle with no session — verified in execute.ts; patch: close the handle (which also removes it); add a test
+  - `medium` `patch` Blind: a host `handle.close()` during `adapter.open` is a no-op for the not-yet-attached session, so cursor-agent leaks and the turn runs on a closed proxy — verified (`closing` guard, session attached later); patch: after `attachSession`, if the handle was closed, close the new session and end the turn; add a test
+  - `low` `patch` Edge: a run superseded while `startMcpProxy` is pending registers over the current run's handle — patch: `assertCurrent()` after `createEntry`, closing the proxy on throw
+  - `low` `patch` Edge: `createEntry`/`startMcpProxy` failures throw raw where open failures give an error record — patch: same error-record path as `attachSession`
+  - `medium` `patch` Edge: a first turn without usable settings lets Cursor see 503 at connect and drop the server for the life of that process, so later warm turns lose tools — patch: mark such an entry degraded and not reusable
+  - `maybe-false` `defer` Blind/Edge: `clearTarget` cuts a Cursor MCP GET/SSE stream between turns and the reconnect gets 503, which may disable the server — maybe-false: observed harmless on 2026.10.3 where every turn restarts; settle on a host with a stable fingerprint
+  - `maybe-false` `defer` Blind/Edge: `Mcp-Session-Id` from turn 1 is sent to turn 2's target — maybe-false: only matters with warm reuse across hosts runs, which 2026.10.3 never does
+  - `low` `patch` Blind: only `x-openclaw-cli-capture-key` is dropped from the CLI's request headers; other `x-openclaw-*`, `cookie`, `origin`, `x-forwarded-*` reach the host — patch: drop them
+  - `low` `patch` Blind/Edge: a target URL with a query or fragment builds a broken upstream URL, and a blank `httpUrl` hides a valid `url` — patch: build with `URL`, ignore blank `httpUrl`
+  - `low` `reject` Blind: request body has no size limit — loopback, token-gated; the cap adds a branch for no reachable harm
+  - `low` `patch` Blind: `docs/setup.md` banner still says warm session (contradicts P4 approx); user docs carry host internals; claim that the proxy is the only MCP server Cursor loads — patch: banner, move internals to MEMORY.md, word the claim as what the plugin hands over
+  - `medium` `patch` Blind/VGap: the real-host live test passes on any reply with a version string, so it does not prove a tool call crossed the proxy, and the real-host path (restart plus `session/load` plus mcpServers) has only one turn — patch: use a unique session id the reply must contain (from `session_status`), and run two turns of one session
+  - `medium` `patch` VGap: no test covers activate-throws, proxy closed on host refusal, warn plumbing through backend and register, or GET/DELETE/subpath/query forwarding — patch: add them
+  - `medium` `defer` VGap: no check without a Cursor login that the real host sets GEMINI_CLI_SYSTEM_SETTINGS_PATH with a loopback `mcpServers.openclaw`; the contract is checked only by the live tests — deferred: needs a fake-agent env log; recorded here
+  - `maybe-false` `defer` Blind: `hostOwnedTools` and `toolAvailabilityEnforcement: "prepare-execution"` are set with no enforcement code behind them — maybe-false (medium if true): settle by reading how the host treats the value when `toolAvailabilityEnforced` is not returned; entry 4 owns enforcement
+  - `low` `patch` Blind/Edge: the proxy starts and warns even for an adapter whose manifest does not decide P7 — patch: pass the flag into `createExecute`
+  - `low` `reject` Blind: the missing-settings warning repeats every turn — noise only
+  - `maybe-false` `defer` Intent: with OpenClaw 2026.10.3 the host hashes the per-turn settings path into the live-session fingerprint, so there is no warm reuse in this mode (P4 approx); and if a host stabilises the fingerprint, `activate` moves later turns onto the first turn's credentials and per-turn forwarding would get 401 — maybe-false: cannot happen on this host; decision: keep per-turn credentials as AD-12 says and revisit with entries 7 and 8
+  - `low` `reject` Intent: readings of the intent and the stand-in surface of the two-turn test — descriptive; the real-host run is covered by the new two-turn live test
 
 ## Design Notes
 
