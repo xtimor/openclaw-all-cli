@@ -3,7 +3,7 @@ title: 'Per-agent Cursor home with static permissions'
 type: 'feature'
 ticket: '2'
 created: '2026-10-17'
-status: 'in-review'
+status: done
 baseline_revision: 'a5ecca3cf18b141ebf189d0576e2849f29c0cede'
 route: 'full'
 route_source: 'auto'
@@ -77,15 +77,17 @@ deferred:
 - [x] `src/transports/files.ts` -- atomic JSON write with a unique temp name -- parallel starts never see a partial file
 - [x] `src/core/ports.ts`, `src/core/backend.ts`, `src/core/execute.ts` -- home derivation, adapter hook, env merge, reuse key -- AD-6
 - [x] `src/adapters/cursor/index.ts` -- env vars plus static permissions merged into any existing file -- AD-9
-- [ ] tests -- unit tests for every matrix row, import-boundary still green
+- [x] tests -- unit tests for every matrix row, import-boundary still green
 - [x] `test/live/` -- gated test: a session in agent mode using the prepared home creates no file for a write request while `grep` still answers
-- [ ] docs and parity P8 -- row and setup text match behavior
+- [x] docs and parity P8 -- row and setup text match behavior
 
 **Acceptance Criteria:**
 - Given two agents with different `agentDir`, when each runs a turn, then each has its own home with the same AD-9 permissions and the user's workspace gains no file.
 - Given the prepared home, when a turn asks to write, edit, or delete a file, then it is denied, and read and grep still work.
 
 ## Implementation Notes
+
+Implemented by a sonnet subagent from this plan; see the Auto Run Result.
 
 ## Plan Change Log
 
@@ -111,3 +113,12 @@ deferred:
 **Commands:**
 - `npm run typecheck && npm run build && npx vitest run` -- expected: all pass
 - `OPENCLAW_ALL_CLI_LIVE=1 npx vitest run test/live` -- expected: pass with a real `cursor-agent` and `CURSOR_API_KEY`
+
+## Auto Run Result
+
+- Summary: each agent gets its own Cursor home at `<agentDir>/openclaw-all-cli/cursor-cli/` (core, AD-6). The Cursor adapter points `CURSOR_CONFIG_DIR`/`CURSOR_DATA_DIR` at it and writes the AD-9 static permissions by atomic rename, keeping Cursor's other keys. A missing `agentDir` fails the turn.
+- Files: `src/transports/files.ts` (atomic write, modes 0600/0700), `src/core/home.ts`, `src/core/{ports,backend,execute}.ts`, `src/adapters/cursor/{index,manifest}.ts`, tests, `test/live/per-agent-home.live.test.ts`, docs and parity P8/P10 rows.
+- Review (quick, one lens): 6 findings — patched 4 (P10 wording, live edit/delete denial, unreadable-config handling, file modes), deferred 2 (lost update vs a running cursor-agent; auth probe vs per-agent home on Linux), rejected 1 (stale checkboxes, plan edit).
+- Follow-up review recommended: false. No high was patched.
+- Verification (isolated Node 24, real cursor-agent 2026.10.16): `npm run typecheck`, `npm run build` clean; `npx vitest run` 122 passed, 2 skipped (live); live tests pass: in agent mode with the prepared home, create, edit and delete requests leave the workspace unchanged with no permission request and `grep` still answers (negative control without the file creates it); `openclaw agent --local --model cursor-cli/auto` still prints Cursor's reply and creates the home with the permissions.
+- Residual risks: login location on Linux hosts without `CURSOR_API_KEY` (unverified); homes created before the mode fix keep their old modes.
