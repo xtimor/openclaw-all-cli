@@ -3,14 +3,14 @@ title: 'OpenClaw tools through the per-session MCP proxy'
 type: 'feature'
 ticket: '3'
 created: '2026-10-17'
-status: 'in-progress'
+status: 'in-review'
 baseline_revision: '6e0d93161c5913023e24b0023ac5ae58a39f2c6d'
 route: 'full'
 route_source: 'auto'
 risk: 'high'
-review: ''
-review_source: ''
-lenses_ran: []
+review: 'thorough'
+review_source: 'pinned'
+lenses_ran: [blind-hunter, edge-case-hunter, verification-gap, intent-alignment]
 review_loop_iteration: 0
 followup_review_recommended: false
 context:
