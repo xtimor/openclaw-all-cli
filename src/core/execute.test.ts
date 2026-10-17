@@ -161,7 +161,7 @@ describe("createExecute", () => {
   it("streams a turn: session ID, deltas, then one result with usage", async () => {
     const { adapter, sessions, opens } = makeAdapter();
     const { live, calls } = makeLive();
-    const records = await run(createExecute(adapter, { home: HOME }), makeCtx({ liveSession: live }));
+    const records = await run(createExecute(adapter, { home: HOME }), makeCtx({ liveSession: live, env: usableEnv }));
 
     expect(parsed(records)).toEqual([
       { kind: "sessionId", sessionId: "native-1" },
@@ -205,8 +205,8 @@ describe("createExecute", () => {
     const { adapter, sessions, opens } = makeAdapter();
     const { live, calls } = makeLive();
     const execute = createExecute(adapter, { home: HOME });
-    await run(execute, makeCtx({ liveSession: live }));
-    await run(execute, makeCtx({ liveSession: live, useResume: true, sessionId: "native-1", ...change }));
+    await run(execute, makeCtx({ liveSession: live, env: usableEnv }));
+    await run(execute, makeCtx({ liveSession: live, env: usableEnv, useResume: true, sessionId: "native-1", ...change }));
 
     expect(opens).toHaveLength(2);
     expect(sessions[0]?.closed).toBe(1);
@@ -217,10 +217,10 @@ describe("createExecute", () => {
     const { adapter, opens } = makeAdapter();
     const { live } = makeLive();
     const other = { dir: "/other/openclaw-all-cli/acme-cli", env: { ACME_HOME: "/other/openclaw-all-cli/acme-cli" } };
-    await run(createExecute(adapter, { home: HOME }), makeCtx({ liveSession: live }));
+    await run(createExecute(adapter, { home: HOME }), makeCtx({ liveSession: live, env: usableEnv }));
     await run(
       createExecute(adapter, { home: other }),
-      makeCtx({ liveSession: live, useResume: true, sessionId: "native-1" }),
+      makeCtx({ liveSession: live, env: usableEnv, useResume: true, sessionId: "native-1" }),
     );
     expect(opens).toHaveLength(2);
   });
@@ -248,7 +248,7 @@ describe("createExecute", () => {
     try {
       const { adapter, sessions } = makeAdapter();
       const { live, calls } = makeLive();
-      await run(createExecute(adapter, { home: HOME, idleMs: 1000 }), makeCtx({ liveSession: live }));
+      await run(createExecute(adapter, { home: HOME, idleMs: 1000 }), makeCtx({ liveSession: live, env: usableEnv }));
       expect(sessions[0]?.closed).toBe(0);
       await vi.advanceTimersByTimeAsync(1001);
       expect(sessions[0]?.closed).toBe(1);
@@ -324,9 +324,9 @@ describe("createExecute", () => {
     const { adapter, sessions, opens } = makeAdapter();
     const { live } = makeLive();
     const execute = createExecute(adapter, { home: HOME });
-    await run(execute, makeCtx({ liveSession: live }));
+    await run(execute, makeCtx({ liveSession: live, env: usableEnv }));
     sessions[0]!.alive = false;
-    await run(execute, makeCtx({ liveSession: live, useResume: true, sessionId: "native-1" }));
+    await run(execute, makeCtx({ liveSession: live, env: usableEnv, useResume: true, sessionId: "native-1" }));
     expect(opens).toHaveLength(2);
     expect(opens[1]?.resumeSessionId).toBe("native-1");
   });
@@ -335,9 +335,9 @@ describe("createExecute", () => {
     const { adapter, opens } = makeAdapter();
     const { live, calls } = makeLive();
     const execute = createExecute(adapter, { home: HOME });
-    await run(execute, makeCtx({ liveSession: live }));
+    await run(execute, makeCtx({ liveSession: live, env: usableEnv }));
     const changed = { ...live, fingerprint: "other" } as LiveSessionCapability;
-    await run(execute, makeCtx({ liveSession: changed, useResume: true, sessionId: "native-1" }));
+    await run(execute, makeCtx({ liveSession: changed, env: usableEnv, useResume: true, sessionId: "native-1" }));
     expect(opens).toHaveLength(2);
     expect(calls.restart).toBe(2);
   });
@@ -412,7 +412,7 @@ describe("createExecute", () => {
     };
     try {
       const records = await run(createExecute(adapter, { home: HOME }), makeCtx());
-      expect(parsed(records)).toEqual([{ kind: "result", errorText: "no port" }]);
+      expect(parsed(records)).toEqual([{ kind: "result", errorText: expect.stringContaining("no port") }]);
       expect(opens).toHaveLength(0);
 
       const controller = new AbortController();
@@ -677,7 +677,7 @@ describe("createExecute MCP proxy (AD-12)", () => {
     try {
       const { adapter, opens } = makeAdapter();
       const { live } = makeLive();
-      await run(createExecute(adapter, { home: HOME, idleMs: 1000 }), makeCtx({ liveSession: live }));
+      await run(createExecute(adapter, { home: HOME, idleMs: 1000 }), makeCtx({ liveSession: live, env: usableEnv }));
       const url = opens[0]!.mcpServers![0]!.url;
       expect(await refused(url)).toBe(false);
       await vi.advanceTimersByTimeAsync(1001);
@@ -696,7 +696,7 @@ describe("createExecute MCP proxy (AD-12)", () => {
   it("closes the proxy when the process exits on its own", async () => {
     const { adapter, opens, sessions } = makeAdapter();
     const { live } = makeLive();
-    await run(createExecute(adapter, { home: HOME }), makeCtx({ liveSession: live }));
+    await run(createExecute(adapter, { home: HOME }), makeCtx({ liveSession: live, env: usableEnv }));
     const url = opens[0]!.mcpServers![0]!.url;
     expect(await refused(url)).toBe(false);
     // The process dies without the host or the core closing it.
@@ -795,7 +795,113 @@ describe("createExecute MCP proxy (AD-12)", () => {
   });
 });
 
+describe("createExecute degraded and superseded runs", () => {
+  it("closes a process whose first turn had no OpenClaw endpoint when that turn ends", async () => {
+    const { adapter, sessions } = makeAdapter();
+    const { live, calls } = makeLive();
+    await run(createExecute(adapter, { home: HOME, idleMs: 60_000 }), makeCtx({ liveSession: live }));
+    expect(sessions[0]!.closed).toBe(1);
+    expect(calls.remove).toBe(1);
+  });
+
+  it("throws, not an error record, when a newer run closes the handle during the open", async () => {
+    const { adapter, sessions } = makeAdapter();
+    const { live } = makeLive();
+    let current = true;
+    let release: () => void = () => {};
+    const gate = new Promise<void>((resolve) => (release = resolve));
+    const open = adapter.open;
+    adapter.open = async (params) => {
+      await gate;
+      return open(params);
+    };
+    const ctx = makeCtx({
+      liveSession: live,
+      assertCurrent: () => {
+        if (!current) throw new Error("superseded");
+      },
+    });
+    const turn = run(createExecute(adapter, { home: HOME }), ctx);
+    const outcome = expect(turn).rejects.toThrow("superseded");
+    while (!live.current()) await new Promise((resolve) => setTimeout(resolve, 5));
+    current = false;
+    live.current()!.close("restart");
+    release();
+    await outcome;
+    expect(sessions[0]!.closed).toBe(1);
+    expect(sessions[0]!.prompts).toEqual([]);
+  });
+
+  it("throws, not an error record, when the run is superseded while the proxy starts", async () => {
+    const { adapter, opens } = makeAdapter();
+    let current = true;
+    proxies.beforeStart = () => {
+      current = false;
+      throw new Error("no port");
+    };
+    try {
+      const ctx = makeCtx({
+        assertCurrent: () => {
+          if (!current) throw new Error("superseded");
+        },
+      });
+      await expect(run(createExecute(adapter, { home: HOME }), ctx)).rejects.toThrow("superseded");
+      expect(opens).toHaveLength(0);
+    } finally {
+      proxies.beforeStart = undefined;
+    }
+  });
+
+  it("reports the closed-while-starting error even when closing the new session fails", async () => {
+    const { adapter, sessions } = makeAdapter();
+    const { live } = makeLive();
+    let release: () => void = () => {};
+    const gate = new Promise<void>((resolve) => (release = resolve));
+    const open = adapter.open;
+    adapter.open = async (params) => {
+      await gate;
+      const session = await open(params);
+      session.close = async () => {
+        throw new Error("close failed");
+      };
+      return session;
+    };
+    const turn = run(createExecute(adapter, { home: HOME }), makeCtx({ liveSession: live }));
+    while (!live.current()) await new Promise((resolve) => setTimeout(resolve, 5));
+    live.current()!.close("restart");
+    release();
+    const records = await turn;
+    expect(parsed(records).at(-1)).toMatchObject({ errorText: expect.stringContaining("closed while") });
+    expect(sessions[0]!.prompts).toEqual([]);
+  });
+
+  it("marks a proxy start failure retryable", async () => {
+    const { adapter } = makeAdapter();
+    proxies.beforeStart = () => {
+      throw new Error("no port");
+    };
+    try {
+      const records = await run(createExecute(adapter, { home: HOME }), makeCtx());
+      expect(records.at(-1)).toMatchObject({
+        is_error: true,
+        event: { kind: "error", error: { code: "server_error", retryable: true } },
+      });
+    } finally {
+      proxies.beforeStart = undefined;
+    }
+  });
+});
+
 describe("createExecute with MCP off", () => {
+  it("reuses the warm process on the next turn", async () => {
+    const { adapter, opens } = makeAdapter();
+    const { live } = makeLive();
+    const execute = createExecute(adapter, { home: HOME, mcp: false });
+    await run(execute, makeCtx({ liveSession: live }));
+    await run(execute, makeCtx({ liveSession: live, useResume: true, sessionId: "native-1" }));
+    expect(opens).toHaveLength(1);
+  });
+
   it("starts no proxy, hands the CLI no MCP server, and warns about nothing", async () => {
     const warnings: string[] = [];
     const { adapter, opens } = makeAdapter();

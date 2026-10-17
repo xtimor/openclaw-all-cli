@@ -46,7 +46,19 @@ const HOP_BY_HOP = new Set([
 ]);
 
 /** Request headers the proxy never copies: its own auth, framing the fetch recomputes, browser and proxy context. */
-const REQUEST_DROP = new Set(["authorization", "host", "content-length", "accept-encoding", "cookie", "origin"]);
+const REQUEST_DROP = new Set([
+  "authorization",
+  "host",
+  "content-length",
+  "accept-encoding",
+  "cookie",
+  "origin",
+  "referer",
+  "forwarded",
+  "via",
+  "x-real-ip",
+  "proxy-connection",
+]);
 
 /** Header prefixes the proxy never copies: the host's own `x-openclaw-*` headers come only from the turn's target. */
 const REQUEST_DROP_PREFIXES = ["x-openclaw-", "x-forwarded-"];

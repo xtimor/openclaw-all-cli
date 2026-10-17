@@ -42,6 +42,15 @@ describe("readTurnTarget", () => {
     await expect(readTurnTarget(env)).resolves.toMatchObject({ ok: true, target: { url: "http://127.0.0.1:2/mcp" } });
   });
 
+  it.each([
+    ["invalid", "not a url"],
+    ["remote", "http://example.com/mcp"],
+    ["https", "https://127.0.0.1:1/mcp"],
+  ])("falls back to url when httpUrl is %s", async (name, httpUrl) => {
+    const env = write(`bad-http-${name}.json`, openclaw({ httpUrl, url: "http://127.0.0.1:5/mcp" }));
+    await expect(readTurnTarget(env)).resolves.toMatchObject({ ok: true, target: { url: "http://127.0.0.1:5/mcp" } });
+  });
+
   it("prefers httpUrl over url when both are set", async () => {
     const env = write("both.json", openclaw({ httpUrl: "http://127.0.0.1:3/mcp", url: "http://127.0.0.1:4/mcp" }));
     await expect(readTurnTarget(env)).resolves.toMatchObject({ ok: true, target: { url: "http://127.0.0.1:3/mcp" } });

@@ -26,11 +26,13 @@ OpenClaw's tools (`sessions_list`, `memory_search`, `web_fetch`, and the rest) r
 | Situation | What happens |
 | --- | --- |
 | Call outside a turn | HTTP 503 with a JSON-RPC error; nothing is forwarded |
-| Missing or wrong client token | HTTP 401; nothing is forwarded |
+| Missing or wrong client token | HTTP 401; nothing is forwarded. The token is checked before the path, so a wrong token gets 401 even for a path outside `/mcp` |
 | Path outside `/mcp` | HTTP 404; nothing is forwarded |
 | Proxy failure while handling a call | HTTP 500 with a JSON-RPC error |
+| The proxy cannot start | The turn fails with a retryable error; Cursor is not started |
+| The live session was closed while Cursor was starting | The new Cursor process is stopped and the turn fails with a retryable error (`The live session was closed while the CLI was starting`) |
 | OpenClaw's endpoint unreachable | HTTP 502 to Cursor; the turn continues |
-| No settings file, or no `mcpServers.openclaw` in it | The turn runs without OpenClaw tools and the plugin logs a warning; the chat does not fail. Cursor drops the `openclaw` server for the life of that process, so the next turn starts a new process |
+| No settings file, or no `mcpServers.openclaw` in it | The turn runs without OpenClaw tools and the plugin logs a warning; the chat does not fail. Cursor drops the `openclaw` server for the life of that process, so a process whose first turn had no settings is closed when that turn ends and the next turn starts a new one |
 | Settings URL is not a loopback `http` URL | Treated as no settings, so the proxy never sends OpenClaw's token anywhere else |
 
 Cursor connects to its MCP servers while it opens the session, before the first prompt, so the plugin registers the session with OpenClaw and points the proxy at the turn's endpoint before it starts `cursor-agent`. The plugin writes no MCP configuration into the workspace or any file you own.

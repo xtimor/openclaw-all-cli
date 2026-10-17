@@ -117,7 +117,21 @@ export function createExecute(adapter: CliAdapter, options: ExecuteOptions): Cli
 
   /** Creates the host handle and the proxy for a process that is not open yet. */
   async function createEntry(ctx: ExecuteContext, live: LiveSessionCapability | undefined): Promise<LiveEntry> {
-    const proxy = mcp ? await startMcpProxy() : undefined;
+    let proxy: McpProxy | undefined;
+    if (mcp) {
+      try {
+        proxy = await startMcpProxy();
+      } catch (error) {
+        throw new CliError(
+          {
+            code: "server_error",
+            message: `Could not start the MCP proxy: ${error instanceof Error ? error.message : String(error)}`,
+            retryable: true,
+          },
+          { cause: error },
+        );
+      }
+    }
     const entry: LiveEntry = {
       proxy,
       key: reuseKey(ctx, home),
@@ -164,7 +178,8 @@ export function createExecute(adapter: CliAdapter, options: ExecuteOptions): Cli
     // The host may have closed the handle while the process was starting: the close found no
     // process to stop, so this one would leak and run against a closed proxy.
     if (entry.closed) {
-      await session.close();
+      // A failing close must not hide the reason the turn cannot run.
+      await session.close().catch(() => {});
       throw new CliError({
         code: "server_error",
         message: "The live session was closed while the CLI was starting.",
@@ -202,6 +217,8 @@ export function createExecute(adapter: CliAdapter, options: ExecuteOptions): Cli
         fresh = await createEntry(ctx, live);
       } catch (error) {
         if (ctx.abortSignal?.aborted) throw error;
+        // A superseded run must throw, not turn into an error record.
+        ctx.assertCurrent?.();
         yield errorRecord(error);
         return;
       }
@@ -238,6 +255,8 @@ export function createExecute(adapter: CliAdapter, options: ExecuteOptions): Cli
       } catch (error) {
         fresh.handle.close("abort");
         if (ctx.abortSignal?.aborted) throw error;
+        // A newer run's restart closes the handle during the open: that run is superseded.
+        ctx.assertCurrent?.();
         yield errorRecord(error);
         return;
       }
@@ -294,7 +313,7 @@ export function createExecute(adapter: CliAdapter, options: ExecuteOptions): Cli
       clearTimeout(graceTimer);
       active.proxy?.clearTarget();
       active.busy = false;
-      if (turnFailed || !live || !active.session.alive || ctx.abortSignal?.aborted) {
+      if (turnFailed || active.degraded || !live || !active.session.alive || ctx.abortSignal?.aborted) {
         active.handle.close("abort");
       } else {
         active.idleTimer = setTimeout(() => active.handle.close("idle"), idleMs);

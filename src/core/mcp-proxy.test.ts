@@ -309,12 +309,17 @@ describe("startMcpProxy", () => {
         Origin: "http://evil.example",
         "X-Forwarded-For": "1.2.3.4",
         "X-Forwarded-Host": "evil.example",
+        Forwarded: "for=1.2.3.4",
+        "X-Real-IP": "1.2.3.4",
+        Referer: "http://evil.example/",
+        Via: "1.1 evil",
+        "Proxy-Connection": "keep-alive",
         "Mcp-Protocol-Version": "2025-03-26",
       },
     });
     const seen = target.requests[0]!.headers;
     expect(seen["x-openclaw-cli-capture-key"]).toBe("turn-key");
-    for (const name of ["x-openclaw-sender-owner", "cookie", "origin", "x-forwarded-for", "x-forwarded-host"]) {
+    for (const name of ["x-openclaw-sender-owner", "cookie", "origin", "x-forwarded-for", "x-forwarded-host", "forwarded", "x-real-ip", "referer", "via", "proxy-connection"]) {
       expect(seen[name]).toBeUndefined();
     }
     expect(seen["mcp-protocol-version"]).toBe("2025-03-26");

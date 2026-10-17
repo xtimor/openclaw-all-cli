@@ -36,20 +36,27 @@ export async function readTurnTarget(env: Readonly<Record<string, string | undef
   const server = isRecord(servers) ? servers[OPENCLAW_MCP_SERVER] : undefined;
   if (!isRecord(server)) return { ok: false, reason: `the settings file has no mcpServers.${OPENCLAW_MCP_SERVER}` };
 
-  const raw = [server.httpUrl, server.url].find((value) => typeof value === "string" && value.trim());
-  if (typeof raw !== "string") {
-    return { ok: false, reason: `mcpServers.${OPENCLAW_MCP_SERVER} has no url` };
+  // `httpUrl` wins, but a candidate that is blank, invalid, or not loopback does not hide a good `url`.
+  let url: URL | undefined;
+  let rejected: string | undefined;
+  for (const candidate of [server.httpUrl, server.url]) {
+    if (typeof candidate !== "string" || !candidate.trim()) continue;
+    let parsed: URL;
+    try {
+      parsed = new URL(candidate);
+    } catch {
+      rejected ??= `mcpServers.${OPENCLAW_MCP_SERVER}.url is not a URL`;
+      continue;
+    }
+    // The host serves its tools on loopback; the proxy must not carry its token anywhere else.
+    if (parsed.protocol !== "http:" || !LOOPBACK_HOSTS.has(parsed.hostname)) {
+      rejected ??= `mcpServers.${OPENCLAW_MCP_SERVER}.url is not a loopback http URL`;
+      continue;
+    }
+    url = parsed;
+    break;
   }
-  let url: URL;
-  try {
-    url = new URL(raw);
-  } catch {
-    return { ok: false, reason: `mcpServers.${OPENCLAW_MCP_SERVER}.url is not a URL` };
-  }
-  // The host serves its tools on loopback; the proxy must not carry its token anywhere else.
-  if (url.protocol !== "http:" || !LOOPBACK_HOSTS.has(url.hostname)) {
-    return { ok: false, reason: `mcpServers.${OPENCLAW_MCP_SERVER}.url is not a loopback http URL` };
-  }
+  if (!url) return { ok: false, reason: rejected ?? `mcpServers.${OPENCLAW_MCP_SERVER} has no url` };
 
   const headers: Record<string, string> = {};
   if (isRecord(server.headers)) {

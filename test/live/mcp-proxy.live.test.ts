@@ -162,27 +162,29 @@ describeLive("OpenClaw tools reach cursor-cli through the real host (P7)", () =>
     "answers from an OpenClaw tool call in two turns of one session",
     () => {
       const sessionId = `mcp-live-${Date.now()}`;
-      const turn = (n: number) => {
+      // Turn 1 states the nonce; turn 2 must still know it, so a resume that lost the chat fails.
+      const nonce = `nonce${Date.now().toString(36)}`;
+      const turn = (n: number, message: string, mustContain: string[]) => {
         const run = openclaw(
-          [
-            "agent",
-            "--local",
-            "--model",
-            "cursor-cli/auto",
-            "--session-id",
-            sessionId,
-            "--message",
-            `Call the OpenClaw MCP tool session_status (turn ${n}). Then reply with one line: "session:" followed by the session key or id it reports, copied exactly.`,
-          ],
+          ["agent", "--local", "--model", "cursor-cli/auto", "--session-id", sessionId, "--message", message],
           { timeoutMs: 240_000 },
         );
-        expect(run.status).toBe(0);
+        expect(run.status, `turn ${n}`).toBe(0);
         expect(run.stderr + run.stdout).not.toMatch(/cli terminal failure/);
-        // session_status returns the session key, which contains the unique id.
-        expect(replyLines(run.stdout).join("\n")).toContain(sessionId);
+        const reply = replyLines(run.stdout).join("\n");
+        for (const text of mustContain) expect(reply, `turn ${n}`).toContain(text);
       };
-      turn(1);
-      turn(2);
+      // session_status returns the session key, which contains the unique id.
+      turn(
+        1,
+        `Remember the word ${nonce}. Call the OpenClaw MCP tool session_status, then reply with one line: "session:" followed by the session key or id it reports, copied exactly.`,
+        [sessionId],
+      );
+      turn(
+        2,
+        `Call the OpenClaw MCP tool session_status again, then reply with one line: "session:" followed by the session key or id it reports, copied exactly, then "word:" followed by the word I asked you to remember.`,
+        [sessionId, nonce],
+      );
     },
     2 * LIVE_TIMEOUT_MS,
   );
