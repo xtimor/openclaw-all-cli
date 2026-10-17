@@ -97,6 +97,9 @@ describe("cursor adapter", () => {
     expect(await replyOf(await openOn("FAKE-SLOW"))).toMatchObject({
       text: expect.stringContaining("model fake-slow[context=1m,effort=high]"),
     });
+    expect(await replyOf(await openOn("twin"))).toMatchObject({
+      text: expect.stringContaining("model twin[effort=low]"),
+    });
     expect(await replyOf(await openOn("twin-high"))).toMatchObject({
       text: expect.stringContaining("model twin[effort=high]"),
     });
@@ -112,7 +115,6 @@ describe("cursor adapter", () => {
       code: "model_not_found",
       message: expect.stringContaining('"not-a-model"'),
     });
-    await expect(openOn("twin")).rejects.toMatchObject({ code: "model_not_found" });
   });
 
   it("runs `auto` and Cursor's own spellings of it on Auto", async () => {
@@ -166,7 +168,7 @@ describe("cursor adapter", () => {
           { name: "auto", label: "Auto", id: "default[]" },
           { name: "fake-fast", label: "fake-fast", id: "fake-fast[speed=fast,fast=true]" },
           { name: "fake-slow", label: "fake-slow", id: "fake-slow[context=1m,effort=high]" },
-          { name: "twin-low", label: "twin (effort=low)", id: "twin[effort=low]" },
+          { name: "twin", label: "twin", id: "twin[effort=low]" },
           { name: "twin-high", label: "twin (effort=high)", id: "twin[effort=high]" },
         ]);
         const methods = readFileSync(file, "utf8")
@@ -189,6 +191,29 @@ describe("cursor adapter", () => {
           .split("\n")
           .map((line) => JSON.parse(line).method);
         expect(methods).toEqual(["initialize", "session/new"]);
+      } finally {
+        rmSync(dir, { recursive: true, force: true });
+      }
+    });
+
+    it("removes the listing's own session directory from the config dir, and nothing else", async () => {
+      const dir = mkdtempSync(join(tmpdir(), "oac-cursor-"));
+      try {
+        const sessions = join(dir, "acp-sessions");
+        mkdirSync(join(sessions, "fake-session-1"), { recursive: true });
+        writeFileSync(join(sessions, "fake-session-1", "store.db"), "x");
+        mkdirSync(join(sessions, "other-session"), { recursive: true });
+        await list({ CURSOR_CONFIG_DIR: dir });
+        expect(readdirSync(sessions)).toEqual(["other-session"]);
+      } finally {
+        rmSync(dir, { recursive: true, force: true });
+      }
+    });
+
+    it("still lists when the session directory does not exist", async () => {
+      const dir = mkdtempSync(join(tmpdir(), "oac-cursor-"));
+      try {
+        await expect(list({ CURSOR_CONFIG_DIR: dir })).resolves.toHaveLength(5);
       } finally {
         rmSync(dir, { recursive: true, force: true });
       }

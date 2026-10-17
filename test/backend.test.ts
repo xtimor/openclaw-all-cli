@@ -346,11 +346,23 @@ describe("provider catalog entry", () => {
     const catalog = entryFor();
     expect(catalog.order).toBe("late");
     const result = await catalog.run({ config, env: fakeEnv(), providerIds: ["cursor-cli"] });
-    expect(ids(result)).toEqual(["auto", "fake-fast", "fake-slow", "twin-low", "twin-high"]);
-    expect(result?.provider.models[0]).toMatchObject({ id: "auto", name: "Auto", reasoning: false, input: ["text", "image"] });
+    expect(ids(result)).toEqual(["auto", "fake-fast", "fake-slow", "twin", "twin-high"]);
+    expect(result?.provider.models[0]).toMatchObject({ id: "auto", name: "Auto", reasoning: false, input: ["text"] });
     // OpenClaw drops a provider with no base URL or api; no request goes to either.
     expect(result?.provider.baseUrl).toBeTruthy();
     expect(result?.provider.api).toBeTruthy();
+  });
+
+  it("offers images only when the manifest decided P13", async () => {
+    const withImages = {
+      ...quickList,
+      manifest: createManifest(quickList.manifest.minVersion, { ...quickList.manifest.rows, P13: { status: "approx", note: "" } }),
+    };
+    const entry = createSyntheticAuthProvider(withImages, createModelCatalog(withImages)) as unknown as {
+      catalog: { run: (context: unknown) => Promise<Result> };
+    };
+    const result = await entry.catalog.run({ config, env: fakeEnv() });
+    expect(result?.provider.models.every((model) => (model.input as string[]).includes("image"))).toBe(true);
   });
 
   it("offers only Auto, and does not start Cursor, without a login or API key", async () => {

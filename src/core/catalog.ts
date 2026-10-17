@@ -66,6 +66,7 @@ export function createModelCatalog(adapter: CliAdapter, options: ModelCatalogOpt
     return createHash("sha256").update(JSON.stringify([params.command, env])).digest("hex");
   }
 
+  /** The listing runs for every waiting caller, so it never takes one caller's signal. */
   async function load(key: string, params: CatalogParams): Promise<CatalogRow[]> {
     try {
       const env = Object.fromEntries(Object.entries(params.env).filter((entry): entry is [string, string] => entry[1] !== undefined));
@@ -73,22 +74,29 @@ export function createModelCatalog(adapter: CliAdapter, options: ModelCatalogOpt
         command: params.command,
         args: adapter.launchArgs,
         env,
-        ...(params.signal ? { signal: params.signal } : {}),
       });
-      params.signal?.throwIfAborted();
       const rows = models.map(toRow);
       // A CLI that answers with nothing leaves the account with the default model, as a failure does.
       if (rows.length === 0) throw new Error("the CLI listed no models");
       cache.set(key, { until: now() + ttlMs, rows });
       return rows;
     } catch (error) {
-      // An abort is the host closing the request, not a CLI failure.
-      if (params.signal?.aborted) throw error;
       const reason = error instanceof Error ? error.message : String(error);
       warn(`Could not list the ${adapter.displayName} models, so only ${fallback[0]?.id} is offered: ${reason}`);
       cache.set(key, { until: now() + failureTtlMs, rows: fallback });
       return fallback;
     }
+  }
+
+  /** Waits for the shared listing, or rejects when this caller's own signal aborts. */
+  function raceAbort<T>(work: Promise<T>, signal: AbortSignal | undefined): Promise<T> {
+    if (!signal) return work;
+    signal.throwIfAborted();
+    return new Promise<T>((resolve, reject) => {
+      const onAbort = () => reject(signal.reason);
+      signal.addEventListener("abort", onAbort, { once: true });
+      work.then(resolve, reject).finally(() => signal.removeEventListener("abort", onAbort));
+    });
   }
 
   return {
@@ -98,13 +106,13 @@ export function createModelCatalog(adapter: CliAdapter, options: ModelCatalogOpt
         const hit = cache.get(key);
         if (hit && hit.until > now()) return hit.rows;
         const inFlight = pending.get(key);
-        if (inFlight) return inFlight;
+        if (inFlight) return raceAbort(inFlight, params.signal);
       }
       const started = load(key, params).finally(() => {
         if (pending.get(key) === started) pending.delete(key);
       });
       pending.set(key, started);
-      return started;
+      return raceAbort(started, params.signal);
     },
   };
 }

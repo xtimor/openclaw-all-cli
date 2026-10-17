@@ -78,7 +78,7 @@ The first command must report `"status": "loaded"` and `cursor-cli` under `cliBa
 | `The CLI offers no "ask" mode` | The `cursor-agent` build has no read-only mode | Run `cursor-agent update` |
 | `cursor-cli keeps native read, grep, glob on in every turn...` | A run asked for a tool selection without Cursor's always-on native tools (a tool cap, tools disabled, a system agent) | Run that turn on another model; see [Cursor provider](providers/cursor.md) |
 | `Cursor has no model "<name>" for this account` | The account does not have that model | Pick one from `openclaw models list --provider cursor-cli`, or check the plan |
-| Only `cursor-cli/auto` is listed | The model listing failed or there is no login; the Gateway log says why (`Could not list the Cursor CLI models`) | Fix the login or `cursor-agent`, then `openclaw models list --provider cursor-cli --refresh` |
+| Only `cursor-cli/auto` is listed | There is no login (the plugin then lists nothing and logs nothing), or the model listing failed (the Gateway log says `Could not list the Cursor CLI models` and why) | Fix the login or `cursor-agent`; the next listing is at least 30 seconds after a failure, so wait that long and run `openclaw models list --provider cursor-cli --refresh` |
 | No `cursor-cli` models in the Gateway's list | The plugin is not loaded yet | Name a `cursor-cli/...` model as the default model so it loads at Gateway start |
 | `The CLI speaks ACP protocol N` | `cursor-agent` speaks a protocol this plugin does not | Run `cursor-agent update`, or update the plugin |
 | `The CLI rejected its login` | `cursor-agent` refused the ACP login | Run `cursor-agent login` and check `cursor-agent status` |

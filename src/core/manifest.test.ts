@@ -16,6 +16,7 @@ describe("manifest", () => {
       resume: false,
       mcp: false,
       toolPolicy: false,
+      images: false,
     });
     expect(
       deriveFlags(
@@ -24,15 +25,23 @@ describe("manifest", () => {
           P5: { status: "approx", note: "" },
           P7: { status: "match", note: "" },
           P10: { status: "approx", note: "" },
+          P13: { status: "gap", note: "" },
         }),
       ),
-    ).toEqual({ liveSession: true, resume: true, mcp: true, toolPolicy: true });
+    ).toEqual({ liveSession: true, resume: true, mcp: true, toolPolicy: true, images: false });
     expect(deriveFlags(createManifest("1", { P4: { status: "gap", note: "" }, P5: { status: "spike", note: "" } }))).toEqual({
       liveSession: false,
       resume: false,
       mcp: false,
       toolPolicy: false,
+      images: false,
     });
+  });
+
+  it("derives images from P13 alone", () => {
+    expect(deriveFlags(createManifest("1", { P13: { status: "match", note: "" } })).images).toBe(true);
+    expect(deriveFlags(createManifest("1", { P13: { status: "approx", note: "" } })).images).toBe(true);
+    expect(deriveFlags(createManifest("1", { P13: { status: "spike", note: "" } })).images).toBe(false);
   });
 
   it("keeps PARITY_ROWS in step with the parity matrix", () => {

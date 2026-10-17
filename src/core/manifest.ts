@@ -10,6 +10,8 @@ export type DerivedFlags = {
   mcp: boolean;
   /** P10: the host may select the run's native tools; the backend enforces what it can (AD-9). */
   toolPolicy: boolean;
+  /** P13: the adapter sends images to the CLI. */
+  images: boolean;
 };
 
 function decided(manifest: CapabilityManifest, id: ParityRowId): boolean {
@@ -20,6 +22,6 @@ function decided(manifest: CapabilityManifest, id: ParityRowId): boolean {
 export function deriveFlags(manifest: CapabilityManifest): DerivedFlags {
   return {
     liveSession: decided(manifest, "P4"), resume: decided(manifest, "P5"), mcp: decided(manifest, "P7"),
-    toolPolicy: decided(manifest, "P10"),
+    toolPolicy: decided(manifest, "P10"), images: decided(manifest, "P13"),
   };
 }

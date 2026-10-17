@@ -40,18 +40,33 @@ describe("buildCursorCatalog", () => {
     expect(after[0]?.id).not.toBe(before[0]?.id);
   });
 
+  it("keeps the bare name of the first ID of a base when Cursor adds a variant later", () => {
+    const before = buildCursorCatalog([{ id: "grok-4.7[effort=high]", name: "grok-4.7" }]);
+    const after = buildCursorCatalog([
+      { id: "grok-4.7[effort=high]", name: "grok-4.7" },
+      { id: "grok-4.7[effort=low]", name: "grok-4.7" },
+    ]);
+    expect(before[0]?.name).toBe("grok-4.7");
+    expect(after.map((model) => [model.name, model.id])).toEqual([
+      ["grok-4.7", "grok-4.7[effort=high]"],
+      ["grok-4.7-low", "grok-4.7[effort=low]"],
+    ]);
+  });
+
   it("makes names unique when IDs share a base, by parameter values and then key-value pairs", () => {
     const catalog = buildCursorCatalog([
       { id: "twin[effort=low]", name: "twin" },
       { id: "twin[effort=high]", name: "twin" },
       { id: "pair[a=x,b=y]", name: "pair" },
       { id: "pair[a=y,b=x]", name: "pair" },
+      { id: "same[a=0]", name: "same" },
       { id: "same[a=1]", name: "same" },
       { id: "same[b=1]", name: "same" },
     ]);
-    expect(catalog.map((model) => model.name)).toEqual(["twin-low", "twin-high", "pair-x-y", "pair-y-x", "same-1", "same-b-1"]);
+    expect(catalog.map((model) => model.name)).toEqual(["twin", "twin-high", "pair", "pair-y-x", "same", "same-1", "same-b-1"]);
     expect(new Set(catalog.map((model) => model.name)).size).toBe(catalog.length);
-    expect(catalog[0]?.label).toBe("twin (effort=low)");
+    expect(catalog[0]?.label).toBe("twin");
+    expect(catalog[1]?.label).toBe("twin (effort=high)");
   });
 
   it("numbers names that still collide and skips entries with no usable name", () => {
@@ -60,7 +75,7 @@ describe("buildCursorCatalog", () => {
       { id: "dup[x=1]", name: "dup" },
       { id: "[]", name: "" },
     ]);
-    expect(catalog.map((model) => model.name)).toEqual(["dup-1", "dup-x-1"]);
+    expect(catalog.map((model) => model.name)).toEqual(["dup", "dup-1"]);
     expect(new Set(catalog.map((model) => model.name)).size).toBe(catalog.length);
     expect(catalog).toHaveLength(2);
   });
@@ -90,13 +105,14 @@ describe("resolveCursorModel", () => {
     }
   });
 
-  it("returns nothing for a model the account lacks, and for a bare base of a suffixed name", () => {
+  it("returns nothing for a model the account lacks, and the bare base resolves to the first of its variants", () => {
     expect(resolveCursorModel("gpt-9", catalog)).toBeUndefined();
     const twins = buildCursorCatalog([
       { id: "twin[effort=low]", name: "twin" },
       { id: "twin[effort=high]", name: "twin" },
     ]);
-    expect(resolveCursorModel("twin", twins)).toBeUndefined();
+    expect(resolveCursorModel("twin", twins)?.id).toBe("twin[effort=low]");
+    expect(resolveCursorModel("twin-high", twins)?.id).toBe("twin[effort=high]");
   });
 });
 

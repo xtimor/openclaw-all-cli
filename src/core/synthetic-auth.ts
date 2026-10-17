@@ -1,6 +1,7 @@
 import { nativeAuthMarkerFor, backendIdFor } from "./backend.ts";
 import { defaultCatalogRow, type CatalogRow, type ModelCatalog } from "./catalog.ts";
 import { readBackendConfig } from "./config.ts";
+import { deriveFlags } from "./manifest.ts";
 import type { CliAdapter } from "./ports.ts";
 
 /** The plugin ID, which is also the key of the plugin's config entry. */
@@ -24,12 +25,12 @@ type CatalogContext = {
 };
 
 /** A catalog row in the shape of OpenClaw's model definition. The CLI reports no price, window, or limits. */
-function toModelDefinition(row: CatalogRow) {
+function toModelDefinition(row: CatalogRow, input: Array<"text" | "image">) {
   return {
     id: row.id,
     name: row.name,
     reasoning: false,
-    input: ["text", "image"] as Array<"text" | "image">,
+    input,
     // A CLI login bills the user's own plan, not OpenClaw.
     cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
   };
@@ -74,12 +75,14 @@ export function createSyntheticAuthProvider(adapter: CliAdapter, catalog?: Model
                 ...(context.signal ? { signal: context.signal } : {}),
               });
               context.signal?.throwIfAborted();
+              // Images are offered only when the manifest decided the adapter handles them (P13).
+              const input: Array<"text" | "image"> = deriveFlags(adapter.manifest).images ? ["text", "image"] : ["text"];
               const rows =
                 status === "available"
                   ? await catalog.list({ command, env, ...(context.signal ? { signal: context.signal } : {}) })
                   : [defaultCatalogRow(adapter)];
               return {
-                provider: { baseUrl: CLI_BASE_URL, api: CLI_PLACEHOLDER_API, models: rows.map(toModelDefinition) },
+                provider: { baseUrl: CLI_BASE_URL, api: CLI_PLACEHOLDER_API, models: rows.map((row) => toModelDefinition(row, input)) },
               };
             },
           },

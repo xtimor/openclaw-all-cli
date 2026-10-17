@@ -1,5 +1,6 @@
 import { isDeepStrictEqual } from "node:util";
-import { tmpdir } from "node:os";
+import { rm } from "node:fs/promises";
+import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 import { AcpSession } from "../../transports/acp/session.ts";
 import { readJsonObject, writeJsonAtomic } from "../../transports/files.ts";
@@ -145,6 +146,7 @@ async function listModels(params: ListModelsParams): Promise<readonly CliModel[]
   const timeout = AbortSignal.timeout(params.timeoutMs ?? LIST_MODELS_TIMEOUT_MS);
   const signal = params.signal ? AbortSignal.any([params.signal, timeout]) : timeout;
   let session: CliSession | undefined;
+  let sessionId: string | undefined;
   try {
     const opened = await AcpSession.open({
       command: params.command,
@@ -156,6 +158,7 @@ async function listModels(params: ListModelsParams): Promise<readonly CliModel[]
       signal,
     });
     session = opened;
+    sessionId = opened.sessionId;
     return buildCursorCatalog(opened.models);
   } catch (error) {
     if (error instanceof CliError) throw error;
@@ -165,7 +168,19 @@ async function listModels(params: ListModelsParams): Promise<readonly CliModel[]
     throw error;
   } finally {
     await session?.close();
+    if (sessionId) await removeListingSession(params.env, sessionId);
   }
+}
+
+/**
+ * Cursor stores every ACP session under `<config dir>/acp-sessions/<id>`. A listing's throwaway
+ * session would pile up there on every refresh, so its directory, and only that one, is removed.
+ * Failures are ignored: a leftover directory is harmless.
+ */
+async function removeListingSession(env: Record<string, string | undefined>, sessionId: string): Promise<void> {
+  if (!/^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(sessionId)) return;
+  const configDir = env.CURSOR_CONFIG_DIR?.trim() || join(homedir(), ".cursor");
+  await rm(join(configDir, "acp-sessions", sessionId), { recursive: true, force: true }).catch(() => {});
 }
 
 export const cursorAdapter: CliAdapter = {

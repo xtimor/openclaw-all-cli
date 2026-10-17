@@ -35,36 +35,45 @@ function slug(text: string): string {
 /**
  * Names Cursor's models for `cursor-cli/<name>`. A model's name is its base ID without the
  * parameter list (`grok-4.7`), so it stays the same while Cursor keeps the base name and changes
- * the defaults. When two IDs share a base, each gets its parameter values as a suffix, then
- * `key-value` pairs, then a number, so names stay unique. The exact ID stays the source of truth.
+ * the defaults. When several IDs share a base, the first in Cursor's list keeps the bare name, so
+ * a variant Cursor adds later never renames it; the others get their parameter values as a
+ * suffix, then `key-value` pairs, then a number, so names stay unique. The exact ID stays the
+ * source of truth.
  */
 export function buildCursorCatalog(entries: readonly CursorModelEntry[]): CliModel[] {
-  const parsed = entries.map((entry) => ({ entry, ...parseId(entry.id) }));
-  const bases = new Map<string, number>();
-  for (const item of parsed) {
-    const base = item.base === CURSOR_AUTO_BASE ? AUTO_MODEL : slug(item.base || item.entry.name);
-    bases.set(base, (bases.get(base) ?? 0) + 1);
-  }
+  const parsed = entries.map((entry) => {
+    const id = parseId(entry.id);
+    return { entry, params: id.params, base: id.base === CURSOR_AUTO_BASE ? AUTO_MODEL : slug(id.base || entry.name) };
+  });
 
-  const taken = new Set<string>();
+  // Bare names first, so a suffixed name can never take one.
+  const bareOwner = new Map<string, number>();
+  parsed.forEach((item, index) => {
+    if (item.base && !bareOwner.has(item.base)) bareOwner.set(item.base, index);
+  });
+  const taken = new Set(bareOwner.keys());
+
   const catalog: CliModel[] = [];
-  for (const item of parsed) {
-    const base = item.base === CURSOR_AUTO_BASE ? AUTO_MODEL : slug(item.base || item.entry.name);
-    if (!base) continue;
-    const candidates = [
-      ...(bases.get(base) === 1 ? [base] : []),
-      slug([base, ...item.params.map(([, value]) => value)].join("-")),
-      slug([base, ...item.params.map(([key, value]) => `${key}-${value}`)].join("-")),
-    ];
-    let name = candidates.find((candidate) => candidate && !taken.has(candidate));
-    for (let index = 2; !name; index += 1) {
-      const numbered = `${base}-${index}`;
-      if (!taken.has(numbered)) name = numbered;
+  parsed.forEach((item, index) => {
+    if (!item.base) return;
+    let name: string | undefined;
+    if (bareOwner.get(item.base) === index) {
+      name = item.base;
+    } else {
+      const candidates = [
+        slug([item.base, ...item.params.map(([, value]) => value)].join("-")),
+        slug([item.base, ...item.params.map(([key, value]) => `${key}-${value}`)].join("-")),
+      ];
+      name = candidates.find((candidate) => candidate && !taken.has(candidate));
+      for (let number = 2; !name; number += 1) {
+        const numbered = `${item.base}-${number}`;
+        if (!taken.has(numbered)) name = numbered;
+      }
+      taken.add(name);
     }
-    taken.add(name);
-    const suffix = name === base ? "" : ` (${item.params.map(([key, value]) => (key ? `${key}=${value}` : value)).join(", ")})`;
-    catalog.push({ name, label: `${item.entry.name || base}${suffix}`, id: item.entry.id });
-  }
+    const suffix = name === item.base ? "" : ` (${item.params.map(([key, value]) => (key ? `${key}=${value}` : value)).join(", ")})`;
+    catalog.push({ name, label: `${item.entry.name || item.base}${suffix}`, id: item.entry.id });
+  });
   return catalog;
 }
 

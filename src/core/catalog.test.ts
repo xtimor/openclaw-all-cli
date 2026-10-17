@@ -114,17 +114,31 @@ describe("model catalog", () => {
     expect(warn).toHaveBeenCalledTimes(1);
   });
 
-  it("passes an abort through instead of logging it as a CLI failure", async () => {
+  it("rejects only the caller whose signal aborts; other callers of the shared listing still get the rows", async () => {
     const warn = vi.fn();
+    let release: (models: CliModel[]) => void = () => {};
+    const list = vi.fn((_params: ListModelsParams) => new Promise<CliModel[]>((resolve) => (release = resolve)));
+    const catalog = createModelCatalog(makeAdapter(list), { warn });
     const controller = new AbortController();
-    const catalog = createModelCatalog(
-      makeAdapter(async () => {
-        controller.abort();
-        throw new Error("aborted");
-      }),
-      { warn },
-    );
-    await expect(catalog.list({ ...params(), signal: controller.signal })).rejects.toThrow();
+    const first = catalog.list({ ...params(), signal: controller.signal });
+    const second = catalog.list(params());
+    controller.abort();
+    await expect(first).rejects.toThrow();
+    release(MODELS);
+    await expect(second).resolves.toEqual([
+      { id: "auto", name: "Auto" },
+      { id: "big", name: "Big" },
+    ]);
+    expect(list).toHaveBeenCalledTimes(1);
+    expect(list.mock.calls[0]?.[0].signal).toBeUndefined();
     expect(warn).not.toHaveBeenCalled();
+  });
+
+  it("rejects at once for a signal that is already aborted", async () => {
+    const list = vi.fn(async () => MODELS);
+    const catalog = createModelCatalog(makeAdapter(list));
+    const controller = new AbortController();
+    controller.abort();
+    await expect(catalog.list({ ...params(), signal: controller.signal })).rejects.toThrow();
   });
 });
