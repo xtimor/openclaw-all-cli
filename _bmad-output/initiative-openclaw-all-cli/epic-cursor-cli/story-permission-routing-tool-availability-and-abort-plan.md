@@ -3,7 +3,7 @@ title: 'Permission routing, tool availability, and abort'
 type: 'feature'
 ticket: '4'
 created: '2026-10-17'
-status: 'in-review'
+status: done
 baseline_revision: 'eda690f1c6b0908fe1bb871710a21a326b9dc35f'
 route: 'full'
 route_source: 'auto'
@@ -119,3 +119,11 @@ The host owns approval authority; the plugin only forwards a request and obeys t
 **Commands:**
 - `npm run typecheck && npm run build && npx vitest run` -- expected: all pass
 - `OPENCLAW_ALL_CLI_LIVE=1 npx vitest run test/live` -- expected: pass with real `cursor-agent` and `CURSOR_API_KEY` (run `npm run dev:install` first)
+
+## Auto Run Result
+
+- Summary: Cursor's ACP permission requests go to `ctx.requestToolPermission` (the host decides; `allow` becomes `allow_once`; deny, error, malformed answer or a rewritten input reject; late, aborted or superseded requests are answered `cancelled` without asking the host; a tool outside `toolAvailability.native` is rejected). Abort races the core's own answer so a host that ignores the signal cannot hang the turn. The backend declares `selectable` native tools with `prepare-execution` enforcement; `toolAvailabilityEnforced: true` is returned only when the run's selection keeps `read`, `grep` and `glob` on, otherwise the run is refused with a clear message. P8, P9, P10 updated.
+- Review (quick, one lens): 5 findings — patched 3 low (late unnamed request answered `cancelled`; abort docs; MEMORY), deferred 1 medium (acceptance criterion 1 holds on a stub host only: a real run has no `exec`), rejected 1 low. Follow-up review recommended: false.
+- Verification (isolated Node 24, real cursor-agent 2026.10.16, isolated OpenClaw 2026.10.3): typecheck and build clean; `npx vitest run` 229 passed, 8 skipped (live); `OPENCLAW_ALL_CLI_LIVE=1 npx vitest run test/live` 8 passed: a shell request the stub host denies makes the model fall back to the stub `exec`; a host-approved read-only shell runs; aborting mid-approval answers the request `cancelled` and ends the turn with the process exited; `tools.deny` through the real OpenClaw hides the denied tools from the model's tool list.
+- Live findings: ACP edits cannot be made to ask (applied without a request in agent mode under every setting tried), so edits stay denied by `Write(**)` and ask mode; Cursor cannot switch native read/grep/glob off per turn.
+- Residual risks: no `exec` for the model in real runs (deferred); AD-9 wording says `toolAvailabilityEnforced: true` unconditionally, which is no longer the behavior (the architecture spine is the user's to amend).
