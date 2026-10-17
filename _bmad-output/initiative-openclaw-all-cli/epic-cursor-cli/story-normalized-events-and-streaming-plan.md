@@ -3,14 +3,14 @@ title: 'Normalized events and streaming'
 type: 'feature'
 ticket: '5'
 created: '2026-10-17'
-status: 'in-progress'
+status: 'in-review'
 baseline_revision: '6ac91f6b74c2f5095f308c010a8725089fa0c6b7'
 route: 'full'
 route_source: 'auto'
 risk: 'medium'
-review: ''
-review_source: ''
-lenses_ran: []
+review: 'quick'
+review_source: 'pinned'
+lenses_ran: [quick]
 review_loop_iteration: 0
 followup_review_recommended: false
 context:
