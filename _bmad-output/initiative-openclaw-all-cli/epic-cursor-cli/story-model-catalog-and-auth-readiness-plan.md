@@ -17,7 +17,14 @@ context:
   - '{project-root}/_bmad-output/initiative-openclaw-all-cli/architecture-openclaw-all-cli/architecture-openclaw-all-cli.md'
   - '{project-root}/MEMORY.md'
 warnings: []
-deferred: []
+deferred:
+  - summary: >-
+      Model names depend on Cursor's list order: a variant added ahead of the first, a reorder, or removal of the first id moves `cursor-cli/<base>` (and suffixed names) to another variant.
+    evidence: |-
+      No naming rule over an order-only signal is fully stable. Settle by checking whether Cursor marks the default variant or keeps a stable order across releases.
+    location: >-
+      src/adapters/cursor/models.ts
+    severity: medium (unverified)
 ---
 
 <intent-contract>
@@ -99,6 +106,22 @@ Built as planned, with the changes in the Plan Change Log. Files: `src/adapters/
 - **Refresh.** The host passes no refresh flag to `catalog.run`, so the 1-minute cache TTL (plus an environment-hash key) bounds staleness; `openclaw models list --refresh` after that minute lists again.
 
 ## Review Triage Log
+
+### 2026-10-17 — Review pass (follow-up)
+- verdicts: 12 findings — high 0, medium 1, low 11, false 0, maybe-false 0
+- findings:
+  - `medium` `patch` `models.ts`: the bare name goes to the first id of a base in Cursor's list, so a variant added ahead of it, a reorder, or removal of the first id moves `cursor-cli/<base>` (silently onto another variant) — no rule over an unordered signal is fully stable; patch: JSDoc and docs say names depend on Cursor's list order; the stable-names promise is recorded as deferred
+  - `low` `patch` The model holding the bare name loses its parameters in the `/model` label next to a labelled sibling — patch: label every variant of a shared base with its parameters
+  - `low` `patch` `models.test.ts`: the number-suffix loop is untested although the title claims it — patch: add a case that reaches it
+  - `low` `patch` Unit tests that run a fake listing delete inside the developer's real Cursor home (`CURSOR_CONFIG_DIR` unset in `fakeEnv`) — patch: `fakeEnv` defaults `CURSOR_CONFIG_DIR` to a temp directory
+  - `low` `patch` The cleanup resolves the default Cursor home from the Gateway's `homedir()`, not from the HOME of the env the child gets — patch: use `params.env.HOME` first
+  - `low` `patch` No live test shows the listing leaves `acp-sessions` unchanged (checked by hand: stayed at 30) — patch: add that live check
+  - `low` `patch` `catalog.ts` JSDoc contradicts the corrected docs (a login changes neither command nor env; `list` can reject with the caller's abort) — patch the comments
+  - `low` `patch` A caller whose signal is already aborted still starts a listing — patch: check the signal before starting a load
+  - `low` `patch` `docs/setup.md` troubleshooting row is confusing (no-login case sits in the "auto is listed" row; the 30 s wait applies only after a failed listing) — patch the text
+  - `low` `patch` `docs/providers/cursor.md`: "a new login is noticed after the minute" is true for an account switch only; from logged-out the next read lists at once — patch the text
+  - `low` `patch` User-visible change not documented: models now declare text-only input while P13 is `spike`, so image attachments are no longer routed to them — patch the docs
+  - `low` `reject` Plan matrix row "Not logged in" and the Plan Change Log entry — rejected in the first pass (the fix is to edit this build's plan); Implementation Notes already record it
 
 ### 2026-10-17 — Review pass
 - verdicts: 10 findings — high 0, medium 4, low 6, false 0, maybe-false 0
