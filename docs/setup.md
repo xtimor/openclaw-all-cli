@@ -2,7 +2,7 @@
 
 How to run `cursor-cli/<model>` in your OpenClaw.
 
-> **Status:** walking skeleton. The plugin registers `cursor-cli`, treats a Cursor login as auth, and answers a prompt over `cursor-agent acp`. With OpenClaw 2026.10.3 every turn restarts the process and resumes the chat with `session/load`, so there is no warm process between turns. OpenClaw's tools reach Cursor through a local MCP proxy. Text, thinking, and tool calls stream to OpenClaw as they happen. The model list in `/model` arrives in a later change; see [Cursor provider](providers/cursor.md) for what works now.
+> **Status:** walking skeleton. The plugin registers `cursor-cli`, treats a Cursor login as auth, and answers a prompt over `cursor-agent acp`. With OpenClaw 2026.10.3 every turn restarts the process and resumes the chat with `session/load`, so there is no warm process between turns. OpenClaw's tools reach Cursor through a local MCP proxy. Text, thinking, and tool calls stream to OpenClaw as they happen. `/model` lists your account's Cursor models; see [Cursor provider](providers/cursor.md) for what works now.
 
 ## Requirements
 
@@ -45,7 +45,7 @@ After `git pull`, run `npm run package` again and reinstall with `openclaw plugi
 
 OpenClaw warns that the source is outside ClawHub review and asks you to confirm; pass `--force` to confirm without a prompt. Do not install the checkout directory with `--link`: OpenClaw scans the whole directory, and a checkout that also holds a development toolchain fails to load.
 
-The plugin loads the first time a turn selects `cursor-cli/<model>`. It also loads at Gateway start when your config names a `cursor-cli/...` model.
+The plugin loads the first time a turn selects `cursor-cli/<model>`. It also loads at Gateway start when your config names a `cursor-cli/...` model; the account's models appear in `/model` only once it is loaded, so name one (for example as the default model).
 
 ## 3. Configure
 
@@ -61,22 +61,25 @@ Isolation needs no setting: every agent gets its own Cursor home with the same f
 
 ```sh
 openclaw plugins inspect openclaw-all-cli --runtime --json
+openclaw models list --provider cursor-cli
 openclaw agent --model cursor-cli/auto --message "Say hi"
 ```
 
-The first command must report `"status": "loaded"` and `cursor-cli` under `cliBackendIds`. The second runs through your Gateway and prints Cursor's reply. In the isolated OpenClaw (see Develop) no Gateway runs by default: run the command with `--local`, or start one with `npm run dev:openclaw -- gateway --allow-unconfigured` and drop `--local`.
+The first command must report `"status": "loaded"` and `cursor-cli` under `cliBackendIds`. The second lists your account's Cursor models and needs a running Gateway that has loaded the plugin. The third runs through your Gateway and prints Cursor's reply. In the isolated OpenClaw (see Develop) no Gateway runs by default: run the command with `--local`, or start one with `npm run dev:openclaw -- gateway --allow-unconfigured` and drop `--local`.
 
 ## Troubleshooting
 
 | Symptom | Cause | Fix |
 | --- | --- | --- |
 | `CLI backend executable could not be resolved: cursor-agent` | The Gateway cannot find `cursor-agent` | Put it on the Gateway's `PATH`, or set `cursor-cli.command` |
-| `cursor-cli/<model>` is `[indeterminate]` in `openclaw models status` | OpenClaw sees no Cursor login | Run `cursor-agent login`, then check `cursor-agent status` |
+| `cursor-cli/<model>` is `[indeterminate]` in `openclaw models status`, or `Auth: no` in `openclaw models list` | OpenClaw sees no Cursor login | Run `cursor-agent login`, then check `cursor-agent status` |
 | `OpenClaw gave no agent directory` | The host passed no `agentDir` for the turn | Report it with your OpenClaw version; the plugin will not share a home between agents |
 | `Could not prepare the CLI home` | The plugin cannot write `cli-config.json` under the agent directory | Fix the directory's permissions or free disk space |
 | `The CLI offers no "ask" mode` | The `cursor-agent` build has no read-only mode | Run `cursor-agent update` |
 | `cursor-cli keeps native read, grep, glob on in every turn...` | A run asked for a tool selection without Cursor's always-on native tools (a tool cap, tools disabled, a system agent) | Run that turn on another model; see [Cursor provider](providers/cursor.md) |
-| `The CLI has no model "<id>" for this account` | The account cannot use that model | Pick another model or check the plan |
+| `Cursor has no model "<name>" for this account` | The account does not have that model | Pick one from `openclaw models list --provider cursor-cli`, or check the plan |
+| Only `cursor-cli/auto` is listed | The model listing failed or there is no login; the Gateway log says why (`Could not list the Cursor CLI models`) | Fix the login or `cursor-agent`, then `openclaw models list --provider cursor-cli --refresh` |
+| No `cursor-cli` models in the Gateway's list | The plugin is not loaded yet | Name a `cursor-cli/...` model as the default model so it loads at Gateway start |
 | `The CLI speaks ACP protocol N` | `cursor-agent` speaks a protocol this plugin does not | Run `cursor-agent update`, or update the plugin |
 | `The CLI rejected its login` | `cursor-agent` refused the ACP login | Run `cursor-agent login` and check `cursor-agent status` |
 | `The CLI could not resume the session` / `cannot load a session` | Cursor lost the stored chat, or the build cannot load sessions | Start a new chat with `/reset`; run `cursor-agent update` |

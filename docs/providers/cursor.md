@@ -72,14 +72,37 @@ Native edits cannot ask in ACP: in agent mode Cursor applies them without a requ
 
 ## Models
 
-`cursor-cli/auto` lets Cursor choose. Any other `cursor-cli/<id>` is selected when the account lists that ID; otherwise the turn fails with `The CLI has no model "<id>" for this account`. Listing the account's models in `/model` is planned.
+`/model`, the model picker, and `openclaw models list --provider cursor-cli` show the models your Cursor account has, as `cursor-cli/<name>` with the readable name Cursor gives them:
+
+```text
+cursor-cli/auto
+cursor-cli/composer-2.5
+cursor-cli/grok-4.7
+cursor-cli/claude-opus-5-5
+```
+
+The list comes from Cursor, never from the plugin. The plugin starts a short `cursor-agent acp` session in a temporary directory, reads the models Cursor reports in `session/new`, and closes it. No prompt is sent, so no model runs and no tokens are spent. The plugin reuses a listing for one minute and lists again after an environment change (a new login or `CURSOR_API_KEY`) or when OpenClaw refreshes its catalog (`openclaw models list --refresh`, Gateway start) after that minute. A turn never waits for the list.
+
+Cursor's own model IDs carry parameters, for example `grok-4.7[context=256k,reasoning_effort=high,fast=true]`. The name in the model ref is the base ID without the parameter list (`grok-4.7`), so it stays the same when Cursor changes a model's defaults. Two IDs that share a base get their parameter values as a suffix (`twin-low`, `twin-high`), then `key-value` pairs, then a number. The plugin maps the name to Cursor's exact ID for you. You can also type the exact ID, in any case. `cursor-cli/default[]` and `cursor-cli/default` mean `cursor-cli/auto`.
+
+| Situation | What happens |
+| --- | --- |
+| Logged in, or `CURSOR_API_KEY` set | The models are listed and available |
+| Listing fails (`cursor-agent` missing, an error, no answer in 30 seconds) | Only `cursor-cli/auto` is listed and the failure is logged; no turn fails. The next listing attempt is at least 30 seconds later |
+| Not logged in and no key | Only `cursor-cli/auto` is listed, as unavailable (`missing-auth` in the Gateway's model list, `Auth: no` in `openclaw models list`). A turn fails with the login error. `openclaw models status` still says `[indeterminate]`: that command reads no prepared auth |
+| A model the account does not have | The turn fails with `Cursor has no model "<name>" for this account` (error code `model_not_found`) |
+| A model the plan cannot use | Cursor answers with its own plan message, for example `Upgrade your plan to continue`; the plugin does not filter it out |
+
+Cursor keeps the model you last used in the agent's own config (`<agentDir>/openclaw-all-cli/cursor-cli/cli-config.json`), so every turn checks the session's model against the model ref. A turn on `cursor-cli/auto` switches back to Auto when the session starts on another model, and sends nothing when it is already on Auto. The exact ID is checked against the session's own list when the session starts, so a stale list cannot pick a model the account lost.
+
+OpenClaw loads the plugin before the first turn only when your config names a `cursor-cli/...` model, for example as the default model. Until then the Gateway's model list has no Cursor rows.
 
 ## Parity with `claude-cli`
 
 | # | Feature | Status | Notes |
 | --- | --- | --- | --- |
-| P1 | Provider in `/model`, model aliases | spike | `cursor-cli/<model>` runs; the model list in `/model` is not built |
-| P2 | Subscription login counts as auth | match | `cursor-agent status` or `CURSOR_API_KEY`; the real `status` wording is unconfirmed |
+| P1 | Provider in `/model`, model aliases | approx | The account's models are listed in `/model` and `openclaw models list` as `cursor-cli/<name>`, read from Cursor itself and cached; the name is mapped to Cursor's exact ID; aliases are Cursor's own spellings of Auto, not `claude-cli`'s short names. Live test: `test/live/model-catalog.live.test.ts` |
+| P2 | Subscription login counts as auth | match | `cursor-agent status` (live: `Logged in as <email>`; the logged-out wording is unconfirmed) or `CURSOR_API_KEY`. The models are available with either, and unavailable without. Live test: `test/live/model-catalog.live.test.ts` |
 | P3 | Streaming text, thinking, and tool progress | approx | Text and thinking deltas as they arrive; Cursor's native tool calls and OpenClaw tools called through the MCP proxy as display-only start and result events, one pair per call. The host does not treat them as tool execution, unlike `claude-cli`'s. Live test: `test/live/streaming.live.test.ts` |
 | P4 | Warm process per conversation | approx | The plugin keeps one `cursor-agent acp` process per conversation, but OpenClaw 2026.10.3 puts the per-turn MCP settings path into its live-session fingerprint, so it restarts the process every turn and the next turn resumes with `session/load`. Live evidence: `test/live/mcp-proxy.live.test.ts` (warm session with a stand-in host) and the real-host run in the ticket notes |
 | P5 | Resume a session | match | ACP `session/load`. No live test yet (live Cursor not run) |

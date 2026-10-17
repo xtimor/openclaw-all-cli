@@ -64,19 +64,147 @@ describe("cursor adapter", () => {
     expect(events.at(-1)).toMatchObject({ kind: "result", text: "hi" });
   });
 
-  it("selects a named model and leaves `auto` to Cursor", async () => {
+  const openOn = async (modelId: string, env: Record<string, string> = {}) => {
     const session = await cursorAdapter.open({
       command: FAKE_CURSOR_AGENT,
       args: cursorAdapter.launchArgs,
       cwd: process.cwd(),
-      env: fakeEnv(),
-      modelId: "fake-fast",
+      env: fakeEnv(env),
+      modelId,
       onPermissionRequest: async () => "reject_once",
     });
     open.push(session);
+    return session;
+  };
+  const replyOf = async (session: CliSession) => {
     const events: NormalizedEvent[] = [];
     for await (const event of session.prompt("hello")) events.push(event);
-    expect(events.at(-1)).toMatchObject({ kind: "result", text: expect.stringContaining("model fake-fast") });
+    return events.at(-1);
+  };
+
+  it("runs the turn on the exact Cursor ID behind a readable model name", async () => {
+    const session = await openOn("fake-fast");
+    expect(await replyOf(session)).toMatchObject({
+      kind: "result",
+      text: expect.stringContaining("model fake-fast[speed=fast,fast=true]"),
+    });
+  });
+
+  it("accepts the exact ID, any case, and the suffixed name of a model that shares its base", async () => {
+    expect(await replyOf(await openOn("fake-slow[context=1m,effort=high]"))).toMatchObject({
+      text: expect.stringContaining("model fake-slow[context=1m,effort=high]"),
+    });
+    expect(await replyOf(await openOn("FAKE-SLOW"))).toMatchObject({
+      text: expect.stringContaining("model fake-slow[context=1m,effort=high]"),
+    });
+    expect(await replyOf(await openOn("twin-high"))).toMatchObject({
+      text: expect.stringContaining("model twin[effort=high]"),
+    });
+  });
+
+  it("works with an agent that reports only the models state", async () => {
+    const session = await openOn("fake-fast", { FAKE_CURSOR_MODEL_SURFACE: "state" });
+    expect(await replyOf(session)).toMatchObject({ text: expect.stringContaining("model fake-fast[") });
+  });
+
+  it("fails an unknown model with model_not_found", async () => {
+    await expect(openOn("not-a-model")).rejects.toMatchObject({
+      code: "model_not_found",
+      message: expect.stringContaining('"not-a-model"'),
+    });
+    await expect(openOn("twin")).rejects.toMatchObject({ code: "model_not_found" });
+  });
+
+  it("runs `auto` and Cursor's own spellings of it on Auto", async () => {
+    for (const name of ["auto", "default", "default[]"]) {
+      expect(await replyOf(await openOn(name))).toMatchObject({ text: expect.stringContaining("model default[]") });
+    }
+  });
+
+  it("sends no model change for cursor-cli/auto while the session is already on Auto", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "oac-cursor-"));
+    try {
+      const file = join(dir, "requests.jsonl");
+      await openOn("auto", { FAKE_CURSOR_LOG: file });
+      const methods = readFileSync(file, "utf8")
+        .trim()
+        .split("\n")
+        .map((line) => JSON.parse(line).method);
+      expect(methods).not.toContain("session/set_config_option");
+      expect(methods).not.toContain("session/set_model");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("switches back to Auto when Cursor starts the session on the model it remembered", async () => {
+    // Cursor keeps the last model in its config directory, so `auto` after another model needs a switch.
+    const session = await openOn("auto", { FAKE_CURSOR_DEFAULT_MODEL: "fake-fast[speed=fast,fast=true]" });
+    expect(await replyOf(session)).toMatchObject({ text: expect.stringContaining("model default[]") });
+  });
+
+  it("keeps the session's model for `auto` when the agent lists no models", async () => {
+    const session = await openOn("auto", { FAKE_CURSOR_NO_MODELS: "1" });
+    expect(await replyOf(session)).toMatchObject({ kind: "result" });
+  });
+
+  describe("listModels", () => {
+    const list = (env: Record<string, string> = {}, extra: { command?: string; timeoutMs?: number } = {}) =>
+      cursorAdapter.listModels({
+        command: extra.command ?? FAKE_CURSOR_AGENT,
+        args: cursorAdapter.launchArgs,
+        env: fakeEnv(env),
+        ...(extra.timeoutMs ? { timeoutMs: extra.timeoutMs } : {}),
+      });
+
+    it("lists the account's models with readable names and exact IDs, without a prompt", async () => {
+      const dir = mkdtempSync(join(tmpdir(), "oac-cursor-"));
+      try {
+        const file = join(dir, "requests.jsonl");
+        const models = await list({ FAKE_CURSOR_LOG: file });
+        expect(models).toEqual([
+          { name: "auto", label: "Auto", id: "default[]" },
+          { name: "fake-fast", label: "fake-fast", id: "fake-fast[speed=fast,fast=true]" },
+          { name: "fake-slow", label: "fake-slow", id: "fake-slow[context=1m,effort=high]" },
+          { name: "twin-low", label: "twin (effort=low)", id: "twin[effort=low]" },
+          { name: "twin-high", label: "twin (effort=high)", id: "twin[effort=high]" },
+        ]);
+        const methods = readFileSync(file, "utf8")
+          .trim()
+          .split("\n")
+          .map((line) => JSON.parse(line).method);
+        expect(methods).toEqual(["initialize", "authenticate", "session/new"]);
+      } finally {
+        rmSync(dir, { recursive: true, force: true });
+      }
+    });
+
+    it("skips the login step with CURSOR_API_KEY, like a turn", async () => {
+      const dir = mkdtempSync(join(tmpdir(), "oac-cursor-"));
+      try {
+        const file = join(dir, "requests.jsonl");
+        await list({ FAKE_CURSOR_LOG: file, CURSOR_API_KEY: "key" });
+        const methods = readFileSync(file, "utf8")
+          .trim()
+          .split("\n")
+          .map((line) => JSON.parse(line).method);
+        expect(methods).toEqual(["initialize", "session/new"]);
+      } finally {
+        rmSync(dir, { recursive: true, force: true });
+      }
+    });
+
+    it("fails with CliError when cursor-agent is missing", async () => {
+      await expect(list({}, { command: "/nonexistent/cursor-agent" })).rejects.toMatchObject({
+        code: "cli_not_found",
+      });
+    });
+
+    it("fails with a timeout when the agent never answers", async () => {
+      await expect(list({ FAKE_CURSOR_NO_INIT: "1" }, { timeoutMs: 300 })).rejects.toMatchObject({
+        code: "timeout",
+      });
+    });
   });
 
   it("skips the login step when CURSOR_API_KEY is set, and runs it otherwise", async () => {
@@ -100,29 +228,6 @@ describe("cursor adapter", () => {
       };
       expect(await methodsFor({})).toContain("authenticate");
       expect(await methodsFor({ CURSOR_API_KEY: "key" })).not.toContain("authenticate");
-    } finally {
-      rmSync(dir, { recursive: true, force: true });
-    }
-  });
-
-  it("sends no model change for cursor-cli/auto, even when the session starts on another model", async () => {
-    const dir = mkdtempSync(join(tmpdir(), "oac-cursor-"));
-    try {
-      const file = join(dir, "requests.jsonl");
-      const session = await cursorAdapter.open({
-        command: FAKE_CURSOR_AGENT,
-        args: cursorAdapter.launchArgs,
-        cwd: process.cwd(),
-        env: fakeEnv({ FAKE_CURSOR_LOG: file, FAKE_CURSOR_DEFAULT_MODEL: "fake-fast" }),
-        modelId: "auto",
-        onPermissionRequest: async () => "reject_once",
-      });
-      open.push(session);
-      const methods = readFileSync(file, "utf8")
-        .trim()
-        .split("\n")
-        .map((line) => JSON.parse(line).method);
-      expect(methods).not.toContain("session/set_config_option");
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }

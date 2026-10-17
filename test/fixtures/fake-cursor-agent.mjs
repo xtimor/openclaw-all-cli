@@ -7,7 +7,11 @@
 //   FAKE_CURSOR_NO_ASK_MODE=1   the agent lists no "ask" mode
 //   FAKE_CURSOR_LOG=<file>      append one JSON line per request the agent receives; the
 //                               `initialize` line also carries CURSOR_CONFIG_DIR/CURSOR_DATA_DIR
-//   FAKE_CURSOR_DEFAULT_MODEL=m the model a new session starts with (default "auto")
+//   FAKE_CURSOR_DEFAULT_MODEL=m the exact model ID a new session starts with (default "default[]", Cursor's Auto)
+//   FAKE_CURSOR_MODEL_SURFACE=s how the agent reports its models: "both" (default; the `models` state and a
+//                               configOptions select, like cursor-agent), "state" (only `models`, switched
+//                               with session/set_model), or "options" (only the configOptions select)
+//   FAKE_CURSOR_NO_MODELS=1     the agent reports no models at all
 //   FAKE_CURSOR_IGNORE_CANCEL=1 session/cancel does nothing
 //   FAKE_CURSOR_IGNORE_TERM=1   SIGTERM does nothing (only SIGKILL stops the process)
 //   FAKE_CURSOR_IGNORE_STDIN_EOF=1  the process stays up when stdin closes
@@ -66,19 +70,32 @@ const modes = () => ({
     ...(process.env.FAKE_CURSOR_NO_ASK_MODE === "1" ? [] : [{ id: "ask", name: "Ask" }]),
   ],
 });
-const configOptions = (session) => [
-  {
-    id: "model",
-    name: "Model",
-    category: "model",
-    type: "select",
-    currentValue: session.model,
-    options: [
-      { value: "auto", name: "Auto" },
-      { value: "fake-fast", name: "Fake Fast" },
-    ],
-  },
+// Exact IDs carry brackets and commas, like Cursor's. Two share a base name to test unique naming.
+const MODELS = [
+  { modelId: "default[]", name: "Auto" },
+  { modelId: "fake-fast[speed=fast,fast=true]", name: "fake-fast" },
+  { modelId: "fake-slow[context=1m,effort=high]", name: "fake-slow" },
+  { modelId: "twin[effort=low]", name: "twin" },
+  { modelId: "twin[effort=high]", name: "twin" },
 ];
+const surface = process.env.FAKE_CURSOR_MODEL_SURFACE ?? "both";
+const noModels = process.env.FAKE_CURSOR_NO_MODELS === "1";
+const modelsState = (session) => ({ currentModelId: session.model, availableModels: MODELS });
+const configOptions = (session) =>
+  noModels || surface === "state"
+    ? []
+    : [
+        {
+          id: "model",
+          name: "Model",
+          category: "model",
+          type: "select",
+          currentValue: session.model,
+          options: MODELS.map((model) => ({ value: model.modelId, name: model.name })),
+        },
+      ];
+const modelFields = (session) => (noModels || surface === "options" ? {} : { models: modelsState(session) });
+const knownModel = (value) => MODELS.some((model) => model.modelId === value);
 
 async function runPrompt(id, params) {
   const session = sessions.get(params.sessionId);
@@ -226,22 +243,31 @@ rl.on("line", (line) => {
       return reply(id, {});
     case "session/new": {
       const sessionId = `fake-session-${nextSession++}`;
-      const session = { model: process.env.FAKE_CURSOR_DEFAULT_MODEL ?? "auto", mode: "agent", prompts: 0 };
+      const session = { model: process.env.FAKE_CURSOR_DEFAULT_MODEL ?? "default[]", mode: "agent", prompts: 0 };
       sessions.set(sessionId, session);
-      return reply(id, { sessionId, modes: modes(), configOptions: configOptions(session) });
+      return reply(id, { sessionId, modes: modes(), configOptions: configOptions(session), ...modelFields(session) });
     }
     case "session/load": {
-      const session = { model: "auto", mode: "agent", prompts: 0, loaded: true };
+      const session = { model: process.env.FAKE_CURSOR_DEFAULT_MODEL ?? "default[]", mode: "agent", prompts: 0, loaded: true };
       sessions.set(params.sessionId, session);
       // Like a real agent, replay history as updates before answering.
       update(params.sessionId, { sessionUpdate: "agent_message_chunk", content: { type: "text", text: "HISTORY" } });
-      return reply(id, { modes: modes(), configOptions: configOptions(session) });
+      return reply(id, { modes: modes(), configOptions: configOptions(session), ...modelFields(session) });
     }
     case "session/set_mode":
       sessions.get(params.sessionId).mode = params.modeId;
       return reply(id, {});
+    case "session/set_model":
+      if (noModels || surface === "options" || !knownModel(params.modelId)) {
+        return fail(id, -32602, "Invalid params");
+      }
+      sessions.get(params.sessionId).model = params.modelId;
+      return reply(id, {});
     case "session/set_config_option":
-      if (params.configId === "model") sessions.get(params.sessionId).model = params.value;
+      if (params.configId === "model") {
+        if (!knownModel(params.value)) return fail(id, -32602, `Invalid model value: ${params.value}`);
+        sessions.get(params.sessionId).model = params.value;
+      }
       return reply(id, { configOptions: configOptions(sessions.get(params.sessionId)) });
     case "session/prompt":
       return void runPrompt(id, params);

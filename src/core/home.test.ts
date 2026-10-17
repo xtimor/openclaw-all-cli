@@ -12,6 +12,7 @@ function adapterWith(prepareHome: CliAdapter["prepareHome"]): CliAdapter {
     manifest: createManifest("1", {}),
     alwaysOnNativeTools: [],
     probeAuth: async () => "available",
+    listModels: async () => [],
     prepareHome,
     open: async () => {
       throw new Error("not used");

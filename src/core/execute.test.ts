@@ -89,6 +89,7 @@ function makeAdapter(script: Script = okTurn) {
     manifest: createManifest("1", {}),
     alwaysOnNativeTools: ["read"],
     probeAuth: async () => "available",
+    listModels: async () => [],
     prepareHome: async (home) => ({ ACME_HOME: home }),
     open: async (params) => {
       opens.push(params);

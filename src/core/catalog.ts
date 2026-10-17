@@ -1,0 +1,110 @@
+import { createHash } from "node:crypto";
+import { backendIdFor } from "./backend.ts";
+import type { CliAdapter, CliModel } from "./ports.ts";
+
+/** A model as `/model` and `openclaw models list` show it: `<backendId>/<id>`. */
+export type CatalogRow = { id: string; name: string };
+
+export type CatalogParams = {
+  command: string;
+  env: Record<string, string | undefined>;
+  signal?: AbortSignal;
+};
+
+export type ModelCatalog = {
+  /**
+   * The account's models. A failed listing yields the default model alone and is logged; it never
+   * throws. `refresh` skips the cache.
+   */
+  list(params: CatalogParams, options?: { refresh?: boolean }): Promise<CatalogRow[]>;
+};
+
+export type ModelCatalogOptions = {
+  /** How long a listing is reused. Default 1 minute: the host has no refresh signal, so this is what bounds a stale list. */
+  ttlMs?: number;
+  /** How long a failed listing is remembered, so a broken CLI is not spawned for every read. Default 30 seconds. */
+  failureTtlMs?: number;
+  now?: () => number;
+  /** Receives failures. Never pass it a key or a header. */
+  warn?: (message: string) => void;
+};
+
+export const DEFAULT_CATALOG_TTL_MS = 60_000;
+export const DEFAULT_CATALOG_FAILURE_TTL_MS = 30_000;
+
+/** The model every account has: the default model of the adapter, as a catalog row. */
+export function defaultCatalogRow(adapter: CliAdapter): CatalogRow {
+  const prefix = `${backendIdFor(adapter)}/`;
+  const id = adapter.defaultModel.startsWith(prefix) ? adapter.defaultModel.slice(prefix.length) : adapter.defaultModel;
+  return { id, name: id };
+}
+
+function toRow(model: CliModel): CatalogRow {
+  return { id: model.name, name: model.label };
+}
+
+/**
+ * Remembers the account's model listing (AD-2: it names no CLI). The listing is cached because the
+ * host asks for the catalog often and each listing starts a CLI process; it is dropped when the
+ * command or the environment changes, which covers a new login or API key. A turn never reads it:
+ * the adapter checks the model against the CLI's own list when it opens the session.
+ */
+export function createModelCatalog(adapter: CliAdapter, options: ModelCatalogOptions = {}): ModelCatalog {
+  const ttlMs = options.ttlMs ?? DEFAULT_CATALOG_TTL_MS;
+  const failureTtlMs = options.failureTtlMs ?? DEFAULT_CATALOG_FAILURE_TTL_MS;
+  const now = options.now ?? Date.now;
+  const warn = options.warn ?? (() => {});
+  const fallback = [defaultCatalogRow(adapter)];
+  const cache = new Map<string, { until: number; rows: CatalogRow[] }>();
+  const pending = new Map<string, Promise<CatalogRow[]>>();
+
+  /** One key per command and environment; the environment is hashed so no value is kept. */
+  function keyFor(params: CatalogParams): string {
+    const env = Object.entries(params.env)
+      .filter((entry): entry is [string, string] => entry[1] !== undefined)
+      .sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0));
+    return createHash("sha256").update(JSON.stringify([params.command, env])).digest("hex");
+  }
+
+  async function load(key: string, params: CatalogParams): Promise<CatalogRow[]> {
+    try {
+      const env = Object.fromEntries(Object.entries(params.env).filter((entry): entry is [string, string] => entry[1] !== undefined));
+      const models = await adapter.listModels({
+        command: params.command,
+        args: adapter.launchArgs,
+        env,
+        ...(params.signal ? { signal: params.signal } : {}),
+      });
+      params.signal?.throwIfAborted();
+      const rows = models.map(toRow);
+      // A CLI that answers with nothing leaves the account with the default model, as a failure does.
+      if (rows.length === 0) throw new Error("the CLI listed no models");
+      cache.set(key, { until: now() + ttlMs, rows });
+      return rows;
+    } catch (error) {
+      // An abort is the host closing the request, not a CLI failure.
+      if (params.signal?.aborted) throw error;
+      const reason = error instanceof Error ? error.message : String(error);
+      warn(`Could not list the ${adapter.displayName} models, so only ${fallback[0]?.id} is offered: ${reason}`);
+      cache.set(key, { until: now() + failureTtlMs, rows: fallback });
+      return fallback;
+    }
+  }
+
+  return {
+    async list(params, listOptions = {}) {
+      const key = keyFor(params);
+      if (!listOptions.refresh) {
+        const hit = cache.get(key);
+        if (hit && hit.until > now()) return hit.rows;
+        const inFlight = pending.get(key);
+        if (inFlight) return inFlight;
+      }
+      const started = load(key, params).finally(() => {
+        if (pending.get(key) === started) pending.delete(key);
+      });
+      pending.set(key, started);
+      return started;
+    },
+  };
+}

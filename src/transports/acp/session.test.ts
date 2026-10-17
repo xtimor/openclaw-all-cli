@@ -97,14 +97,90 @@ describe("AcpSession", () => {
     expect(requests(file).map((entry) => entry.method)).not.toContain("session/new");
   });
 
-  it("selects a listed model and rejects an unknown one", async () => {
+  const FAST = "fake-fast[speed=fast,fast=true]";
+
+  it("selects a listed model through the configOptions select and rejects an unknown one", async () => {
     const file = logFile();
-    await start({ modelId: "fake-fast", env: { FAKE_CURSOR_LOG: file } });
+    await start({ modelId: FAST, env: { FAKE_CURSOR_LOG: file } });
+    const methods = requests(file).map((entry) => entry.method);
     expect(requests(file).find((entry) => entry.method === "session/set_config_option")?.params).toMatchObject({
       configId: "model",
-      value: "fake-fast",
+      value: FAST,
     });
+    expect(methods).not.toContain("session/set_model");
     await expect(AcpSession.open(options({ modelId: "nope" }))).rejects.toMatchObject({ code: "model_not_found" });
+  });
+
+  it("switches an agent that reports only the models state with session/set_model", async () => {
+    const file = logFile();
+    const session = await start({
+      modelId: FAST,
+      env: { FAKE_CURSOR_LOG: file, FAKE_CURSOR_MODEL_SURFACE: "state" },
+    });
+    expect(requests(file).find((entry) => entry.method === "session/set_model")?.params).toMatchObject({
+      modelId: FAST,
+    });
+    expect(requests(file).map((entry) => entry.method)).not.toContain("session/set_config_option");
+    const events = await collect(session.prompt("hello"));
+    expect(events.at(-1)).toMatchObject({ kind: "result", text: expect.stringContaining(`model ${FAST}`) });
+  });
+
+  it("exposes the models the agent offered", async () => {
+    const session = await start({ env: { FAKE_CURSOR_MODEL_SURFACE: "state" } });
+    expect(session.models.map((model) => model.id)).toContain(FAST);
+    expect(session.models[0]).toEqual({ id: "default[]", name: "Auto" });
+    const viaOptions = await start({ env: { FAKE_CURSOR_MODEL_SURFACE: "options" } });
+    expect(viaOptions.models.map((model) => model.id)).toEqual(session.models.map((model) => model.id));
+  });
+
+  it("lets the adapter pick the exact ID, keep the model, or report a missing one", async () => {
+    const file = logFile();
+    const seen: Array<{ count: number; current: string | undefined }> = [];
+    await start({
+      env: { FAKE_CURSOR_LOG: file },
+      selectModel: (available, current) => {
+        seen.push({ count: available.length, current });
+        return available.find((model) => model.name === "fake-fast")?.id;
+      },
+    });
+    expect(seen).toEqual([{ count: 5, current: "default[]" }]);
+    expect(requests(file).find((entry) => entry.method === "session/set_config_option")?.params).toMatchObject({
+      value: FAST,
+    });
+
+    const kept = logFile();
+    await start({ env: { FAKE_CURSOR_LOG: kept }, selectModel: () => null });
+    expect(requests(kept).map((entry) => entry.method)).not.toContain("session/set_config_option");
+
+    const same = logFile();
+    await start({ env: { FAKE_CURSOR_LOG: same }, selectModel: (_available, current) => current });
+    expect(requests(same).map((entry) => entry.method)).not.toContain("session/set_config_option");
+
+    await expect(AcpSession.open(options({ selectModel: () => undefined }))).rejects.toMatchObject({
+      code: "model_not_found",
+    });
+  });
+
+  it("fails with capability_mismatch when a model is wanted and the agent lists none", async () => {
+    await expect(
+      AcpSession.open(options({ modelId: FAST, env: { FAKE_CURSOR_NO_MODELS: "1" } })),
+    ).rejects.toMatchObject({ code: "capability_mismatch" });
+    await expect(
+      AcpSession.open(options({ selectModel: () => undefined, env: { FAKE_CURSOR_NO_MODELS: "1" } })),
+    ).rejects.toMatchObject({ code: "capability_mismatch" });
+    // An adapter that only wants to keep the model works with an agent that lists none.
+    const session = await start({ selectModel: () => null, env: { FAKE_CURSOR_NO_MODELS: "1" } });
+    expect(session.models).toEqual([]);
+  });
+
+  it("reads the models of a resumed session too", async () => {
+    const file = logFile();
+    const session = await start({ resumeSessionId: "fake-session-9", modelId: FAST, env: { FAKE_CURSOR_LOG: file } });
+    expect(session.models.length).toBe(5);
+    expect(requests(file).map((entry) => entry.method)).toContain("session/load");
+    expect(requests(file).find((entry) => entry.method === "session/set_config_option")?.params).toMatchObject({
+      value: FAST,
+    });
   });
 
   it("answers a permission request through the adapter's policy", async () => {

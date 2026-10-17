@@ -1,13 +1,15 @@
 import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterAll, describe, expect, it } from "vitest";
+import { afterAll, describe, expect, it, vi } from "vitest";
 import { ADAPTERS } from "../src/registry.ts";
 import { CURSOR_PERMISSIONS, cursorAdapter } from "../src/adapters/cursor/index.ts";
 import { createManifest } from "../src/core/ports.ts";
 import { backendIdFor, buildCliBackend, nativeAuthMarkerFor } from "../src/core/backend.ts";
 import { createConfigValidator, registerAdapters } from "../src/core/register.ts";
 import provider from "../src/provider-discovery.ts";
+import { createModelCatalog } from "../src/core/catalog.ts";
+import { createSyntheticAuthProvider } from "../src/core/synthetic-auth.ts";
 import { FAKE_CURSOR_AGENT, fakeEnv } from "./fixtures/paths.ts";
 
 const manifest = JSON.parse(readFileSync(new URL("../openclaw.plugin.json", import.meta.url), "utf8"));
@@ -35,6 +37,10 @@ describe("cursor-cli backend", () => {
       toolAvailabilityEnforcement: "prepare-execution",
     });
     expect(backend.parseJsonlEvent).toBeTypeOf("function");
+  });
+
+  it("hands Cursor's own spellings of Auto to OpenClaw as model aliases", () => {
+    expect(backend.config.modelAliases).toEqual({ "default[]": "auto", default: "auto" });
   });
 
   it("takes the binary from the plugin config", () => {
@@ -320,5 +326,70 @@ describe("synthetic auth provider entry", () => {
       entry.prepareSyntheticAuth({ provider: "other-cli", config: config(FAKE_CURSOR_AGENT), env: fakeEnv() }),
     ).resolves.toBeUndefined();
     await expect(entry.prepareSyntheticAuth({ provider: "cursor-cli", env: fakeEnv() })).resolves.toBeUndefined();
+  });
+});
+
+describe("provider catalog entry", () => {
+  type Row = { id: string; name: string; cost: unknown; input: unknown; reasoning: boolean };
+  type Result = { provider: { baseUrl: string; api: string; models: Row[] } } | null;
+  const quickList = { ...cursorAdapter, listModels: (p: Parameters<typeof cursorAdapter.listModels>[0]) => cursorAdapter.listModels({ ...p, timeoutMs: 400 }) };
+  const config = { plugins: { entries: { "openclaw-all-cli": { config: { "cursor-cli": { command: FAKE_CURSOR_AGENT } } } } } };
+  const entryFor = (warn: (message: string) => void = () => {}) => {
+    const entry = createSyntheticAuthProvider(quickList, createModelCatalog(quickList, { warn })) as unknown as {
+      catalog: { order: string; run: (context: unknown) => Promise<Result> };
+    };
+    return entry.catalog;
+  };
+  const ids = (result: Result) => result?.provider.models.map((model) => model.id);
+
+  it("lists the account's models as plain names, ordered after the other providers", async () => {
+    const catalog = entryFor();
+    expect(catalog.order).toBe("late");
+    const result = await catalog.run({ config, env: fakeEnv(), providerIds: ["cursor-cli"] });
+    expect(ids(result)).toEqual(["auto", "fake-fast", "fake-slow", "twin-low", "twin-high"]);
+    expect(result?.provider.models[0]).toMatchObject({ id: "auto", name: "Auto", reasoning: false, input: ["text", "image"] });
+    // OpenClaw drops a provider with no base URL or api; no request goes to either.
+    expect(result?.provider.baseUrl).toBeTruthy();
+    expect(result?.provider.api).toBeTruthy();
+  });
+
+  it("offers only Auto, and does not start Cursor, without a login or API key", async () => {
+    const list = vi.fn(quickList.listModels);
+    const adapter = { ...quickList, listModels: list };
+    const entry = createSyntheticAuthProvider(adapter, createModelCatalog(adapter)) as unknown as {
+      catalog: { run: (context: unknown) => Promise<Result> };
+    };
+    const result = await entry.catalog.run({ config, env: fakeEnv({ FAKE_CURSOR_LOGGED_IN: "0" }) });
+    expect(ids(result)).toEqual(["auto"]);
+    expect(list).not.toHaveBeenCalled();
+  });
+
+  it("lists the models with only CURSOR_API_KEY set", async () => {
+    const result = await entryFor().run({
+      config,
+      env: fakeEnv({ FAKE_CURSOR_LOGGED_IN: "0", CURSOR_API_KEY: "key" }),
+    });
+    expect(ids(result)).toHaveLength(5);
+  });
+
+  it("offers only Auto and logs when listing fails, so no turn fails", async () => {
+    const warn = vi.fn();
+    const result = await entryFor(warn).run({ config, env: fakeEnv({ FAKE_CURSOR_NO_INIT: "1" }) });
+    expect(ids(result)).toEqual(["auto"]);
+    expect(warn).toHaveBeenCalledTimes(1);
+    expect(warn.mock.calls[0]?.[0]).toContain("Cursor CLI");
+  });
+
+  it("answers only for its own provider, and stops when aborted", async () => {
+    const catalog = entryFor();
+    await expect(catalog.run({ config, env: fakeEnv(), providerIds: ["other-cli"] })).resolves.toBeNull();
+    const controller = new AbortController();
+    controller.abort();
+    await expect(catalog.run({ config, env: fakeEnv(), signal: controller.signal })).rejects.toThrow();
+  });
+
+  it("is the entry the plugin ships", () => {
+    const shipped = (provider as unknown as { catalog?: unknown }[])[0]!;
+    expect(shipped.catalog).toBeTypeOf("object");
   });
 });

@@ -37,6 +37,9 @@ export type AcpPermissionRequest = {
   optionIds: string[];
 };
 
+/** A model the agent offers: its exact ID and its own display name. */
+export type AcpModelInfo = { id: string; name: string };
+
 export type AcpSessionOptions = {
   command: string;
   args: readonly string[];
@@ -48,8 +51,14 @@ export type AcpSessionOptions = {
   authMethodId?: string;
   /** Session mode the adapter requires. The session fails closed when the agent lacks it. */
   requiredModeId?: string;
-  /** Model to select. Left unset, the agent keeps its default. */
+  /** Exact model ID to select. Left unset (and without `selectModel`), the agent keeps its current model. */
   modelId?: string;
+  /**
+   * Picks the exact model ID from what the agent offers, so the adapter can map its own model
+   * names onto the agent's IDs. Returns the ID to switch to, `null` to keep the current model, or
+   * `undefined` when the agent has no such model. Wins over `modelId`.
+   */
+  selectModel?: (available: readonly AcpModelInfo[], currentId: string | undefined) => string | null | undefined;
   /** Native session to resume with `session/load`. */
   resumeSessionId?: string;
   /** Answers a permission request. Throwing counts as `cancelled`. */
@@ -166,13 +175,40 @@ function rememberToolCall(
   }
 }
 
-function selectValues(options: acp.SessionConfigSelectOptions): string[] {
-  const values: string[] = [];
+function selectModels(options: acp.SessionConfigSelectOptions): AcpModelInfo[] {
+  const models: AcpModelInfo[] = [];
   for (const entry of options) {
-    if ("value" in entry) values.push(entry.value);
-    else for (const inner of entry.options) values.push(inner.value);
+    if ("value" in entry) models.push({ id: entry.value, name: entry.name });
+    else for (const inner of entry.options) models.push({ id: inner.value, name: inner.name });
   }
-  return values;
+  return models;
+}
+
+/**
+ * The ACP `models` state of a `session/new` or `session/load` result. The SDK's schema does not
+ * type it, and agents send it as an extra field (ACP's model selection is still unstable).
+ */
+type SessionModelState = { currentModelId?: string; availableModels?: Array<{ modelId: string; name: string }> };
+
+function readModelState(result: object): SessionModelState | undefined {
+  const models = (result as { models?: unknown }).models;
+  return typeof models === "object" && models !== null && !Array.isArray(models) ? (models as SessionModelState) : undefined;
+}
+
+/** What the agent says about its models: the `models` state, and a `model` select in `configOptions`. */
+function readModelFacts(
+  models: SessionModelState | null | undefined,
+  configOptions: acp.SessionConfigOption[] | null | undefined,
+): { offered: AcpModelInfo[]; currentId?: string; option?: acp.SessionConfigOption & { type: "select" } } {
+  const found = configOptions?.find((candidate) => candidate.category === "model");
+  const option = found?.type === "select" ? found : undefined;
+  const offered: AcpModelInfo[] = (models?.availableModels ?? []).map((model) => ({
+    id: model.modelId,
+    name: model.name,
+  }));
+  if (offered.length === 0 && option) offered.push(...selectModels(option.options));
+  const currentId = models?.currentModelId ?? option?.currentValue;
+  return { offered, ...(currentId ? { currentId } : {}), ...(option ? { option } : {}) };
 }
 
 function mapUsage(usage: acp.Usage | null | undefined): NormalizedUsage | undefined {
@@ -194,6 +230,8 @@ export class AcpSession implements CliSession {
     private readonly runtime: Runtime,
     private readonly connection: acp.ClientSideConnection,
     private readonly command: string,
+    /** The models the agent offered when the session started. */
+    readonly models: readonly AcpModelInfo[],
   ) {}
 
   get alive(): boolean {
@@ -306,8 +344,8 @@ export class AcpSession implements CliSession {
     died.catch(() => {});
 
     try {
-      const sessionId = await Promise.race([setup(connection, options), died]);
-      return new AcpSession(sessionId, runtime, connection, options.command);
+      const started = await Promise.race([setup(connection, options), died]);
+      return new AcpSession(started.sessionId, runtime, connection, options.command, started.models);
     } catch (error) {
       terminate(runtime);
       await runtime.exited;
@@ -449,7 +487,10 @@ export class AcpSession implements CliSession {
 }
 
 /** The ACP handshake: initialize, log in, then start or resume a session in the right mode and model. */
-async function setup(connection: acp.ClientSideConnection, options: AcpSessionOptions): Promise<string> {
+async function setup(
+  connection: acp.ClientSideConnection,
+  options: AcpSessionOptions,
+): Promise<{ sessionId: string; models: AcpModelInfo[] }> {
   const init = await connection.initialize({
     protocolVersion: acp.PROTOCOL_VERSION,
     clientCapabilities: {},
@@ -481,12 +522,14 @@ async function setup(connection: acp.ClientSideConnection, options: AcpSessionOp
   const base = { cwd: options.cwd, mcpServers: options.mcpServers ?? [] };
   let sessionId: string;
   let modes: acp.SessionModeState | null | undefined;
+  let modelState: SessionModelState | undefined;
   let configOptions: acp.SessionConfigOption[] | null | undefined;
   if (options.resumeSessionId) {
     try {
       const loaded = await connection.loadSession({ sessionId: options.resumeSessionId, ...base });
       sessionId = options.resumeSessionId;
       modes = loaded.modes;
+      modelState = readModelState(loaded);
       configOptions = loaded.configOptions;
     } catch (error) {
       throw toCliError(error, "session_expired", "The CLI could not resume the session");
@@ -496,6 +539,7 @@ async function setup(connection: acp.ClientSideConnection, options: AcpSessionOp
       const created = await connection.newSession(base);
       sessionId = created.sessionId;
       modes = created.modes;
+      modelState = readModelState(created);
       configOptions = created.configOptions;
     } catch (error) {
       throw toCliError(error, "server_error", "The CLI could not start a session");
@@ -515,23 +559,43 @@ async function setup(connection: acp.ClientSideConnection, options: AcpSessionOp
     }
   }
 
-  if (options.modelId) {
-    const option = configOptions?.find((candidate) => candidate.category === "model");
-    if (!option || option.type !== "select") {
-      throw new CliError({
-        code: "capability_mismatch",
-        message: `The CLI does not list models, so it cannot switch to "${options.modelId}".`,
-      });
-    }
-    if (option.currentValue !== options.modelId) {
-      if (!selectValues(option.options).includes(options.modelId)) {
-        throw new CliError({
-          code: "model_not_found",
-          message: `The CLI has no model "${options.modelId}" for this account.`,
-        });
-      }
-      await connection.setSessionConfigOption({ sessionId, configId: option.id, value: options.modelId });
-    }
+  const facts = readModelFacts(modelState, configOptions);
+  if (options.selectModel || options.modelId) await switchModel(connection, sessionId, facts, options);
+  return { sessionId, models: facts.offered };
+}
+
+/**
+ * Switches the session to the wanted model. A `model` select in `configOptions` is the standard
+ * way; an agent that only reports the `models` state is switched with `session/set_model`. The
+ * wanted ID must be one the agent offered, so a stale or unknown name fails as `model_not_found`.
+ */
+async function switchModel(
+  connection: acp.ClientSideConnection,
+  sessionId: string,
+  facts: ReturnType<typeof readModelFacts>,
+  options: AcpSessionOptions,
+): Promise<void> {
+  const { offered, currentId, option } = facts;
+  const wanted = options.selectModel ? options.selectModel(offered, currentId) : options.modelId;
+  if (wanted === null) return;
+  if (wanted === undefined || !offered.some((model) => model.id === wanted)) {
+    const asked = wanted ?? options.modelId ?? "";
+    throw new CliError(
+      offered.length === 0
+        ? {
+            code: "capability_mismatch",
+            message: `The CLI does not list models, so it cannot switch to a model${asked ? ` "${asked}"` : ""}.`,
+          }
+        : { code: "model_not_found", message: `The CLI has no model${asked ? ` "${asked}"` : ""} for this account.` },
+    );
   }
-  return sessionId;
+  if (wanted === currentId) return;
+  try {
+    if (option) await connection.setSessionConfigOption({ sessionId, configId: option.id, value: wanted });
+    else await connection.extMethod("session/set_model", { sessionId, modelId: wanted });
+  } catch (error) {
+    // An agent that refuses the value says so as invalid params; anything else is a failed process.
+    const refused = error instanceof Error && /\b(invalid|unknown|not found|no such)\b/i.test(error.message);
+    throw toCliError(error, refused ? "model_not_found" : "server_error", `The CLI could not switch to model "${wanted}"`);
+  }
 }

@@ -1,4 +1,4 @@
-import { spawnSync } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import { writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -22,11 +22,15 @@ const DEV_SCRIPT = fileURLToPath(new URL("../../scripts/dev-openclaw.sh", import
 export type OpenClawResult = { status: number | null; stdout: string; stderr: string };
 
 /** Runs `openclaw <args>` in the isolated setup from `scripts/dev-openclaw.sh`. */
-export function openclaw(args: string[], options: { timeoutMs?: number } = {}): OpenClawResult {
+export function openclaw(
+  args: string[],
+  options: { timeoutMs?: number; env?: Record<string, string> } = {},
+): OpenClawResult {
   // OpenClaw mutes its output when it sees a test runner's variables.
-  const env = Object.fromEntries(
-    Object.entries(process.env).filter(([key]) => !key.startsWith("VITEST") && key !== "NODE_ENV"),
-  );
+  const env = {
+    ...Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.startsWith("VITEST") && key !== "NODE_ENV")),
+    ...options.env,
+  };
   const result = spawnSync(DEV_SCRIPT, ["run", ...args], {
     encoding: "utf8",
     timeout: options.timeoutMs ?? 180_000,
@@ -87,4 +91,46 @@ export function writeSettingsFile(dir: string, name: string, url: string, token:
     }),
   );
   return file;
+}
+
+/** The isolated OpenClaw's state directory (`.spike/state`), where agent homes live. */
+export const ISOLATED_STATE_DIR = fileURLToPath(new URL("../../.spike/state", import.meta.url));
+
+export type TestGateway = { port: number; env: Record<string, string>; stop(): Promise<void> };
+
+/**
+ * Runs an isolated Gateway and waits until it answers. Chat commands reach it through
+ * `OPENCLAW_GATEWAY_PORT`; `models list` and `/model` read the catalog it prepares. The plugin
+ * loads at startup only when the config names it, for example as the default model
+ * (OpenClaw #148584), so set `agents.defaults.model.primary` first.
+ */
+export async function startGateway(port: number, options: { timeoutMs?: number } = {}): Promise<TestGateway> {
+  const env = Object.fromEntries(
+    Object.entries(process.env).filter((entry): entry is [string, string] => entry[1] !== undefined && !entry[0].startsWith("VITEST") && entry[0] !== "NODE_ENV"),
+  );
+  const child = spawn(DEV_SCRIPT, ["run", "gateway", "run", "--allow-unconfigured", "--auth", "none", "--port", String(port)], {
+    env,
+    stdio: "ignore",
+    // Its own process group, so one signal reaches every process the Gateway started.
+    detached: true,
+  });
+  const exited = new Promise<void>((resolve) => child.once("exit", () => resolve()));
+  const stop = async () => {
+    if (child.exitCode === null && child.pid) {
+      try {
+        process.kill(-child.pid, "SIGTERM");
+      } catch {
+        // Already gone.
+      }
+    }
+    await Promise.race([exited, new Promise((resolve) => setTimeout(resolve, 15_000))]);
+  };
+  const deadline = Date.now() + (options.timeoutMs ?? 120_000);
+  while (Date.now() < deadline) {
+    const probe = openclaw(["gateway", "call", "health", "--port", String(port), "--json", "--timeout", "5000"], { timeoutMs: 15_000 });
+    if (probe.status === 0) return { port, env: { OPENCLAW_GATEWAY_PORT: String(port) }, stop };
+    await new Promise((resolve) => setTimeout(resolve, 2_000));
+  }
+  await stop();
+  throw new Error(`The isolated Gateway did not answer on port ${port}.`);
 }

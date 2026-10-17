@@ -8,8 +8,8 @@ export const CURSOR_MIN_VERSION = "2026.07.06";
  * `docs/providers/cursor.md`, and that row's live test in the same change.
  */
 export const cursorManifest = createManifest(CURSOR_MIN_VERSION, {
-  P1: { status: "spike", note: "cursor-cli/<model> runs; the model list in /model is not built" },
-  P2: { status: "match", note: "synthetic auth from cursor-agent status or CURSOR_API_KEY; the real status wording is unconfirmed" },
+  P1: { status: "approx", note: "/model and `openclaw models list` show the account's models as cursor-cli/<name>, listed by Cursor itself through a throwaway ACP session (no turn) and reused for a minute; the name is the base ID without Cursor's parameter list, and the adapter maps it to the exact ID; the provider catalog entry publishes the rows, since a CLI backend has no static list; aliases are Cursor's own spellings of Auto, not claude-cli's short names" },
+  P2: { status: "match", note: "synthetic auth from cursor-agent status (live: `Logged in as <email>`; the logged-out wording is unconfirmed) or CURSOR_API_KEY; the catalog rows are available with either, and unavailable (missing-auth) without both" },
   P3: { status: "approx", note: "text and thinking deltas as they arrive, and Cursor's native tool calls as display-only start and result events (one of each per call, a call still open when the turn ends is closed as aborted); OpenClaw tools called through the MCP proxy show as mcp__openclaw__<tool>; the events are not tracked as tool execution, unlike claude-cli's" },
   P4: { status: "approx", note: "the core keeps one cursor-agent acp process per conversation, but OpenClaw 2026.10.3 puts the per-turn MCP settings path into its live-session fingerprint, so it restarts the process every turn and the next turn resumes with session/load" },
   P5: { status: "match", note: "ACP session/load" },

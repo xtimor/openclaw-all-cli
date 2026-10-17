@@ -226,6 +226,25 @@ export type AuthProbeParams = {
   signal?: AbortSignal;
 };
 
+/** One model the CLI offers the account, as the plugin names it. */
+export type CliModel = {
+  /** The stable, readable name: `<backendId>/<name>` is the model ref the user types. */
+  name: string;
+  /** What `/model` shows. */
+  label: string;
+  /** The CLI's exact ID for the model (it may hold brackets and commas). The adapter maps `name` onto it. */
+  id: string;
+};
+
+export type ListModelsParams = {
+  command: string;
+  args: readonly string[];
+  env: Record<string, string>;
+  /** Longest the listing may take. */
+  timeoutMs?: number;
+  signal?: AbortSignal;
+};
+
 /** What one CLI provider supplies to the core. Adapters import only this module and transports. */
 export interface CliAdapter {
   /** Short CLI name, for example `acme`. The backend ID is `<id>-cli`. */
@@ -257,4 +276,9 @@ export interface CliAdapter {
   prepareHome(home: string): Promise<HomeEnv>;
   /** Starts the process and the native session. Throws `CliError` only. */
   open(params: OpenParams): Promise<CliSession>;
+  /**
+   * Lists the account's models from the CLI itself, without spending tokens or running a turn.
+   * `name` is unique and stable; `open` accepts it as `OpenParams.modelId`. Throws `CliError` only.
+   */
+  listModels(params: ListModelsParams): Promise<readonly CliModel[]>;
 }

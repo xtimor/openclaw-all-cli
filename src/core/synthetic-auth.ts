@@ -1,9 +1,39 @@
 import { nativeAuthMarkerFor, backendIdFor } from "./backend.ts";
+import { defaultCatalogRow, type CatalogRow, type ModelCatalog } from "./catalog.ts";
 import { readBackendConfig } from "./config.ts";
 import type { CliAdapter } from "./ports.ts";
 
 /** The plugin ID, which is also the key of the plugin's config entry. */
 export const PLUGIN_ID = "openclaw-all-cli";
+
+/**
+ * OpenClaw drops a catalog provider that has no base URL or no `api` (checked against OpenClaw
+ * 2026.10.3: without `api` the models never reach `/model`). A CLI backend has neither, and the
+ * turn runs through the backend's `execute`, so no request is ever made to this URL or API.
+ */
+const CLI_BASE_URL = "cli://local";
+const CLI_PLACEHOLDER_API = "openai-completions";
+
+/** The catalog hook's context, reduced to what the plugin reads. */
+type CatalogContext = {
+  config?: DiscoveryContext["config"];
+  env?: Record<string, string | undefined>;
+  signal?: AbortSignal;
+  /** Providers the host asks about; absent means all. */
+  providerIds?: readonly string[];
+};
+
+/** A catalog row in the shape of OpenClaw's model definition. The CLI reports no price, window, or limits. */
+function toModelDefinition(row: CatalogRow) {
+  return {
+    id: row.id,
+    name: row.name,
+    reasoning: false,
+    input: ["text", "image"] as Array<"text" | "image">,
+    // A CLI login bills the user's own plan, not OpenClaw.
+    cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+  };
+}
 
 type DiscoveryContext = {
   config?: { plugins?: { entries?: Record<string, { config?: Record<string, unknown> } | undefined> } };
@@ -17,13 +47,44 @@ type DiscoveryContext = {
  * the plugin runtime, asks `prepareSyntheticAuth` whether the login works, and shows the models
  * as available when it returns a marker.
  */
-export function createSyntheticAuthProvider(adapter: CliAdapter) {
+export function createSyntheticAuthProvider(adapter: CliAdapter, catalog?: ModelCatalog) {
   const backendId = backendIdFor(adapter);
   return {
     id: backendId,
     label: adapter.displayName,
     docsPath: "/providers/models",
     auth: [] as never[],
+    ...(catalog
+      ? {
+          /**
+           * The account's models, listed by the CLI itself. Without a working login the CLI cannot
+           * list anything, so only the default model is offered and the host shows it unavailable.
+           */
+          catalog: {
+            order: "late" as const,
+            async run(context: CatalogContext) {
+              context.signal?.throwIfAborted();
+              if (context.providerIds && !context.providerIds.some((id) => id.toLowerCase() === backendId)) return null;
+              const pluginConfig = context.config?.plugins?.entries?.[PLUGIN_ID]?.config;
+              const command = readBackendConfig(pluginConfig, backendId, () => {}).command ?? adapter.command;
+              const env = context.env ?? process.env;
+              const status = await adapter.probeAuth({
+                command,
+                env,
+                ...(context.signal ? { signal: context.signal } : {}),
+              });
+              context.signal?.throwIfAborted();
+              const rows =
+                status === "available"
+                  ? await catalog.list({ command, env, ...(context.signal ? { signal: context.signal } : {}) })
+                  : [defaultCatalogRow(adapter)];
+              return {
+                provider: { baseUrl: CLI_BASE_URL, api: CLI_PLACEHOLDER_API, models: rows.map(toModelDefinition) },
+              };
+            },
+          },
+        }
+      : {}),
     async prepareSyntheticAuth(context: DiscoveryContext) {
       context.signal?.throwIfAborted();
       if (!context.config || context.provider?.toLowerCase() !== backendId) return undefined;

@@ -62,12 +62,12 @@ deferred: []
 ## Tasks & Acceptance
 
 **Execution:**
-- [ ] live probes -- which ACP call switches model on real Cursor; the shape of `--list-models`; what `openclaw models list` / the catalog needs; record in Implementation Notes
-- [ ] `src/transports/acp/session.ts`, adapter -- model switching that works on real Cursor, `model_not_found` for an unknown name
-- [ ] `src/core/*`, adapter -- catalog discovery, name and alias mapping, cache, fallback to `auto`
-- [ ] unit tests -- every matrix row with the fake agent
-- [ ] live test (gated) -- the isolated OpenClaw lists the account's Cursor models; selecting a non-auto model runs a turn and Cursor reports that model
-- [ ] docs, manifest, parity P1 and P2 -- match behavior and evidence
+- [x] live probes -- which ACP call switches model on real Cursor; the shape of `--list-models`; what `openclaw models list` / the catalog needs; record in Implementation Notes
+- [x] `src/transports/acp/session.ts`, adapter -- model switching that works on real Cursor, `model_not_found` for an unknown name
+- [x] `src/core/*`, adapter -- catalog discovery, name and alias mapping, cache, fallback to `auto`
+- [x] unit tests -- every matrix row with the fake agent
+- [x] live test (gated) -- the isolated OpenClaw lists the account's Cursor models; selecting a non-auto model runs a turn and Cursor reports that model
+- [x] docs, manifest, parity P1 and P2 -- match behavior and evidence
 
 **Acceptance Criteria:**
 - Given a logged-in account, when `/model` (or `openclaw models list`) runs in the isolated OpenClaw, then the account's Cursor models appear as `cursor-cli/<name>`, available.
@@ -75,7 +75,28 @@ deferred: []
 
 ## Implementation Notes
 
+Built as planned, with the changes in the Plan Change Log. Files: `src/adapters/cursor/models.ts` (naming, name to exact ID, `selectCursorModel`), `src/adapters/cursor/index.ts` (`listModels`, `selectModel`, `modelAliases`), `src/transports/acp/session.ts` (`AcpModelInfo`, `selectModel` option, `AcpSession.models`, `switchModel`), `src/core/catalog.ts` (cache, in-flight sharing, fallback, logging), `src/core/synthetic-auth.ts` (the provider entry's `catalog.run`), `src/core/logger.ts`, `src/core/ports.ts` (`CliModel`, `CliAdapter.listModels`), `src/provider-discovery.ts`, tests next to each, `test/fixtures/fake-cursor-agent.mjs` (bracketed IDs, `FAKE_CURSOR_MODEL_SURFACE`, `FAKE_CURSOR_NO_MODELS`, `session/set_model`), `test/live/model-catalog.live.test.ts`, `test/live/harness.ts` (`startGateway`, `env` option).
+
+- **Live probes (cursor-agent 2026.10.16, ACP).**
+  - `session/new` and `session/load` return `models` (46 on this account) and a `configOptions` model select with the same IDs. The SDK's types omit `models`; the transport reads it as an extra field.
+  - Both `session/set_model` and `session/set_config_option` switch the model; an unknown value fails with `Invalid params` (`Invalid model value: x`). The configOptions select is used when present, `session/set_model` (through `connection.extMethod`) otherwise. A bare base name (`grok-4.7`) and `--list-models` IDs (`grok-4.7-high-fast`) are rejected: only the exact ID works.
+  - `--list-models` / `models` print other IDs than ACP, so the catalog comes from ACP only. A listing is a throwaway `cursor-agent acp` session in the temp directory: initialize, authenticate (skipped with `CURSOR_API_KEY`), `session/new`, close; about 3 s, no prompt.
+  - Cursor persists the selected model in `CURSOR_CONFIG_DIR/cli-config.json` (`selectedModel`). The probe changed the shared `~/.cursor` default to `composer-2.5`; it was restored to Auto with `session/set_model default[]`.
+  - A selected model answers as that model (`composer-2.5`: "I'm Composer"); `claude-sonnet-5` answered `Upgrade your plan to continue` on this plan (a plan limit, not a plugin fault).
+- **What the host needs (OpenClaw 2026.10.3).** The provider entry's `catalog.run` is called with `providerIds`, `env`, `signal`; its result must hold `baseUrl` and `api` or the host silently drops every row (checked by removing `api`). `contextWindow` and `maxTokens` may be omitted. `api: "openai-completions"` is a placeholder: the turn runs through `execute`, no request is made. `catalog.run` runs only once the plugin is loaded, so a Gateway that does not name a `cursor-cli/...` model has no Cursor rows (OpenClaw #148584). Rows show in `gateway call models.list` and `openclaw models list --provider cursor-cli` (with a Gateway running), `available: true` with a login or key.
+- **Not logged in (host with the fake agent, `FAKE_CURSOR_LOGGED_IN=0`, no key).** Only `cursor-cli/auto` is listed; the Gateway's list marks it `available: false, unavailableReason: "missing-auth"` and `models list` shows `Auth: no`. `openclaw models status` still says `[indeterminate]`: that command has no prepared synthetic auth in this OpenClaw version, so the plugin cannot change it. The login error itself comes from the existing `authenticate` step (`The CLI rejected its login`, code `auth`); the fake agent accepts any login, so it is not exercised host-less.
+- **Listing failure.** `/bin/false` as the command with `CURSOR_API_KEY` set: only `auto` is listed and the Gateway log shows `Could not list the Cursor CLI models, so only auto is offered: ...` through the subsystem logger.
+- **Naming.** The name is the lowercase base ID before `[` (`default` is `auto`). IDs that share a base get their parameter values (`twin-low`), then `key-value` pairs, then a number. The turn resolves the requested name against the session's own `models`/`configOptions` list at `open`, never against the cache, so a stale catalog cannot select a model the account lost: it fails with `model_not_found` and a message that names the model.
+- **Evidence.** `OPENCLAW_ALL_CLI_LIVE=1 npx vitest run test/live/model-catalog.live.test.ts`: the isolated Gateway lists the same 46 models as Cursor's own session, all available; `openclaw models list --provider cursor-cli` shows them; a turn on a non-auto model records that model in the per-agent `cli-config.json`; a following `cursor-cli/auto` turn records Auto again; an unknown model fails with the named error. Resume on a non-auto model (`session/load` with the model switch) ran two turns on one session.
+- **Verification run.** `npm run typecheck && npm run build && npx vitest run`: 301 passed, 14 live skipped. `OPENCLAW_ALL_CLI_LIVE=1 npx vitest run test/live`: 13 of 14 passed; `permission-routing` "falls back to OpenClaw exec" failed once because the model paraphrased the stub's `stub-exec-ran:` output (exec was called), and passed on rerun (4 of 4): model variance, not related to this change.
+
 ## Plan Change Log
+
+- **`auto` is not "no switch".** The plan said `auto` keeps sending no model switch. Cursor remembers the last model in the config directory, so after a turn on another model a per-agent home starts the next session on that model (checked live: `selectedModel` stayed `composer-2.5` until a switch). The adapter now switches to Auto's exact ID unless the session already runs on it, and sends nothing when it does (no switch in the common case). When the agent lists no Auto entry or no models, `auto` keeps the session's model.
+- **configOptions path kept, `models` path added.** The plan assumed real Cursor has no configOptions model select. The probe shows both; the transport uses the select when present and `session/set_model` for an agent that only reports `models`. The fake agent covers both (`FAKE_CURSOR_MODEL_SURFACE`).
+- **`resolveModelId` not used.** The host's `resolveModelId` hook is synchronous and only knows `modelId` and `contextWindow`; names are resolved against the live list in `open` instead. `modelAliases` holds only Cursor's spellings of Auto (`default[]`, `default`), which are structural, not a model list.
+- **Aliases beyond that are not built.** No short names such as `opus`: they would be a hard-coded list. A name or the exact ID (any case) resolves.
+- **Refresh.** The host passes no refresh flag to `catalog.run`, so the 1-minute cache TTL (plus an environment-hash key) bounds staleness; `openclaw models list --refresh` after that minute lists again.
 
 ## Review Triage Log
 
