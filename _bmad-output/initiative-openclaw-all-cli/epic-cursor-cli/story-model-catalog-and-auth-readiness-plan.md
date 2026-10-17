@@ -3,7 +3,7 @@ title: 'Model catalog and auth readiness'
 type: 'feature'
 ticket: '6'
 created: '2026-10-17'
-status: 'in-review'
+status: done
 baseline_revision: '775ec60bb2ae086fa8a13a0a85f3e5c2c611c0cf'
 route: 'full'
 route_source: 'auto'
@@ -146,3 +146,10 @@ Names must be unique and stable across Cursor releases where Cursor keeps the ba
 **Commands:**
 - `npm run typecheck && npm run build && npx vitest run` -- expected: all pass
 - `OPENCLAW_ALL_CLI_LIVE=1 npx vitest run test/live` -- expected: pass with real `cursor-agent` and `CURSOR_API_KEY` (run `npm run dev:install` first)
+
+## Auto Run Result
+
+- Summary: the account's Cursor models are listed through a short throwaway ACP session (about 3 s, no prompt) and published as `cursor-cli/<name>` rows with `input: ["text"]` (P13 is `spike`); names follow Cursor's list order (the first id of a base keeps the bare name, later ones get parameter suffixes, with parameters in every variant's label); a core cache (1 minute, 30 s for a failure, shared load independent of any caller's abort) with a fallback to `cursor-cli/auto`; the listing session's own directory is removed from the Cursor home afterwards. Model switching works on real Cursor through the `configOptions` select when present and `session/set_model` otherwise; an unknown name fails with `model_not_found`; `auto` switches back to Auto when the session is on another model.
+- Review (quick, one lens): pass 1 — 10 findings (4 medium, 6 low): 8 patched in 25344b6, 2 rejected. Pass 2 (follow-up) — 12 findings (1 medium, 11 low): all patched in cb3fce7 except one rejected; one deferred (names depend on Cursor's list order). No `high`. Follow-up review recommended: false.
+- Verification (isolated Node 24, real cursor-agent 2026.10.16, isolated OpenClaw 2026.10.3): typecheck and build clean; `npx vitest run` 310 passed, 15 skipped (live); `OPENCLAW_ALL_CLI_LIVE=1 npx vitest run test/live` 15 passed. Live: the isolated Gateway lists the account's 46 models as `cursor-cli/<name>` with Auth yes, the same set as Cursor's own session; a turn on `composer-2.5` runs on it and the per-agent config records it; a following `auto` turn records Auto; an unknown model fails with `Cursor has no model "x" for this account`; a listing leaves `~/.cursor/acp-sessions` unchanged (30 entries before and after).
+- Residual risks: rows appear only once the plugin is loaded (OpenClaw #148584); `models status` stays `[indeterminate]` when logged out (host CLI path); plan-limited models are listed but answer "Upgrade your plan"; the not-logged-in matrix row (models listed as unavailable) is not achievable (listing needs a login); name stability depends on Cursor's list order (deferred).
