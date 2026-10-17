@@ -14,7 +14,7 @@ export const cursorManifest = createManifest(CURSOR_MIN_VERSION, {
   P4: { status: "approx", note: "the core keeps one cursor-agent acp process per conversation, but OpenClaw 2026.10.3 puts the per-turn MCP settings path into its live-session fingerprint, so it restarts the process every turn and the next turn resumes with session/load" },
   P5: { status: "match", note: "ACP session/load" },
   P6: { status: "gap", note: "cursor-agent has no fork or checkpoint flag" },
-  P7: { status: "match", note: "one MCP proxy per live session is the only MCP server (ACP mcpServers); it forwards to each turn's loopback URL and headers from the host's settings file and rejects calls between turns" },
+  P7: { status: "match", note: "the plugin hands Cursor one MCP proxy per live session, and nothing else, in ACP mcpServers; it forwards to each turn's loopback URL and headers from the host's settings file and rejects calls between turns" },
   P8: { status: "approx", note: "per-agent cli-config.json denies Shell, Write, and WebFetch; OpenClaw exec is not offered yet" },
   P9: { status: "approx", note: "shell and MCP ask; native edits do not ask" },
   P10: { status: "spike", note: "static permissions, equal for every agent; the adapter does not translate tools.allow/deny (the host filters the OpenClaw tool list, AD-9); OpenClaw's own tool filtering is a later entry" },

@@ -37,6 +37,16 @@ describe("readTurnTarget", () => {
     await expect(readTurnTarget(env)).resolves.toMatchObject({ ok: true, target: { url: "http://127.0.0.1:1/mcp", headers: {} } });
   });
 
+  it.each(["", "   "])("falls back to url when httpUrl is blank (%j)", async (blank) => {
+    const env = write(`blank-${blank.length}.json`, openclaw({ httpUrl: blank, url: "http://127.0.0.1:2/mcp" }));
+    await expect(readTurnTarget(env)).resolves.toMatchObject({ ok: true, target: { url: "http://127.0.0.1:2/mcp" } });
+  });
+
+  it("prefers httpUrl over url when both are set", async () => {
+    const env = write("both.json", openclaw({ httpUrl: "http://127.0.0.1:3/mcp", url: "http://127.0.0.1:4/mcp" }));
+    await expect(readTurnTarget(env)).resolves.toMatchObject({ ok: true, target: { url: "http://127.0.0.1:3/mcp" } });
+  });
+
   it.each([
     ["the variable unset", {}],
     ["the variable empty", { [SETTINGS_PATH_ENV]: " " }],

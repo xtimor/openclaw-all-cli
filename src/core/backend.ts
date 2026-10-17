@@ -70,6 +70,7 @@ export function buildCliBackend(adapter: CliAdapter, options: BuildBackendOption
         return { execute: createExecute(adapter, {
             ...options.execute,
             home,
+            mcp: flags.mcp,
             ...(options.warn ? { warn: options.warn } : {}),
           }) };
       } catch (error) {

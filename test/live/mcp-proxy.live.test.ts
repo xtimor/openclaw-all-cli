@@ -154,28 +154,36 @@ describeLive("OpenClaw tools through the per-session MCP proxy (P7)", () => {
 });
 
 // The same row through the real OpenClaw: its per-run loopback URL, token, and capture key reach the
-// proxy only through the settings file. Run `npm run dev:install` first.
+// proxy only through the settings file. Run `npm run dev:install` first. Two turns of one session id:
+// the second restarts the process (the host's live-session fingerprint changes with the per-turn
+// settings path) and goes through `session/load` with `mcpServers` again.
 describeLive("OpenClaw tools reach cursor-cli through the real host (P7)", () => {
   it(
-    "answers from an OpenClaw tool call",
+    "answers from an OpenClaw tool call in two turns of one session",
     () => {
-      const run = openclaw(
-        [
-          "agent",
-          "--local",
-          "--model",
-          "cursor-cli/auto",
-          "--session-id",
-          `live-mcp-${Date.now()}`,
-          "--message",
-          'Call the OpenClaw MCP tool session_status. Then reply with one line: "version:" followed by the OpenClaw version it reports.',
-        ],
-        { timeoutMs: 240_000 },
-      );
-      expect(run.status).toBe(0);
-      expect(replyLines(run.stdout).join("\n")).toMatch(/version:\s*\S*2026\.\d+\.\d+/i);
-      expect(run.stderr + run.stdout).not.toMatch(/cli terminal failure/);
+      const sessionId = `mcp-live-${Date.now()}`;
+      const turn = (n: number) => {
+        const run = openclaw(
+          [
+            "agent",
+            "--local",
+            "--model",
+            "cursor-cli/auto",
+            "--session-id",
+            sessionId,
+            "--message",
+            `Call the OpenClaw MCP tool session_status (turn ${n}). Then reply with one line: "session:" followed by the session key or id it reports, copied exactly.`,
+          ],
+          { timeoutMs: 240_000 },
+        );
+        expect(run.status).toBe(0);
+        expect(run.stderr + run.stdout).not.toMatch(/cli terminal failure/);
+        // session_status returns the session key, which contains the unique id.
+        expect(replyLines(run.stdout).join("\n")).toContain(sessionId);
+      };
+      turn(1);
+      turn(2);
     },
-    LIVE_TIMEOUT_MS,
+    2 * LIVE_TIMEOUT_MS,
   );
 });

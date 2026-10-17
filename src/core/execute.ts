@@ -24,13 +24,25 @@ export type ExecuteOptions = {
   abortGraceMs?: number;
   /** Receives warnings. Never pass it a token, an auth header, or prompt text. */
   warn?: (message: string) => void;
+  /**
+   * Whether OpenClaw's tools reach the CLI through the MCP proxy (parity row P7). When false the
+   * core starts no proxy, hands the CLI no MCP server, and reads no settings file. Default true.
+   */
+  mcp?: boolean;
 };
 
 type LiveEntry = {
   /** Set once the process is open; the handle exists (and is registered) before that. */
   session?: CliSession;
-  /** The session's MCP endpoint (AD-12). It lives and dies with the process. */
-  proxy: McpProxy;
+  /** The session's MCP endpoint (AD-12). It lives and dies with the process. Absent when `mcp` is off. */
+  proxy?: McpProxy;
+  /** Set by the handle's close, which may arrive while the process is still opening. */
+  closed?: boolean;
+  /**
+   * The first turn had no usable OpenClaw endpoint, so the CLI connected to a proxy that answered
+   * 503 and dropped the server. Such a process never serves another turn.
+   */
+  degraded?: boolean;
   /** What must match for the process to serve the next turn (AD-13). */
   key: string;
   handle: LiveSessionHandle;
@@ -79,12 +91,13 @@ export function createExecute(adapter: CliAdapter, options: ExecuteOptions): Cli
   const abortGraceMs = options.abortGraceMs ?? DEFAULT_ABORT_GRACE_MS;
   const { home } = options;
   const warn = options.warn ?? (() => {});
+  const mcp = options.mcp ?? true;
 
   function reusable(ctx: ExecuteContext, live: LiveSessionCapability | undefined): OpenEntry | undefined {
     const current = live?.current();
     if (!live || !current || current.fingerprint !== live.fingerprint) return undefined;
     const entry = entries.get(current);
-    if (!entry?.session || entry.busy || !entry.session.alive) return undefined;
+    if (!entry?.session || entry.busy || entry.degraded || !entry.session.alive) return undefined;
     if (!ctx.useResume || ctx.sessionId !== entry.session.sessionId) return undefined;
     return entry.key === reuseKey(ctx, home) ? (entry as OpenEntry) : undefined;
   }
@@ -104,8 +117,7 @@ export function createExecute(adapter: CliAdapter, options: ExecuteOptions): Cli
 
   /** Creates the host handle and the proxy for a process that is not open yet. */
   async function createEntry(ctx: ExecuteContext, live: LiveSessionCapability | undefined): Promise<LiveEntry> {
-    const proxy = await startMcpProxy();
-    let closing = false;
+    const proxy = mcp ? await startMcpProxy() : undefined;
     const entry: LiveEntry = {
       proxy,
       key: reuseKey(ctx, home),
@@ -115,12 +127,12 @@ export function createExecute(adapter: CliAdapter, options: ExecuteOptions): Cli
         fingerprint: live?.fingerprint ?? randomUUID(),
         isIdle: () => !entry.busy && Boolean(entry.session?.alive),
         close: () => {
-          if (closing) return;
-          closing = true;
+          if (entry.closed) return;
+          entry.closed = true;
           clearTimeout(entry.idleTimer);
           live?.remove(entry.handle);
           void entry.session?.close();
-          void proxy.close();
+          void proxy?.close();
         },
         waitForExit: () => entry.session?.waitForExit() ?? Promise.resolve(),
       },
@@ -139,16 +151,34 @@ export function createExecute(adapter: CliAdapter, options: ExecuteOptions): Cli
       modelId: ctx.modelId,
       ...(ctx.useResume && ctx.sessionId ? { resumeSessionId: ctx.sessionId } : {}),
       // The CLI gets only the proxy: the host's per-run URL and token never leave the core.
-      mcpServers: [{ name: OPENCLAW_MCP_SERVER, url: proxy.url, headers: { Authorization: `Bearer ${proxy.token}` } }],
+      ...(proxy
+        ? {
+            mcpServers: [
+              { name: OPENCLAW_MCP_SERVER, url: proxy.url, headers: { Authorization: `Bearer ${proxy.token}` } },
+            ],
+          }
+        : {}),
       onPermissionRequest: rejectPermission,
       ...(ctx.abortSignal ? { signal: ctx.abortSignal } : {}),
     });
+    // The host may have closed the handle while the process was starting: the close found no
+    // process to stop, so this one would leak and run against a closed proxy.
+    if (entry.closed) {
+      await session.close();
+      throw new CliError({
+        code: "server_error",
+        message: "The live session was closed while the CLI was starting.",
+        retryable: true,
+      });
+    }
     entry.session = session;
     // The proxy ends with its process, however the process ends.
-    void session.waitForExit().then(
-      () => proxy.close(),
-      () => proxy.close(),
-    );
+    if (proxy) {
+      void session.waitForExit().then(
+        () => proxy.close(),
+        () => proxy.close(),
+      );
+    }
     entries.set(entry.handle, entry);
     return entry as OpenEntry;
   }
@@ -158,7 +188,7 @@ export function createExecute(adapter: CliAdapter, options: ExecuteOptions): Cli
     ctx.abortSignal?.throwIfAborted();
     const live = ctx.liveSession;
 
-    const turnTarget = await readTurnTarget(ctx.env);
+    const turnTarget: TurnTarget = mcp ? await readTurnTarget(ctx.env) : { ok: false, reason: "MCP is off" };
     ctx.abortSignal?.throwIfAborted();
     let entry = reusable(ctx, live);
     if (!entry && live) await live.restart();
@@ -167,21 +197,43 @@ export function createExecute(adapter: CliAdapter, options: ExecuteOptions): Cli
     let opened = false;
     if (!entry) {
       opened = true;
-      const fresh = await createEntry(ctx, live);
+      let fresh: LiveEntry;
       try {
-        // A host that tracks live sessions must know the process and activate its MCP grant before
-        // the CLI connects: a CLI connects to its MCP servers while it opens the session, and one
-        // rejected connection drops the server for good. So register and activate first. Host
-        // errors keep propagating as throws, not error records.
+        fresh = await createEntry(ctx, live);
+      } catch (error) {
+        if (ctx.abortSignal?.aborted) throw error;
+        yield errorRecord(error);
+        return;
+      }
+      try {
+        ctx.assertCurrent?.();
+      } catch (error) {
+        void fresh.proxy?.close();
+        throw error;
+      }
+      // A host that tracks live sessions must know the process and activate its MCP grant before
+      // the CLI connects: a CLI connects to its MCP servers while it opens the session, and one
+      // rejected connection drops the server for good. So register and activate first. Host
+      // errors keep propagating as throws, not error records.
+      try {
         live?.register(fresh.handle);
+      } catch (error) {
+        void fresh.proxy?.close();
+        throw error;
+      }
+      try {
         live?.activate(fresh.handle);
       } catch (error) {
-        void fresh.proxy.close();
+        // The host holds the registered handle: close removes it and stops the proxy.
+        fresh.handle.close("abort");
         throw error;
       }
       try {
         ctx.abortSignal?.throwIfAborted();
-        pointProxy(fresh.proxy, turnTarget);
+        if (fresh.proxy) {
+          pointProxy(fresh.proxy, turnTarget);
+          fresh.degraded = !turnTarget.ok;
+        }
         entry = await attachSession(fresh, ctx);
       } catch (error) {
         fresh.handle.close("abort");
@@ -209,7 +261,7 @@ export function createExecute(adapter: CliAdapter, options: ExecuteOptions): Cli
       if (!opened) {
         live?.activate(active.handle);
         ctx.abortSignal?.throwIfAborted();
-        pointProxy(active.proxy, turnTarget);
+        if (active.proxy) pointProxy(active.proxy, turnTarget);
       }
       ctx.abortSignal?.throwIfAborted();
 
@@ -240,7 +292,7 @@ export function createExecute(adapter: CliAdapter, options: ExecuteOptions): Cli
     } finally {
       ctx.abortSignal?.removeEventListener("abort", onAbort);
       clearTimeout(graceTimer);
-      active.proxy.clearTarget();
+      active.proxy?.clearTarget();
       active.busy = false;
       if (turnFailed || !live || !active.session.alive || ctx.abortSignal?.aborted) {
         active.handle.close("abort");

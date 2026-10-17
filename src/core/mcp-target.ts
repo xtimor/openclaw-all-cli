@@ -36,8 +36,8 @@ export async function readTurnTarget(env: Readonly<Record<string, string | undef
   const server = isRecord(servers) ? servers[OPENCLAW_MCP_SERVER] : undefined;
   if (!isRecord(server)) return { ok: false, reason: `the settings file has no mcpServers.${OPENCLAW_MCP_SERVER}` };
 
-  const raw = typeof server.httpUrl === "string" ? server.httpUrl : server.url;
-  if (typeof raw !== "string" || !raw.trim()) {
+  const raw = [server.httpUrl, server.url].find((value) => typeof value === "string" && value.trim());
+  if (typeof raw !== "string") {
     return { ok: false, reason: `mcpServers.${OPENCLAW_MCP_SERVER} has no url` };
   }
   let url: URL;

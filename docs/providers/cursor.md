@@ -27,8 +27,10 @@ OpenClaw's tools (`sessions_list`, `memory_search`, `web_fetch`, and the rest) r
 | --- | --- |
 | Call outside a turn | HTTP 503 with a JSON-RPC error; nothing is forwarded |
 | Missing or wrong client token | HTTP 401; nothing is forwarded |
+| Path outside `/mcp` | HTTP 404; nothing is forwarded |
+| Proxy failure while handling a call | HTTP 500 with a JSON-RPC error |
 | OpenClaw's endpoint unreachable | HTTP 502 to Cursor; the turn continues |
-| No settings file, or no `mcpServers.openclaw` in it | The turn runs without OpenClaw tools and the plugin logs a warning; the chat does not fail |
+| No settings file, or no `mcpServers.openclaw` in it | The turn runs without OpenClaw tools and the plugin logs a warning; the chat does not fail. Cursor drops the `openclaw` server for the life of that process, so the next turn starts a new process |
 | Settings URL is not a loopback `http` URL | Treated as no settings, so the proxy never sends OpenClaw's token anywhere else |
 
 Cursor connects to its MCP servers while it opens the session, before the first prompt, so the plugin registers the session with OpenClaw and points the proxy at the turn's endpoint before it starts `cursor-agent`. The plugin writes no MCP configuration into the workspace or any file you own.
@@ -49,7 +51,7 @@ Until permission routing lands, every session also runs in Cursor's read-only `a
 | P4 | Warm process per conversation | approx | The plugin keeps one `cursor-agent acp` process per conversation, but OpenClaw 2026.10.3 puts the per-turn MCP settings path into its live-session fingerprint, so it restarts the process every turn and the next turn resumes with `session/load`. Live evidence: `test/live/mcp-proxy.live.test.ts` (warm session with a stand-in host) and the real-host run in the ticket notes |
 | P5 | Resume a session | match | ACP `session/load`. No live test yet (live Cursor not run) |
 | P6 | Fork, resume at a checkpoint | gap | `cursor-agent` has no fork or checkpoint flag |
-| P7 | OpenClaw tools as MCP | match | One MCP proxy per live session is the only MCP server Cursor gets (ACP `mcpServers`). It forwards each call to the turn's OpenClaw endpoint and rejects calls between turns. Live test: `test/live/mcp-proxy.live.test.ts` |
+| P7 | OpenClaw tools as MCP | match | The plugin hands Cursor one MCP proxy per live session, and nothing else, in ACP `mcpServers`. It forwards each call to the turn's OpenClaw endpoint and rejects calls between turns. Live test: `test/live/mcp-proxy.live.test.ts` |
 | P8 | Native shell replaced by OpenClaw `exec` | approx | The per-agent `cli-config.json` denies `Shell(*)`, `Write(**)`, and `WebFetch(*)`; OpenClaw `exec` is not offered yet. Live test: `test/live/per-agent-home.live.test.ts` |
 | P9 | Tool approvals through OpenClaw | approx | Shell and MCP ask; native edits do not ask. Routing to OpenClaw is not built |
 | P10 | `tools.allow` and `tools.deny` | spike | Static permissions, equal for every agent. The adapter does not translate `tools.allow`/`deny` (the host filters the OpenClaw tool list, AD-9); OpenClaw's own tool filtering is a later entry |
@@ -67,7 +69,7 @@ Until permission routing lands, every session also runs in Cursor's read-only `a
 
 - **No usage.** Cursor's ACP reports no token counts, so OpenClaw records none for a turn.
 - **No OpenClaw system prompt or skills yet.** The model sees only the prompt text and OpenClaw's tools.
-- **No warm process across turns with OpenClaw 2026.10.3.** Each turn restarts the process and resumes it with `session/load`, because the host's live-session fingerprint includes the per-turn settings path. The proxy would also need the first turn's credentials on a reused process (the host moves later turns onto them); the plugin reads each turn's file, so lift the restart only after checking that against the host.
+- **No warm process across turns with OpenClaw 2026.10.3.** Each turn restarts the process and resumes it with `session/load`, because OpenClaw's live-session check sees a different MCP settings path every turn.
 - **Native read, grep, and glob stay reachable.** `Read(**)` is allowed, and Cursor's `grep` and `glob` are not blocked by a `Read` rule.
 - **Permissions are not configurable.** Every agent gets the same rules; changing them in `cli-config.json` has no lasting effect.
 

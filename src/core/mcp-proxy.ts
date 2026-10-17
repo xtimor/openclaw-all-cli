@@ -45,8 +45,11 @@ const HOP_BY_HOP = new Set([
   "upgrade",
 ]);
 
-/** Request headers the proxy never copies: its own auth, framing the fetch recomputes. */
-const REQUEST_DROP = new Set(["authorization", "host", "content-length", "accept-encoding", "x-openclaw-cli-capture-key"]);
+/** Request headers the proxy never copies: its own auth, framing the fetch recomputes, browser and proxy context. */
+const REQUEST_DROP = new Set(["authorization", "host", "content-length", "accept-encoding", "cookie", "origin"]);
+
+/** Header prefixes the proxy never copies: the host's own `x-openclaw-*` headers come only from the turn's target. */
+const REQUEST_DROP_PREFIXES = ["x-openclaw-", "x-forwarded-"];
 
 /** Response headers the proxy never copies: fetch already decoded the body. */
 const RESPONSE_DROP = new Set(["content-length", "content-encoding"]);
@@ -94,6 +97,7 @@ function forwardedHeaders(req: IncomingMessage, target: McpTarget): Headers {
   for (const [name, value] of Object.entries(req.headers)) {
     const lower = name.toLowerCase();
     if (value === undefined || HOP_BY_HOP.has(lower) || REQUEST_DROP.has(lower)) continue;
+    if (REQUEST_DROP_PREFIXES.some((prefix) => lower.startsWith(prefix))) continue;
     headers.set(name, Array.isArray(value) ? value.join(", ") : value);
   }
   for (const [name, value] of Object.entries(target.headers)) headers.set(name, value);
@@ -139,7 +143,10 @@ export async function startMcpProxy(): Promise<McpProxy> {
       running.delete(controller);
     });
     try {
-      const url = `${current.url}${incoming.pathname.slice(PROXY_PATH.length)}${incoming.search}`;
+      // The target keeps its own path and query; the CLI's subpath and query are merged onto them.
+      const url = new URL(current.url);
+      url.pathname = url.pathname.replace(/\/+$/, "") + incoming.pathname.slice(PROXY_PATH.length);
+      for (const [name, value] of incoming.searchParams) url.searchParams.append(name, value);
       const upstream = await fetch(url, {
         method: req.method ?? "POST",
         headers: forwardedHeaders(req, current),
@@ -186,7 +193,7 @@ export async function startMcpProxy(): Promise<McpProxy> {
     setTarget(next) {
       if (closed) return;
       endRunning();
-      target = { url: next.url.replace(/\/+$/, ""), headers: { ...next.headers } };
+      target = { url: next.url, headers: { ...next.headers } };
     },
     clearTarget() {
       target = undefined;

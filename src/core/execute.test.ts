@@ -5,11 +5,30 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterAll, describe, expect, it, vi } from "vitest";
 import { createExecute } from "./execute.ts";
+import type { McpProxy } from "./mcp-proxy.ts";
 import { parseJsonlEvent } from "./events.ts";
 import { SETTINGS_PATH_ENV } from "./mcp-target.ts";
 import { CliError, type CliAdapter, type CliSession, type NormalizedEvent, type OpenParams } from "./ports.ts";
 import { createManifest } from "./ports.ts";
 import type { ExecuteContext, LiveSessionCapability, LiveSessionHandle } from "./sdk-types.ts";
+
+const proxies = vi.hoisted(() => ({
+  started: [] as McpProxy[],
+  /** Called before the next proxy starts; a throw there fails the start. */
+  beforeStart: undefined as (() => void) | undefined,
+}));
+vi.mock("./mcp-proxy.ts", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("./mcp-proxy.ts")>();
+  return {
+    ...actual,
+    startMcpProxy: async () => {
+      proxies.beforeStart?.();
+      const proxy = await actual.startMcpProxy();
+      proxies.started.push(proxy);
+      return proxy;
+    },
+  };
+});
 
 const HOME = { dir: "/agent/openclaw-all-cli/acme-cli", env: { ACME_HOME: "/agent/openclaw-all-cli/acme-cli" } };
 
@@ -127,6 +146,17 @@ const parsed = (records: Record<string, unknown>[]) =>
     return result === null ? [] : Array.isArray(result) ? result : [result];
   });
 
+/** A settings env whose target is never called: enough for the core to treat the turn as having tools. */
+const usableEnv = (() => {
+  const dir = mkdtempSync(join(tmpdir(), "oac-execute-usable-"));
+  const file = join(dir, "settings.json");
+  writeFileSync(file, JSON.stringify({ mcpServers: { openclaw: { url: "http://127.0.0.1:1/mcp", headers: {} } } }));
+  afterAll(() => rmSync(dir, { recursive: true, force: true }));
+  return { PATH: "/bin", [SETTINGS_PATH_ENV]: file };
+})();
+
+const proxyRefuses = (url: string) => fetch(url, { method: "POST", body: "{}" }).then(() => false, () => true);
+
 describe("createExecute", () => {
   it("streams a turn: session ID, deltas, then one result with usage", async () => {
     const { adapter, sessions, opens } = makeAdapter();
@@ -158,8 +188,8 @@ describe("createExecute", () => {
     const { adapter, sessions, opens } = makeAdapter();
     const { live, calls } = makeLive();
     const execute = createExecute(adapter, { home: HOME });
-    await run(execute, makeCtx({ liveSession: live }));
-    await run(execute, makeCtx({ liveSession: live, useResume: true, sessionId: "native-1", prompt: "again" }));
+    await run(execute, makeCtx({ liveSession: live, env: usableEnv }));
+    await run(execute, makeCtx({ liveSession: live, env: usableEnv, useResume: true, sessionId: "native-1", prompt: "again" }));
 
     expect(opens).toHaveLength(1);
     expect(sessions[0]?.prompts).toEqual(["hi", "again"]);
@@ -335,8 +365,65 @@ describe("createExecute", () => {
     live.register = () => {
       throw new Error("host refused");
     };
+    const before = proxies.started.length;
     await expect(run(createExecute(adapter, { home: HOME }), makeCtx({ liveSession: live }))).rejects.toThrow("host refused");
     expect(opens).toHaveLength(0);
+    expect(proxies.started).toHaveLength(before + 1);
+    expect(await proxyRefuses(proxies.started.at(-1)!.url)).toBe(true);
+  });
+
+  it("removes the handle, closes the proxy, and rethrows when the host refuses to activate it", async () => {
+    const { adapter, opens } = makeAdapter();
+    const { live, calls } = makeLive();
+    live.activate = () => {
+      throw new Error("activation refused");
+    };
+    const before = proxies.started.length;
+    await expect(run(createExecute(adapter, { home: HOME }), makeCtx({ liveSession: live }))).rejects.toThrow("activation refused");
+    expect(opens).toHaveLength(0);
+    expect(calls.remove).toBe(1);
+    expect(proxies.started).toHaveLength(before + 1);
+    expect(await proxyRefuses(proxies.started.at(-1)!.url)).toBe(true);
+  });
+
+  it("closes the proxy and rethrows when the run was superseded after the proxy started", async () => {
+    const { adapter, opens } = makeAdapter();
+    const { live, calls } = makeLive();
+    let checks = 0;
+    // Calls: start of the turn, after the restart, after the proxy started.
+    const ctx = makeCtx({
+      liveSession: live,
+      assertCurrent: () => {
+        checks += 1;
+        if (checks >= 3) throw new Error("superseded");
+      },
+    });
+    const before = proxies.started.length;
+    await expect(run(createExecute(adapter, { home: HOME }), ctx)).rejects.toThrow("superseded");
+    expect(opens).toHaveLength(0);
+    expect(calls.register).toBe(0);
+    expect(await proxyRefuses(proxies.started[before]!.url)).toBe(true);
+  });
+
+  it("reports a proxy that cannot start as an error result, but still throws on abort", async () => {
+    const { adapter, opens } = makeAdapter();
+    proxies.beforeStart = () => {
+      throw new Error("no port");
+    };
+    try {
+      const records = await run(createExecute(adapter, { home: HOME }), makeCtx());
+      expect(parsed(records)).toEqual([{ kind: "result", errorText: "no port" }]);
+      expect(opens).toHaveLength(0);
+
+      const controller = new AbortController();
+      proxies.beforeStart = () => {
+        controller.abort(new Error("stop"));
+        throw new Error("no port");
+      };
+      await expect(run(createExecute(adapter, { home: HOME }), makeCtx({ abortSignal: controller.signal }))).rejects.toThrow();
+    } finally {
+      proxies.beforeStart = undefined;
+    }
   });
 
   it("registers and activates the host handle before the CLI opens its session", async () => {
@@ -653,5 +740,82 @@ describe("createExecute MCP proxy (AD-12)", () => {
     const [a, b] = opens.map((open) => open.mcpServers![0]!);
     expect(a!.url).not.toBe(b!.url);
     expect(a!.headers.Authorization).not.toBe(b!.headers.Authorization);
+  });
+
+  it("closes the new process and runs no turn when the host closes the handle while the CLI starts", async () => {
+    const { adapter, sessions } = makeAdapter();
+    const { live, calls } = makeLive();
+    let release: () => void = () => {};
+    const gate = new Promise<void>((resolve) => (release = resolve));
+    const open = adapter.open;
+    adapter.open = async (params) => {
+      await gate;
+      return open(params);
+    };
+    const turn = run(createExecute(adapter, { home: HOME }), makeCtx({ liveSession: live }));
+    while (!live.current()) await new Promise((resolve) => setTimeout(resolve, 5));
+    live.current()!.close("restart");
+    release();
+    const records = await turn;
+
+    expect(parsed(records).at(-1)).toMatchObject({ kind: "result", errorText: expect.stringContaining("closed while") });
+    expect(sessions).toHaveLength(1);
+    expect(sessions[0]!.closed).toBe(1);
+    expect(sessions[0]!.prompts).toEqual([]);
+    expect(calls.remove).toBeGreaterThanOrEqual(1);
+  });
+
+  it("does not reuse a process whose first turn had no OpenClaw endpoint", async () => {
+    const host = await startHost();
+    try {
+      const warnings: string[] = [];
+      const { adapter, opens, sessions } = makeAdapter();
+      const { live } = makeLive();
+      const execute = createExecute(adapter, { home: HOME, warn: (message) => warnings.push(message) });
+      // Turn 1: no settings. The CLI connects to a proxy that answers 503 and drops the server.
+      await run(execute, makeCtx({ liveSession: live }));
+      expect(warnings).toHaveLength(1);
+      // Turn 2: settings exist, but the first process never gets the server back.
+      await run(
+        execute,
+        makeCtx({ liveSession: live, useResume: true, sessionId: "native-1", env: settingsFor(host.url, "t", "c") }),
+      );
+      expect(opens).toHaveLength(2);
+      expect(sessions[0]!.closed).toBe(1);
+      expect(opens[1]!.mcpServers).toHaveLength(1);
+      // Turn 3 reuses the healthy process.
+      await run(
+        execute,
+        makeCtx({ liveSession: live, useResume: true, sessionId: "native-2", env: settingsFor(host.url, "t", "c") }),
+      );
+      expect(opens).toHaveLength(2);
+    } finally {
+      await host.close();
+    }
+  });
+});
+
+describe("createExecute with MCP off", () => {
+  it("starts no proxy, hands the CLI no MCP server, and warns about nothing", async () => {
+    const warnings: string[] = [];
+    const { adapter, opens } = makeAdapter();
+    const before = proxies.started.length;
+    const records = await run(
+      createExecute(adapter, { home: HOME, mcp: false, warn: (message) => warnings.push(message) }),
+      makeCtx({ env: { PATH: "/bin" } }),
+    );
+    expect(parsed(records).at(-1)).toMatchObject({ kind: "result" });
+    expect(proxies.started).toHaveLength(before);
+    expect(opens[0]!.mcpServers).toBeUndefined();
+    expect(warnings).toEqual([]);
+  });
+
+  it("starts a proxy and warns when MCP is on and the settings are missing", async () => {
+    const warnings: string[] = [];
+    const { adapter, opens } = makeAdapter();
+    await run(createExecute(adapter, { home: HOME, mcp: true, warn: (message) => warnings.push(message) }), makeCtx());
+    expect(opens[0]!.mcpServers).toHaveLength(1);
+    expect(warnings).toHaveLength(1);
+    expect(warnings[0]).toContain(SETTINGS_PATH_ENV);
   });
 });

@@ -260,4 +260,63 @@ describe("startMcpProxy", () => {
     expect((await call(a)).status).toBe(503);
     expect((await call(b)).status).toBe(200);
   });
+
+  it("forwards a GET with no body, keeping the method and the query", async () => {
+    const target = await stub();
+    const p = await proxy();
+    p.setTarget({ url: target.url, headers: { Authorization: "Bearer t" } });
+    const res = await fetch(`${p.url}?a=1`, { method: "GET", headers: { Authorization: `Bearer ${p.token}`, Accept: "text/event-stream" } });
+    expect(res.status).toBe(200);
+    expect(target.requests[0]).toMatchObject({ method: "GET", url: "/mcp?a=1", body: "" });
+    expect(target.requests[0]!.headers.authorization).toBe("Bearer t");
+  });
+
+  it("forwards a DELETE to a subpath with its query", async () => {
+    const target = await stub();
+    const p = await proxy();
+    p.setTarget({ url: target.url, headers: {} });
+    const res = await fetch(`${p.url}/x?y=1`, { method: "DELETE", headers: { Authorization: `Bearer ${p.token}` } });
+    expect(res.status).toBe(200);
+    expect(target.requests[0]).toMatchObject({ method: "DELETE", url: "/mcp/x?y=1" });
+  });
+
+  it("merges the incoming query onto a target URL that has its own", async () => {
+    const target = await stub();
+    const p = await proxy();
+    p.setTarget({ url: `${target.url}?own=1`, headers: {} });
+    await fetch(`${p.url}/sub?y=2`, { method: "POST", headers: { Authorization: `Bearer ${p.token}` }, body: "{}" });
+    await fetch(p.url, { method: "POST", headers: { Authorization: `Bearer ${p.token}` }, body: "{}" });
+    expect(target.requests.map((r) => r.url)).toEqual(["/mcp/sub?own=1&y=2", "/mcp?own=1"]);
+  });
+
+  it("tolerates a trailing slash on the target URL", async () => {
+    const target = await stub();
+    const p = await proxy();
+    p.setTarget({ url: `${target.url}/`, headers: {} });
+    await call(p);
+    expect(target.requests[0]!.url).toBe("/mcp");
+  });
+
+  it("does not forward the CLI's x-openclaw-*, cookie, origin, or x-forwarded-* headers", async () => {
+    const target = await stub();
+    const p = await proxy();
+    p.setTarget({ url: target.url, headers: { "x-openclaw-cli-capture-key": "turn-key" } });
+    await call(p, {
+      headers: {
+        "x-openclaw-cli-capture-key": "from-cli",
+        "x-openclaw-sender-owner": "true",
+        Cookie: "a=b",
+        Origin: "http://evil.example",
+        "X-Forwarded-For": "1.2.3.4",
+        "X-Forwarded-Host": "evil.example",
+        "Mcp-Protocol-Version": "2025-03-26",
+      },
+    });
+    const seen = target.requests[0]!.headers;
+    expect(seen["x-openclaw-cli-capture-key"]).toBe("turn-key");
+    for (const name of ["x-openclaw-sender-owner", "cookie", "origin", "x-forwarded-for", "x-forwarded-host"]) {
+      expect(seen[name]).toBeUndefined();
+    }
+    expect(seen["mcp-protocol-version"]).toBe("2025-03-26");
+  });
 });

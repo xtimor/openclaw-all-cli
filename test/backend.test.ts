@@ -4,6 +4,7 @@ import { join } from "node:path";
 import { afterAll, describe, expect, it } from "vitest";
 import { ADAPTERS } from "../src/registry.ts";
 import { CURSOR_PERMISSIONS, cursorAdapter } from "../src/adapters/cursor/index.ts";
+import { createManifest } from "../src/core/ports.ts";
 import { backendIdFor, buildCliBackend, nativeAuthMarkerFor } from "../src/core/backend.ts";
 import { createConfigValidator, registerAdapters } from "../src/core/register.ts";
 import provider from "../src/provider-discovery.ts";
@@ -128,6 +129,86 @@ describe("plugin registration", () => {
       ADAPTERS,
     );
     expect(registered).toEqual(["cursor-cli:/x/cursor-agent"]);
+  });
+});
+
+describe("MCP proxy wiring", () => {
+  const scratch = mkdtempSync(join(tmpdir(), "oac-backend-mcp-"));
+  afterAll(() => rmSync(scratch, { recursive: true, force: true }));
+
+  type Backend = ReturnType<typeof buildCliBackend>;
+  /** Runs one turn of `backend` against the fake agent, without the host's MCP settings env. */
+  async function turn(backend: Backend, name: string): Promise<Record<string, unknown>[]> {
+    const log = join(scratch, `${name}.jsonl`);
+    const prepared = await backend.prepareExecution!({ agentDir: join(scratch, name) } as never);
+    const records: Record<string, unknown>[] = [];
+    for await (const record of prepared!.execute!({
+      command: FAKE_CURSOR_AGENT,
+      args: ["acp"],
+      cwd: process.cwd(),
+      env: fakeEnv({ FAKE_CURSOR_LOG: log }),
+      prompt: "say:pong",
+      modelId: "auto",
+      systemPrompt: "",
+      useResume: false,
+      timeoutMs: 10_000,
+      requestToolPermission: async () => ({ behavior: "deny", message: "no" }),
+      requestUserInput: async () => ({ status: "cancelled", message: "no" }),
+    })) {
+      records.push(record);
+    }
+    return records;
+  }
+  const sessionNewParams = (name: string) =>
+    readFileSync(join(scratch, `${name}.jsonl`), "utf8")
+      .trim()
+      .split("\n")
+      .map((line) => JSON.parse(line))
+      .find((entry) => entry.method === "session/new").params;
+
+  it("warns once, naming the settings variable, when a turn has no settings file (buildCliBackend)", async () => {
+    const warnings: string[] = [];
+    const backend = buildCliBackend(cursorAdapter, { settings: {}, warn: (message) => warnings.push(message) });
+    const records = await turn(backend, "warn-direct");
+    expect(records.at(-1)).toMatchObject({ type: "result", is_error: false });
+    expect(warnings).toHaveLength(1);
+    expect(warnings[0]).toContain("GEMINI_CLI_SYSTEM_SETTINGS_PATH");
+    expect(sessionNewParams("warn-direct").mcpServers).toHaveLength(1);
+  });
+
+  it("warns once through the plugin logger when registered by registerAdapters", async () => {
+    const warnings: string[] = [];
+    const backends: Backend[] = [];
+    registerAdapters(
+      {
+        pluginConfig: {},
+        logger: { warn: (message: string) => warnings.push(message) },
+        registerCliBackend: (backend: Backend) => backends.push(backend),
+      } as never,
+      ADAPTERS,
+    );
+    const records = await turn(backends[0]!, "warn-registered");
+    expect(records.at(-1)).toMatchObject({ type: "result", is_error: false });
+    expect(warnings).toHaveLength(1);
+    expect(warnings[0]).toContain("GEMINI_CLI_SYSTEM_SETTINGS_PATH");
+  });
+
+  it("starts no proxy and warns about nothing when the manifest leaves P7 undecided", async () => {
+    const warnings: string[] = [];
+    const adapter = {
+      ...cursorAdapter,
+      manifest: createManifest(cursorAdapter.manifest.minVersion, {
+        ...cursorAdapter.manifest.rows,
+        P7: { status: "spike", note: "off" },
+      }),
+    };
+    const backend = buildCliBackend(adapter, { settings: {}, warn: (message) => warnings.push(message) });
+    expect(backend.bundleMcp).toBeUndefined();
+    expect(backend.bundleMcpMode).toBeUndefined();
+    const records = await turn(backend, "mcp-off");
+    expect(records.at(-1)).toMatchObject({ type: "result", is_error: false });
+    expect(warnings).toEqual([]);
+    expect(sessionNewParams("mcp-off").mcpServers).toEqual([]);
   });
 });
 
