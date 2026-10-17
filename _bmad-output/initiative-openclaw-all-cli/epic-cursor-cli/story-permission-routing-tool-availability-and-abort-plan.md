@@ -3,14 +3,14 @@ title: 'Permission routing, tool availability, and abort'
 type: 'feature'
 ticket: '4'
 created: '2026-10-17'
-status: 'in-progress'
+status: 'in-review'
 baseline_revision: 'eda690f1c6b0908fe1bb871710a21a326b9dc35f'
 route: 'full'
 route_source: 'auto'
 risk: 'medium'
-review: ''
-review_source: ''
-lenses_ran: []
+review: 'quick'
+review_source: 'pinned'
+lenses_ran: [quick]
 review_loop_iteration: 0
 followup_review_recommended: false
 context:
