@@ -4,8 +4,8 @@ import { join } from "node:path";
 import { afterAll, expect, it } from "vitest";
 import { cursorAdapter } from "../../src/adapters/cursor/index.ts";
 import { homeDirFor } from "../../src/core/home.ts";
-import type { NormalizedEvent, PermissionRequest } from "../../src/core/ports.ts";
-import { AcpSession } from "../../src/transports/acp/session.ts";
+import type { NormalizedEvent } from "../../src/core/ports.ts";
+import { AcpSession, type AcpPermissionRequest } from "../../src/transports/acp/session.ts";
 import { LIVE_TIMEOUT_MS, describeLive } from "./harness.ts";
 
 // Parity row P8 (native shell and writers are not available). The adapter's own sessions run in `ask` mode; this test opens the session in
@@ -39,7 +39,7 @@ describeLive("per-agent Cursor home denies native writes in agent mode (P8)", ()
       for (const [key, value] of Object.entries(process.env)) {
         if (value !== undefined && !key.startsWith("VITEST")) env[key] = value;
       }
-      const requests: PermissionRequest[] = [];
+      const requests: AcpPermissionRequest[] = [];
       const session = await AcpSession.open({
         command: process.env.CURSOR_AGENT_BIN ?? cursorAdapter.command,
         args: cursorAdapter.launchArgs,

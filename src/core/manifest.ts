@@ -8,6 +8,8 @@ export type DerivedFlags = {
   resume: boolean;
   /** P7: OpenClaw's tools reach the CLI through the MCP proxy. */
   mcp: boolean;
+  /** P10: the host may select the run's native tools; the backend enforces what it can (AD-9). */
+  toolPolicy: boolean;
 };
 
 function decided(manifest: CapabilityManifest, id: ParityRowId): boolean {
@@ -16,5 +18,8 @@ function decided(manifest: CapabilityManifest, id: ParityRowId): boolean {
 }
 
 export function deriveFlags(manifest: CapabilityManifest): DerivedFlags {
-  return { liveSession: decided(manifest, "P4"), resume: decided(manifest, "P5"), mcp: decided(manifest, "P7") };
+  return {
+    liveSession: decided(manifest, "P4"), resume: decided(manifest, "P5"), mcp: decided(manifest, "P7"),
+    toolPolicy: decided(manifest, "P10"),
+  };
 }

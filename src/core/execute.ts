@@ -3,13 +3,8 @@ import type { AgentHome } from "./home.ts";
 import { toRecord, type CoreRecord, type TurnSummary } from "./events.ts";
 import { startMcpProxy, type McpProxy } from "./mcp-proxy.ts";
 import { OPENCLAW_MCP_SERVER, readTurnTarget, type TurnTarget } from "./mcp-target.ts";
-import {
-  CliError,
-  type CliAdapter,
-  type CliSession,
-  type NormalizedEvent,
-  type PermissionDecision,
-} from "./ports.ts";
+import { routePermission, type PermissionTurn } from "./permissions.ts";
+import { CliError, type CliAdapter, type CliSession, type NormalizedEvent } from "./ports.ts";
 import type { CliBackendExecute, ExecuteContext, LiveSessionCapability, LiveSessionHandle } from "./sdk-types.ts";
 
 /** AD-14: live processes close after 15 idle minutes. */
@@ -43,6 +38,8 @@ type LiveEntry = {
    * 503 and dropped the server. Such a process never serves another turn.
    */
   degraded?: boolean;
+  /** The running turn, which the CLI's permission requests belong to (AD-11). */
+  turn?: PermissionTurn;
   /** What must match for the process to serve the next turn (AD-13). */
   key: string;
   handle: LiveSessionHandle;
@@ -62,11 +59,6 @@ function reuseKey(ctx: ExecuteContext, home: AgentHome): string {
 function composePrompt(ctx: ExecuteContext): string {
   const { prependContext, appendContext } = ctx.promptContext ?? {};
   return [prependContext, ctx.prompt, appendContext].filter((part): part is string => Boolean(part)).join("\n\n");
-}
-
-/** Until permission routing exists (entry 4) every CLI permission request is rejected. */
-async function rejectPermission(): Promise<PermissionDecision> {
-  return "reject_once";
 }
 
 export function errorRecord(error: unknown): CoreRecord {
@@ -172,7 +164,8 @@ export function createExecute(adapter: CliAdapter, options: ExecuteOptions): Cli
             ],
           }
         : {}),
-      onPermissionRequest: rejectPermission,
+      // The process outlives turns: each request goes to the turn running when it arrives.
+      onPermissionRequest: (request) => routePermission(entry.turn, request, warn),
       ...(ctx.abortSignal ? { signal: ctx.abortSignal } : {}),
     });
     // The host may have closed the handle while the process was starting: the close found no
@@ -247,6 +240,7 @@ export function createExecute(adapter: CliAdapter, options: ExecuteOptions): Cli
       }
       try {
         ctx.abortSignal?.throwIfAborted();
+        fresh.turn = { ctx, ended: false };
         if (fresh.proxy) {
           pointProxy(fresh.proxy, turnTarget);
           fresh.degraded = !turnTarget.ok;
@@ -265,6 +259,8 @@ export function createExecute(adapter: CliAdapter, options: ExecuteOptions): Cli
     const active = entry;
     clearTimeout(active.idleTimer);
     active.busy = true;
+    active.turn ??= { ctx, ended: false };
+    const turn = active.turn;
 
     let graceTimer: NodeJS.Timeout | undefined;
     const onAbort = () => {
@@ -311,6 +307,9 @@ export function createExecute(adapter: CliAdapter, options: ExecuteOptions): Cli
     } finally {
       ctx.abortSignal?.removeEventListener("abort", onAbort);
       clearTimeout(graceTimer);
+      // A request that arrives from now on belongs to no turn.
+      turn.ended = true;
+      active.turn = undefined;
       active.proxy?.clearTarget();
       active.busy = false;
       if (turnFailed || active.degraded || !live || !active.session.alive || ctx.abortSignal?.aborted) {

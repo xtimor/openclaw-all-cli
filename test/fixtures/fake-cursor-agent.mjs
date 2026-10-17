@@ -13,7 +13,9 @@
 //   FAKE_CURSOR_IGNORE_STDIN_EOF=1  the process stays up when stdin closes
 //   FAKE_CURSOR_NO_INIT=1       `initialize` is never answered (a hanging handshake)
 //
-// Prompt text steers a turn: "[[ask-permission]]" requests a shell permission, "[[hang]]" never
+// Prompt text steers a turn: "[[ask-permission]]" requests a shell permission, "[[ask-json]]<json>"
+// requests the permission the JSON describes ({toolCall, announce?, options?}; `announce` is sent first
+// as a `tool_call` update, like Cursor does), "[[hang]]" never
 // finishes until cancelled, "[[refuse]]" ends with stopReason refusal, "[[crash]]" exits, "say:<text>" replies with <text>.
 import { appendFileSync } from "node:fs";
 import { createInterface } from "node:readline";
@@ -93,6 +95,32 @@ async function runPrompt(id, params) {
       }, 20);
     });
     return reply(id, { stopReason: "cancelled" });
+  }
+  if (text.includes("[[ask-json]]")) {
+    const spec = JSON.parse(text.slice(text.indexOf("[[ask-json]]") + "[[ask-json]]".length));
+    if (spec.announce) {
+      update(params.sessionId, { sessionUpdate: "tool_call", status: "pending", ...spec.announce });
+    }
+    const requestId = nextRequestId++;
+    send({
+      id: requestId,
+      method: "session/request_permission",
+      params: {
+        sessionId: params.sessionId,
+        toolCall: { status: "pending", ...spec.toolCall },
+        options: spec.options ?? [
+          { optionId: "allow-once", name: "Allow once", kind: "allow_once" },
+          { optionId: "allow-always", name: "Allow always", kind: "allow_always" },
+          { optionId: "reject-once", name: "Reject", kind: "reject_once" },
+        ],
+      },
+    });
+    const outcome = await new Promise((resolve) => waitingForClient.set(requestId, resolve));
+    update(params.sessionId, {
+      sessionUpdate: "agent_message_chunk",
+      content: { type: "text", text: `permission:${JSON.stringify(outcome)}` },
+    });
+    return reply(id, { stopReason: "end_turn" });
   }
   if (text.includes("[[ask-permission]]")) {
     const requestId = nextRequestId++;

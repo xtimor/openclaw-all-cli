@@ -10,6 +10,7 @@ function adapterWith(prepareHome: CliAdapter["prepareHome"]): CliAdapter {
     launchArgs: [],
     defaultModel: "acme-cli/auto",
     manifest: createManifest("1", {}),
+    alwaysOnNativeTools: [],
     probeAuth: async () => "available",
     prepareHome,
     open: async () => {

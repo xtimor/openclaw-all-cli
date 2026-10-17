@@ -2,9 +2,9 @@ import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import { CliError, type CliSession, type NormalizedEvent, type PermissionRequest } from "../../core/ports.ts";
+import { CliError, type CliSession, type NormalizedEvent } from "../../core/ports.ts";
 import { FAKE_CURSOR_AGENT, fakeEnv } from "../../../test/fixtures/paths.ts";
-import { AcpSession, type AcpSessionOptions } from "./session.ts";
+import { AcpSession, type AcpPermissionRequest, type AcpSessionOptions } from "./session.ts";
 
 const open: CliSession[] = [];
 const dirs: string[] = [];
@@ -108,7 +108,7 @@ describe("AcpSession", () => {
   });
 
   it("answers a permission request through the adapter's policy", async () => {
-    const seen: PermissionRequest[] = [];
+    const seen: AcpPermissionRequest[] = [];
     const rejecting = await start({
       onPermissionRequest: async (request) => {
         seen.push(request);
@@ -116,12 +116,76 @@ describe("AcpSession", () => {
       },
     });
     const rejected = await collect(rejecting.prompt("[[ask-permission]]"));
-    expect(seen).toEqual([{ title: "Run shell command", kind: "execute", toolCallId: "call-1" }]);
+    expect(seen).toEqual([
+      {
+        toolCallId: "call-1",
+        title: "Run shell command",
+        kind: "execute",
+        paths: [],
+        content: [],
+        optionIds: ["allow", "reject"],
+      },
+    ]);
     expect(JSON.stringify(rejected)).toContain('\\"optionId\\":\\"reject\\"');
 
     const allowing = await start({ onPermissionRequest: async () => "allow_once" });
     const allowed = await collect(allowing.prompt("[[ask-permission]]"));
     expect(JSON.stringify(allowed)).toContain('\\"optionId\\":\\"allow\\"');
+  });
+
+  it("joins a permission request with what the agent said about the call before", async () => {
+    const seen: AcpPermissionRequest[] = [];
+    const session = await start({
+      onPermissionRequest: async (request) => {
+        seen.push(request);
+        return "reject_once";
+      },
+    });
+    const spec = {
+      announce: {
+        toolCallId: "call-2",
+        title: "Edit File",
+        kind: "edit",
+        rawInput: { path: "/w/a.txt" },
+        locations: [{ path: "/w/a.txt" }],
+      },
+      toolCall: {
+        toolCallId: "call-2",
+        title: "Edit `/w/a.txt`",
+        kind: "edit",
+        content: [{ type: "diff", path: "/w/a.txt", oldText: "a", newText: "b" }],
+      },
+    };
+    await collect(session.prompt(`[[ask-json]]${JSON.stringify(spec)}`));
+    expect(seen).toEqual([
+      {
+        toolCallId: "call-2",
+        title: "Edit `/w/a.txt`",
+        kind: "edit",
+        rawInput: { path: "/w/a.txt" },
+        paths: ["/w/a.txt"],
+        content: spec.toolCall.content,
+        optionIds: ["allow-once", "allow-always", "reject-once"],
+      },
+    ]);
+  });
+
+  it("answers cancelled when the adapter's policy throws, and when no option has the decided kind", async () => {
+    const throwing = await start({
+      onPermissionRequest: async () => {
+        throw new Error("boom");
+      },
+    });
+    expect(JSON.stringify(await collect(throwing.prompt("[[ask-permission]]")))).toContain('\\"outcome\\":\\"cancelled\\"');
+
+    const onlyAllow = await start({ onPermissionRequest: async () => "reject_once" });
+    const spec = {
+      toolCall: { toolCallId: "call-3", title: "x", kind: "other" },
+      options: [{ optionId: "yes", name: "Yes", kind: "allow_once" }],
+    };
+    expect(JSON.stringify(await collect(onlyAllow.prompt(`[[ask-json]]${JSON.stringify(spec)}`)))).toContain(
+      '\\"outcome\\":\\"cancelled\\"',
+    );
   });
 
   it("answers a pending permission request as cancelled when the turn is cancelled", async () => {

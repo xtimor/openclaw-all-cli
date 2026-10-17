@@ -9,13 +9,30 @@ import {
   type NormalizedEvent,
   type NormalizedUsage,
   type PermissionDecision,
-  type PermissionRequest,
 } from "../../core/ports.ts";
 
 /**
  * A generic ACP client session over a spawned process. It knows no CLI: the adapter supplies
  * the command, the login method, the mode it needs, and the policy for permission requests.
  */
+
+/**
+ * A permission request as the agent sent it, joined with what its earlier `tool_call` updates
+ * said about the same call. The adapter turns it into a canonical request (AD-2).
+ */
+export type AcpPermissionRequest = {
+  toolCallId: string;
+  title: string;
+  kind?: string;
+  /** The tool's raw input, when the agent reported it before or with the request. */
+  rawInput?: Record<string, unknown>;
+  /** Paths the call touches. */
+  paths: string[];
+  /** The request's own content blocks (a diff, a note, JSON arguments). */
+  content: readonly acp.ToolCallContent[];
+  /** The option IDs the agent offers. */
+  optionIds: string[];
+};
 
 export type AcpSessionOptions = {
   command: string;
@@ -32,7 +49,8 @@ export type AcpSessionOptions = {
   modelId?: string;
   /** Native session to resume with `session/load`. */
   resumeSessionId?: string;
-  onPermissionRequest: (request: PermissionRequest) => Promise<PermissionDecision>;
+  /** Answers a permission request. Throwing counts as `cancelled`. */
+  onPermissionRequest: (request: AcpPermissionRequest) => Promise<PermissionDecision>;
   clientName?: string;
   clientVersion?: string;
   signal?: AbortSignal;
@@ -44,6 +62,10 @@ const EXIT_SETTLE_MS = 500;
 
 type TurnQueue = { push(event: NormalizedEvent): void; end(): void };
 type PendingPermission = { resolve: (response: acp.RequestPermissionResponse) => void };
+type ToolCallFacts = { rawInput?: Record<string, unknown>; paths: string[] };
+
+/** The agent reports a tool call before it asks about it; keep this many calls' facts. */
+const MAX_TOOL_CALL_FACTS = 256;
 
 /** Everything the ACP client callbacks and the session share. */
 type Runtime = {
@@ -54,6 +76,8 @@ type Runtime = {
   stderrTail: string;
   turn?: TurnQueue;
   pending: Set<PendingPermission>;
+  /** What `tool_call` updates said about each call of the running turn, for permission requests. */
+  toolCalls: Map<string, ToolCallFacts>;
 };
 
 function toCliError(error: unknown, fallback: CliErrorCode, context: string): CliError {
@@ -109,6 +133,28 @@ function cancelPermissions(runtime: Runtime): void {
   }
 }
 
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+/** Merges what a `tool_call` or `tool_call_update` says into the facts kept for that call. */
+function rememberToolCall(
+  runtime: Runtime,
+  update: { toolCallId: string; rawInput?: unknown; locations?: Array<{ path: string }> | null },
+): void {
+  const facts = runtime.toolCalls.get(update.toolCallId) ?? { paths: [] };
+  if (isRecord(update.rawInput) && Object.keys(update.rawInput).length > 0) facts.rawInput = update.rawInput;
+  for (const location of update.locations ?? []) {
+    if (!facts.paths.includes(location.path)) facts.paths.push(location.path);
+  }
+  runtime.toolCalls.delete(update.toolCallId);
+  runtime.toolCalls.set(update.toolCallId, facts);
+  if (runtime.toolCalls.size > MAX_TOOL_CALL_FACTS) {
+    const oldest = runtime.toolCalls.keys().next();
+    if (!oldest.done) runtime.toolCalls.delete(oldest.value);
+  }
+}
+
 function selectValues(options: acp.SessionConfigSelectOptions): string[] {
   const values: string[] = [];
   for (const entry of options) {
@@ -158,6 +204,7 @@ export class AcpSession implements CliSession {
       hasExited: false,
       stderrTail: "",
       pending: new Set(),
+      toolCalls: new Map(),
       exited: Promise.resolve(),
     };
     runtime.exited = new Promise<void>((resolve) => {
@@ -179,10 +226,19 @@ export class AcpSession implements CliSession {
 
     const clientHandler: acp.Client = {
       requestPermission(params) {
-        const request: PermissionRequest = {
-          title: params.toolCall.title ?? "tool call",
-          ...(params.toolCall.kind ? { kind: params.toolCall.kind } : {}),
-          toolCallId: params.toolCall.toolCallId,
+        const call = params.toolCall;
+        const known = runtime.toolCalls.get(call.toolCallId);
+        const paths = [...(known?.paths ?? [])];
+        for (const location of call.locations ?? []) if (!paths.includes(location.path)) paths.push(location.path);
+        const rawInput = isRecord(call.rawInput) ? call.rawInput : known?.rawInput;
+        const request: AcpPermissionRequest = {
+          toolCallId: call.toolCallId,
+          title: call.title ?? "tool call",
+          ...(call.kind ? { kind: call.kind } : {}),
+          ...(rawInput ? { rawInput } : {}),
+          paths,
+          content: call.content ?? [],
+          optionIds: params.options.map((item) => item.optionId),
         };
         return new Promise<acp.RequestPermissionResponse>((resolve) => {
           const entry: PendingPermission = { resolve };
@@ -197,7 +253,9 @@ export class AcpSession implements CliSession {
                 : { outcome: { outcome: "cancelled" } },
             );
           };
-          options.onPermissionRequest(request).then(settle, () => settle("cancelled"));
+          Promise.resolve()
+            .then(() => options.onPermissionRequest(request))
+            .then(settle, () => settle("cancelled"));
         });
       },
       sessionUpdate(params) {
@@ -205,6 +263,10 @@ export class AcpSession implements CliSession {
         const turn = runtime.turn;
         if (!turn) return;
         const update = params.update;
+        if (update.sessionUpdate === "tool_call" || update.sessionUpdate === "tool_call_update") {
+          rememberToolCall(runtime, update);
+          return;
+        }
         if (update.sessionUpdate === "agent_message_chunk" && update.content.type === "text") {
           turn.push({ kind: "text", text: update.content.text });
         } else if (update.sessionUpdate === "agent_thought_chunk" && update.content.type === "text") {
@@ -337,6 +399,7 @@ export class AcpSession implements CliSession {
       }
       await settled;
       runtime.turn = undefined;
+      runtime.toolCalls.clear();
     }
   }
 

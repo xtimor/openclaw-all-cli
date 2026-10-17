@@ -151,12 +151,23 @@ export function createManifest(
 // Adapter port (AD-11)
 // ---------------------------------------------------------------------------
 
+/**
+ * A CLI permission request, already named in OpenClaw's terms by the adapter (AD-2). The core
+ * hands `toolName` and `toolInput` to the host, which owns approval authority.
+ */
 export type PermissionRequest = {
-  /** What the CLI wants to do, as the CLI names it. */
+  /** What the CLI wants to do, as the CLI names it. For logs and display only. */
   title: string;
   /** The CLI's tool kind, for example `execute` or `edit`. */
   kind?: string;
   toolCallId?: string;
+  /**
+   * The canonical OpenClaw tool name: `exec`, `write`, `edit`, `delete`, `web_fetch`, `web_search`,
+   * `read`, `grep`, `glob`, or `mcp__<server>__<tool>` for an MCP tool.
+   */
+  toolName: string;
+  /** The action's input, shaped like the input of OpenClaw's tool of that name. */
+  toolInput: Record<string, unknown>;
 };
 
 /** The core's answer to a CLI permission request. */
@@ -228,6 +239,13 @@ export interface CliAdapter {
   /** Maps an OpenClaw model ID onto a CLI model ID where they differ. */
   readonly modelAliases?: Readonly<Record<string, string>>;
   readonly manifest: CapabilityManifest;
+  /**
+   * Native tools (canonical names, see `PermissionRequest.toolName`) the CLI keeps available in
+   * every turn and the adapter cannot switch off per turn, for example a reader its permission
+   * file allows. The core claims exact tool-availability enforcement only for a run whose native
+   * selection contains all of them.
+   */
+  readonly alwaysOnNativeTools: readonly string[];
   /** Asks the CLI whether its own login works, without reading token material. */
   probeAuth(params: AuthProbeParams): Promise<AuthStatus>;
   /**

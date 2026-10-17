@@ -31,10 +31,9 @@ describe("cursor-cli backend", () => {
       bundleMcp: true,
       bundleMcpMode: "gemini-system-settings",
       hostOwnedTools: ["exec", "process"],
+      nativeToolMode: "selectable",
       toolAvailabilityEnforcement: "prepare-execution",
     });
-    // Tools stay on until the per-agent permissions land.
-    expect(backend.nativeToolMode).toBe("always-on");
     expect(backend.parseJsonlEvent).toBeTypeOf("function");
   });
 
@@ -112,6 +111,51 @@ describe("cursor-cli backend", () => {
     // No shared home appears anywhere: nothing was created next to the scratch agent homes or in the cwd.
     expect(readdirSync(cwd)).toEqual([]);
     expect(existsSync(join(process.cwd(), "openclaw-all-cli"))).toBe(false);
+  });
+});
+
+describe("tool availability (AD-9)", () => {
+  const scratch = mkdtempSync(join(tmpdir(), "oac-backend-tools-"));
+  afterAll(() => rmSync(scratch, { recursive: true, force: true }));
+  const backend = buildCliBackend(cursorAdapter, { settings: {} });
+  const prepare = (toolAvailability?: { native: string[]; openClaw: string[] }) =>
+    backend.prepareExecution!({ agentDir: join(scratch, "agent"), ...(toolAvailability ? { toolAvailability } : {}) } as never);
+
+  it("asks for no confirmation when the host selects no tools", async () => {
+    const prepared = await prepare();
+    expect(prepared?.execute).toBeTypeOf("function");
+    expect(prepared).not.toHaveProperty("toolAvailabilityEnforced");
+  });
+
+  it("confirms a selection that keeps the native tools Cursor cannot switch off", async () => {
+    const prepared = await prepare({ native: ["read", "grep", "glob"], openClaw: ["memory_search"] });
+    expect(prepared?.toolAvailabilityEnforced).toBe(true);
+    expect(prepared?.execute).toBeTypeOf("function");
+    const withMore = await prepare({ native: ["read", "grep", "glob", "exec"], openClaw: [] });
+    expect(withMore?.toolAvailabilityEnforced).toBe(true);
+  });
+
+  it.each([
+    [[], "read, grep, glob"],
+    [["read"], "grep, glob"],
+    [["grep", "glob", "exec"], "read"],
+  ])("refuses a selection of native tools %j, which Cursor cannot honor", async (native, blocked) => {
+    await expect(prepare({ native, openClaw: ["memory_search"] })).rejects.toThrow(
+      new RegExp(`keeps native ${blocked.replaceAll(", ", ", ")} on in every turn.*did not start the run`),
+    );
+  });
+
+  it("stays on always-on tools when the manifest leaves P10 undecided", () => {
+    const adapter = {
+      ...cursorAdapter,
+      manifest: createManifest(cursorAdapter.manifest.minVersion, {
+        ...cursorAdapter.manifest.rows,
+        P10: { status: "spike", note: "off" },
+      }),
+    };
+    const undecided = buildCliBackend(adapter, { settings: {} });
+    expect(undecided.nativeToolMode).toBe("always-on");
+    expect(undecided.toolAvailabilityEnforcement).toBeUndefined();
   });
 });
 

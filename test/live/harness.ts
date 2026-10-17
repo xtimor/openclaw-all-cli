@@ -1,6 +1,9 @@
 import { spawnSync } from "node:child_process";
+import { writeFileSync } from "node:fs";
+import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { describe } from "vitest";
+import type { LiveSessionCapability, LiveSessionHandle } from "../../src/core/sdk-types.ts";
 
 /**
  * Live tests drive the real `cursor-agent` through the isolated OpenClaw. They run only with
@@ -40,4 +43,48 @@ export function replyLines(output: string): string[] {
     .split("\n")
     .map((line) => line.trim())
     .filter((line) => line.length > 0 && !line.startsWith("["));
+}
+
+/** The test process's env without the test runner's variables, for a spawned CLI. */
+export function liveHostEnv(): Record<string, string> {
+  const env: Record<string, string> = {};
+  for (const [key, value] of Object.entries(process.env)) {
+    if (value !== undefined && !key.startsWith("VITEST")) env[key] = value;
+  }
+  return env;
+}
+
+/** The host's live-session capability, reduced to what `createExecute` uses. */
+export function makeLiveSession(): LiveSessionCapability {
+  let current: LiveSessionHandle | undefined;
+  return {
+    fingerprint: "live-fp",
+    current: () => current,
+    restart: async () => {
+      current?.close("restart");
+      current = undefined;
+    },
+    register: (handle) => {
+      current = handle;
+    },
+    activate: () => {},
+    remove: (handle) => {
+      if (current === handle) current = undefined;
+    },
+  };
+}
+
+/** Writes the settings file OpenClaw would write for a run: its loopback URL, token, and capture key. */
+export function writeSettingsFile(dir: string, name: string, url: string, token: string, capture: string): string {
+  const file = join(dir, `${name}.json`);
+  writeFileSync(
+    file,
+    JSON.stringify({
+      mcp: { allowed: ["openclaw"] },
+      mcpServers: {
+        openclaw: { type: "http", url, headers: { Authorization: `Bearer ${token}`, "x-openclaw-cli-capture-key": capture } },
+      },
+    }),
+  );
+  return file;
 }

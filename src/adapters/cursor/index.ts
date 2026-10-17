@@ -14,6 +14,7 @@ import {
   type OpenParams,
 } from "../../core/ports.ts";
 import { cursorManifest } from "./manifest.ts";
+import { CURSOR_ALWAYS_ON_NATIVE_TOOLS, toCanonicalRequest } from "./permissions.ts";
 
 const PROBE_TIMEOUT_MS = 5_000;
 
@@ -92,13 +93,19 @@ function open(params: OpenParams): Promise<CliSession> {
     env: params.env,
     // With an API key Cursor needs no login step; `authenticate{cursor_login}` would try a browser login and fail.
     ...(params.env.CURSOR_API_KEY?.trim() ? {} : { authMethodId: "cursor_login" }),
-    // The per-agent permissions deny shell, write, and fetch; until permission routing (entry 4)
-    // lands, the session also runs in Cursor's read-only mode as a second lock.
+    // Cursor applies native edits without asking in agent mode, so only the per-agent `Write(**)`
+    // deny stops them. `ask` mode has no edit tool at all and still asks for (and runs) what the
+    // host approves, so it stays as the second lock (checked against cursor-agent 2026.10.16).
     requiredModeId: "ask",
     ...(params.modelId === AUTO_MODEL ? {} : { modelId: params.modelId }),
     ...(params.resumeSessionId ? { resumeSessionId: params.resumeSessionId } : {}),
     ...(params.mcpServers?.length ? { mcpServers: params.mcpServers.map(toAcpMcpServer) } : {}),
-    onPermissionRequest: params.onPermissionRequest,
+    // A request the mapping cannot name is rejected without asking the host: the host cannot
+    // approve what it cannot see.
+    onPermissionRequest: async (request) => {
+      const named = toCanonicalRequest(request);
+      return named ? params.onPermissionRequest(named) : "reject_once";
+    },
     ...(params.signal ? { signal: params.signal } : {}),
   });
 }
@@ -110,6 +117,7 @@ export const cursorAdapter: CliAdapter = {
   launchArgs: ["acp"],
   defaultModel: "cursor-cli/auto",
   manifest: cursorManifest,
+  alwaysOnNativeTools: CURSOR_ALWAYS_ON_NATIVE_TOOLS,
   probeAuth,
   prepareHome,
   open,

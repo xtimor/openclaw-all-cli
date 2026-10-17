@@ -10,12 +10,15 @@ export type StubRequest = {
 };
 
 export const STUB_TOOL = "oac_echo";
+/** The stand-in for OpenClaw's `exec`; offered only with `startStubMcpHost({ execTool: true })`. */
+export const STUB_EXEC_TOOL = "exec";
 
 /**
  * A stand-in for OpenClaw's per-run loopback MCP endpoint: MCP over HTTP with JSON replies and
- * one tool, `oac_echo`, that answers `echo:<text>`. It records every request with its headers.
+ * one tool, `oac_echo`, that answers `echo:<text>`. With `execTool` it also offers `exec`, which
+ * answers `stub-exec-ran:<command>` without running anything. It records every request with its headers.
  */
-export async function startStubMcpHost() {
+export async function startStubMcpHost(options: { execTool?: boolean } = {}) {
   const requests: StubRequest[] = [];
   const server = createServer((req, res) => {
     const chunks: Buffer[] = [];
@@ -56,10 +59,24 @@ export async function startStubMcpHost() {
                 description: "Echoes the text it is given. Use it when asked to call oac_echo.",
                 inputSchema: { type: "object", properties: { text: { type: "string" } }, required: ["text"] },
               },
+              ...(options.execTool
+                ? [
+                    {
+                      name: STUB_EXEC_TOOL,
+                      description: "Runs a shell command on the host and returns its output.",
+                      inputSchema: { type: "object", properties: { command: { type: "string" } }, required: ["command"] },
+                    },
+                  ]
+                : []),
             ],
           });
-        case "tools/call":
-          return reply({ content: [{ type: "text", text: `echo:${String(rpc.params?.arguments && (rpc.params.arguments as { text?: unknown }).text)}` }] });
+        case "tools/call": {
+          const args = (rpc.params?.arguments ?? {}) as { text?: unknown; command?: unknown };
+          if (rpc.params?.name === STUB_EXEC_TOOL) {
+            return reply({ content: [{ type: "text", text: `stub-exec-ran:${String(args.command)}` }] });
+          }
+          return reply({ content: [{ type: "text", text: `echo:${String(args.text)}` }] });
+        }
         default:
           return reply({});
       }

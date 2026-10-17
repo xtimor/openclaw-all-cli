@@ -62,12 +62,12 @@ deferred: []
 ## Tasks & Acceptance
 
 **Execution:**
-- [ ] `src/core/execute.ts`, `ports.ts`, `session.ts`, adapter mapping -- route requests to the host and answer by its decision; `cancelled` after abort/turn end
-- [ ] `src/core/backend.ts` -- selectable native tools, `prepare-execution` enforcement, `toolAvailabilityEnforced` only for real enforcement; settle with live probes how the host selects native tools and what the plugin can enforce; record the design and evidence in Implementation Notes
-- [ ] settle "whether ACP edits can be made to ask" by a live probe and record the result in Implementation Notes and the P9 row
-- [ ] unit tests -- every matrix row (fake agent with scripted permission requests, a stub `requestToolPermission`)
-- [ ] live test (gated) -- with a test home that leaves shell to ask: a shell request the stub host denies makes the model use the OpenClaw `exec` tool (through the proxy) instead; abort mid-approval ends the turn cleanly; a tool the host denies via `tools.deny` is absent from the model's tool list
-- [ ] docs, manifest, parity P8/P9/P10 -- match behavior and evidence
+- [x] `src/core/execute.ts`, `ports.ts`, `session.ts`, adapter mapping -- route requests to the host and answer by its decision; `cancelled` after abort/turn end
+- [x] `src/core/backend.ts` -- selectable native tools, `prepare-execution` enforcement, `toolAvailabilityEnforced` only for real enforcement; settle with live probes how the host selects native tools and what the plugin can enforce; record the design and evidence in Implementation Notes
+- [x] settle "whether ACP edits can be made to ask" by a live probe and record the result in Implementation Notes and the P9 row
+- [x] unit tests -- every matrix row (fake agent with scripted permission requests, a stub `requestToolPermission`)
+- [x] live test (gated) -- with a test home that leaves shell to ask: a shell request the stub host denies makes the model use the OpenClaw `exec` tool (through the proxy) instead; abort mid-approval ends the turn cleanly; a tool the host denies via `tools.deny` is absent from the model's tool list
+- [x] docs, manifest, parity P8/P9/P10 -- match behavior and evidence
 
 **Acceptance Criteria:**
 - Given a shell request the host denies, when the model runs, then it falls back to OpenClaw `exec`.
@@ -75,6 +75,20 @@ deferred: []
 - Given an abort while a permission request awaits approval, when the turn is aborted, then the request is answered `cancelled` and the turn ends cleanly.
 
 ## Implementation Notes
+
+**Design.**
+- Routing lives in `src/core/permissions.ts` (`routePermission`), called from the handler `execute.ts` gives `adapter.open`. The handler reads the entry's current `turn`, because a warm process outlives turns: a request with no turn, a finished turn, an aborted turn, or a superseded run (`assertCurrent`) is answered `cancelled` and never reaches the host. A tool outside `ctx.toolAvailability.native` is rejected without asking. Otherwise `ctx.requestToolPermission` decides (`abortSignal` passed; the core also races the abort, so a host that ignores the signal cannot hang the turn). Error, malformed answer, or an `updatedInput` that differs from the request (ACP cannot apply a rewrite) reject. No timers.
+- `AcpSession` builds an `AcpPermissionRequest` (title, kind, call ID, option IDs, content, and `rawInput`/paths joined from earlier `tool_call` updates; the request itself carries no `rawInput`). `src/adapters/cursor/permissions.ts` names it (`exec`, `write`, `edit`, `delete`, `read`, `grep`, `glob`, `web_fetch`, `web_search`, `mcp__<server>__<tool>`) in the input shape of OpenClaw's tool of that name; the adapter rejects what it cannot name (unknown operation, no path, a question prompt) without asking the host.
+- Abort: `session.cancel()` (unchanged) already answered pending requests `cancelled`; the core handler adds the same on its side. Live: the turn ends, the process exits, no hang.
+- `backend.ts`: `nativeToolMode: "selectable"` + `prepare-execution` now follow manifest P10 (`DerivedFlags.toolPolicy`); `bundleMcp`/`hostOwnedTools` stay under P7. `CliAdapter.alwaysOnNativeTools` (Cursor: `read`, `grep`, `glob`) names the natives the adapter cannot switch off per turn. `prepareExecution` returns `toolAvailabilityEnforced: true` only when `ctx.toolAvailability` is set and keeps all of them; otherwise it throws a message and the host never starts the run. A run without `toolAvailability` gets no flag.
+
+**Evidence (live, 2026-10-17, cursor-agent 2026.10.16, `CURSOR_API_KEY`).**
+- Edits cannot be made to ask: in agent mode an edit (inside or outside the workspace) was applied with no request under no permissions, `approvalMode: allowlist`, `Write(nothing/**)` allow, and sandbox enabled; `ask` and `plan` mode have no edit tool. P9 stays `approx`; edits stay denied by `Write(**)` and `ask` mode.
+- `ask` mode stays: it is the only lock that survives a changed permission file, a shell request in `ask` mode asks and runs after approval, and MCP works in it. Cost: the model refuses file-changing commands there, even if approved.
+- How the host selects native tools: `ctx.toolAvailability = {native, openClaw}` is set only for capped runs; 2026.10.3 always sends `native: []` (runtime tools cap, `disableTools`, system agent, trusted handoff, rooted runs). The plugin cannot switch off `read`/`grep`/`glob` per turn (a per-turn file is excluded by AD-6), so it cannot honestly enforce `native: []`; such runs are refused, as they were under `always-on`. Plain runs and `tools.deny` runs work. A static second home denying `Read(**)`, `Grep(**)`, `Glob(**)` would enforce it (grep and glob return nothing then); not built, since it splits the chat store and AD-9 says one file for every agent.
+- `hostOwnedTools` is inert with `prepare-execution` in 2026.10.3 (`resolveCliMcpToolOwnership` needs `execution-args`), so no real run offers `exec`; a real run listed 47 OpenClaw tools and no `exec`, also with `tools.allow: [session_status, exec]`. The acceptance fallback to `exec` is shown with a stub host serving `exec`. Follow-up for the epic: `execution-args` enforcement with `resolveExecutionArgs`, or an `exec` the host serves.
+- `tools.deny` of `session_status` and `web_fetch` removed both from the model's list through the real host (`test/live/permission-routing.live.test.ts`).
+- Tests: `npm run typecheck && npm run build && npx vitest run` pass; `OPENCLAW_ALL_CLI_LIVE=1 npx vitest run test/live` passes (8 tests) after `npm run dev:install`.
 
 ## Plan Change Log
 

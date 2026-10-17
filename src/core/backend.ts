@@ -3,6 +3,7 @@ import { parseJsonlEvent } from "./events.ts";
 import { createExecute, errorRecord, type ExecuteOptions } from "./execute.ts";
 import { prepareAgentHome } from "./home.ts";
 import { deriveFlags } from "./manifest.ts";
+import { unenforceableNativeTools } from "./permissions.ts";
 import type { CliAdapter } from "./ports.ts";
 import type { CliBackendPlugin } from "./sdk-types.ts";
 
@@ -39,9 +40,11 @@ export function buildCliBackend(adapter: CliAdapter, options: BuildBackendOption
       defaultImageProbe: false,
       defaultMcpProbe: false,
     },
-    // Native read, grep and glob stay reachable; the host must fail closed for callers that
-    // need no native tools until the tool-availability contract (entry 3) makes them selectable.
-    nativeToolMode: "always-on",
+    // P10: the host selects native tools per run through `ctx.toolAvailability`; `prepareExecution`
+    // confirms only a selection it enforces. Without that, the host fails closed for restricted runs.
+    ...(flags.toolPolicy
+      ? { nativeToolMode: "selectable" as const, toolAvailabilityEnforcement: "prepare-execution" as const }
+      : { nativeToolMode: "always-on" as const }),
     ...(flags.mcp
       ? {
           // P7: the host writes the turn's loopback URL and headers to a settings file, and the
@@ -49,7 +52,6 @@ export function buildCliBackend(adapter: CliAdapter, options: BuildBackendOption
           bundleMcp: true,
           bundleMcpMode: "gemini-system-settings" as const,
           hostOwnedTools: ["exec", "process"],
-          toolAvailabilityEnforcement: "prepare-execution" as const,
         }
       : {}),
     config: {
@@ -65,18 +67,35 @@ export function buildCliBackend(adapter: CliAdapter, options: BuildBackendOption
     },
     parseJsonlEvent: (line) => parseJsonlEvent(line),
     prepareExecution: async (ctx) => {
+      // The run's native selection must be one the adapter enforces: it cannot switch off the
+      // tools its permission file keeps open. Refuse before any process starts (AD-9).
+      const blocked = ctx.toolAvailability
+        ? unenforceableNativeTools(ctx.toolAvailability, adapter.alwaysOnNativeTools)
+        : [];
+      if (blocked.length > 0) {
+        throw new Error(
+          `${backendIdFor(adapter)} keeps native ${blocked.join(", ")} on in every turn and cannot switch ${blocked.length > 1 ? "them" : "it"} off for this run. ` +
+            "Select those native tools or run this turn on another model. OpenClaw did not start the run.",
+        );
+      }
+      // Only a selection the adapter enforces is confirmed; a run without one needs no confirmation.
+      const enforced = ctx.toolAvailability ? { toolAvailabilityEnforced: true as const } : {};
       try {
         const home = await prepareAgentHome(adapter, backendIdFor(adapter), ctx.agentDir);
-        return { execute: createExecute(adapter, {
+        return {
+          ...enforced,
+          execute: createExecute(adapter, {
             ...options.execute,
             home,
             mcp: flags.mcp,
             ...(options.warn ? { warn: options.warn } : {}),
-          }) };
+          }),
+        };
       } catch (error) {
         // Fail the turn the way an open failure does: an error record, never a shared home.
         const record = errorRecord(error);
         return {
+          ...enforced,
           execute: async function* () {
             yield record;
           },

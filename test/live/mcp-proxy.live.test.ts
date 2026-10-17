@@ -1,4 +1,4 @@
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterAll, expect, it } from "vitest";
@@ -7,9 +7,17 @@ import { homeDirFor } from "../../src/core/home.ts";
 import { createExecute } from "../../src/core/execute.ts";
 import { SETTINGS_PATH_ENV } from "../../src/core/mcp-target.ts";
 import type { CliAdapter, NormalizedEvent, OpenParams } from "../../src/core/ports.ts";
-import type { ExecuteContext, LiveSessionCapability, LiveSessionHandle } from "../../src/core/sdk-types.ts";
+import type { ExecuteContext } from "../../src/core/sdk-types.ts";
 import { STUB_TOOL, startStubMcpHost } from "../fixtures/stub-mcp-host.ts";
-import { LIVE_TIMEOUT_MS, describeLive, openclaw, replyLines } from "./harness.ts";
+import {
+  LIVE_TIMEOUT_MS,
+  describeLive,
+  liveHostEnv,
+  makeLiveSession,
+  openclaw,
+  replyLines,
+  writeSettingsFile,
+} from "./harness.ts";
 
 // Parity row P7 (OpenClaw tools as MCP through the per-session proxy, AD-12). Real cursor-agent,
 // one warm `createExecute` session, a stub HTTP MCP host standing in for OpenClaw. Each turn has
@@ -17,48 +25,6 @@ import { LIVE_TIMEOUT_MS, describeLive, openclaw, replyLines } from "./harness.t
 describeLive("OpenClaw tools through the per-session MCP proxy (P7)", () => {
   const root = mkdtempSync(join(tmpdir(), "oac-live-mcp-"));
   afterAll(() => rmSync(root, { recursive: true, force: true }));
-
-  function hostEnv(): Record<string, string> {
-    const env: Record<string, string> = {};
-    for (const [key, value] of Object.entries(process.env)) {
-      if (value !== undefined && !key.startsWith("VITEST")) env[key] = value;
-    }
-    return env;
-  }
-
-  /** The host's live-session capability, reduced to what `createExecute` uses. */
-  function makeLive(): LiveSessionCapability {
-    let current: LiveSessionHandle | undefined;
-    return {
-      fingerprint: "live-fp",
-      current: () => current,
-      restart: async () => {
-        current?.close("restart");
-        current = undefined;
-      },
-      register: (handle) => {
-        current = handle;
-      },
-      activate: () => {},
-      remove: (handle) => {
-        if (current === handle) current = undefined;
-      },
-    };
-  }
-
-  function settingsFile(name: string, url: string, token: string, capture: string): string {
-    const file = join(root, `${name}.json`);
-    writeFileSync(
-      file,
-      JSON.stringify({
-        mcp: { allowed: ["openclaw"] },
-        mcpServers: {
-          openclaw: { type: "http", url, headers: { Authorization: `Bearer ${token}`, "x-openclaw-cli-capture-key": capture } },
-        },
-      }),
-    );
-    return file;
-  }
 
   it(
     "reaches each turn's target with that turn's headers, and rejects calls between turns",
@@ -76,7 +42,7 @@ describeLive("OpenClaw tools through the per-session MCP proxy (P7)", () => {
       const homeDir = homeDirFor(join(root, "agent"), "cursor-cli");
       const home = { dir: homeDir, env: await cursorAdapter.prepareHome(homeDir) };
       const execute = createExecute(adapter, { home, warn: (message) => console.warn(message) });
-      const live = makeLive();
+      const live = makeLiveSession();
 
       const hostOne = await startStubMcpHost();
       const hostTwo = await startStubMcpHost();
@@ -89,8 +55,8 @@ describeLive("OpenClaw tools through the per-session MCP proxy (P7)", () => {
             args: cursorAdapter.launchArgs,
             cwd: workspace,
             env: {
-              ...hostEnv(),
-              [SETTINGS_PATH_ENV]: settingsFile(`settings-${n}`, host.url, `host-token-${n}`, `capture-${n}`),
+              ...liveHostEnv(),
+              [SETTINGS_PATH_ENV]: writeSettingsFile(root, `settings-${n}`, host.url, `host-token-${n}`, `capture-${n}`),
             },
             prompt: `Call the MCP tool ${STUB_TOOL} (server "openclaw") with text "${marker}". Reply with the tool's output only.`,
             modelId: "auto",

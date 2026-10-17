@@ -3,7 +3,13 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { FAKE_CURSOR_AGENT, fakeEnv } from "../../../test/fixtures/paths.ts";
-import { CliError, type CliSession, type NormalizedEvent } from "../../core/ports.ts";
+import {
+  CliError,
+  type CliSession,
+  type NormalizedEvent,
+  type PermissionDecision,
+  type PermissionRequest,
+} from "../../core/ports.ts";
 import { PARITY_ROWS } from "../../core/ports.ts";
 import { CURSOR_PERMISSIONS, cursorAdapter, parseStatusOutput } from "./index.ts";
 import { cursorManifest } from "./manifest.ts";
@@ -169,6 +175,51 @@ describe("cursor adapter", () => {
         onPermissionRequest: async () => "reject_once",
       }),
     ).rejects.toMatchObject({ code: "capability_mismatch" });
+  });
+
+  describe("permission requests", () => {
+    async function ask(spec: unknown, decide: (request: PermissionRequest) => Promise<PermissionDecision>) {
+      const session = await cursorAdapter.open({
+        command: FAKE_CURSOR_AGENT,
+        args: cursorAdapter.launchArgs,
+        cwd: process.cwd(),
+        env: fakeEnv(),
+        modelId: "auto",
+        onPermissionRequest: decide,
+      });
+      open.push(session);
+      const events: NormalizedEvent[] = [];
+      for await (const event of session.prompt(`[[ask-json]]${JSON.stringify(spec)}`)) events.push(event);
+      return JSON.stringify(events);
+    }
+
+    it("hands the core a request named in OpenClaw's terms, joined with the earlier tool_call update", async () => {
+      const seen: PermissionRequest[] = [];
+      const events = await ask(
+        {
+          announce: { toolCallId: "c9", title: "`ls -la`", kind: "execute", rawInput: { command: "ls -la" } },
+          toolCall: { toolCallId: "c9", title: "`ls -la`", kind: "execute" },
+        },
+        async (request) => {
+          seen.push(request);
+          return "allow_once";
+        },
+      );
+      expect(seen).toEqual([
+        { title: "`ls -la`", kind: "execute", toolCallId: "c9", toolName: "exec", toolInput: { command: "ls -la" } },
+      ]);
+      expect(events).toContain('\\"optionId\\":\\"allow-once\\"');
+    });
+
+    it("rejects a request it cannot name without asking the core", async () => {
+      let asked = 0;
+      const events = await ask({ toolCall: { toolCallId: "c10", title: "Unknown operation", kind: "other" } }, async () => {
+        asked += 1;
+        return "allow_once";
+      });
+      expect(asked).toBe(0);
+      expect(events).toContain('\\"optionId\\":\\"reject-once\\"');
+    });
   });
 
   describe("per-agent home", () => {

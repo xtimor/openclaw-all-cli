@@ -8,7 +8,15 @@ import { createExecute } from "./execute.ts";
 import type { McpProxy } from "./mcp-proxy.ts";
 import { parseJsonlEvent } from "./events.ts";
 import { SETTINGS_PATH_ENV } from "./mcp-target.ts";
-import { CliError, type CliAdapter, type CliSession, type NormalizedEvent, type OpenParams } from "./ports.ts";
+import {
+  CliError,
+  type CliAdapter,
+  type CliSession,
+  type NormalizedEvent,
+  type OpenParams,
+  type PermissionDecision,
+  type PermissionRequest,
+} from "./ports.ts";
 import { createManifest } from "./ports.ts";
 import type { ExecuteContext, LiveSessionCapability, LiveSessionHandle } from "./sdk-types.ts";
 
@@ -79,6 +87,7 @@ function makeAdapter(script: Script = okTurn) {
     launchArgs: ["serve"],
     defaultModel: "acme-cli/auto",
     manifest: createManifest("1", {}),
+    alwaysOnNativeTools: ["read"],
     probeAuth: async () => "available",
     prepareHome: async (home) => ({ ACME_HOME: home }),
     open: async (params) => {
@@ -174,14 +183,6 @@ describe("createExecute", () => {
     expect(opens[0]).toMatchObject({ command: "acme", args: ["serve"], cwd: "/work", modelId: "auto" });
     expect(opens[0]?.resumeSessionId).toBeUndefined();
     expect(sessions[0]?.closed).toBe(0);
-  });
-
-  it("rejects CLI permission requests until routing exists", async () => {
-    const { adapter, opens } = makeAdapter();
-    await run(createExecute(adapter, { home: HOME }), makeCtx());
-    await expect(
-      opens[0]?.onPermissionRequest({ title: "Run shell command", kind: "execute" }),
-    ).resolves.toBe("reject_once");
   });
 
   it("reuses the warm process when model, cwd, and native session match", async () => {
@@ -923,5 +924,229 @@ describe("createExecute with MCP off", () => {
     expect(opens[0]!.mcpServers).toHaveLength(1);
     expect(warnings).toHaveLength(1);
     expect(warnings[0]).toContain(SETTINGS_PATH_ENV);
+  });
+});
+
+describe("createExecute permission routing (AD-9, AD-11)", () => {
+  const shell: PermissionRequest = {
+    title: "`ls`",
+    kind: "execute",
+    toolCallId: "call-1",
+    toolName: "exec",
+    toolInput: { command: "ls" },
+  };
+  type HostAnswer = Awaited<ReturnType<ExecuteContext["requestToolPermission"]>>;
+
+  /** A turn in which the CLI asks `request` and ends with the decision it got. */
+  function askingTurn(request: PermissionRequest) {
+    const decisions: PermissionDecision[] = [];
+    const script: Script = async function* () {
+      decisions.push(await harness.opens[0]!.onPermissionRequest(request));
+      yield { kind: "result", text: "done", stopReason: "end_turn" };
+    };
+    const harness = makeAdapter(script);
+    return { ...harness, decisions };
+  }
+
+  it("asks the host about the canonical tool and selects allow_once when it approves", async () => {
+    const { adapter, decisions } = askingTurn(shell);
+    const controller = new AbortController();
+    const requestToolPermission = vi.fn(async (request: { toolInput: Record<string, unknown> }): Promise<HostAnswer> => ({
+      behavior: "allow",
+      updatedInput: request.toolInput,
+    }));
+    await run(
+      createExecute(adapter, { home: HOME }),
+      makeCtx({ requestToolPermission, abortSignal: controller.signal }),
+    );
+    expect(decisions).toEqual(["allow_once"]);
+    expect(requestToolPermission).toHaveBeenCalledTimes(1);
+    expect(requestToolPermission).toHaveBeenCalledWith({
+      toolName: "exec",
+      toolInput: { command: "ls" },
+      toolCallId: "call-1",
+      cwd: "/work",
+      abortSignal: controller.signal,
+    });
+  });
+
+  it("selects reject_once when the host denies", async () => {
+    const { adapter, decisions } = askingTurn(shell);
+    await run(
+      createExecute(adapter, { home: HOME }),
+      makeCtx({ requestToolPermission: async () => ({ behavior: "deny", message: "no shell" }) }),
+    );
+    expect(decisions).toEqual(["reject_once"]);
+  });
+
+  it("fails closed and logs when asking the host throws, and the turn continues", async () => {
+    const { adapter, decisions } = askingTurn({ ...shell, toolInput: { command: "topsecret --flag" } });
+    const warn = vi.fn();
+    const records = await run(
+      createExecute(adapter, { home: HOME, warn }),
+      makeCtx({
+        requestToolPermission: async () => {
+          throw new Error("host unavailable");
+        },
+      }),
+    );
+    expect(decisions).toEqual(["reject_once"]);
+    expect(parsed(records).at(-1)).toMatchObject({ kind: "result", text: "done" });
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining("exec"));
+    expect(warn.mock.calls.flat().join(" ")).not.toContain("topsecret");
+  });
+
+  it("rejects an approval that changed the input, which the CLI cannot apply", async () => {
+    const { adapter, decisions } = askingTurn(shell);
+    const warn = vi.fn();
+    await run(
+      createExecute(adapter, { home: HOME, warn }),
+      makeCtx({ requestToolPermission: async () => ({ behavior: "allow", updatedInput: { command: "rm -rf /" } }) }),
+    );
+    expect(decisions).toEqual(["reject_once"]);
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining("changed the input"));
+  });
+
+  it("rejects a malformed host answer", async () => {
+    const { adapter, decisions } = askingTurn(shell);
+    await run(
+      createExecute(adapter, { home: HOME, warn: () => {} }),
+      makeCtx({ requestToolPermission: async () => ({}) as never }),
+    );
+    expect(decisions).toEqual(["reject_once"]);
+  });
+
+  it("answers cancelled and ends the turn when it is aborted while the host waits for a human", async () => {
+    const { adapter, sessions, decisions } = askingTurn(shell);
+    const controller = new AbortController();
+    let hostSignal: AbortSignal | undefined;
+    const requestToolPermission = vi.fn((request: { abortSignal?: AbortSignal }) => {
+      hostSignal = request.abortSignal;
+      return new Promise<HostAnswer>(() => {});
+    });
+    const turn = run(
+      createExecute(adapter, { home: HOME }),
+      makeCtx({ requestToolPermission: requestToolPermission as never, abortSignal: controller.signal }),
+    );
+    const outcome = expect(turn).rejects.toThrow();
+    await new Promise((resolve) => setTimeout(resolve, 30));
+    expect(requestToolPermission).toHaveBeenCalledTimes(1);
+    controller.abort(new Error("stop"));
+    await outcome;
+    expect(decisions).toEqual(["cancelled"]);
+    expect(hostSignal).toBe(controller.signal);
+    expect(sessions[0]?.cancelled).toBe(1);
+    expect(sessions[0]?.closed).toBe(1);
+  });
+
+  it("does not let a late host approval allow a call after the abort", async () => {
+    const { adapter, decisions } = askingTurn(shell);
+    const controller = new AbortController();
+    let approve: (answer: HostAnswer) => void = () => {};
+    const turn = run(
+      createExecute(adapter, { home: HOME }),
+      makeCtx({
+        requestToolPermission: () => new Promise<HostAnswer>((resolve) => (approve = resolve)),
+        abortSignal: controller.signal,
+      }),
+    );
+    const outcome = expect(turn).rejects.toThrow();
+    await new Promise((resolve) => setTimeout(resolve, 30));
+    controller.abort(new Error("stop"));
+    await outcome;
+    approve({ behavior: "allow", updatedInput: shell.toolInput });
+    expect(decisions).toEqual(["cancelled"]);
+  });
+
+  it("answers cancelled, and never asks the host, for a request after the turn ended", async () => {
+    const { adapter, opens } = makeAdapter();
+    const requestToolPermission = vi.fn(async (): Promise<HostAnswer> => ({ behavior: "allow", updatedInput: {} }));
+    const { live } = makeLive();
+    await run(createExecute(adapter, { home: HOME }), makeCtx({ requestToolPermission, liveSession: live, env: usableEnv }));
+    await expect(opens[0]!.onPermissionRequest({ ...shell, toolInput: {} })).resolves.toBe("cancelled");
+    expect(requestToolPermission).not.toHaveBeenCalled();
+  });
+
+  it("answers cancelled, and never asks the host, when a newer run has taken over", async () => {
+    let superseded = false;
+    const decisions: PermissionDecision[] = [];
+    const script: Script = async function* () {
+      superseded = true;
+      decisions.push(await harness.opens[0]!.onPermissionRequest(shell));
+      yield { kind: "result", text: "done", stopReason: "end_turn" };
+    };
+    const harness = makeAdapter(script);
+    const requestToolPermission = vi.fn(async (): Promise<HostAnswer> => ({ behavior: "allow", updatedInput: {} }));
+    await run(
+      createExecute(harness.adapter, { home: HOME }),
+      makeCtx({
+        requestToolPermission,
+        assertCurrent: () => {
+          if (superseded) throw new Error("superseded");
+        },
+      }),
+    );
+    expect(decisions).toEqual(["cancelled"]);
+    expect(requestToolPermission).not.toHaveBeenCalled();
+  });
+
+  it("sends each turn's requests to that turn's host on a warm process", async () => {
+    const decisions: PermissionDecision[] = [];
+    const script: Script = async function* () {
+      decisions.push(await harness.opens[0]!.onPermissionRequest(shell));
+      yield { kind: "result", text: "done", stopReason: "end_turn" };
+    };
+    const harness = makeAdapter(script);
+    const { live } = makeLive();
+    const execute = createExecute(harness.adapter, { home: HOME });
+    const first = vi.fn(async (): Promise<HostAnswer> => ({ behavior: "deny", message: "first" }));
+    const second = vi.fn(async (request: { toolInput: Record<string, unknown> }): Promise<HostAnswer> => ({
+      behavior: "allow",
+      updatedInput: request.toolInput,
+    }));
+    await run(execute, makeCtx({ requestToolPermission: first, liveSession: live, env: usableEnv }));
+    await run(
+      execute,
+      makeCtx({ requestToolPermission: second, liveSession: live, env: usableEnv, useResume: true, sessionId: "native-1" }),
+    );
+    expect(harness.opens).toHaveLength(1);
+    expect(decisions).toEqual(["reject_once", "allow_once"]);
+    expect(first).toHaveBeenCalledTimes(1);
+    expect(second).toHaveBeenCalledTimes(1);
+  });
+
+  describe("with a native tool selection", () => {
+    const selection = { native: ["read", "grep", "glob"], openClaw: ["memory_search"] };
+    const allowAll = () => vi.fn(async (request: { toolInput: Record<string, unknown> }): Promise<HostAnswer> => ({
+      behavior: "allow",
+      updatedInput: request.toolInput,
+    }));
+
+    it("denies a native tool the host left out, without asking it", async () => {
+      const { adapter, decisions } = askingTurn(shell);
+      const requestToolPermission = allowAll();
+      await run(
+        createExecute(adapter, { home: HOME }),
+        makeCtx({ requestToolPermission, toolAvailability: selection }),
+      );
+      expect(decisions).toEqual(["reject_once"]);
+      expect(requestToolPermission).not.toHaveBeenCalled();
+    });
+
+    it("denies an MCP tool outside the selection", async () => {
+      const { adapter, decisions } = askingTurn({ ...shell, toolName: "mcp__other__tool", toolInput: {} });
+      const requestToolPermission = allowAll();
+      await run(createExecute(adapter, { home: HOME }), makeCtx({ requestToolPermission, toolAvailability: selection }));
+      expect(decisions).toEqual(["reject_once"]);
+      expect(requestToolPermission).not.toHaveBeenCalled();
+    });
+
+    it("still asks the host about a tool the selection includes", async () => {
+      const { adapter, decisions } = askingTurn({ ...shell, toolName: "read", toolInput: { path: "/work/a" } });
+      const requestToolPermission = allowAll();
+      await run(createExecute(adapter, { home: HOME }), makeCtx({ requestToolPermission, toolAvailability: selection }));
+      expect(decisions).toEqual(["allow_once"]);
+      expect(requestToolPermission).toHaveBeenCalledTimes(1);
+    });
   });
 });
