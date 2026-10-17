@@ -19,6 +19,13 @@ context:
 warnings: []
 deferred:
   - summary: >-
+      `degraded` is inferred from the settings file, not from what Cursor saw at connect; a reused process given a no-settings turn is not marked.
+    evidence: |-
+      A valid target answering 401/502 at connect also makes Cursor drop the server. Settle by recording the first initialize status in the proxy.
+    location: >-
+      src/core/execute.ts
+    severity: medium (unverified)
+  - summary: >-
       A Cursor MCP GET/SSE stream cut between turns and rejected on reconnect may disable the openclaw server.
     evidence: |-
       Observed harmless on 2026.10.3 where every turn restarts; settle on a host with a stable fingerprint.
@@ -125,6 +132,25 @@ Built as planned (`mcp-proxy.ts`, `mcp-target.ts`, wiring in `execute.ts`, `port
 ## Plan Change Log
 
 ## Review Triage Log
+
+### 2026-10-17 — Review pass (follow-up)
+- verdicts: 15 findings — high 0, medium 3, low 11, false 0, maybe-false 1
+- findings:
+  - `medium` `patch` Blind/Edge: a run superseded while `adapter.open` runs or the proxy starts yields an error record instead of throwing — patch: `assertCurrent` before yielding the record
+  - `medium` `patch` VGap: the `degraded` check short-circuits the negative reuse tests (model, cwd, home, resume, session id, dead process), so AD-13 checks are no longer exercised — patch: give both turns a usable settings env
+  - `medium` `patch` VGap: no two-turn live-session run with MCP off, so warm reuse for an adapter without P7 is unverified — patch: add the test
+  - `low` `patch` Blind/Edge: a degraded process keeps its 15-minute idle timer though it can never be reused — patch: close it when its turn ends
+  - `maybe-false` `defer` Blind/Edge: `degraded` is inferred from the settings file, not from what the CLI saw at connect (a 401/502 from a valid target also makes Cursor drop the server), and a reused process given a no-settings turn is not marked — maybe-false (medium if true): settle by recording the first initialize status in the proxy; docs now say the first turn only
+  - `low` `patch` Edge: the request header drop list misses `forwarded`, `x-real-ip`, `referer`, `via`, `proxy-connection` — patch: add them
+  - `low` `patch` Blind: a proxy start failure is a non-retryable `unknown` error — patch: wrap as a retryable `server_error`
+  - `low` `patch` Blind/Edge: user docs lack rows for proxy start failure and close during start, and say 404 for a path outside /mcp although the token is checked first — patch
+  - `low` `patch` Blind/Edge: the real-host live test would also pass if turn 2 opened a fresh chat — patch: turn 1 states a nonce, turn 2 must repeat it
+  - `low` `patch` Blind: a rejecting `session.close()` hides the real cause — patch: swallow the close error
+  - `low` `patch` Edge: a non-blank invalid `httpUrl` hides a valid `url` — patch: try each candidate through the checks
+  - `low` `reject` Edge: the CLI's query can duplicate or shadow the target's, and rewriting `searchParams` re-serializes the target's query — the host URL carries no query; a CLI cannot reach host state through it
+  - `low` `reject` Blind: weak or brittle unit assertions (`toThrow()` without a message, `>= 1`, call counts) — the behaviors are covered; polishing adds churn
+  - `low` `reject` Blind: `turnTarget` computed and unused when MCP is off; register and activate cleanup paths differ — cosmetic, behavior correct
+  - `low` `reject` Intent: warm-session evidence is at the stub surface, the real-host test is two cold `--local` runs, tokens are not observed at the real host, the outside-turn rejection is stub-only — descriptive; carried from pass 1 and recorded in deferred
 
 ### 2026-10-17 — Review pass
 - verdicts: 19 findings — high 0, medium 6, low 9, false 0, maybe-false 4
