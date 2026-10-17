@@ -28,3 +28,5 @@
 - Vitest env makes OpenClaw mute output; strip `VITEST*` when a test spawns it.
 - Host-less checks use `test/fixtures/fake-cursor-agent.mjs` (ACP stand-in; steer with `[[hang]]`, `[[crash]]`, `[[ask-permission]]`, `[[refuse]]`, `say:<text>`; env knobs `FAKE_CURSOR_DEFAULT_MODEL`, `FAKE_CURSOR_IGNORE_CANCEL`, `FAKE_CURSOR_IGNORE_TERM`, `FAKE_CURSOR_IGNORE_STDIN_EOF`, `FAKE_CURSOR_NO_INIT`, `FAKE_CURSOR_NO_ASK_MODE`, `FAKE_CURSOR_LOGGED_IN`, `FAKE_CURSOR_LOG`). It proves wiring only, not Cursor behavior.
 - Plugin startup loading (#148584, OpenClaw 2026.10.3): with no config naming `cursor-cli`, the Gateway loads the plugin on the first turn selecting it; with `agents.defaults.model.primary = cursor-cli/auto` it loads at startup.
+
+- Live Cursor (2026.10.16): with `CURSOR_API_KEY`, skip `authenticate{cursor_login}` (it opens a browser and fails). ACP lists models under `models` with ids like `default[]`, not a configOptions select. Cursor returns backend errors as message text with `end_turn`. The proxy must allow `agentn.global.api5.cursor.sh` for a real turn.

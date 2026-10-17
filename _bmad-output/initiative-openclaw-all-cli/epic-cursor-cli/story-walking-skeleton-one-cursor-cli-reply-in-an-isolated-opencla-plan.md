@@ -17,6 +17,20 @@ context: []
 warnings: []
 deferred:
   - summary: >-
+      Real Cursor reports models as ACP `models` (ids like `default[]`, `grok-4.7[...]`), not as a configOptions model select, so a non-auto model fails with capability_mismatch.
+    evidence: |-
+      Seen live on cursor-agent 2026.10.16 (session/new result). `auto` works because it sends no switch.
+    location: >-
+      src/transports/acp/session.ts
+    severity: medium
+  - summary: >-
+      Cursor reports backend errors (network, quota) as an agent_message_chunk plus stopReason end_turn, so the plugin shows the error text as a normal reply.
+    evidence: |-
+      Seen live: a blocked host produced "Error: RetriableError: ..." as the reply and a successful turn.
+    location: >-
+      src/transports/acp/session.ts
+    severity: medium
+  - summary: >-
       Error code and retryable never reach OpenClaw's failover logic; a dead native session is never dropped.
     evidence: |-
       Unknown whether the host's result event can carry a failover reason or drop the binding on session_expired. Read the SDK parsed-event type.
@@ -178,3 +192,11 @@ Implementation commit: `4af9048e17a0e2539e66b7daed1e68890df5beab` (baseline `789
 - Follow-up review recommended: false. No high patched; the work converged.
 - Verification (orchestrator, isolated Node 24): `npm run typecheck` and `npm run build` clean; `npx vitest run` 86 passed, 1 skipped (live test, needs real Cursor).
 - Residual risks: live Cursor check NOT RUN; real `cursor-agent status` wording, `ask` mode, model list and `session/load` unconfirmed; 5 deferred items listed in frontmatter.
+
+## Live Cursor check (2026-10-17)
+
+cursor-agent 2026.10.16 installed on the host; `CURSOR_API_KEY` set; isolated OpenClaw 2026.10.3, Node 24.
+- Found and fixed: `authenticate{cursor_login}` fails with an API key ("Failed to open browser"). The adapter now skips it when `CURSOR_API_KEY` is set.
+- Confirmed: `initialize` (loadSession true, authMethods cursor_login), `session/new` with modes agent/plan/ask, `cursor-agent status` says "Not logged in" without a login. The plugin starts a live session and runs the turn in the real Cursor.
+- Not confirmed: the reply text. The turn failed inside Cursor: the environment proxy blocks `agentn.global.api5.cursor.sh`. Allow it (and `*.api5.cursor.sh`, `api3.cursor.sh`) in the environment's network policy and rerun.
+- Confirmed live: `session/load` of an id Cursor does not know returns "Invalid params", so a stale binding fails every turn (deferred item 2).

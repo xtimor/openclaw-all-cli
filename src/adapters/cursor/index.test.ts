@@ -73,6 +73,32 @@ describe("cursor adapter", () => {
     expect(events.at(-1)).toMatchObject({ kind: "result", text: expect.stringContaining("model fake-fast") });
   });
 
+  it("skips the login step when CURSOR_API_KEY is set, and runs it otherwise", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "oac-cursor-"));
+    try {
+      const methodsFor = async (extra: Record<string, string>) => {
+        const file = join(dir, `requests-${Object.keys(extra).length}.jsonl`);
+        const session = await cursorAdapter.open({
+          command: FAKE_CURSOR_AGENT,
+          args: cursorAdapter.launchArgs,
+          cwd: process.cwd(),
+          env: fakeEnv({ FAKE_CURSOR_LOG: file, ...extra }),
+          modelId: "auto",
+          onPermissionRequest: async () => "reject_once",
+        });
+        open.push(session);
+        return readFileSync(file, "utf8")
+          .trim()
+          .split("\n")
+          .map((line) => JSON.parse(line).method);
+      };
+      expect(await methodsFor({})).toContain("authenticate");
+      expect(await methodsFor({ CURSOR_API_KEY: "key" })).not.toContain("authenticate");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   it("sends no model change for cursor-cli/auto, even when the session starts on another model", async () => {
     const dir = mkdtempSync(join(tmpdir(), "oac-cursor-"));
     try {

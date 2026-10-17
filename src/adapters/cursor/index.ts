@@ -36,7 +36,8 @@ function open(params: OpenParams): Promise<CliSession> {
     args: params.args,
     cwd: params.cwd,
     env: params.env,
-    authMethodId: "cursor_login",
+    // With an API key Cursor needs no login step; `authenticate{cursor_login}` would try a browser login and fail.
+    ...(params.env.CURSOR_API_KEY?.trim() ? {} : { authMethodId: "cursor_login" }),
     // Until the per-agent permissions (entry 2) and permission routing (entry 4) land, the
     // session runs in Cursor's read-only mode so a native edit or shell command cannot act.
     requiredModeId: "ask",
