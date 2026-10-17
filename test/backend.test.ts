@@ -1,7 +1,9 @@
-import { readFileSync } from "node:fs";
-import { describe, expect, it } from "vitest";
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { afterAll, describe, expect, it } from "vitest";
 import { ADAPTERS } from "../src/registry.ts";
-import { cursorAdapter } from "../src/adapters/cursor/index.ts";
+import { CURSOR_PERMISSIONS, cursorAdapter } from "../src/adapters/cursor/index.ts";
 import { backendIdFor, buildCliBackend, nativeAuthMarkerFor } from "../src/core/backend.ts";
 import { createConfigValidator, registerAdapters } from "../src/core/register.ts";
 import provider from "../src/provider-discovery.ts";
@@ -34,14 +36,18 @@ describe("cursor-cli backend", () => {
     expect(custom.config.command).toBe("/opt/cursor-agent");
   });
 
-  it("runs a prepared turn end to end against an ACP agent", async () => {
-    const prepared = await backend.prepareExecution!({} as never);
+  const scratch = mkdtempSync(join(tmpdir(), "oac-backend-"));
+  afterAll(() => rmSync(scratch, { recursive: true, force: true }));
+
+  type Turn = { records: Record<string, unknown>[]; events: Array<Record<string, unknown> | null> };
+  async function runTurn(agentDir: string | undefined, env: Record<string, string> = {}, cwd = process.cwd()): Promise<Turn> {
+    const prepared = await backend.prepareExecution!({ ...(agentDir === undefined ? {} : { agentDir }) } as never);
     const records: Record<string, unknown>[] = [];
     for await (const record of prepared!.execute!({
       command: FAKE_CURSOR_AGENT,
       args: ["acp"],
-      cwd: process.cwd(),
-      env: fakeEnv(),
+      cwd,
+      env: fakeEnv(env),
       prompt: "say:pong",
       modelId: "auto",
       systemPrompt: "",
@@ -53,8 +59,52 @@ describe("cursor-cli backend", () => {
       records.push(record);
     }
     const parse = backend.parseJsonlEvent!;
-    const events = records.map((record) => parse(JSON.stringify(record), {} as never));
+    return { records, events: records.map((record) => parse(JSON.stringify(record), {} as never) as never) };
+  }
+
+  const homeOf = (agentDir: string) => join(agentDir, "openclaw-all-cli", "cursor-cli");
+
+  it("runs a prepared turn end to end against an ACP agent", async () => {
+    const { events } = await runTurn(join(scratch, "end-to-end"));
     expect(events.at(-1)).toMatchObject({ kind: "result", text: "pong", sessionId: "fake-session-1" });
+  });
+
+  it("gives each agent its own home with the static permissions and leaves the workspace alone", async () => {
+    const workspace = join(scratch, "workspace");
+    mkdirSync(workspace);
+    const homes: Record<string, { config: string; data: string }> = {};
+    for (const name of ["agent-a", "agent-b"]) {
+      const agentDir = join(scratch, name);
+      const log = join(scratch, `${name}.jsonl`);
+      const { events } = await runTurn(agentDir, { FAKE_CURSOR_LOG: log }, workspace);
+      expect(events.at(-1)).toMatchObject({ kind: "result", text: "pong" });
+      const initialize = readFileSync(log, "utf8")
+        .trim()
+        .split("\n")
+        .map((line) => JSON.parse(line))
+        .find((entry) => entry.method === "initialize");
+      homes[name] = { config: initialize.env.CURSOR_CONFIG_DIR, data: initialize.env.CURSOR_DATA_DIR };
+      expect(homes[name]).toEqual({ config: homeOf(agentDir), data: join(homeOf(agentDir), "data") });
+      expect(JSON.parse(readFileSync(join(homeOf(agentDir), "cli-config.json"), "utf8"))).toEqual({
+        permissions: CURSOR_PERMISSIONS,
+      });
+    }
+    expect(homes["agent-a"]!.config).not.toBe(homes["agent-b"]!.config);
+    expect(readdirSync(workspace)).toEqual([]);
+  });
+
+  it.each([undefined, ""])("fails the turn when OpenClaw gives no agent directory (%j)", async (agentDir) => {
+    const cwd = mkdtempSync(join(scratch, "no-agent-dir-"));
+    const { records, events } = await runTurn(agentDir, {}, cwd);
+    expect(records).toHaveLength(1);
+    expect(records[0]).toMatchObject({ type: "result", is_error: true });
+    expect(events.at(-1)).toMatchObject({
+      kind: "result",
+      errorText: expect.stringContaining("OpenClaw gave no agent directory"),
+    });
+    // No shared home appears anywhere: nothing was created next to the scratch agent homes or in the cwd.
+    expect(readdirSync(cwd)).toEqual([]);
+    expect(existsSync(join(process.cwd(), "openclaw-all-cli"))).toBe(false);
   });
 });
 

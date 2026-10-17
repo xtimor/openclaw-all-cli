@@ -194,6 +194,9 @@ export interface CliSession {
   waitForExit(): Promise<void>;
 }
 
+/** Environment variables an adapter adds so its CLI keeps its state in the per-agent home. */
+export type HomeEnv = Readonly<Record<string, string>>;
+
 export type AuthStatus = "available" | "missing" | "unreadable";
 
 export type AuthProbeParams = {
@@ -218,6 +221,12 @@ export interface CliAdapter {
   readonly manifest: CapabilityManifest;
   /** Asks the CLI whether its own login works, without reading token material. */
   probeAuth(params: AuthProbeParams): Promise<AuthStatus>;
+  /**
+   * Sets up the per-agent home (AD-6): the directory is the core's choice, the CLI's variable
+   * names and file format are the adapter's. Writes only static permissions (AD-9), safe to call
+   * for the same home from parallel turns. Returns the env additions that point the CLI at it.
+   */
+  prepareHome(home: string): Promise<HomeEnv>;
   /** Starts the process and the native session. Throws `CliError` only. */
   open(params: OpenParams): Promise<CliSession>;
 }

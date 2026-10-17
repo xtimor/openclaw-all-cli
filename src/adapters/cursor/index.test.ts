@@ -1,11 +1,11 @@
-import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { FAKE_CURSOR_AGENT, fakeEnv } from "../../../test/fixtures/paths.ts";
 import type { CliSession, NormalizedEvent } from "../../core/ports.ts";
 import { PARITY_ROWS } from "../../core/ports.ts";
-import { cursorAdapter, parseStatusOutput } from "./index.ts";
+import { CURSOR_PERMISSIONS, cursorAdapter, parseStatusOutput } from "./index.ts";
 import { cursorManifest } from "./manifest.ts";
 
 const open: CliSession[] = [];
@@ -133,6 +133,103 @@ describe("cursor adapter", () => {
         onPermissionRequest: async () => "reject_once",
       }),
     ).rejects.toMatchObject({ code: "capability_mismatch" });
+  });
+
+  describe("per-agent home", () => {
+    let root: string;
+    beforeEach(() => {
+      root = mkdtempSync(join(tmpdir(), "oac-home-"));
+    });
+    afterEach(() => {
+      rmSync(root, { recursive: true, force: true });
+    });
+    const configOf = (home: string) => join(home, "cli-config.json");
+    const read = (home: string) => JSON.parse(readFileSync(configOf(home), "utf8")) as Record<string, unknown>;
+
+    it("points Cursor's config and chat store at the home and writes the static permissions", async () => {
+      const home = join(root, "agent-a", "openclaw-all-cli", "cursor-cli");
+      await expect(cursorAdapter.prepareHome(home)).resolves.toEqual({
+        CURSOR_CONFIG_DIR: home,
+        CURSOR_DATA_DIR: join(home, "data"),
+      });
+      expect(read(home)).toEqual({ permissions: CURSOR_PERMISSIONS });
+      expect(CURSOR_PERMISSIONS).toEqual({
+        allow: ["Read(**)", "Mcp(openclaw:*)"],
+        deny: ["Shell(*)", "Write(**)", "WebFetch(*)"],
+      });
+    });
+
+    it("gives two agents separate homes with the same permissions", async () => {
+      const a = join(root, "a");
+      const b = join(root, "b");
+      const [envA, envB] = await Promise.all([cursorAdapter.prepareHome(a), cursorAdapter.prepareHome(b)]);
+      expect(envA.CURSOR_CONFIG_DIR).not.toBe(envB.CURSOR_CONFIG_DIR);
+      expect(envA.CURSOR_DATA_DIR).not.toBe(envB.CURSOR_DATA_DIR);
+      expect(read(a)).toEqual(read(b));
+    });
+
+    it("does not rewrite a file that already holds the permissions", async () => {
+      const home = join(root, "a");
+      await cursorAdapter.prepareHome(home);
+      const before = statSync(configOf(home));
+      await cursorAdapter.prepareHome(home);
+      const after = statSync(configOf(home));
+      expect(after.ino).toBe(before.ino);
+      expect(after.mtimeMs).toBe(before.mtimeMs);
+    });
+
+    it("keeps keys Cursor wrote and replaces only the permissions", async () => {
+      const home = join(root, "a");
+      mkdirSync(home, { recursive: true });
+      writeFileSync(
+        configOf(home),
+        JSON.stringify({ version: 1, editor: { vimMode: true }, permissions: { allow: ["Shell(*)"], deny: [] } }),
+      );
+      await cursorAdapter.prepareHome(home);
+      expect(read(home)).toEqual({ version: 1, editor: { vimMode: true }, permissions: CURSOR_PERMISSIONS });
+    });
+
+    it("replaces an unreadable config file", async () => {
+      const home = join(root, "a");
+      mkdirSync(home, { recursive: true });
+      writeFileSync(configOf(home), "{broken");
+      await cursorAdapter.prepareHome(home);
+      expect(read(home)).toEqual({ permissions: CURSOR_PERMISSIONS });
+    });
+
+    it("leaves one valid file when many turns prepare one home at once", async () => {
+      const home = join(root, "a");
+      mkdirSync(home, { recursive: true });
+      writeFileSync(configOf(home), JSON.stringify({ keep: true }));
+      await Promise.all(Array.from({ length: 25 }, () => cursorAdapter.prepareHome(home)));
+      expect(read(home)).toEqual({ keep: true, permissions: CURSOR_PERMISSIONS });
+      expect(readdirSync(home)).toEqual(["cli-config.json"]);
+    });
+
+    it("runs Cursor with the home's env and creates nothing in the working directory", async () => {
+      const home = join(root, "agent", "openclaw-all-cli", "cursor-cli");
+      const cwd = join(root, "workspace");
+      mkdirSync(cwd);
+      const log = join(root, "requests.jsonl");
+      const env = await cursorAdapter.prepareHome(home);
+      const session = await cursorAdapter.open({
+        command: FAKE_CURSOR_AGENT,
+        args: cursorAdapter.launchArgs,
+        cwd,
+        env: fakeEnv({ FAKE_CURSOR_LOG: log, ...env }),
+        modelId: "auto",
+        onPermissionRequest: async () => "reject_once",
+      });
+      open.push(session);
+      for await (const _ of session.prompt("say:hi")) void _;
+      const initialize = readFileSync(log, "utf8")
+        .trim()
+        .split("\n")
+        .map((line) => JSON.parse(line))
+        .find((entry) => entry.method === "initialize");
+      expect(initialize.env).toEqual({ CURSOR_CONFIG_DIR: home, CURSOR_DATA_DIR: join(home, "data") });
+      expect(readdirSync(cwd)).toEqual([]);
+    });
   });
 
   it("has a manifest row for every parity row", () => {

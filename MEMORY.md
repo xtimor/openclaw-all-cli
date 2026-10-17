@@ -30,3 +30,4 @@
 - Plugin startup loading (#148584, OpenClaw 2026.10.3): with no config naming `cursor-cli`, the Gateway loads the plugin on the first turn selecting it; with `agents.defaults.model.primary = cursor-cli/auto` it loads at startup.
 
 - Live Cursor (2026.10.16): with `CURSOR_API_KEY`, skip `authenticate{cursor_login}` (it opens a browser and fails). ACP lists models under `models` with ids like `default[]`, not a configOptions select. Cursor returns backend errors as message text with `end_turn`. The proxy must allow `agentn.global.api5.cursor.sh` for a real turn.
+- Per-agent home (entry 2): `<agentDir>/openclaw-all-cli/<backendId>/` with `cli-config.json` permissions; real `cursor-agent acp` in agent mode creates no file with it and does create one without it (checked 2026-10-17, `test/live/per-agent-home.live.test.ts`). Unverified: a login kept in the config dir (no Keychain) may be invisible to a per-agent `CURSOR_CONFIG_DIR`; this host has only `CURSOR_API_KEY`.

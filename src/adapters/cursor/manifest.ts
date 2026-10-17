@@ -15,7 +15,7 @@ export const cursorManifest = createManifest(CURSOR_MIN_VERSION, {
   P5: { status: "match", note: "ACP session/load" },
   P6: { status: "gap", note: "cursor-agent has no fork or checkpoint flag" },
   P7: { status: "spike", note: "ACP session/new mcpServers is spiked; the MCP proxy is not wired" },
-  P8: { status: "approx", note: "shell requests are rejected; OpenClaw exec is not offered yet" },
+  P8: { status: "approx", note: "per-agent cli-config.json denies Shell, Write, and WebFetch; OpenClaw exec is not offered yet" },
   P9: { status: "approx", note: "shell and MCP ask; native edits do not ask" },
   P10: { status: "spike", note: "tools.allow and deny via per-agent cli-config.json" },
   P11: { status: "spike", note: "--plugin-dir or a prompt catalog" },

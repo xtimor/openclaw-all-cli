@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import type { AgentHome } from "./home.ts";
 import { toRecord, type CoreRecord, type TurnSummary } from "./events.ts";
 import {
   CliError,
@@ -15,6 +16,8 @@ export const DEFAULT_IDLE_MS = 15 * 60_000;
 export const DEFAULT_ABORT_GRACE_MS = 5_000;
 
 export type ExecuteOptions = {
+  /** The agent's CLI home (AD-6). Every process the execute opens runs in it. */
+  home: AgentHome;
   idleMs?: number;
   abortGraceMs?: number;
 };
@@ -31,8 +34,8 @@ type LiveEntry = {
 /** Live processes by their host handle. The host owns the lifecycle; this only finds the process. */
 const entries = new WeakMap<LiveSessionHandle, LiveEntry>();
 
-function reuseKey(ctx: ExecuteContext): string {
-  return JSON.stringify([ctx.modelId, ctx.cwd]);
+function reuseKey(ctx: ExecuteContext, home: AgentHome): string {
+  return JSON.stringify([ctx.modelId, ctx.cwd, home.dir]);
 }
 
 function composePrompt(ctx: ExecuteContext): string {
@@ -45,7 +48,7 @@ async function rejectPermission(): Promise<PermissionDecision> {
   return "reject_once";
 }
 
-function errorRecord(error: unknown): CoreRecord {
+export function errorRecord(error: unknown): CoreRecord {
   const info =
     error instanceof CliError
       ? error.toInfo()
@@ -65,6 +68,7 @@ function errorRecord(error: unknown): CoreRecord {
 export function createExecute(adapter: CliAdapter, options: ExecuteOptions): CliBackendExecute {
   const idleMs = options.idleMs ?? DEFAULT_IDLE_MS;
   const abortGraceMs = options.abortGraceMs ?? DEFAULT_ABORT_GRACE_MS;
+  const { home } = options;
 
   function reusable(ctx: ExecuteContext, live: LiveSessionCapability | undefined): LiveEntry | undefined {
     const current = live?.current();
@@ -72,7 +76,7 @@ export function createExecute(adapter: CliAdapter, options: ExecuteOptions): Cli
     const entry = entries.get(current);
     if (!entry || entry.busy || !entry.session.alive) return undefined;
     if (!ctx.useResume || ctx.sessionId !== entry.session.sessionId) return undefined;
-    return entry.key === reuseKey(ctx) ? entry : undefined;
+    return entry.key === reuseKey(ctx, home) ? entry : undefined;
   }
 
   async function openEntry(ctx: ExecuteContext, live: LiveSessionCapability | undefined): Promise<LiveEntry> {
@@ -80,7 +84,7 @@ export function createExecute(adapter: CliAdapter, options: ExecuteOptions): Cli
       command: ctx.command,
       args: ctx.args,
       cwd: ctx.cwd,
-      env: ctx.env,
+      env: { ...ctx.env, ...home.env },
       modelId: ctx.modelId,
       ...(ctx.useResume && ctx.sessionId ? { resumeSessionId: ctx.sessionId } : {}),
       onPermissionRequest: rejectPermission,
@@ -89,7 +93,7 @@ export function createExecute(adapter: CliAdapter, options: ExecuteOptions): Cli
     let closing = false;
     const entry: LiveEntry = {
       session,
-      key: reuseKey(ctx),
+      key: reuseKey(ctx, home),
       busy: false,
       handle: {
         generation: randomUUID(),

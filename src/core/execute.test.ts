@@ -5,6 +5,8 @@ import { CliError, type CliAdapter, type CliSession, type NormalizedEvent, type 
 import { createManifest } from "./ports.ts";
 import type { ExecuteContext, LiveSessionCapability, LiveSessionHandle } from "./sdk-types.ts";
 
+const HOME = { dir: "/agent/openclaw-all-cli/acme-cli", env: { ACME_HOME: "/agent/openclaw-all-cli/acme-cli" } };
+
 type Script = (prompt: string, session: FakeSession) => AsyncGenerator<NormalizedEvent>;
 
 class FakeSession implements CliSession {
@@ -48,6 +50,7 @@ function makeAdapter(script: Script = okTurn) {
     defaultModel: "acme-cli/auto",
     manifest: createManifest("1", {}),
     probeAuth: async () => "available",
+    prepareHome: async (home) => ({ ACME_HOME: home }),
     open: async (params) => {
       opens.push(params);
       const session = new FakeSession(`native-${sessions.length + 1}`, script);
@@ -117,7 +120,7 @@ describe("createExecute", () => {
   it("streams a turn: session ID, deltas, then one result with usage", async () => {
     const { adapter, sessions, opens } = makeAdapter();
     const { live, calls } = makeLive();
-    const records = await run(createExecute(adapter, {}), makeCtx({ liveSession: live }));
+    const records = await run(createExecute(adapter, { home: HOME }), makeCtx({ liveSession: live }));
 
     expect(parsed(records)).toEqual([
       { kind: "sessionId", sessionId: "native-1" },
@@ -134,7 +137,7 @@ describe("createExecute", () => {
 
   it("rejects CLI permission requests until routing exists", async () => {
     const { adapter, opens } = makeAdapter();
-    await run(createExecute(adapter, {}), makeCtx());
+    await run(createExecute(adapter, { home: HOME }), makeCtx());
     await expect(
       opens[0]?.onPermissionRequest({ title: "Run shell command", kind: "execute" }),
     ).resolves.toBe("reject_once");
@@ -143,7 +146,7 @@ describe("createExecute", () => {
   it("reuses the warm process when model, cwd, and native session match", async () => {
     const { adapter, sessions, opens } = makeAdapter();
     const { live, calls } = makeLive();
-    const execute = createExecute(adapter, {});
+    const execute = createExecute(adapter, { home: HOME });
     await run(execute, makeCtx({ liveSession: live }));
     await run(execute, makeCtx({ liveSession: live, useResume: true, sessionId: "native-1", prompt: "again" }));
 
@@ -160,7 +163,7 @@ describe("createExecute", () => {
   ])("opens a new process for %s", async (_name, change) => {
     const { adapter, sessions, opens } = makeAdapter();
     const { live, calls } = makeLive();
-    const execute = createExecute(adapter, {});
+    const execute = createExecute(adapter, { home: HOME });
     await run(execute, makeCtx({ liveSession: live }));
     await run(execute, makeCtx({ liveSession: live, useResume: true, sessionId: "native-1", ...change }));
 
@@ -169,15 +172,33 @@ describe("createExecute", () => {
     expect(calls.restart).toBe(2);
   });
 
+  it("opens a new process when the agent's home differs", async () => {
+    const { adapter, opens } = makeAdapter();
+    const { live } = makeLive();
+    const other = { dir: "/other/openclaw-all-cli/acme-cli", env: { ACME_HOME: "/other/openclaw-all-cli/acme-cli" } };
+    await run(createExecute(adapter, { home: HOME }), makeCtx({ liveSession: live }));
+    await run(
+      createExecute(adapter, { home: other }),
+      makeCtx({ liveSession: live, useResume: true, sessionId: "native-1" }),
+    );
+    expect(opens).toHaveLength(2);
+  });
+
+  it("adds the home's env to the process env, over the host's", async () => {
+    const { adapter, opens } = makeAdapter();
+    await run(createExecute(adapter, { home: HOME }), makeCtx({ env: { PATH: "/bin", ACME_HOME: "/host" } }));
+    expect(opens[0]?.env).toEqual({ PATH: "/bin", ACME_HOME: HOME.env.ACME_HOME });
+  });
+
   it("resumes the native session after a restart", async () => {
     const { adapter, opens } = makeAdapter();
-    await run(createExecute(adapter, {}), makeCtx({ useResume: true, sessionId: "native-7" }));
+    await run(createExecute(adapter, { home: HOME }), makeCtx({ useResume: true, sessionId: "native-7" }));
     expect(opens[0]?.resumeSessionId).toBe("native-7");
   });
 
   it("closes the process after the turn when the host gives no live session", async () => {
     const { adapter, sessions } = makeAdapter();
-    await run(createExecute(adapter, {}), makeCtx());
+    await run(createExecute(adapter, { home: HOME }), makeCtx());
     expect(sessions[0]?.closed).toBe(1);
   });
 
@@ -186,7 +207,7 @@ describe("createExecute", () => {
     try {
       const { adapter, sessions } = makeAdapter();
       const { live, calls } = makeLive();
-      await run(createExecute(adapter, { idleMs: 1000 }), makeCtx({ liveSession: live }));
+      await run(createExecute(adapter, { home: HOME, idleMs: 1000 }), makeCtx({ liveSession: live }));
       expect(sessions[0]?.closed).toBe(0);
       await vi.advanceTimersByTimeAsync(1001);
       expect(sessions[0]?.closed).toBe(1);
@@ -202,7 +223,7 @@ describe("createExecute", () => {
     };
     const { adapter, sessions } = makeAdapter(failing);
     const { live, calls } = makeLive();
-    const records = await run(createExecute(adapter, {}), makeCtx({ liveSession: live }));
+    const records = await run(createExecute(adapter, { home: HOME }), makeCtx({ liveSession: live }));
     expect(parsed(records).at(-1)).toEqual({ kind: "result", errorText: "slow down" });
     expect(records.at(-1)).toMatchObject({ type: "result", is_error: true });
     expect(sessions[0]?.closed).toBe(1);
@@ -214,7 +235,7 @@ describe("createExecute", () => {
     adapter.open = async () => {
       throw new CliError({ code: "cli_not_found", message: "no binary" });
     };
-    const records = await run(createExecute(adapter, {}), makeCtx());
+    const records = await run(createExecute(adapter, { home: HOME }), makeCtx());
     expect(parsed(records)).toEqual([{ kind: "result", errorText: "no binary" }]);
   });
 
@@ -223,7 +244,7 @@ describe("createExecute", () => {
       yield { kind: "text", text: "partial" };
     };
     const { adapter, sessions } = makeAdapter(silent);
-    const records = await run(createExecute(adapter, {}), makeCtx());
+    const records = await run(createExecute(adapter, { home: HOME }), makeCtx());
     expect(parsed(records).at(-1)).toMatchObject({ kind: "result", errorText: expect.stringContaining("without a result") });
     expect(sessions[0]?.closed).toBe(1);
   });
@@ -235,7 +256,7 @@ describe("createExecute", () => {
     };
     const { adapter, sessions } = makeAdapter(hanging);
     const controller = new AbortController();
-    const turn = run(createExecute(adapter, {}), makeCtx({ abortSignal: controller.signal }));
+    const turn = run(createExecute(adapter, { home: HOME }), makeCtx({ abortSignal: controller.signal }));
     await new Promise((resolve) => setTimeout(resolve, 30));
     controller.abort(new Error("stop"));
     await expect(turn).rejects.toThrow();
@@ -249,7 +270,7 @@ describe("createExecute", () => {
     };
     const { adapter, sessions } = makeAdapter(stubborn);
     const controller = new AbortController();
-    const turn = run(createExecute(adapter, { abortGraceMs: 20 }), makeCtx({ abortSignal: controller.signal }));
+    const turn = run(createExecute(adapter, { home: HOME, abortGraceMs: 20 }), makeCtx({ abortSignal: controller.signal }));
     const outcome = expect(turn).rejects.toThrow();
     await new Promise((resolve) => setTimeout(resolve, 30));
     controller.abort(new Error("stop"));
@@ -261,7 +282,7 @@ describe("createExecute", () => {
   it("opens a new process when the warm one died", async () => {
     const { adapter, sessions, opens } = makeAdapter();
     const { live } = makeLive();
-    const execute = createExecute(adapter, {});
+    const execute = createExecute(adapter, { home: HOME });
     await run(execute, makeCtx({ liveSession: live }));
     sessions[0]!.alive = false;
     await run(execute, makeCtx({ liveSession: live, useResume: true, sessionId: "native-1" }));
@@ -272,7 +293,7 @@ describe("createExecute", () => {
   it("opens a new process and restarts when the host's fingerprint changed", async () => {
     const { adapter, opens } = makeAdapter();
     const { live, calls } = makeLive();
-    const execute = createExecute(adapter, {});
+    const execute = createExecute(adapter, { home: HOME });
     await run(execute, makeCtx({ liveSession: live }));
     const changed = { ...live, fingerprint: "other" } as LiveSessionCapability;
     await run(execute, makeCtx({ liveSession: changed, useResume: true, sessionId: "native-1" }));
@@ -293,7 +314,7 @@ describe("createExecute", () => {
     live.restart = async () => {
       current = false;
     };
-    await expect(run(createExecute(adapter, {}), ctx)).rejects.toThrow("superseded");
+    await expect(run(createExecute(adapter, { home: HOME }), ctx)).rejects.toThrow("superseded");
     expect(opens).toHaveLength(0);
   });
 
@@ -303,7 +324,7 @@ describe("createExecute", () => {
     live.register = () => {
       throw new Error("host refused");
     };
-    await expect(run(createExecute(adapter, {}), makeCtx({ liveSession: live }))).rejects.toThrow("host refused");
+    await expect(run(createExecute(adapter, { home: HOME }), makeCtx({ liveSession: live }))).rejects.toThrow("host refused");
     expect(sessions[0]?.closed).toBe(1);
   });
 
@@ -316,7 +337,7 @@ describe("createExecute", () => {
     };
     const records: Record<string, unknown>[] = [];
     const consume = async () => {
-      for await (const record of createExecute(adapter, {})(makeCtx({ liveSession: live }))) records.push(record);
+      for await (const record of createExecute(adapter, { home: HOME })(makeCtx({ liveSession: live }))) records.push(record);
     };
     await expect(consume()).rejects.toBe(hostError);
     expect(records).toEqual([]);
@@ -327,14 +348,14 @@ describe("createExecute", () => {
     const { adapter, opens } = makeAdapter();
     const controller = new AbortController();
     controller.abort(new Error("stop"));
-    await expect(run(createExecute(adapter, {}), makeCtx({ abortSignal: controller.signal }))).rejects.toThrow();
+    await expect(run(createExecute(adapter, { home: HOME }), makeCtx({ abortSignal: controller.signal }))).rejects.toThrow();
     expect(opens).toHaveLength(0);
   });
 
   it("adds the host's private prompt context around the prompt", async () => {
     const { adapter, sessions } = makeAdapter();
     await run(
-      createExecute(adapter, {}),
+      createExecute(adapter, { home: HOME }),
       makeCtx({ promptContext: { prependContext: "before", appendContext: "after" } }),
     );
     expect(sessions[0]?.prompts).toEqual(["before\n\nhi\n\nafter"]);

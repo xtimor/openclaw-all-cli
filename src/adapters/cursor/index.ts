@@ -1,6 +1,9 @@
+import { isDeepStrictEqual } from "node:util";
+import { join } from "node:path";
 import { AcpSession } from "../../transports/acp/session.ts";
+import { readJsonObject, writeJsonAtomic } from "../../transports/files.ts";
 import { runCommand } from "../../transports/process.ts";
-import type { AuthProbeParams, AuthStatus, CliAdapter, CliSession, OpenParams } from "../../core/ports.ts";
+import type { AuthProbeParams, AuthStatus, CliAdapter, CliSession, HomeEnv, OpenParams } from "../../core/ports.ts";
 import { cursorManifest } from "./manifest.ts";
 
 const PROBE_TIMEOUT_MS = 5_000;
@@ -30,6 +33,28 @@ async function probeAuth(params: AuthProbeParams): Promise<AuthStatus> {
   return parseStatusOutput(`${result.stdout}\n${result.stderr}`);
 }
 
+/** AD-9: the same for every agent. Native read, grep, and glob stay open; the MCP proxy is allowed. */
+export const CURSOR_PERMISSIONS = {
+  allow: ["Read(**)", "Mcp(openclaw:*)"],
+  deny: ["Shell(*)", "Write(**)", "WebFetch(*)"],
+} as const;
+
+const CONFIG_FILE = "cli-config.json";
+
+/**
+ * Points Cursor's config and chat store at the per-agent home (AD-6) and writes the static
+ * permissions there. Keys Cursor wrote stay; the file is rewritten only when its permissions
+ * differ, and always by atomic rename so parallel turns never leave a partial file.
+ */
+async function prepareHome(home: string): Promise<HomeEnv> {
+  const file = join(home, CONFIG_FILE);
+  const existing = (await readJsonObject(file)) ?? {};
+  if (!isDeepStrictEqual(existing.permissions, CURSOR_PERMISSIONS)) {
+    await writeJsonAtomic(file, { ...existing, permissions: CURSOR_PERMISSIONS });
+  }
+  return { CURSOR_CONFIG_DIR: home, CURSOR_DATA_DIR: join(home, "data") };
+}
+
 function open(params: OpenParams): Promise<CliSession> {
   return AcpSession.open({
     command: params.command,
@@ -38,8 +63,8 @@ function open(params: OpenParams): Promise<CliSession> {
     env: params.env,
     // With an API key Cursor needs no login step; `authenticate{cursor_login}` would try a browser login and fail.
     ...(params.env.CURSOR_API_KEY?.trim() ? {} : { authMethodId: "cursor_login" }),
-    // Until the per-agent permissions (entry 2) and permission routing (entry 4) land, the
-    // session runs in Cursor's read-only mode so a native edit or shell command cannot act.
+    // The per-agent permissions deny shell, write, and fetch; until permission routing (entry 4)
+    // lands, the session also runs in Cursor's read-only mode as a second lock.
     requiredModeId: "ask",
     ...(params.modelId === AUTO_MODEL ? {} : { modelId: params.modelId }),
     ...(params.resumeSessionId ? { resumeSessionId: params.resumeSessionId } : {}),
@@ -56,5 +81,6 @@ export const cursorAdapter: CliAdapter = {
   defaultModel: "cursor-cli/auto",
   manifest: cursorManifest,
   probeAuth,
+  prepareHome,
   open,
 };

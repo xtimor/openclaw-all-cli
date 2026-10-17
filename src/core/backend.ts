@@ -1,6 +1,7 @@
 import type { BackendConfig } from "./config.ts";
 import { parseJsonlEvent } from "./events.ts";
-import { createExecute, type ExecuteOptions } from "./execute.ts";
+import { createExecute, errorRecord, type ExecuteOptions } from "./execute.ts";
+import { prepareAgentHome } from "./home.ts";
 import { deriveFlags } from "./manifest.ts";
 import type { CliAdapter } from "./ports.ts";
 import type { CliBackendPlugin } from "./sdk-types.ts";
@@ -37,7 +38,7 @@ export function buildCliBackend(adapter: CliAdapter, options: BuildBackendOption
       defaultMcpProbe: false,
     },
     // Native read, grep and glob stay reachable; the host must fail closed for callers that
-    // need no native tools until the per-agent permissions (entry 2) make them selectable.
+    // need no native tools until the tool-availability contract (entry 3) makes them selectable.
     nativeToolMode: "always-on",
     config: {
       command,
@@ -51,8 +52,19 @@ export function buildCliBackend(adapter: CliAdapter, options: BuildBackendOption
       ...(adapter.modelAliases ? { modelAliases: { ...adapter.modelAliases } } : {}),
     },
     parseJsonlEvent: (line) => parseJsonlEvent(line),
-    prepareExecution: () => ({
-      execute: createExecute(adapter, { ...options.execute }),
-    }),
+    prepareExecution: async (ctx) => {
+      try {
+        const home = await prepareAgentHome(adapter, backendIdFor(adapter), ctx.agentDir);
+        return { execute: createExecute(adapter, { ...options.execute, home }) };
+      } catch (error) {
+        // Fail the turn the way an open failure does: an error record, never a shared home.
+        const record = errorRecord(error);
+        return {
+          execute: async function* () {
+            yield record;
+          },
+        };
+      }
+    },
   };
 }

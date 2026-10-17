@@ -5,7 +5,8 @@
 //
 //   FAKE_CURSOR_LOGGED_IN=0     `status` reports "Not logged in"
 //   FAKE_CURSOR_NO_ASK_MODE=1   the agent lists no "ask" mode
-//   FAKE_CURSOR_LOG=<file>      append one JSON line per request the agent receives
+//   FAKE_CURSOR_LOG=<file>      append one JSON line per request the agent receives; the
+//                               `initialize` line also carries CURSOR_CONFIG_DIR/CURSOR_DATA_DIR
 //   FAKE_CURSOR_DEFAULT_MODEL=m the model a new session starts with (default "auto")
 //   FAKE_CURSOR_IGNORE_CANCEL=1 session/cancel does nothing
 //   FAKE_CURSOR_IGNORE_TERM=1   SIGTERM does nothing (only SIGKILL stops the process)
@@ -132,7 +133,13 @@ rl.on("line", (line) => {
     waitingForClient.delete(message.id);
     return;
   }
-  log({ method: message.method, params: message.params });
+  log({
+    method: message.method,
+    params: message.params,
+    ...(message.method === "initialize"
+      ? { env: { CURSOR_CONFIG_DIR: process.env.CURSOR_CONFIG_DIR, CURSOR_DATA_DIR: process.env.CURSOR_DATA_DIR } }
+      : {}),
+  });
   const { id, method, params } = message;
   switch (method) {
     case "initialize":

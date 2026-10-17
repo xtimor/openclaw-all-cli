@@ -2,7 +2,7 @@
 
 How to run `cursor-cli/<model>` in your OpenClaw.
 
-> **Status:** walking skeleton. The plugin registers `cursor-cli`, treats a Cursor login as auth, and answers a prompt over a warm `cursor-agent acp` session. Streaming of tool calls, OpenClaw tools, per-agent homes, and the model list in `/model` arrive in later changes; see [Cursor provider](providers/cursor.md) for what works now.
+> **Status:** walking skeleton. The plugin registers `cursor-cli`, treats a Cursor login as auth, and answers a prompt over a warm `cursor-agent acp` session. Streaming of tool calls, OpenClaw tools, and the model list in `/model` arrive in later changes; see [Cursor provider](providers/cursor.md) for what works now.
 
 ## Requirements
 
@@ -23,6 +23,8 @@ cursor-agent status
 ```
 
 `status` must say you are logged in. On macOS the login is stored in the Keychain and is shared by every agent. A `CURSOR_API_KEY` in the Gateway's environment also counts as a login.
+
+Each agent runs Cursor with its own config and chat store under `<agentDir>/openclaw-all-cli/cursor-cli/`, which the plugin creates. The plugin does not copy or change the login. Where Cursor keeps the login in its config directory instead of the Keychain, the per-agent home may not see it (not yet checked on a host without a Keychain); set `CURSOR_API_KEY` for the Gateway there.
 
 **Optional: Cursor API key.** Create a user API key in the Cursor Dashboard. Add it as an OpenClaw `api_key` auth profile if you want OpenClaw to replay chat history into a fresh Cursor session.
 
@@ -53,7 +55,7 @@ All settings are optional. They live under `plugins.entries.openclaw-all-cli.con
 | --- | --- | --- |
 | `cursor-cli.command` | `cursor-agent` | Path or name of the Cursor CLI. Set it when the Gateway's `PATH` does not include `cursor-agent`. |
 
-Isolation, transport, and API-key settings are documented here once they exist.
+Isolation needs no setting: every agent gets its own Cursor home with the same fixed permissions (see [Cursor provider](providers/cursor.md)). Transport and API-key settings are documented here once they exist.
 
 ## 4. Verify
 
@@ -70,6 +72,8 @@ The first command must report `"status": "loaded"` and `cursor-cli` under `cliBa
 | --- | --- | --- |
 | `CLI backend executable could not be resolved: cursor-agent` | The Gateway cannot find `cursor-agent` | Put it on the Gateway's `PATH`, or set `cursor-cli.command` |
 | `cursor-cli/<model>` is `[indeterminate]` in `openclaw models status` | OpenClaw sees no Cursor login | Run `cursor-agent login`, then check `cursor-agent status` |
+| `OpenClaw gave no agent directory` | The host passed no `agentDir` for the turn | Report it with your OpenClaw version; the plugin will not share a home between agents |
+| `Could not prepare the CLI home` | The plugin cannot write `cli-config.json` under the agent directory | Fix the directory's permissions or free disk space |
 | `The CLI offers no "ask" mode` | The `cursor-agent` build has no read-only mode | Run `cursor-agent update` |
 | `The CLI has no model "<id>" for this account` | The account cannot use that model | Pick another model or check the plan |
 | `The CLI speaks ACP protocol N` | `cursor-agent` speaks a protocol this plugin does not | Run `cursor-agent update`, or update the plugin |

@@ -8,7 +8,18 @@ What `cursor-cli/<model>` does in OpenClaw and how it compares with `claude-cli`
 
 OpenClaw selects the `cursor-cli` backend from the model ref `cursor-cli/<model>`. The plugin starts `cursor-agent acp` and talks to it over the Agent Client Protocol (ACP). One process serves one conversation and stays warm between turns (closed after 15 idle minutes). OpenClaw owns the session binding: it stores the Cursor session ID the plugin reports, and the next turn resumes it with ACP `session/load` when OpenClaw says to.
 
-Until per-agent permissions and permission routing land, every session runs in Cursor's read-only `ask` mode and every Cursor permission request is rejected, so Cursor's shell and edit tools cannot act. The plugin refuses to run when `cursor-agent` offers no `ask` mode.
+Each agent gets its own Cursor home, `<agentDir>/openclaw-all-cli/cursor-cli/` (`agentDir` is OpenClaw's per-agent directory). The plugin points `CURSOR_CONFIG_DIR` at it and `CURSOR_DATA_DIR` at its `data/` folder, so agents share no Cursor config or chat store. The Cursor login stays shared. The plugin writes nothing into the agent's working directory. If OpenClaw gives no agent directory, the turn fails with `OpenClaw gave no agent directory`; the plugin never falls back to a shared home.
+
+The home holds one file the plugin writes, `cli-config.json`, with the same static permissions for every agent:
+
+| Rule | Entries |
+| --- | --- |
+| Deny | `Shell(*)`, `Write(**)`, `WebFetch(*)` |
+| Allow | `Read(**)`, `Mcp(openclaw:*)` |
+
+The plugin writes the file once through an atomic rename and leaves it alone while it already holds these rules. Other keys Cursor stores there are kept, and edits to the `permissions` key are overwritten on the next turn. No per-turn policy goes into a file. Native read, grep, and glob stay available.
+
+Until permission routing lands, every session also runs in Cursor's read-only `ask` mode and every Cursor permission request is rejected, so Cursor's shell and edit tools cannot act. The plugin refuses to run when `cursor-agent` offers no `ask` mode.
 
 ## Models
 
@@ -25,9 +36,9 @@ Until per-agent permissions and permission routing land, every session runs in C
 | P5 | Resume a session | match | ACP `session/load`. No live test yet (live Cursor not run) |
 | P6 | Fork, resume at a checkpoint | gap | `cursor-agent` has no fork or checkpoint flag |
 | P7 | OpenClaw tools as MCP | spike | ACP `session/new` `mcpServers` is spiked; the MCP proxy is not wired |
-| P8 | Native shell replaced by OpenClaw `exec` | approx | Shell requests are rejected; OpenClaw `exec` is not offered yet |
+| P8 | Native shell replaced by OpenClaw `exec` | approx | The per-agent `cli-config.json` denies `Shell(*)`, `Write(**)`, and `WebFetch(*)`; OpenClaw `exec` is not offered yet. Live test: `test/live/per-agent-home.live.test.ts` |
 | P9 | Tool approvals through OpenClaw | approx | Shell and MCP ask; native edits do not ask. Routing to OpenClaw is not built |
-| P10 | `tools.allow` and `tools.deny` | spike | |
+| P10 | `tools.allow` and `tools.deny` | spike | The static permissions are the same for every agent; `tools.allow` and `tools.deny` are not translated yet |
 | P11 | Skills as a native plugin | spike | |
 | P12 | System prompt every turn | spike | The OpenClaw system prompt is not sent yet |
 | P13 | Images | spike | |
@@ -42,7 +53,8 @@ Until per-agent permissions and permission routing land, every session runs in C
 
 - **No usage.** Cursor's ACP reports no token counts, so OpenClaw records none for a turn.
 - **No OpenClaw system prompt, tools, or skills yet.** The model sees only the prompt text.
-- **Native read, grep, and glob stay reachable** in `ask` mode.
+- **Native read, grep, and glob stay reachable.** `Read(**)` is allowed, and Cursor's `grep` and `glob` are not blocked by a `Read` rule.
+- **Permissions are not configurable.** Every agent gets the same rules; changing them in `cli-config.json` has no lasting effect.
 
 ## Check it works
 

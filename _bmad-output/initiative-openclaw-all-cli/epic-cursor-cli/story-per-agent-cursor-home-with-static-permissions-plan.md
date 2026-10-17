@@ -60,11 +60,11 @@ deferred: []
 ## Tasks & Acceptance
 
 **Execution:**
-- [ ] `src/transports/files.ts` -- atomic JSON write with a unique temp name -- parallel starts never see a partial file
-- [ ] `src/core/ports.ts`, `src/core/backend.ts`, `src/core/execute.ts` -- home derivation, adapter hook, env merge, reuse key -- AD-6
-- [ ] `src/adapters/cursor/index.ts` -- env vars plus static permissions merged into any existing file -- AD-9
+- [x] `src/transports/files.ts` -- atomic JSON write with a unique temp name -- parallel starts never see a partial file
+- [x] `src/core/ports.ts`, `src/core/backend.ts`, `src/core/execute.ts` -- home derivation, adapter hook, env merge, reuse key -- AD-6
+- [x] `src/adapters/cursor/index.ts` -- env vars plus static permissions merged into any existing file -- AD-9
 - [ ] tests -- unit tests for every matrix row, import-boundary still green
-- [ ] `test/live/` -- gated test: a session in agent mode using the prepared home creates no file for a write request while `grep` still answers
+- [x] `test/live/` -- gated test: a session in agent mode using the prepared home creates no file for a write request while `grep` still answers
 - [ ] docs and parity P8 -- row and setup text match behavior
 
 **Acceptance Criteria:**
