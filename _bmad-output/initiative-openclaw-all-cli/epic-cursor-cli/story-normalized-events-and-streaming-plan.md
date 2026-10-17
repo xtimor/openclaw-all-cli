@@ -96,6 +96,15 @@ Built as planned, with the two changes in the Plan Change Log. Files: `src/trans
 
 ## Review Triage Log
 
+### 2026-10-17 — Review pass
+- verdicts: 5 findings — high 0, medium 1, low 4, false 0, maybe-false 0
+- findings:
+  - `medium` `patch` A `session/request_permission` toolCall never marks the turn as having started a tool, so an approved call by an agent that does not announce first, followed by a crash, reports `retryable: true` — generic transport, AD-11; patch: a permission request marks `started`
+  - `low` `patch` Doc comments in `session.ts` and `tool-calls.ts` still describe a hide/filter contract that the Plan Change Log removed; `undefined` only defers the start by one update — patch the comments
+  - `low` `patch` Cursor display fallbacks for read and exec re-implement title parsing and drift from `permissions.ts` (backticks kept, escaped backticks not unescaped) — patch: reuse the permissions parsing
+  - `low` `patch` `ToolLedger` passes through a `toolResult` whose call was never started, and a second orphan for the same id, against its own one-start-one-result contract — patch: drop an orphan result
+  - `low` `patch` The real-OpenClaw live test asserts exactly 2 tool calls, which depends on the model's choices and cannot catch a plugin-side duplicate — patch: assert each expected tool name appears exactly once and no extra entry for the proxied tool
+
 ## Design Notes
 
 Display events are the transport's job; policy is not. Keep the per-turn call table in the transport so the core only sees the clean event language.
