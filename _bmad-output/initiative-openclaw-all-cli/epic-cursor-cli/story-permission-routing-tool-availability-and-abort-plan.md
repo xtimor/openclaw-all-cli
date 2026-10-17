@@ -17,7 +17,14 @@ context:
   - '{project-root}/_bmad-output/initiative-openclaw-all-cli/architecture-openclaw-all-cli/architecture-openclaw-all-cli.md'
   - '{project-root}/MEMORY.md'
 warnings: []
-deferred: []
+deferred:
+  - summary: >-
+      On a real OpenClaw 2026.10.3 run the model has no shell: the host serves exec only to execution-args backends and the static file denies native shell, so a denied shell request cannot fall back to OpenClaw exec (acceptance criterion 1 holds on a stub host only).
+    evidence: |-
+      Host code: resolveCliMcpToolOwnership sets hostOwnedTools only for execution-args. A real run listed 47 OpenClaw tools and no exec. Follow-up: an exec the host serves, or execution-args enforcement the plugin can honor.
+    location: >-
+      src/core/backend.ts
+    severity: medium
 ---
 
 <intent-contract>
@@ -93,6 +100,15 @@ deferred: []
 ## Plan Change Log
 
 ## Review Triage Log
+
+### 2026-10-17 — Review pass
+- verdicts: 5 findings — high 0, medium 1, low 4, false 0, maybe-false 0
+- findings:
+  - `medium` `defer` AC 1 (a denied shell request makes the model fall back to OpenClaw `exec`) holds only on a stub host: the host serves `hostOwnedTools` only to `execution-args` backends, `CURSOR_PERMISSIONS` denies shell statically, so on a real run the model has no shell at all — verified (worker read the host; docs and P8 already say it). The plugin cannot honor `execution-args` honestly (ACP has no tool-restricting launch args). Deferred as a follow-up for the epic; P8 stays approx; reported to the user
+  - `low` `patch` An unnamed request arriving after the turn ended is answered reject, not `cancelled`: the adapter wrapper returns reject before the core's turn check — patch: let the core check the turn first
+  - `low` `patch` Docs say the process closes after the abort grace; the code closes it as soon as the turn ends and uses the grace only as an upper bound — patch the docs row
+  - `low` `patch` MEMORY.md does not list the `[[ask-json]]` fake-agent control — patch
+  - `low` `reject` The plan's Boundaries line ("no matching option -> reject") contradicts its matrix row (`cancelled`); the code follows the matrix and is safe — the fix is to edit this build's plan
 
 ## Design Notes
 
