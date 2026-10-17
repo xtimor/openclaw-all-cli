@@ -80,7 +80,7 @@ Native edits cannot ask in ACP: in agent mode Cursor applies them without a requ
 | P13 | Images | spike | |
 | P14 | Native and manual compaction | spike | |
 | P15 | History reseed | approx | Needs a Cursor API-key profile |
-| P16 | Usage per turn | gap | ACP reports no usage so far |
+| P16 | Usage per turn | gap | ACP reports no usage; the input side can be estimated from Cursor's session store, output cannot |
 | P17 | Clean env, watchdog, timeouts | match | OpenClaw's watchdog and timeouts apply |
 | P18 | Side questions without tools | spike | Every session runs in `ask` mode; side questions are not handled separately |
 | P19 | Binary detection, live tests | approx | OpenClaw finds `cursor-agent` on `PATH`. The minimum version 2026.07.06 is recorded but not enforced yet |

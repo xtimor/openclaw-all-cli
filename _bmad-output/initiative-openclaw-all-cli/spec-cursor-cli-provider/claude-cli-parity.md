@@ -19,7 +19,7 @@ What OpenClaw's built-in `claude-cli` backend does (OpenClaw 2026.10.3, `extensi
 | P13 | Images | `imageArg: "@"`, workspace scope | spike | tbd |
 | P14 | Native and manual compaction | `ownsNativeCompaction`, `/compact` | spike | tbd |
 | P15 | History reseed and fallback prelude | `reseedFromRawTranscriptWhenUncompacted`, prelude from Claude JSONL | approx: reseed with a Cursor API-key profile; prelude from Cursor transcripts: spike | tbd |
-| P16 | Usage per turn | parsed from the terminal event | `-p`: match (`result.usage`); ACP: gap so far (no usage in `session/prompt`) | tbd |
+| P16 | Usage per turn | parsed from the terminal event | `-p`: match (`result.usage`); ACP: gap (no usage in `session/prompt`, no `usage_update`; input side estimable from the session store within about 2%, output not; see the spike write-up) | tbd |
 | P17 | Clean env, watchdog, timeouts | `clearEnv`, `reliability.watchdog` | match | tbd |
 | P18 | Side questions without tools | `sideQuestionToolMode: "disabled"` | spike: every ACP session runs in `ask` mode; side questions are not handled separately | tbd |
 | P19 | Binary detection, live tests | `runtimeArtifact`, `liveTest` | approx: OpenClaw finds `cursor-agent` on `PATH`; the minimum version 2026.07.06 is recorded, not enforced | tbd |

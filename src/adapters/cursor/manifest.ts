@@ -23,7 +23,7 @@ export const cursorManifest = createManifest(CURSOR_MIN_VERSION, {
   P13: { status: "spike", note: "ACP advertises image prompts" },
   P14: { status: "spike", note: "not researched" },
   P15: { status: "approx", note: "reseed needs a Cursor API-key profile" },
-  P16: { status: "gap", note: "ACP session/prompt reports no usage so far" },
+  P16: { status: "gap", note: "ACP reports no usage; the input side is estimable from the session store, output is not" },
   P17: { status: "match", note: "host watchdog and clean env" },
   P18: { status: "spike", note: "every session runs in ask mode; side-question mode is not handled separately" },
   P19: { status: "approx", note: "OpenClaw finds cursor-agent on PATH; the minimum version is recorded, not enforced" },
