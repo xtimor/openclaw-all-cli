@@ -15,6 +15,7 @@ import {
 } from "../../core/ports.ts";
 import { cursorManifest } from "./manifest.ts";
 import { CURSOR_ALWAYS_ON_NATIVE_TOOLS, toCanonicalRequest } from "./permissions.ts";
+import { describeCursorToolCall } from "./tool-display.ts";
 
 const PROBE_TIMEOUT_MS = 5_000;
 
@@ -100,6 +101,7 @@ function open(params: OpenParams): Promise<CliSession> {
     ...(params.modelId === AUTO_MODEL ? {} : { modelId: params.modelId }),
     ...(params.resumeSessionId ? { resumeSessionId: params.resumeSessionId } : {}),
     ...(params.mcpServers?.length ? { mcpServers: params.mcpServers.map(toAcpMcpServer) } : {}),
+    describeToolCall: describeCursorToolCall,
     // A request the mapping cannot name goes to the core unnamed: the core rejects it after its
     // turn check, so a late one is `cancelled`.
     onPermissionRequest: async (request) =>

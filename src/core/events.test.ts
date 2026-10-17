@@ -46,3 +46,13 @@ describe("core records", () => {
     expect(parseJsonlEvent('{"oac":"openclaw-all-cli","event":null}')).toBeNull();
   });
 });
+
+describe("tool events for the host", () => {
+  it("passes a tool start and result with the fields OpenClaw reads", () => {
+    const start: NormalizedEvent = { kind: "toolStart", toolCallId: "c1", name: "exec", args: { command: "ls" } };
+    const result: NormalizedEvent = { kind: "toolResult", toolCallId: "c1", name: "exec", isError: true, result: "boom" };
+    expect(parseJsonlEvent(line(start))).toEqual(start);
+    expect(parseJsonlEvent(line(result))).toEqual(result);
+    expect(toRecord(start)).toMatchObject({ type: "oac-event" });
+  });
+});

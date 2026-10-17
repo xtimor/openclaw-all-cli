@@ -10,6 +10,9 @@ import {
   type NormalizedUsage,
   type PermissionDecision,
 } from "../../core/ports.ts";
+import { ToolCallTable, type DescribeToolCall } from "./tool-calls.ts";
+
+export type { AcpToolCallView, AcpToolDisplay, DescribeToolCall } from "./tool-calls.ts";
 
 /**
  * A generic ACP client session over a spawned process. It knows no CLI: the adapter supplies
@@ -51,6 +54,8 @@ export type AcpSessionOptions = {
   resumeSessionId?: string;
   /** Answers a permission request. Throwing counts as `cancelled`. */
   onPermissionRequest: (request: AcpPermissionRequest) => Promise<PermissionDecision>;
+  /** Names a tool call for display, or hides it. Without it a call shows under the agent's own name. */
+  describeToolCall?: DescribeToolCall;
   clientName?: string;
   clientVersion?: string;
   signal?: AbortSignal;
@@ -78,6 +83,9 @@ type Runtime = {
   pending: Set<PendingPermission>;
   /** What `tool_call` updates said about each call of the running turn, for permission requests. */
   toolCalls: Map<string, ToolCallFacts>;
+  describeToolCall?: DescribeToolCall;
+  /** The running turn's tool calls, folded into `toolStart` and `toolResult` events. */
+  tools?: ToolCallTable;
 };
 
 function toCliError(error: unknown, fallback: CliErrorCode, context: string): CliError {
@@ -205,6 +213,7 @@ export class AcpSession implements CliSession {
       stderrTail: "",
       pending: new Set(),
       toolCalls: new Map(),
+      ...(options.describeToolCall ? { describeToolCall: options.describeToolCall } : {}),
       exited: Promise.resolve(),
     };
     runtime.exited = new Promise<void>((resolve) => {
@@ -265,6 +274,7 @@ export class AcpSession implements CliSession {
         const update = params.update;
         if (update.sessionUpdate === "tool_call" || update.sessionUpdate === "tool_call_update") {
           rememberToolCall(runtime, update);
+          for (const event of runtime.tools?.update(update) ?? []) turn.push(event);
           return;
         }
         if (update.sessionUpdate === "agent_message_chunk" && update.content.type === "text") {
@@ -326,10 +336,12 @@ export class AcpSession implements CliSession {
       },
     };
     runtime.turn = queue;
+    const tools = new ToolCallTable(runtime.describeToolCall);
+    runtime.tools = tools;
 
-    // A death mid-turn is never retryable: a tool call may already have run (AD-11).
+    // A death after a tool call started is not retryable: the call may already have run (AD-11).
     const died = runtime.exited.then(() => {
-      throw deathError(runtime, this.command, false);
+      throw deathError(runtime, this.command, !tools.started);
     });
     died.catch(() => {});
 
@@ -339,6 +351,8 @@ export class AcpSession implements CliSession {
           this.connection.prompt({ sessionId: this.sessionId, prompt: [{ type: "text", text }] }),
           died,
         ]);
+        // Nothing stays pending for the host when the turn closes.
+        for (const event of tools.closeOpen()) queue.push(event);
         const usage = mapUsage(response.usage);
         if (usage) queue.push({ kind: "usage", usage });
         if (response.stopReason === "cancelled") {
@@ -358,8 +372,9 @@ export class AcpSession implements CliSession {
         // A dead process closes its pipes before `exit` fires; give the exit a moment to land.
         await Promise.race([runtime.exited, new Promise((resolve) => setTimeout(resolve, EXIT_SETTLE_MS))]);
         const failure = runtime.hasExited
-          ? deathError(runtime, this.command, false)
+          ? deathError(runtime, this.command, !tools.started)
           : toCliError(error, "server_error", "The CLI turn failed");
+        for (const event of tools.closeOpen()) queue.push(event);
         queue.push({ kind: "error", error: failure.toInfo() });
       } finally {
         queue.end();
@@ -399,6 +414,7 @@ export class AcpSession implements CliSession {
       }
       await settled;
       runtime.turn = undefined;
+      runtime.tools = undefined;
       runtime.toolCalls.clear();
     }
   }

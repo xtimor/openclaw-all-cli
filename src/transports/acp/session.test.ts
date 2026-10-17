@@ -206,10 +206,10 @@ describe("AcpSession", () => {
     expect(events.at(-1)).toMatchObject({ kind: "error", error: { message: "The CLI cancelled the turn." } });
   });
 
-  it("reports a crash mid-turn as a non-retryable error and marks the session dead", async () => {
+  it("reports a crash before any tool as a retryable error and marks the session dead", async () => {
     const session = await start();
     const events = await collect(session.prompt("[[crash]]"));
-    expect(events.at(-1)).toMatchObject({ kind: "error", error: { code: "server_error", retryable: false } });
+    expect(events.at(-1)).toMatchObject({ kind: "error", error: { code: "server_error", retryable: true } });
     await session.waitForExit();
     expect(session.alive).toBe(false);
     const after = await collect(session.prompt("say:again"));
@@ -297,5 +297,250 @@ describe("AcpSession", () => {
     await session.close();
     await session.close();
     expect(session.alive).toBe(false);
+  });
+
+  describe("tool calls", () => {
+    const call = (id: string, extra: Record<string, unknown> = {}) => ({
+      sessionUpdate: "tool_call",
+      toolCallId: id,
+      title: "Read a.txt",
+      kind: "read",
+      status: "pending",
+      rawInput: { path: "/w/a.txt" },
+      ...extra,
+    });
+    const change = (id: string, extra: Record<string, unknown>) => ({
+      sessionUpdate: "tool_call_update",
+      toolCallId: id,
+      ...extra,
+    });
+    const script = (...items: unknown[]) => `[[updates]]${JSON.stringify(items)}`;
+    const toolEvents = (events: NormalizedEvent[]) =>
+      events.filter((event) => event.kind === "toolStart" || event.kind === "toolResult");
+
+    it("streams text and thinking deltas before the turn ends, and the result text is their concatenation", async () => {
+      const session = await start();
+      const seen: { event: NormalizedEvent; at: number }[] = [];
+      for await (const event of session.prompt(
+        script({ $: "say", text: "one " }, { $: "say", text: "two " }, { $: "wait", ms: 300 }, { $: "say", text: "three" }),
+      )) {
+        seen.push({ event, at: Date.now() });
+      }
+      const kinds = seen.map((entry) => entry.event.kind);
+      expect(kinds).toEqual(["thinking", "text", "text", "text", "result"]);
+      const first = seen.find((entry) => entry.event.kind === "text")!;
+      const last = seen.at(-1)!;
+      expect(last.at - first.at).toBeGreaterThanOrEqual(250);
+      const text = seen.flatMap((entry) => (entry.event.kind === "text" ? [entry.event.text] : []));
+      expect(text).toEqual(["one ", "two ", "three"]);
+      expect(last.event).toMatchObject({ kind: "result", text: "one two three" });
+    });
+
+    it("renders a call once however many updates it gets", async () => {
+      const session = await start();
+      const events = await collect(
+        session.prompt(
+          script(
+            call("c1"),
+            change("c1", { status: "in_progress" }),
+            change("c1", { status: "in_progress" }),
+            change("c1", { status: "completed", rawOutput: { content: "hello" } }),
+            change("c1", { status: "completed", rawOutput: { content: "again" } }),
+            change("c1", { status: "in_progress" }),
+          ),
+        ),
+      );
+      expect(toolEvents(events)).toEqual([
+        { kind: "toolStart", toolCallId: "c1", name: "Read a.txt", args: { path: "/w/a.txt" } },
+        { kind: "toolResult", toolCallId: "c1", name: "Read a.txt", isError: false, result: { content: "hello" } },
+      ]);
+      expect(events.at(-1)).toMatchObject({ kind: "result" });
+    });
+
+    it("keeps several calls apart and orders each start before its result", async () => {
+      const session = await start();
+      const events = await collect(
+        session.prompt(
+          script(
+            call("a", { title: "one" }),
+            call("b", { title: "two" }),
+            change("b", { status: "completed" }),
+            change("a", { status: "completed" }),
+          ),
+        ),
+      );
+      expect(toolEvents(events).map((event) => `${event.kind}:${(event as { toolCallId: string }).toolCallId}`)).toEqual([
+        "toolStart:a",
+        "toolStart:b",
+        "toolResult:b",
+        "toolResult:a",
+      ]);
+    });
+
+    it("marks a failed call as an error", async () => {
+      const session = await start();
+      const events = await collect(
+        session.prompt(
+          script(call("c1"), change("c1", { status: "failed", content: [{ type: "content", content: { type: "text", text: "no such file" } }] })),
+        ),
+      );
+      expect(toolEvents(events).at(-1)).toEqual({
+        kind: "toolResult",
+        toolCallId: "c1",
+        name: "Read a.txt",
+        isError: true,
+        result: "no such file",
+      });
+    });
+
+    it("closes a call that is still open when the turn ends", async () => {
+      const session = await start();
+      const events = await collect(session.prompt(script(call("c1"), change("c1", { status: "in_progress" }))));
+      const kinds = events.map((event) => event.kind);
+      expect(toolEvents(events)).toEqual([
+        { kind: "toolStart", toolCallId: "c1", name: "Read a.txt", args: { path: "/w/a.txt" } },
+        { kind: "toolResult", toolCallId: "c1", name: "Read a.txt", isError: true, result: { aborted: true } },
+      ]);
+      expect(kinds.at(-1)).toBe("result");
+      expect(kinds.indexOf("toolResult")).toBeLessThan(kinds.indexOf("result"));
+    });
+
+    it("closes a call that is still open when the turn is cancelled", async () => {
+      const session = await start();
+      const turn = collect(session.prompt(script(call("c1"), { $: "hang" })));
+      await new Promise((resolve) => setTimeout(resolve, 200));
+      await session.cancel();
+      const events = await turn;
+      const kinds = events.map((event) => event.kind);
+      expect(kinds.slice(-2)).toEqual(["toolResult", "error"]);
+      expect(toolEvents(events).at(-1)).toMatchObject({ kind: "toolResult", isError: true, result: { aborted: true } });
+      expect(events.at(-1)).toMatchObject({ kind: "error", error: { retryable: false } });
+    });
+
+    it("treats an update for an unknown call as its start", async () => {
+      const session = await start();
+      const events = await collect(
+        session.prompt(
+          script(
+            change("late", { title: "grep", kind: "search", rawInput: { pattern: "x" }, status: "in_progress" }),
+            change("late", { status: "completed", rawOutput: { totalMatches: 1 } }),
+          ),
+        ),
+      );
+      expect(toolEvents(events)).toEqual([
+        { kind: "toolStart", toolCallId: "late", name: "grep", args: { pattern: "x" } },
+        { kind: "toolResult", toolCallId: "late", name: "grep", isError: false, result: { totalMatches: 1 } },
+      ]);
+    });
+
+    it("starts and finishes a call that is first seen already completed", async () => {
+      const session = await start();
+      const events = await collect(session.prompt(script(call("c1", { status: "completed" }))));
+      expect(toolEvents(events).map((event) => event.kind)).toEqual(["toolStart", "toolResult"]);
+    });
+
+    it("ignores an update kind it does not know", async () => {
+      const session = await start();
+      const events = await collect(
+        session.prompt(
+          script(
+            { sessionUpdate: "future_kind", payload: 1 },
+            { sessionUpdate: "plan", entries: [] },
+            { sessionUpdate: "current_mode_update", currentModeId: "ask" },
+            { $: "say", text: "fine" },
+          ),
+        ),
+      );
+      expect(events.map((event) => event.kind)).toEqual(["thinking", "text", "result"]);
+      expect(events.at(-1)).toMatchObject({ text: "fine" });
+    });
+
+    it("reports a crash after a tool started as not retryable", async () => {
+      const session = await start();
+      const events = await collect(session.prompt(script(call("c1"), { $: "crash" })));
+      expect(events.at(-1)).toMatchObject({ kind: "error", error: { code: "server_error", retryable: false } });
+      expect(events.map((event) => event.kind).slice(-2)).toEqual(["toolResult", "error"]);
+      expect(toolEvents(events).map((event) => event.kind)).toEqual(["toolStart", "toolResult"]);
+      expect(toolEvents(events).at(-1)).toMatchObject({ isError: true, result: { aborted: true } });
+    });
+
+    it("reports a crash in the middle of a reply, before any tool, as retryable", async () => {
+      const session = await start();
+      const events = await collect(session.prompt(script({ $: "say", text: "partial" }, { $: "crash" })));
+      expect(events.at(-1)).toMatchObject({ kind: "error", error: { retryable: true } });
+    });
+
+    it("lets the adapter name a call and wait one update for its details", async () => {
+      const seen: Array<{ title: string; final: boolean; hasInput: boolean }> = [];
+      const session = await start({
+        describeToolCall: (view, final) => {
+          seen.push({ title: view.title, final, hasInput: view.rawInput !== undefined });
+          if (!view.rawInput && !final) return undefined;
+          return { name: `native:${view.title}`, ...(view.rawInput ? { args: view.rawInput } : {}) };
+        },
+      });
+      const events = await collect(
+        session.prompt(
+          script(
+            call("c1", { title: "grep", rawInput: {} }),
+            change("c1", { title: 'grep "x"', rawInput: { pattern: "x" } }),
+            change("c1", { status: "completed" }),
+          ),
+        ),
+      );
+      expect(seen).toEqual([
+        { title: "grep", final: false, hasInput: false },
+        { title: 'grep "x"', final: true, hasInput: true },
+      ]);
+      expect(toolEvents(events)).toEqual([
+        { kind: "toolStart", toolCallId: "c1", name: 'native:grep "x"', args: { pattern: "x" } },
+        { kind: "toolResult", toolCallId: "c1", name: 'native:grep "x"', isError: false },
+      ]);
+    });
+
+    it("shows a call the adapter kept waiting on as the agent called it, once the wait is over", async () => {
+      const session = await start({ describeToolCall: () => undefined });
+      const events = await collect(
+        session.prompt(script(call("c1", { rawInput: {} }), change("c1", { status: "completed" }))),
+      );
+      expect(toolEvents(events).map((event) => event.kind)).toEqual(["toolStart", "toolResult"]);
+      expect(toolEvents(events)[0]).toMatchObject({ name: "Read a.txt" });
+    });
+
+    it("starts a call that never left the adapter's wait when the turn ends", async () => {
+      const session = await start({ describeToolCall: (_view, final) => (final ? { name: "late" } : undefined) });
+      const events = await collect(session.prompt(script(call("c1", { rawInput: {} }))));
+      expect(toolEvents(events)).toEqual([
+        { kind: "toolStart", toolCallId: "c1", name: "late" },
+        { kind: "toolResult", toolCallId: "c1", name: "late", isError: true, result: { aborted: true } },
+      ]);
+    });
+
+    it("counts a call as a started tool even when no event was shown for it yet", async () => {
+      // The adapter waits on a call whose details never arrive; the process dies meanwhile.
+      const session = await start({ describeToolCall: () => undefined });
+      const crashed = await collect(session.prompt(script(call("c1", { rawInput: {} }), { $: "crash" })));
+      expect(crashed.at(-1)).toMatchObject({ kind: "error", error: { retryable: false } });
+    });
+
+    it("keeps a tool call from one turn out of the next", async () => {
+      const session = await start();
+      await collect(session.prompt(script(call("c1"))));
+      const second = await collect(session.prompt(script(call("c1"), change("c1", { status: "completed" }))));
+      expect(toolEvents(second).map((event) => event.kind)).toEqual(["toolStart", "toolResult"]);
+      const third = await collect(session.prompt("say:no tools"));
+      expect(toolEvents(third)).toEqual([]);
+    });
+
+    it("caps a very large result", async () => {
+      const session = await start();
+      const events = await collect(
+        session.prompt(script(call("c1"), change("c1", { status: "completed", rawOutput: { content: "x".repeat(20_000) } }))),
+      );
+      const result = toolEvents(events).at(-1) as { result: string };
+      expect(typeof result.result).toBe("string");
+      expect(result.result.length).toBeLessThan(8_100);
+      expect(result.result.endsWith("[truncated]")).toBe(true);
+    });
   });
 });

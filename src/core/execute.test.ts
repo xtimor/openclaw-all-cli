@@ -1165,3 +1165,83 @@ describe("createExecute permission routing (AD-9, AD-11)", () => {
     });
   });
 });
+
+describe("createExecute native tool events (AD-3)", () => {
+  const toolTurn: Script = async function* () {
+    yield { kind: "toolStart", toolCallId: "t1", name: "read", args: { path: "a" } };
+    yield { kind: "toolStart", toolCallId: "t1", name: "read" };
+    yield { kind: "toolResult", toolCallId: "t1", name: "read", result: "ok" };
+    yield { kind: "toolResult", toolCallId: "t1", name: "read", result: "again" };
+    yield { kind: "result", text: "done", stopReason: "end_turn" };
+  };
+
+  it("passes tool events to the host with the shapes it reads, one start and one result per call", async () => {
+    const { adapter } = makeAdapter(toolTurn);
+    const records = await run(createExecute(adapter, { home: HOME }), makeCtx());
+    expect(parsed(records)).toEqual([
+      { kind: "sessionId", sessionId: "native-1" },
+      { kind: "toolStart", toolCallId: "t1", name: "read", args: { path: "a" } },
+      { kind: "toolResult", toolCallId: "t1", name: "read", result: "ok" },
+      { kind: "result", text: "done", sessionId: "native-1" },
+    ]);
+  });
+
+  it("hands each event to the host before the adapter produces the next one", async () => {
+    let release: () => void = () => {};
+    const gate = new Promise<void>((resolve) => (release = resolve));
+    const gated: Script = async function* () {
+      yield { kind: "text", text: "first" };
+      yield { kind: "toolStart", toolCallId: "t1", name: "exec" };
+      await gate;
+      yield { kind: "result", text: "first", stopReason: "end_turn" };
+    };
+    const { adapter } = makeAdapter(gated);
+    const seen: string[] = [];
+    const turn = (async () => {
+      for await (const record of createExecute(adapter, { home: HOME })(makeCtx())) {
+        seen.push((record as { event: NormalizedEvent }).event.kind);
+      }
+    })();
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    expect(seen).toEqual(["sessionId", "text", "toolStart"]);
+    release();
+    await turn;
+    expect(seen.at(-1)).toBe("result");
+  });
+
+  it("closes a call the adapter left open before the result", async () => {
+    const open: Script = async function* () {
+      yield { kind: "toolStart", toolCallId: "t1", name: "exec" };
+      yield { kind: "result", text: "done", stopReason: "end_turn" };
+    };
+    const { adapter } = makeAdapter(open);
+    const records = await run(createExecute(adapter, { home: HOME }), makeCtx());
+    expect(parsed(records).map((event) => event.kind)).toEqual(["sessionId", "toolStart", "toolResult", "result"]);
+    expect(parsed(records)[2]).toMatchObject({ toolCallId: "t1", name: "exec", isError: true, result: { aborted: true } });
+  });
+
+  it("closes a call left open by a turn that ends without a result, and by a thrown error", async () => {
+    const silent: Script = async function* () {
+      yield { kind: "toolStart", toolCallId: "t1", name: "exec" };
+    };
+    const first = await run(createExecute(makeAdapter(silent).adapter, { home: HOME }), makeCtx());
+    expect(parsed(first).map((event) => event.kind)).toEqual(["sessionId", "toolStart", "toolResult", "result"]);
+
+    const throwing: Script = async function* () {
+      yield { kind: "toolStart", toolCallId: "t1", name: "exec" };
+      throw new Error("boom");
+    };
+    const second = await run(createExecute(makeAdapter(throwing).adapter, { home: HOME }), makeCtx());
+    expect(parsed(second).map((event) => event.kind)).toEqual(["sessionId", "toolStart", "toolResult", "result"]);
+    expect(parsed(second).at(-1)).toEqual({ kind: "result", errorText: "boom" });
+  });
+
+  it("closes a call left open when the adapter ends the turn with an error", async () => {
+    const failing: Script = async function* () {
+      yield { kind: "toolStart", toolCallId: "t1", name: "exec" };
+      yield { kind: "error", error: { code: "server_error", retryable: false, message: "gone" } };
+    };
+    const records = await run(createExecute(makeAdapter(failing).adapter, { home: HOME }), makeCtx());
+    expect(parsed(records).map((event) => event.kind)).toEqual(["sessionId", "toolStart", "toolResult", "result"]);
+  });
+});

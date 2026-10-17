@@ -61,6 +61,40 @@ function composePrompt(ctx: ExecuteContext): string {
   return [prependContext, ctx.prompt, appendContext].filter((part): part is string => Boolean(part)).join("\n\n");
 }
 
+/**
+ * The turn's native tool calls as the host sees them: one start and at most one result per call.
+ * Whatever is still open when the turn closes gets an aborted result, so the host shows nothing
+ * pending whatever the adapter did.
+ */
+class ToolLedger {
+  private readonly calls = new Map<string, { name: string; open: boolean }>();
+
+  /** Whether the event may go to the host. A second start or result for one call is dropped. */
+  admit(event: NormalizedEvent): boolean {
+    if (event.kind === "toolStart") {
+      if (this.calls.has(event.toolCallId)) return false;
+      this.calls.set(event.toolCallId, { name: event.name, open: true });
+    } else if (event.kind === "toolResult") {
+      const call = this.calls.get(event.toolCallId);
+      if (call && !call.open) return false;
+      if (call) call.open = false;
+    }
+    return true;
+  }
+
+  closeOpen(): CoreRecord[] {
+    const records: CoreRecord[] = [];
+    for (const [toolCallId, call] of this.calls) {
+      if (!call.open) continue;
+      call.open = false;
+      records.push(
+        toRecord({ kind: "toolResult", toolCallId, name: call.name, isError: true, result: { aborted: true } }),
+      );
+    }
+    return records;
+  }
+}
+
 export function errorRecord(error: unknown): CoreRecord {
   const info =
     error instanceof CliError
@@ -271,6 +305,7 @@ export function createExecute(adapter: CliAdapter, options: ExecuteOptions): Cli
     ctx.abortSignal?.addEventListener("abort", onAbort, { once: true });
 
     let turnFailed = false;
+    const tools = new ToolLedger();
     try {
       // A process opened for this turn is already registered, activated, and pointed.
       if (!opened) {
@@ -284,18 +319,24 @@ export function createExecute(adapter: CliAdapter, options: ExecuteOptions): Cli
       yield toRecord({ kind: "sessionId", sessionId: active.session.sessionId });
 
       let closed = false;
+      // Each event goes to the host as it arrives; nothing waits for the turn to end.
       for await (const event of active.session.prompt(composePrompt(ctx))) {
         if (event.kind === "usage") {
           summary.usage = event.usage;
           continue;
         }
+        if (!tools.admit(event)) continue;
         if (event.kind === "error") turnFailed = true;
-        if (event.kind === "result" || event.kind === "error") closed = true;
+        if (event.kind === "result" || event.kind === "error") {
+          closed = true;
+          for (const record of tools.closeOpen()) yield record;
+        }
         yield toRecord(event satisfies NormalizedEvent, summary);
       }
       ctx.abortSignal?.throwIfAborted();
       if (!closed) {
         turnFailed = true;
+        for (const record of tools.closeOpen()) yield record;
         yield errorRecord(
           new CliError({ code: "empty_response", message: "The CLI ended the turn without a result." }),
         );
@@ -303,6 +344,7 @@ export function createExecute(adapter: CliAdapter, options: ExecuteOptions): Cli
     } catch (error) {
       turnFailed = true;
       if (ctx.abortSignal?.aborted) throw error;
+      for (const record of tools.closeOpen()) yield record;
       yield errorRecord(error);
     } finally {
       ctx.abortSignal?.removeEventListener("abort", onAbort);

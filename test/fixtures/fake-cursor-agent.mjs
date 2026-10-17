@@ -17,6 +17,9 @@
 // requests the permission the JSON describes ({toolCall, announce?, options?}; `announce` is sent first
 // as a `tool_call` update, like Cursor does), "[[hang]]" never
 // finishes until cancelled, "[[refuse]]" ends with stopReason refusal, "[[crash]]" exits, "say:<text>" replies with <text>.
+// "[[updates]]<json array>" sends each item as a `session/update` body, in order, a few ms apart, then ends the
+// turn. An item `{"$":"say","text":"..."}` sends a message chunk, `{"$":"crash"}` exits, `{"$":"hang"}` waits for a
+// cancel and answers `cancelled`, `{"$":"wait","ms":n}` pauses. Use it to script tool calls the way Cursor sends them.
 import { appendFileSync } from "node:fs";
 import { createInterface } from "node:readline";
 
@@ -95,6 +98,31 @@ async function runPrompt(id, params) {
       }, 20);
     });
     return reply(id, { stopReason: "cancelled" });
+  }
+  if (text.includes("[[updates]]")) {
+    const items = JSON.parse(text.slice(text.indexOf("[[updates]]") + "[[updates]]".length));
+    for (const item of items) {
+      if (item.$ === "crash") process.exit(3);
+      if (item.$ === "wait") {
+        await new Promise((resolve) => setTimeout(resolve, item.ms));
+      } else if (item.$ === "hang") {
+        await new Promise((resolve) => {
+          const timer = setInterval(() => {
+            if (cancelled.has(params.sessionId)) {
+              clearInterval(timer);
+              resolve();
+            }
+          }, 20);
+        });
+        return reply(id, { stopReason: "cancelled" });
+      } else if (item.$ === "say") {
+        update(params.sessionId, { sessionUpdate: "agent_message_chunk", content: { type: "text", text: item.text } });
+      } else {
+        update(params.sessionId, item);
+      }
+      await new Promise((resolve) => setTimeout(resolve, 5));
+    }
+    return reply(id, { stopReason: "end_turn" });
   }
   if (text.includes("[[ask-json]]")) {
     const spec = JSON.parse(text.slice(text.indexOf("[[ask-json]]") + "[[ask-json]]".length));

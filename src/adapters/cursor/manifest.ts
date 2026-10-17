@@ -10,7 +10,7 @@ export const CURSOR_MIN_VERSION = "2026.07.06";
 export const cursorManifest = createManifest(CURSOR_MIN_VERSION, {
   P1: { status: "spike", note: "cursor-cli/<model> runs; the model list in /model is not built" },
   P2: { status: "match", note: "synthetic auth from cursor-agent status or CURSOR_API_KEY; the real status wording is unconfirmed" },
-  P3: { status: "approx", note: "text and thinking deltas; tool progress is not mapped yet" },
+  P3: { status: "approx", note: "text and thinking deltas as they arrive, and Cursor's native tool calls as display-only start and result events (one of each per call, a call still open when the turn ends is closed as aborted); OpenClaw tools called through the MCP proxy show as mcp__openclaw__<tool>; the events are not tracked as tool execution, unlike claude-cli's" },
   P4: { status: "approx", note: "the core keeps one cursor-agent acp process per conversation, but OpenClaw 2026.10.3 puts the per-turn MCP settings path into its live-session fingerprint, so it restarts the process every turn and the next turn resumes with session/load" },
   P5: { status: "match", note: "ACP session/load" },
   P6: { status: "gap", note: "cursor-agent has no fork or checkpoint flag" },

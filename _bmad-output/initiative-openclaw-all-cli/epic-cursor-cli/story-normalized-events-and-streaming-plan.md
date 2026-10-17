@@ -64,11 +64,11 @@ deferred: []
 ## Tasks & Acceptance
 
 **Execution:**
-- [ ] `src/transports/acp/session.ts` -- map tool updates, dedupe by call ID, close open calls, retryability
-- [ ] `src/core/events.ts`, `execute.ts` -- verify and fix the record shapes OpenClaw needs; no event buffering
-- [ ] unit tests -- every matrix row with the fake agent
-- [ ] live test (gated) -- a real turn: text and thinking deltas arrive over time before the closing record (record the gap between the first delta and the result), a tool call renders exactly once, final text equals the concatenated deltas; a real OpenClaw run shows the tool once
-- [ ] docs, manifest and parity P3 -- match behavior and evidence
+- [x] `src/transports/acp/session.ts` -- map tool updates, dedupe by call ID, close open calls, retryability
+- [x] `src/core/events.ts`, `execute.ts` -- verify and fix the record shapes OpenClaw needs; no event buffering
+- [x] unit tests -- every matrix row with the fake agent
+- [x] live test (gated) -- a real turn: text and thinking deltas arrive over time before the closing record (record the gap between the first delta and the result), a tool call renders exactly once, final text equals the concatenated deltas; a real OpenClaw run shows the tool once
+- [x] docs, manifest and parity P3 -- match behavior and evidence
 
 **Acceptance Criteria:**
 - Given a turn with a long reply, when it streams, then text and thinking deltas reach the consumer before the result.
@@ -77,7 +77,22 @@ deferred: []
 
 ## Implementation Notes
 
+Built as planned, with the two changes in the Plan Change Log. Files: `src/transports/acp/tool-calls.ts` (per-turn call table), `session.ts` (wiring, closing results, retryability), `src/adapters/cursor/tool-display.ts` (naming), `src/core/execute.ts` (`ToolLedger`: drops a second start or result for one call and closes calls left open before the result or error record), tests next to each, `test/fixtures/fake-cursor-agent.mjs` (`[[updates]]<json>` scripts any update sequence), `test/live/streaming.live.test.ts`.
+
+- **`parseJsonlEvent`.** Already passed `toolStart`/`toolResult` unchanged; their fields (`toolCallId`, `name`, `args`, `isError`, `result`) match `CliBackendParsedJsonlEvent`. No change beyond a test.
+- **Host display.** The host handles them as display events (`onDisplayToolUseStart`), dedups by call ID, and drops tool events that follow an `errorText` result, so closing results go before the closing record.
+- **Real Cursor shapes** (probe, 2026.10.16): see MEMORY.md. A call is announced with a generic title and empty `rawInput` for search and MCP calls.
+- **Proxy duplicate check (live, OpenClaw 2026.10.3).** `openclaw agent --local --json` reports `meta.toolSummary`. With proxied calls hidden: `calls: 1, tools: [read]`. With them shown: `calls: 2, tools: [read, mcp__openclaw__session_status]`. The host's loopback emits no display event of its own, so there is no duplicate: showing the call is the only display, and nothing is hidden. The live test asserts `calls === 2`.
+- **Streaming evidence (live, real cursor-agent 2026.10.16, stub host).** 159 text and 4 thinking deltas; first delta 5.5 s after the turn started and 9.6 s before the result; final text equals the concatenation; the `read` call and the proxied `oac_echo` call each had one start and one result.
+- **`retryable`.** True only for a process death before any tool call started; the host never receives it (its JSONL contract carries only `errorText`).
+- **Results** over 8 000 characters are cut (display only).
+- **Not handled.** ACP message chunks carry no separator between text before and after a tool call, so the reply reads `...sentence.Next`; Cursor sends it that way.
+- **Verification run.** `npm run typecheck && npm run build && npx vitest run` and `OPENCLAW_ALL_CLI_LIVE=1 npx vitest run test/live` (see the run log).
+
 ## Plan Change Log
+
+- **Start timing.** The plan says one `toolStart` at the first sight. Cursor's first announcement has no usable title or input (and for MCP calls no server), so the transport lets the adapter wait one update (`DescribeToolCall` returns `undefined`). Without a hook, or when the adapter decides at once (read, shell), the start is at first sight. A call that never gets its next update starts when it completes or when the turn closes.
+- **No hiding of proxied calls.** The plan expected the host might show them too; it does not (see the proxy duplicate check), so the hide path that was built first was removed.
 
 ## Review Triage Log
 

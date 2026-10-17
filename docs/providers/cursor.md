@@ -37,6 +37,19 @@ OpenClaw's tools (`sessions_list`, `memory_search`, `web_fetch`, and the rest) r
 
 Cursor connects to its MCP servers while it opens the session, before the first prompt, so the plugin registers the session with OpenClaw and points the proxy at the turn's endpoint before it starts `cursor-agent`. The plugin writes no MCP configuration into the workspace or any file you own.
 
+## Streaming and tool progress
+
+Cursor's replies reach OpenClaw while the turn runs, not when it ends: every `agent_message_chunk` becomes a text delta and every `agent_thought_chunk` a thinking delta, in order, and the closing record carries the full reply, which is exactly the concatenation of the text deltas. Nothing waits for the end of the turn. Live run (real `cursor-agent`, 2026.10.16): 159 text and 4 thinking deltas, the first one 9.6 s before the closing record.
+
+Cursor's tool activity (`tool_call` and `tool_call_update`) shows as tool progress in OpenClaw. Rules:
+
+- **Once per call.** However many updates Cursor sends for one call ID, OpenClaw gets one start and at most one result (at `completed` or `failed`; a failed call is marked as an error). An update for a call the plugin has not seen counts as its start.
+- **Names.** Cursor announces a call with a generic title and, for search and MCP calls, no input; the next update, a few milliseconds later, has both. The plugin waits for that update, then shows the call under OpenClaw's tool names: `read`, `grep`, `glob`, `exec`, `edit`, `write`, `delete`, `web_fetch`, `web_search`, or `mcp__<server>__<tool>`. A call to OpenClaw's own tools through the MCP proxy shows as `mcp__openclaw__<tool>`, as in `claude-cli`; OpenClaw displays that without the prefix. The host adds no display of its own for a proxied call (checked live: its tool summary counts one entry), so the plugin does not hide it.
+- **Nothing left pending.** A call still open when the turn ends, fails, or is cancelled gets a closing result marked as an aborted error.
+- **Display only.** The events change no permission and no tool policy. Approvals still go through the permission requests described below.
+- **Results are shortened.** A result longer than 8 000 characters is cut, because the events only feed the display.
+- **Retries.** An error after any tool call started in the turn is not retryable, because the call may already have run. A process that dies before any tool call is retryable. OpenClaw's JSONL contract carries only the error text, so the host never sees this flag; it is in the plugin's own event for logs and tests.
+
 ## Permissions and tool availability
 
 OpenClaw owns approval authority; the plugin only asks. The static `cli-config.json` is the first line of defence: it denies shell, writes, and web fetch, so Cursor does not ask about them. A permission request still arises for what the file leaves open (for example a web search or another MCP server). The plugin names the request in OpenClaw's terms (`exec`, `write`, `edit`, `delete`, `web_fetch`, `web_search`, `read`, `grep`, `glob`, or `mcp__<server>__<tool>`), asks the host (`requestToolPermission`), and answers Cursor from the result:
@@ -67,7 +80,7 @@ Native edits cannot ask in ACP: in agent mode Cursor applies them without a requ
 | --- | --- | --- | --- |
 | P1 | Provider in `/model`, model aliases | spike | `cursor-cli/<model>` runs; the model list in `/model` is not built |
 | P2 | Subscription login counts as auth | match | `cursor-agent status` or `CURSOR_API_KEY`; the real `status` wording is unconfirmed |
-| P3 | Streaming text and thinking | approx | Text and thinking deltas; tool progress is not mapped yet |
+| P3 | Streaming text, thinking, and tool progress | approx | Text and thinking deltas as they arrive; Cursor's native tool calls and OpenClaw tools called through the MCP proxy as display-only start and result events, one pair per call. The host does not treat them as tool execution, unlike `claude-cli`'s. Live test: `test/live/streaming.live.test.ts` |
 | P4 | Warm process per conversation | approx | The plugin keeps one `cursor-agent acp` process per conversation, but OpenClaw 2026.10.3 puts the per-turn MCP settings path into its live-session fingerprint, so it restarts the process every turn and the next turn resumes with `session/load`. Live evidence: `test/live/mcp-proxy.live.test.ts` (warm session with a stand-in host) and the real-host run in the ticket notes |
 | P5 | Resume a session | match | ACP `session/load`. No live test yet (live Cursor not run) |
 | P6 | Fork, resume at a checkpoint | gap | `cursor-agent` has no fork or checkpoint flag |
