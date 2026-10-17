@@ -100,6 +100,20 @@ Built as planned, with the changes in the Plan Change Log. Files: `src/adapters/
 
 ## Review Triage Log
 
+### 2026-10-17 — Review pass
+- verdicts: 10 findings — high 0, medium 4, low 6, false 0, maybe-false 0
+- findings:
+  - `medium` `patch` `catalog.ts`: callers sharing one in-flight listing all fail when the first caller's signal aborts, and the provider then publishes no rows, not even `auto` — patch: the shared load ignores caller signals; each caller races its own
+  - `medium` `patch` `models.ts`: a model keeps its bare name only while its base is unique, so a second variant of a base renames the existing model and breaks configured `cursor-cli/<base>` refs — patch: the first id of a base in Cursor's order keeps the bare name, later ones get suffixes
+  - `medium` `patch` `synthetic-auth.ts` hard-codes `input: ["text","image"]` for every model although images are P13 `spike` and the turn sends text only (and the flag belongs to the manifest, AD-10) — patch: derive input from manifest P13
+  - `medium` `patch` The listing session runs against the user's shared Cursor home and leaves a throwaway chat in `~/.cursor/acp-sessions` on every refresh (30 sessions seen on this host) — patch: remove the listing session's own directory after listing
+  - `low` `patch` `docs/setup.md` troubleshooting is wrong without a login (nothing is logged) and `--refresh` does not reach the plugin cache; a failed listing is pinned for 30 s — patch the text
+  - `low` `patch` `docs/providers/cursor.md` presents a new login as an environment change; the cache key is command and env, so a new login is covered only by the 60 s TTL — patch the text
+  - `low` `patch` `MEMORY.md` still says ACP lists models "not a configOptions select" and lacks the new fake-agent knobs — patch
+  - `low` `patch` `src/core/logger.ts` falls back to `console.warn`, against the logging convention (OpenClaw logger only) — patch: no console fallback
+  - `low` `reject` Plan matrix row "Not logged in" (models listed as unavailable) is not met and not in the Plan Change Log — models cannot be listed without a login (ACP `session/new` needs auth), so the row is unachievable; the Implementation Notes already say so; the fix is to edit this build's plan
+  - `low` `reject` The catalog cache map never drops an entry — one small entry per distinct env or command in a Gateway's life
+
 ## Design Notes
 
 Names must be unique and stable across Cursor releases where Cursor keeps the base model name; the exact id stays the source of truth. A cached catalog is acceptable; a stale one must not select a model the account lost (the switch fails with `model_not_found`).
