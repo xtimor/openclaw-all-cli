@@ -49,7 +49,7 @@ describeLive("permission requests go to the host (P8, P9)", () => {
           ...params,
           onPermissionRequest: async (request) => {
             const decision = await params.onPermissionRequest(request);
-            decisions.push({ tool: request.toolName, decision });
+            decisions.push({ tool: request.toolName ?? "", decision });
             return decision;
           },
         });

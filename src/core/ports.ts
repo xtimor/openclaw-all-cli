@@ -163,11 +163,12 @@ export type PermissionRequest = {
   toolCallId?: string;
   /**
    * The canonical OpenClaw tool name: `exec`, `write`, `edit`, `delete`, `web_fetch`, `web_search`,
-   * `read`, `grep`, `glob`, or `mcp__<server>__<tool>` for an MCP tool.
+   * `read`, `grep`, `glob`, or `mcp__<server>__<tool>` for an MCP tool. Absent when the adapter
+   * cannot name the call; the core then rejects it without asking the host.
    */
-  toolName: string;
+  toolName?: string;
   /** The action's input, shaped like the input of OpenClaw's tool of that name. */
-  toolInput: Record<string, unknown>;
+  toolInput?: Record<string, unknown>;
 };
 
 /** The core's answer to a CLI permission request. */

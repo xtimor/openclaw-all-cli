@@ -1054,7 +1054,7 @@ describe("createExecute permission routing (AD-9, AD-11)", () => {
     await new Promise((resolve) => setTimeout(resolve, 30));
     controller.abort(new Error("stop"));
     await outcome;
-    approve({ behavior: "allow", updatedInput: shell.toolInput });
+    approve({ behavior: "allow", updatedInput: shell.toolInput ?? {} });
     expect(decisions).toEqual(["cancelled"]);
   });
 
@@ -1064,6 +1064,21 @@ describe("createExecute permission routing (AD-9, AD-11)", () => {
     const { live } = makeLive();
     await run(createExecute(adapter, { home: HOME }), makeCtx({ requestToolPermission, liveSession: live, env: usableEnv }));
     await expect(opens[0]!.onPermissionRequest({ ...shell, toolInput: {} })).resolves.toBe("cancelled");
+    expect(requestToolPermission).not.toHaveBeenCalled();
+  });
+
+  it("rejects a request the adapter could not name during a turn, and answers cancelled for one after it", async () => {
+    const unnamed: PermissionRequest = { title: "Unknown operation", kind: "other", toolCallId: "call-9" };
+    const decisions: PermissionDecision[] = [];
+    const script: Script = async function* () {
+      decisions.push(await harness.opens[0]!.onPermissionRequest(unnamed));
+      yield { kind: "result", text: "done", stopReason: "end_turn" };
+    };
+    const harness = makeAdapter(script);
+    const requestToolPermission = vi.fn(async (): Promise<HostAnswer> => ({ behavior: "allow", updatedInput: {} }));
+    await run(createExecute(harness.adapter, { home: HOME }), makeCtx({ requestToolPermission }));
+    expect(decisions).toEqual(["reject_once"]);
+    await expect(harness.opens[0]!.onPermissionRequest(unnamed)).resolves.toBe("cancelled");
     expect(requestToolPermission).not.toHaveBeenCalled();
   });
 

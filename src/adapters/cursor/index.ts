@@ -100,12 +100,16 @@ function open(params: OpenParams): Promise<CliSession> {
     ...(params.modelId === AUTO_MODEL ? {} : { modelId: params.modelId }),
     ...(params.resumeSessionId ? { resumeSessionId: params.resumeSessionId } : {}),
     ...(params.mcpServers?.length ? { mcpServers: params.mcpServers.map(toAcpMcpServer) } : {}),
-    // A request the mapping cannot name is rejected without asking the host: the host cannot
-    // approve what it cannot see.
-    onPermissionRequest: async (request) => {
-      const named = toCanonicalRequest(request);
-      return named ? params.onPermissionRequest(named) : "reject_once";
-    },
+    // A request the mapping cannot name goes to the core unnamed: the core rejects it after its
+    // turn check, so a late one is `cancelled`.
+    onPermissionRequest: async (request) =>
+      params.onPermissionRequest(
+        toCanonicalRequest(request) ?? {
+          title: request.title,
+          ...(request.kind ? { kind: request.kind } : {}),
+          toolCallId: request.toolCallId,
+        },
+      ),
     ...(params.signal ? { signal: params.signal } : {}),
   });
 }

@@ -48,9 +48,9 @@ OpenClaw owns approval authority; the plugin only asks. The static `cli-config.j
 | Asking the host fails, or the answer is malformed | reject (fail closed); the failure is logged and the turn continues |
 | The host allows but changes the input | reject: Cursor can run only what the host saw |
 | Cursor offers no option of the decided kind | `cancelled` |
-| The turn is aborted while the host waits for a human | `cancelled` at once; the turn ends cleanly and the process closes after the abort grace |
+| The turn is aborted while the host waits for a human | `cancelled` at once; the turn ends cleanly and the process closes as soon as the turn ends (the 5-second abort grace only bounds a CLI that ignores the cancel) |
 | A request arrives after the turn ended, was aborted, or was superseded | `cancelled`; the host is never asked |
-| A request the plugin cannot name (an unknown operation, a question prompt) | reject; the host is not asked |
+| A request the plugin cannot name (an unknown operation, a question prompt) during a turn | reject; the host is not asked (after the turn it is `cancelled`, like any late request) |
 | The run's tool selection leaves the tool out | reject; the host is not asked |
 
 The plugin starts no timer for approvals; OpenClaw's own timers apply. A run's tool selection (`toolAvailability`) comes from OpenClaw. The backend declares `nativeToolMode: "selectable"` with `prepare-execution` enforcement and confirms a selection only if it keeps native `read`, `grep`, and `glob` on, because Cursor cannot switch them off per turn and the plugin writes no per-turn policy file. OpenClaw 2026.10.3 asks for `native: []` for runs with a tool cap, tools disabled, or a system agent; such a run is refused before Cursor starts, with `cursor-cli keeps native read, grep, glob on in every turn...`. A run without a selection starts as usual. `tools.allow` and `tools.deny` filter the OpenClaw tool list on OpenClaw's side; the plugin translates nothing.

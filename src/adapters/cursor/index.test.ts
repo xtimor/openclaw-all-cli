@@ -211,14 +211,13 @@ describe("cursor adapter", () => {
       expect(events).toContain('\\"optionId\\":\\"allow-once\\"');
     });
 
-    it("rejects a request it cannot name without asking the core", async () => {
-      let asked = 0;
-      const events = await ask({ toolCall: { toolCallId: "c10", title: "Unknown operation", kind: "other" } }, async () => {
-        asked += 1;
-        return "allow_once";
+    it("hands the core a request it cannot name without a tool name, for the core to reject", async () => {
+      const seen: PermissionRequest[] = [];
+      await ask({ toolCall: { toolCallId: "c10", title: "Unknown operation", kind: "other" } }, async (request) => {
+        seen.push(request);
+        return "reject_once";
       });
-      expect(asked).toBe(0);
-      expect(events).toContain('\\"optionId\\":\\"reject-once\\"');
+      expect(seen).toEqual([{ title: "Unknown operation", kind: "other", toolCallId: "c10" }]);
     });
   });
 

@@ -50,7 +50,8 @@ function describe(error: unknown): string {
 /**
  * Answers one CLI permission request.
  * - No turn, a finished turn, an aborted turn: `cancelled`, and the host is never asked.
- * - A tool outside the run's native selection: rejected, and the host is never asked.
+ * - A call the adapter could not name, or a tool outside the run's native selection: rejected,
+ *   and the host is never asked. The turn check comes first, so a late one is `cancelled`.
  * - Otherwise the host decides. An error, a malformed answer, or an answer that changes the
  *   input rejects: the CLI can run only what the host saw.
  */
@@ -61,15 +62,18 @@ export async function routePermission(
 ): Promise<PermissionDecision> {
   if (!turn || turnIsOver(turn)) return "cancelled";
   const { ctx } = turn;
+  const { toolName, toolInput } = request;
 
-  if (ctx.toolAvailability && !ctx.toolAvailability.native.includes(request.toolName)) return "reject_once";
+  // A call the adapter could not name is one the host cannot approve.
+  if (toolName === undefined || toolInput === undefined) return "reject_once";
+  if (ctx.toolAvailability && !ctx.toolAvailability.native.includes(toolName)) return "reject_once";
 
   const abort = onAbort(ctx.abortSignal);
   try {
     const asked = ctx
       .requestToolPermission({
-        toolName: request.toolName,
-        toolInput: request.toolInput,
+        toolName,
+        toolInput,
         ...(request.toolCallId ? { toolCallId: request.toolCallId } : {}),
         ...(ctx.cwd ? { cwd: ctx.cwd } : {}),
         ...(ctx.abortSignal ? { abortSignal: ctx.abortSignal } : {}),
@@ -77,15 +81,15 @@ export async function routePermission(
       .then<PermissionDecision>((result) => {
         if (turnIsOver(turn)) return "cancelled";
         if (result?.behavior !== "allow") return "reject_once";
-        if (!isDeepStrictEqual(result.updatedInput, request.toolInput)) {
-          warn(`The host changed the input of native tool "${request.toolName}"; the CLI cannot apply that, so the call is rejected.`);
+        if (!isDeepStrictEqual(result.updatedInput, toolInput)) {
+          warn(`The host changed the input of native tool "${toolName}"; the CLI cannot apply that, so the call is rejected.`);
           return "reject_once";
         }
         return "allow_once";
       });
     return await Promise.race([asked, abort.aborted]);
   } catch (error) {
-    warn(`Asking the host to approve native tool "${request.toolName}" failed; the call is rejected. ${describe(error)}`);
+    warn(`Asking the host to approve native tool "${toolName}" failed; the call is rejected. ${describe(error)}`);
     return turnIsOver(turn) ? "cancelled" : "reject_once";
   } finally {
     abort.dispose();
