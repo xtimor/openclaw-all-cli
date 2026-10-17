@@ -3,14 +3,14 @@ title: 'Model catalog and auth readiness'
 type: 'feature'
 ticket: '6'
 created: '2026-10-17'
-status: 'in-progress'
+status: 'in-review'
 baseline_revision: '775ec60bb2ae086fa8a13a0a85f3e5c2c611c0cf'
 route: 'full'
 route_source: 'auto'
 risk: 'medium'
-review: ''
-review_source: ''
-lenses_ran: []
+review: 'quick'
+review_source: 'pinned'
+lenses_ran: [quick]
 review_loop_iteration: 0
 followup_review_recommended: false
 context:
