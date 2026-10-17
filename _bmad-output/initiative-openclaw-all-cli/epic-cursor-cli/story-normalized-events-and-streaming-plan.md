@@ -3,7 +3,7 @@ title: 'Normalized events and streaming'
 type: 'feature'
 ticket: '5'
 created: '2026-10-17'
-status: 'in-review'
+status: done
 baseline_revision: '6ac91f6b74c2f5095f308c010a8725089fa0c6b7'
 route: 'full'
 route_source: 'auto'
@@ -114,3 +114,11 @@ Display events are the transport's job; policy is not. Keep the per-turn call ta
 **Commands:**
 - `npm run typecheck && npm run build && npx vitest run` -- expected: all pass
 - `OPENCLAW_ALL_CLI_LIVE=1 npx vitest run test/live` -- expected: pass with real `cursor-agent` and `CURSOR_API_KEY` (run `npm run dev:install` first)
+
+## Auto Run Result
+
+- Summary: the generic ACP transport maps `tool_call` and `tool_call_update` onto `toolStart` and `toolResult` through a per-turn call table (one start and at most one result per call id; open calls closed with an aborted result at turn end; results capped at 8000 characters; a permission request counts as a started tool). The Cursor adapter names calls (`read`, `grep`, `glob`, `exec`, `edit`, `write`, `delete`, `web_fetch`, `web_search`, `mcp__<server>__<tool>`). The core keeps a `ToolLedger` as a safety net (duplicate starts and orphan results dropped) and yields events as they arrive, without buffering. `retryable` is false once any tool started (AD-11).
+- Deviations (Plan Change Log): the start of a call may wait one update because Cursor announces calls with a generic title and empty input; no hide path was needed because the host does not display proxied OpenClaw tools itself.
+- Review (quick, one lens): 5 findings — all patched in 809be64 (permission request marks a started tool; stale comments; display fallbacks reuse the permissions parsing; orphan results dropped; model-independent live assertions). Follow-up review recommended: false.
+- Verification (isolated Node 24, real cursor-agent 2026.10.16, isolated OpenClaw 2026.10.3): typecheck and build clean; `npx vitest run` 261 passed, 10 skipped (live); `OPENCLAW_ALL_CLI_LIVE=1 npx vitest run test/live` 10 passed. Live streaming: 159 text deltas and 4 thinking deltas, the first delta 5.5 s after the turn started and 9.6 s before the closing record; final text equals the concatenated deltas; the native `read` call and the proxied tool each had exactly one start and one result; a real OpenClaw run showed `read` and `mcp__openclaw__session_status` once each.
+- Residual risks: `retryable` does not reach OpenClaw (its JSONL contract carries only `errorText`); Cursor sends no separator between text before and after a tool call; a transient Cursor backend error (`RetriableError: [internal] Protocol error`) was seen once in a live run and cleared on rerun.
