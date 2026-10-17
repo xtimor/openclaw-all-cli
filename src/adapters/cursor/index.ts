@@ -10,6 +10,7 @@ import {
   type CliAdapter,
   type CliSession,
   type HomeEnv,
+  type McpServerSpec,
   type OpenParams,
 } from "../../core/ports.ts";
 import { cursorManifest } from "./manifest.ts";
@@ -73,6 +74,16 @@ async function prepareHome(home: string): Promise<HomeEnv> {
   return { CURSOR_CONFIG_DIR: home, CURSOR_DATA_DIR: join(home, "data") };
 }
 
+/** The ACP `McpServer` shape for an HTTP server: headers are a name/value list. */
+function toAcpMcpServer(server: McpServerSpec) {
+  return {
+    type: "http" as const,
+    name: server.name,
+    url: server.url,
+    headers: Object.entries(server.headers).map(([name, value]) => ({ name, value })),
+  };
+}
+
 function open(params: OpenParams): Promise<CliSession> {
   return AcpSession.open({
     command: params.command,
@@ -86,6 +97,7 @@ function open(params: OpenParams): Promise<CliSession> {
     requiredModeId: "ask",
     ...(params.modelId === AUTO_MODEL ? {} : { modelId: params.modelId }),
     ...(params.resumeSessionId ? { resumeSessionId: params.resumeSessionId } : {}),
+    ...(params.mcpServers?.length ? { mcpServers: params.mcpServers.map(toAcpMcpServer) } : {}),
     onPermissionRequest: params.onPermissionRequest,
     ...(params.signal ? { signal: params.signal } : {}),
   });

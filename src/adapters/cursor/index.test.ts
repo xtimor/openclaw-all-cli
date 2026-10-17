@@ -122,6 +122,42 @@ describe("cursor adapter", () => {
     }
   });
 
+  it.each([
+    ["session/new", {}],
+    ["session/load", { resumeSessionId: "native-9" }],
+  ])("hands the MCP proxy to %s in the ACP http shape", async (method, extra) => {
+    const dir = mkdtempSync(join(tmpdir(), "oac-cursor-"));
+    try {
+      const file = join(dir, "requests.jsonl");
+      const session = await cursorAdapter.open({
+        command: FAKE_CURSOR_AGENT,
+        args: cursorAdapter.launchArgs,
+        cwd: process.cwd(),
+        env: fakeEnv({ FAKE_CURSOR_LOG: file }),
+        modelId: "auto",
+        mcpServers: [{ name: "openclaw", url: "http://127.0.0.1:4711/mcp", headers: { Authorization: "Bearer proxy-token" } }],
+        onPermissionRequest: async () => "reject_once",
+        ...extra,
+      });
+      open.push(session);
+      const request = readFileSync(file, "utf8")
+        .trim()
+        .split("\n")
+        .map((line) => JSON.parse(line))
+        .find((entry) => entry.method === method);
+      expect(request.params.mcpServers).toEqual([
+        {
+          type: "http",
+          name: "openclaw",
+          url: "http://127.0.0.1:4711/mcp",
+          headers: [{ name: "Authorization", value: "Bearer proxy-token" }],
+        },
+      ]);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   it("refuses to run without Cursor's read-only mode", async () => {
     await expect(
       cursorAdapter.open({
@@ -251,7 +287,8 @@ describe("cursor adapter", () => {
 
   it("has a manifest row for every parity row", () => {
     expect(Object.keys(cursorManifest.rows)).toEqual([...PARITY_ROWS]);
-    expect(cursorManifest.rows.P4.status).toBe("match");
+    expect(cursorManifest.rows.P4.status).toBe("approx");
+    expect(cursorManifest.rows.P7.status).toBe("match");
     expect(cursorManifest.rows.P6.status).toBe("gap");
   });
 });

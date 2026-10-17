@@ -7,7 +7,7 @@ import type { OpenClawPluginApi } from "./sdk-types.ts";
 export function registerAdapters(api: OpenClawPluginApi, adapters: readonly CliAdapter[]): void {
   for (const adapter of adapters) {
     const settings = readBackendConfig(api.pluginConfig, backendIdFor(adapter), (message) => api.logger.warn(message));
-    api.registerCliBackend(buildCliBackend(adapter, { settings }));
+    api.registerCliBackend(buildCliBackend(adapter, { settings, warn: (message) => api.logger.warn(message) }));
   }
 }
 

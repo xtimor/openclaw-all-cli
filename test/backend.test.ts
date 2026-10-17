@@ -26,6 +26,12 @@ describe("cursor-cli backend", () => {
       liveSession: "claude-stdio",
       sessionMode: "existing",
     });
+    expect(backend).toMatchObject({
+      bundleMcp: true,
+      bundleMcpMode: "gemini-system-settings",
+      hostOwnedTools: ["exec", "process"],
+      toolAvailabilityEnforcement: "prepare-execution",
+    });
     // Tools stay on until the per-agent permissions land.
     expect(backend.nativeToolMode).toBe("always-on");
     expect(backend.parseJsonlEvent).toBeTypeOf("function");

@@ -10,19 +10,21 @@ describe("manifest", () => {
     expect(Object.values(manifest.rows).every((row) => row.status === "tbd")).toBe(true);
   });
 
-  it("derives live session and resume flags only from decided rows", () => {
-    expect(deriveFlags(createManifest("1", {}))).toEqual({ liveSession: false, resume: false });
+  it("derives live session, resume, and MCP flags only from decided rows", () => {
+    expect(deriveFlags(createManifest("1", {}))).toEqual({ liveSession: false, resume: false, mcp: false });
     expect(
       deriveFlags(
         createManifest("1", {
           P4: { status: "match", note: "" },
           P5: { status: "approx", note: "" },
+          P7: { status: "match", note: "" },
         }),
       ),
-    ).toEqual({ liveSession: true, resume: true });
+    ).toEqual({ liveSession: true, resume: true, mcp: true });
     expect(deriveFlags(createManifest("1", { P4: { status: "gap", note: "" }, P5: { status: "spike", note: "" } }))).toEqual({
       liveSession: false,
       resume: false,
+      mcp: false,
     });
   });
 

@@ -162,6 +162,13 @@ export type PermissionRequest = {
 /** The core's answer to a CLI permission request. */
 export type PermissionDecision = "allow_once" | "reject_once" | "cancelled";
 
+/** An HTTP MCP server the CLI session is given. The core hands over only its own proxy (AD-12). */
+export type McpServerSpec = {
+  name: string;
+  url: string;
+  headers: Readonly<Record<string, string>>;
+};
+
 export type OpenParams = {
   /** The CLI binary, absolute or on PATH. */
   command: string;
@@ -173,6 +180,8 @@ export type OpenParams = {
   modelId: string;
   /** The native session ID to resume. Set only when OpenClaw says to resume. */
   resumeSessionId?: string;
+  /** MCP servers for the native session, given at both new and resumed sessions. */
+  mcpServers?: readonly McpServerSpec[];
   /** Answers a CLI permission request. */
   onPermissionRequest: (request: PermissionRequest) => Promise<PermissionDecision>;
   signal?: AbortSignal;

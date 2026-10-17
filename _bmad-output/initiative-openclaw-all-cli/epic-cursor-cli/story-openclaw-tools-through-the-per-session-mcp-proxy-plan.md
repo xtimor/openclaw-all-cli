@@ -76,6 +76,17 @@ deferred: []
 
 ## Implementation Notes
 
+Built as planned (`mcp-proxy.ts`, `mcp-target.ts`, wiring in `execute.ts`, `ports.ts` `McpServerSpec`/`OpenParams.mcpServers`, adapter mapping to the ACP http shape). Deviations and evidence:
+
+- **Order.** Cursor connects to MCP servers inside `session/new`/`session/load` and drops a server after one rejected connection. The first real-host run failed that way (host 401: its MCP grant capture is only active after `live.activate`). So `execute` now creates the handle and proxy, calls `live.register` and `live.activate`, points the proxy at the turn target, and only then calls `adapter.open`. A failed open removes the handle. Host `register`/`activate` errors still propagate as throws.
+- **Manifest flags.** `deriveFlags` gained `mcp` (P7 decided); `backend.ts` sets `bundleMcp`, `bundleMcpMode: "gemini-system-settings"`, `hostOwnedTools: ["exec","process"]`, `toolAvailabilityEnforcement: "prepare-execution"` from it. `nativeToolMode` stays `always-on`, so `hostOwnedTools` is inert today (the host applies it only with `execution-args`) and `prepareExecution` does not claim `toolAvailabilityEnforced`.
+- **Warnings.** `buildCliBackend` takes `warn`; `register.ts` passes the plugin logger.
+- **Target check.** `readTurnTarget` accepts only a loopback `http` URL, so the proxy never carries the host token elsewhere.
+- **Live runs.** `OPENCLAW_ALL_CLI_LIVE=1 npx vitest run test/live` passes (real `cursor-agent` with `CURSOR_API_KEY`): `mcp-proxy.live.test.ts` runs two turns of one warm `createExecute` session against a stub host (each tool call reaches that turn's host with that turn's `Authorization` and capture key; a call between turns gets 503) and one `openclaw agent --local` turn that calls `session_status` through the proxy. `vitest.config.ts` runs live files serially because two `openclaw agent` runs at once contend for the isolated state.
+- **End-to-end answer (the ticket's settings-file uncertainty).** In the isolated OpenClaw 2026.10.3 with real Cursor, `ctx.env.GEMINI_CLI_SYSTEM_SETTINGS_PATH` is always set and the file has `mcpServers.openclaw` with `url` (`http://127.0.0.1:<gateway port>/mcp`, `type: "http"`), `Authorization: Bearer <64 hex>` and `x-openclaw-cli-capture-key` already resolved. `cursor-cli/auto` listed 47 OpenClaw tools and called `agents_list` and `session_status` through the proxy (`--local`, and on a Gateway for two turns of one session).
+- **Two turns on a Gateway.** The file differs per turn (new path, token, capture key; same URL). The host's live-session fingerprint hashes the env, including that path, so `live.current().fingerprint !== live.fingerprint` on every later turn: no warm reuse in this mode, each turn restarts the process and resumes with `session/load` (P4 is now `approx`). Both turns reached the tools. Between turns Cursor's SSE `GET` got 503 and Cursor did not retry harmfully.
+- **Risk for AD-12.** If a host version stabilises the fingerprint, `live.activate` moves the later turn onto the first turn's bearer and capture key (`adoptProcessToken`, `beginCapture(record.capture.key)`), so the later turn's file credentials would be rejected. Not reachable with 2026.10.3; needs a decision (pin the first turn's credentials per process) before it is.
+
 ## Plan Change Log
 
 ## Review Triage Log

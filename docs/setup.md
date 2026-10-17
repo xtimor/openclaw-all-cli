@@ -2,7 +2,7 @@
 
 How to run `cursor-cli/<model>` in your OpenClaw.
 
-> **Status:** walking skeleton. The plugin registers `cursor-cli`, treats a Cursor login as auth, and answers a prompt over a warm `cursor-agent acp` session. Streaming of tool calls, OpenClaw tools, and the model list in `/model` arrive in later changes; see [Cursor provider](providers/cursor.md) for what works now.
+> **Status:** walking skeleton. The plugin registers `cursor-cli`, treats a Cursor login as auth, and answers a prompt over a warm `cursor-agent acp` session. OpenClaw's tools reach Cursor through a local MCP proxy. Streaming of tool calls and the model list in `/model` arrive in later changes; see [Cursor provider](providers/cursor.md) for what works now.
 
 ## Requirements
 
