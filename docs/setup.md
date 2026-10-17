@@ -62,7 +62,7 @@ openclaw plugins inspect openclaw-all-cli --runtime --json
 openclaw agent --model cursor-cli/auto --message "Say hi"
 ```
 
-The first command must report `"status": "loaded"` and `cursor-cli` under `cliBackendIds`. The second runs through your Gateway and prints Cursor's reply. In the isolated OpenClaw (see Develop) no Gateway is started, so run the command with `--local`; with a Gateway running, drop `--local`.
+The first command must report `"status": "loaded"` and `cursor-cli` under `cliBackendIds`. The second runs through your Gateway and prints Cursor's reply. In the isolated OpenClaw (see Develop) no Gateway runs by default: run the command with `--local`, or start one with `npm run dev:openclaw -- gateway --allow-unconfigured` and drop `--local`.
 
 ## Troubleshooting
 

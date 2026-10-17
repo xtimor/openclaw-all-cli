@@ -6,9 +6,13 @@ import { LIVE_TIMEOUT_MS, describeLive, openclaw, replyLines } from "./harness.t
 // check needs no login and lives in test/isolated-openclaw.test.ts.
 describeLive("walking skeleton: cursor-cli/auto answers a prompt (P1, P2, P3)", () => {
   it("prints Cursor's reply to `openclaw agent --model cursor-cli/auto`", () => {
-    const run = openclaw(["agent", "--local", "--model", "cursor-cli/auto", "--message", "Say hi"], {
-      timeoutMs: 240_000,
-    });
+    // A fresh session id every run: a stored binding from an earlier run would make Cursor try
+    // `session/load` on a session it never had.
+    const sessionId = `live-${Date.now()}`;
+    const run = openclaw(
+      ["agent", "--local", "--model", "cursor-cli/auto", "--session-id", sessionId, "--message", "Say hi"],
+      { timeoutMs: 240_000 },
+    );
     expect(run.status).toBe(0);
     expect(replyLines(run.stdout).length).toBeGreaterThan(0);
     expect(run.stderr + run.stdout).not.toMatch(/cli terminal failure/);

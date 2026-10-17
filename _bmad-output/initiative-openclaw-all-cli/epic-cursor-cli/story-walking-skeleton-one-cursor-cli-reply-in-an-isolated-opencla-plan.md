@@ -198,5 +198,13 @@ Implementation commit: `4af9048e17a0e2539e66b7daed1e68890df5beab` (baseline `789
 cursor-agent 2026.10.16 installed on the host; `CURSOR_API_KEY` set; isolated OpenClaw 2026.10.3, Node 24.
 - Found and fixed: `authenticate{cursor_login}` fails with an API key ("Failed to open browser"). The adapter now skips it when `CURSOR_API_KEY` is set.
 - Confirmed: `initialize` (loadSession true, authMethods cursor_login), `session/new` with modes agent/plan/ask, `cursor-agent status` says "Not logged in" without a login. The plugin starts a live session and runs the turn in the real Cursor.
-- Not confirmed: the reply text. The turn failed inside Cursor: the environment proxy blocks `agentn.global.api5.cursor.sh`. Allow it (and `*.api5.cursor.sh`, `api3.cursor.sh`) in the environment's network policy and rerun.
+- Network: the proxy first blocked `agentn.global.api5.cursor.sh`; after the host was allowed the turn ran.
 - Confirmed live: `session/load` of an id Cursor does not know returns "Invalid params", so a stale binding fails every turn (deferred item 2).
+
+### Live result (verify met)
+
+- `openclaw agent --model cursor-cli/auto --message 'Say hi'` through a Gateway (no `--local`) printed Cursor's reply. `--local` also works. Live tests (`OPENCLAW_ALL_CLI_LIVE=1`) pass: reply and plugin load.
+- liveSession: works. Second turn of one session logged `reuse=reusable` and no new live session start, so the warm process was reused through the Gateway; with `--local` each call is a new process and the second turn resumed via `session/load` with context kept.
+- Synthetic auth: works. Turns run with no auth profile, only `CURSOR_API_KEY` in the environment.
+- Plugin startup loading (#148584): loads on the first turn that selects `cursor-cli/...`, and at Gateway start when the config names a `cursor-cli/...` model (stand-in evidence, then confirmed with the real Cursor run).
+- Fixes found by the live run: login step skipped with an API key; the live test uses a fresh session id each run.
