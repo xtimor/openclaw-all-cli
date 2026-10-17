@@ -1,4 +1,4 @@
-import { mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
@@ -61,7 +61,39 @@ describe("writeJsonAtomic", () => {
   });
 });
 
+describe("writeJsonAtomic modes", () => {
+  it("creates the file with 0600 and new directories with 0700", async () => {
+    const file = join(dir, "home", "c.json");
+    await writeJsonAtomic(file, { x: 1 });
+    expect(statSync(file).mode & 0o777).toBe(0o600);
+    expect(statSync(join(dir, "home")).mode & 0o777).toBe(0o700);
+  });
+
+  it("tightens a looser existing file to 0600", async () => {
+    const file = join(dir, "c.json");
+    writeFileSync(file, "{}");
+    chmodSync(file, 0o644);
+    await writeJsonAtomic(file, { x: 1 });
+    expect(statSync(file).mode & 0o777).toBe(0o600);
+  });
+
+  it("keeps an existing file's stricter mode", async () => {
+    const file = join(dir, "c.json");
+    writeFileSync(file, "{}");
+    chmodSync(file, 0o400);
+    await writeJsonAtomic(file, { x: 1 });
+    expect(statSync(file).mode & 0o777).toBe(0o400);
+    expect(JSON.parse(readFileSync(file, "utf8"))).toEqual({ x: 1 });
+  });
+});
+
 describe("readJsonObject", () => {
+  it("throws on a read error other than a missing file", async () => {
+    const file = join(dir, "is-a-directory.json");
+    mkdirSync(file);
+    await expect(readJsonObject(file)).rejects.toMatchObject({ code: "EISDIR" });
+  });
+
   it("reads an object", async () => {
     const file = join(dir, "o.json");
     writeFileSync(file, '{"a":1}');

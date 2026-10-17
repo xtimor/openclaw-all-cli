@@ -17,7 +17,7 @@ The home holds one file the plugin writes, `cli-config.json`, with the same stat
 | Deny | `Shell(*)`, `Write(**)`, `WebFetch(*)` |
 | Allow | `Read(**)`, `Mcp(openclaw:*)` |
 
-The plugin writes the file once through an atomic rename and leaves it alone while it already holds these rules. Other keys Cursor stores there are kept, and edits to the `permissions` key are overwritten on the next turn. No per-turn policy goes into a file. Native read, grep, and glob stay available.
+The home directory is created with mode 0700 and the file with mode 0600 (an existing stricter file mode is kept). If `cli-config.json` exists but cannot be read, the turn fails and names the file instead of replacing it. The plugin writes the file once through an atomic rename and leaves it alone while it already holds these rules. Other keys Cursor stores there are kept, and edits to the `permissions` key are overwritten on the next turn. No per-turn policy goes into a file. Native read, grep, and glob stay available.
 
 Until permission routing lands, every session also runs in Cursor's read-only `ask` mode and every Cursor permission request is rejected, so Cursor's shell and edit tools cannot act. The plugin refuses to run when `cursor-agent` offers no `ask` mode.
 
@@ -38,7 +38,7 @@ Until permission routing lands, every session also runs in Cursor's read-only `a
 | P7 | OpenClaw tools as MCP | spike | ACP `session/new` `mcpServers` is spiked; the MCP proxy is not wired |
 | P8 | Native shell replaced by OpenClaw `exec` | approx | The per-agent `cli-config.json` denies `Shell(*)`, `Write(**)`, and `WebFetch(*)`; OpenClaw `exec` is not offered yet. Live test: `test/live/per-agent-home.live.test.ts` |
 | P9 | Tool approvals through OpenClaw | approx | Shell and MCP ask; native edits do not ask. Routing to OpenClaw is not built |
-| P10 | `tools.allow` and `tools.deny` | spike | The static permissions are the same for every agent; `tools.allow` and `tools.deny` are not translated yet |
+| P10 | `tools.allow` and `tools.deny` | spike | Static permissions, equal for every agent. The adapter does not translate `tools.allow`/`deny` (the host filters the OpenClaw tool list, AD-9); OpenClaw's own tool filtering is a later entry |
 | P11 | Skills as a native plugin | spike | |
 | P12 | System prompt every turn | spike | The OpenClaw system prompt is not sent yet |
 | P13 | Images | spike | |

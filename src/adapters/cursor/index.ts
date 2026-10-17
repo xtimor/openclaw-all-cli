@@ -3,7 +3,15 @@ import { join } from "node:path";
 import { AcpSession } from "../../transports/acp/session.ts";
 import { readJsonObject, writeJsonAtomic } from "../../transports/files.ts";
 import { runCommand } from "../../transports/process.ts";
-import type { AuthProbeParams, AuthStatus, CliAdapter, CliSession, HomeEnv, OpenParams } from "../../core/ports.ts";
+import {
+  CliError,
+  type AuthProbeParams,
+  type AuthStatus,
+  type CliAdapter,
+  type CliSession,
+  type HomeEnv,
+  type OpenParams,
+} from "../../core/ports.ts";
 import { cursorManifest } from "./manifest.ts";
 
 const PROBE_TIMEOUT_MS = 5_000;
@@ -48,7 +56,17 @@ const CONFIG_FILE = "cli-config.json";
  */
 async function prepareHome(home: string): Promise<HomeEnv> {
   const file = join(home, CONFIG_FILE);
-  const existing = (await readJsonObject(file)) ?? {};
+  // Only a missing or invalid file starts fresh; an unreadable one must not drop Cursor's keys.
+  const existing =
+    (await readJsonObject(file).catch((error: unknown) => {
+      throw new CliError(
+        {
+          code: "unclassified",
+          message: `Could not read "${file}": ${error instanceof Error ? error.message : String(error)}`,
+        },
+        { cause: error },
+      );
+    })) ?? {};
   if (!isDeepStrictEqual(existing.permissions, CURSOR_PERMISSIONS)) {
     await writeJsonAtomic(file, { ...existing, permissions: CURSOR_PERMISSIONS });
   }

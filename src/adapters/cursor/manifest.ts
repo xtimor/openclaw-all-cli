@@ -17,7 +17,7 @@ export const cursorManifest = createManifest(CURSOR_MIN_VERSION, {
   P7: { status: "spike", note: "ACP session/new mcpServers is spiked; the MCP proxy is not wired" },
   P8: { status: "approx", note: "per-agent cli-config.json denies Shell, Write, and WebFetch; OpenClaw exec is not offered yet" },
   P9: { status: "approx", note: "shell and MCP ask; native edits do not ask" },
-  P10: { status: "spike", note: "tools.allow and deny via per-agent cli-config.json" },
+  P10: { status: "spike", note: "static permissions, equal for every agent; the adapter does not translate tools.allow/deny (the host filters the OpenClaw tool list, AD-9); OpenClaw's own tool filtering is a later entry" },
   P11: { status: "spike", note: "--plugin-dir or a prompt catalog" },
   P12: { status: "spike", note: "no system-prompt flag known" },
   P13: { status: "spike", note: "ACP advertises image prompts" },

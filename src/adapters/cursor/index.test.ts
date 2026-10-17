@@ -3,7 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { FAKE_CURSOR_AGENT, fakeEnv } from "../../../test/fixtures/paths.ts";
-import type { CliSession, NormalizedEvent } from "../../core/ports.ts";
+import { CliError, type CliSession, type NormalizedEvent } from "../../core/ports.ts";
 import { PARITY_ROWS } from "../../core/ports.ts";
 import { CURSOR_PERMISSIONS, cursorAdapter, parseStatusOutput } from "./index.ts";
 import { cursorManifest } from "./manifest.ts";
@@ -195,6 +195,23 @@ describe("cursor adapter", () => {
       writeFileSync(configOf(home), "{broken");
       await cursorAdapter.prepareHome(home);
       expect(read(home)).toEqual({ permissions: CURSOR_PERMISSIONS });
+    });
+
+    it("fails with a CliError naming the file when the config cannot be read, and changes nothing", async () => {
+      const home = join(root, "a");
+      mkdirSync(configOf(home), { recursive: true });
+      const error = await cursorAdapter.prepareHome(home).catch((e: unknown) => e);
+      expect(error).toBeInstanceOf(CliError);
+      expect((error as CliError).message).toContain(configOf(home));
+      expect(statSync(configOf(home)).isDirectory()).toBe(true);
+      expect(readdirSync(home)).toEqual(["cli-config.json"]);
+    });
+
+    it("writes the config with mode 0600 in a 0700 home", async () => {
+      const home = join(root, "agent", "openclaw-all-cli", "cursor-cli");
+      await cursorAdapter.prepareHome(home);
+      expect(statSync(configOf(home)).mode & 0o777).toBe(0o600);
+      expect(statSync(home).mode & 0o777).toBe(0o700);
     });
 
     it("leaves one valid file when many turns prepare one home at once", async () => {
