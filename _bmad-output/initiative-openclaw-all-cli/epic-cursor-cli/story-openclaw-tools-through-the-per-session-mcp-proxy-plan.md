@@ -3,7 +3,7 @@ title: 'OpenClaw tools through the per-session MCP proxy'
 type: 'feature'
 ticket: '3'
 created: '2026-10-17'
-status: 'in-review'
+status: done
 baseline_revision: '6e0d93161c5913023e24b0023ac5ae58a39f2c6d'
 route: 'full'
 route_source: 'auto'
@@ -105,12 +105,12 @@ deferred:
 ## Tasks & Acceptance
 
 **Execution:**
-- [ ] `src/core/mcp-proxy.ts`, `src/core/mcp-target.ts` -- proxy and target reader -- AD-12
-- [ ] `src/core/execute.ts`, `ports.ts`, `backend.ts`, adapter -- wire it; set/clear target per turn; close with the session
-- [ ] unit tests -- every matrix row (proxy forwarding with a stub target, 401, 503, 502, retarget, parallel proxies, close frees the port, missing settings)
-- [ ] live test (`test/live/`, gated) -- real cursor-agent, a stub HTTP target standing in for OpenClaw records the Authorization and capture-key headers; two consecutive turns of one warm `createExecute` session each make Cursor call a tool and each reaches the stub with that turn's headers; a request to the proxy between turns is rejected
-- [ ] end-to-end check -- in the isolated OpenClaw with real Cursor, ask `cursor-cli/auto` to use an OpenClaw tool and record what happened in Implementation Notes (this answers the ticket's uncertainty about the settings file)
-- [ ] docs, manifest and parity P7 -- match behavior and the evidence
+- [x] `src/core/mcp-proxy.ts`, `src/core/mcp-target.ts` -- proxy and target reader -- AD-12
+- [x] `src/core/execute.ts`, `ports.ts`, `backend.ts`, adapter -- wire it; set/clear target per turn; close with the session
+- [x] unit tests -- every matrix row (proxy forwarding with a stub target, 401, 503, 502, retarget, parallel proxies, close frees the port, missing settings)
+- [x] live test (`test/live/`, gated) -- real cursor-agent, a stub HTTP target standing in for OpenClaw records the Authorization and capture-key headers; two consecutive turns of one warm `createExecute` session each make Cursor call a tool and each reaches the stub with that turn's headers; a request to the proxy between turns is rejected
+- [x] end-to-end check -- in the isolated OpenClaw with real Cursor, ask `cursor-cli/auto` to use an OpenClaw tool and record what happened in Implementation Notes (this answers the ticket's uncertainty about the settings file)
+- [x] docs, manifest and parity P7 -- match behavior and the evidence
 
 **Acceptance Criteria:**
 - Given one warm session and two turns with different targets, when Cursor calls an OpenClaw tool in each turn, then each call reaches that turn's target with that turn's headers.
@@ -184,3 +184,11 @@ The proxy is a thin forwarder, not an MCP server: it does not parse tool calls. 
 **Commands:**
 - `npm run typecheck && npm run build && npx vitest run` -- expected: all pass
 - `OPENCLAW_ALL_CLI_LIVE=1 npx vitest run test/live` -- expected: pass with real `cursor-agent` and `CURSOR_API_KEY`
+
+## Auto Run Result
+
+- Summary: a per-live-session MCP proxy in the core (`src/core/mcp-proxy.ts`, `mcp-target.ts`) gives Cursor one HTTP MCP server `openclaw` via ACP `mcpServers`. Each turn the core reads the host's loopback URL and headers from the file named by `GEMINI_CLI_SYSTEM_SETTINGS_PATH` and points the proxy at them; outside a turn the proxy answers 503. The backend sets `bundleMcp` and `bundleMcpMode: "gemini-system-settings"` from the manifest's P7 row.
+- Ticket uncertainty answered: on OpenClaw 2026.10.3 the settings path is always set and the file carries the loopback URL and resolved headers, with a new temp path, token and capture key every turn. That path is hashed into the host's live-session fingerprint, so there is no warm reuse in this mode: every turn restarts the process and resumes with `session/load` (P4 approx).
+- Review: pass 1 thorough, four lenses, 19 findings (medium 6, low 9, maybe-false 4): patched in e9efb49, 5 deferred. Follow-up pass thorough, four lenses, 15 findings, no high: patched in 39ba4cf, 1 more deferred. Follow-up review recommended: false.
+- Verification (isolated Node 24, real cursor-agent 2026.10.16, isolated OpenClaw 2026.10.3): typecheck and build clean; `npx vitest run` 193 passed, 4 skipped (live); `OPENCLAW_ALL_CLI_LIVE=1 npx vitest run test/live` 4 passed: stub host sees two turns of one warm session with each turn's own Authorization and capture key and rejects a call between turns with 503; real OpenClaw runs two turns of one session id, both reply with the unique session id returned by `session_status` and turn 2 returns a nonce from turn 1. A direct run with the real OpenClaw also listed 47 tools and called `agents_list` and `session_status`.
+- Residual risks: the 6 deferred items (SSE reconnect and Mcp-Session-Id on a warm host, `degraded` inferred from settings, unenforced host flags, no login-free check of the host contract, per-turn credentials if a host stabilises the fingerprint); no warm process on 2026.10.3.
