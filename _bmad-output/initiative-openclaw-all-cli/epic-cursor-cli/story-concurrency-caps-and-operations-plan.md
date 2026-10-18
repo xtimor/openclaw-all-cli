@@ -42,7 +42,7 @@ deferred: []
 | Turn cap full | `maxConcurrentTurns` turns running, one more arrives | It waits FIFO, then runs when a slot frees | Abort while waiting: leaves the queue, throws the abort, holds no slot |
 | Process cap full | `maxProcesses` processes, one idle, a new process is needed | The least recently used idle process is closed (`idle`), then the new one opens | No error expected |
 | Process cap full, none idle | Only possible with a broken invariant | Turn fails | Retryable `overloaded`, slot released |
-| Bad caps config | `maxProcesses` < `maxConcurrentTurns`, or out of 1..64 | Defaults used | Warning, as for any invalid backend config |
+| Bad caps config | `maxProcesses` < `maxConcurrentTurns` (out of 1..64 never reaches the plugin: the host rejects the config against `openclaw.plugin.json`) | Caps reset to the defaults, other valid settings (such as `command`) kept | Warning |
 | Version ok | `--version` prints `2026.10.16-e3cb207` | Cached per backend and command; later processes skip the check | No error expected |
 | Version too old | `2026.05.01-abc` | Turn fails before any ACP process starts | `unsupported_version`: found version, minimum `2026.07.06`, `cursor-agent update` |
 | Version unreadable | Non-zero exit, timeout, or unparseable text | Turn runs; not cached, checked again next process | Warning |
@@ -112,6 +112,8 @@ deferred: []
 ## Plan Change Log
 
 ## Review Triage Log
+
+Thorough review (4 lenses), all patched in the follow-up change: (1) dead idle process kept its slot: evictable and freed on exit; (2) out-of-range caps: host rejects, docs and matrix corrected, `readBackendConfig` keeps other settings; (3) failed-open lock test made deterministic (fails without `releaseLock`); (4) discarded-entry slot tests (superseded, register throws, proxy fails), each shown to fail when its cleanup is reverted; (5) `TZ=UTC`; (6) unavailable owner read/reap not memoized; (7) a process that survives the kill keeps its lock and is not reported as stopped (EPERM too); (8) temp file removed on rename failure; (9) close aborts a starting open, no open/register after close; (10) admission waits for the evicted process's exit; (11) one version check for concurrent turns; (12) LRU execute test; (13) unload tests observe the exit wait; (14) docs, spine exception line, MEMORY.
 
 ## Design Notes
 

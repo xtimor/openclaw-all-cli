@@ -87,49 +87,87 @@ describe("ProcessPool turns", () => {
 });
 
 describe("ProcessPool processes", () => {
-  it("evicts the least recently used idle process at the cap", () => {
+  it("evicts the least recently used idle process at the cap", async () => {
     const pool = new ProcessPool({ maxTurns: 1, maxProcesses: 3 });
     const busy = member({ idle: false, lastUsed: 1 });
     const old = member({ lastUsed: 5 });
     const recent = member({ lastUsed: 9 });
-    for (const x of [busy, old, recent]) pool.add(x.m);
+    for (const x of [busy, old, recent]) await pool.add(x.m);
     const fresh = member();
-    pool.add(fresh.m);
+    await pool.add(fresh.m);
     expect(old.state.closed).toBe(1);
     expect(recent.state.closed).toBe(0);
     expect(busy.state.closed).toBe(0);
     expect(pool.processes).toBe(3);
   });
 
-  it("frees the slot when a process leaves", () => {
+  it("frees the slot when a process leaves", async () => {
     const pool = new ProcessPool({ maxTurns: 1, maxProcesses: 1 });
     const a = member();
-    pool.add(a.m);
+    await pool.add(a.m);
     pool.remove(a.m);
     const b = member();
-    pool.add(b.m);
+    await pool.add(b.m);
     expect(a.state.closed).toBe(0);
   });
 
-  it("fails retryably as overloaded when no process is idle", () => {
+  it("fails retryably as overloaded when no process is idle", async () => {
     const pool = new ProcessPool({ maxTurns: 1, maxProcesses: 1 });
-    pool.add(member({ idle: false }).m);
-    try {
-      pool.add(member().m);
-      expect.unreachable();
-    } catch (error) {
-      expect(error).toBeInstanceOf(CliError);
-      expect(error).toMatchObject({ code: "overloaded", retryable: true });
-    }
+    await pool.add(member({ idle: false }).m);
+    const error = await pool.add(member().m).catch((e: unknown) => e);
+    expect(error).toBeInstanceOf(CliError);
+    expect(error).toMatchObject({ code: "overloaded", retryable: true });
     expect(pool.processes).toBe(1);
   });
 
-  it("remembers a passed version check per key", () => {
+  it("waits for the evicted process to exit before it counts the new one", async () => {
     const pool = new ProcessPool({ maxTurns: 1, maxProcesses: 1 });
-    expect(pool.versionChecked("acme")).toBe(false);
-    pool.markVersionChecked("acme");
-    expect(pool.versionChecked("acme")).toBe(true);
-    expect(pool.versionChecked("/other/acme")).toBe(false);
+    let exit!: () => void;
+    const old = member({ exit: new Promise<void>((resolve) => (exit = resolve)) });
+    await pool.add(old.m);
+    let admitted = false;
+    const adding = pool.add(member().m).then(() => (admitted = true));
+    await flush();
+    expect(old.state.closed).toBe(1);
+    expect(admitted).toBe(false);
+    exit();
+    await adding;
+    expect(pool.processes).toBe(1);
+  });
+
+  it("stops waiting for an evicted process that does not exit", async () => {
+    const pool = new ProcessPool({ maxTurns: 1, maxProcesses: 1, closeWaitMs: 30 });
+    await pool.add(member({ exit: new Promise<void>(() => {}) }).m);
+    await pool.add(member().m);
+    expect(pool.processes).toBe(1);
+  });
+
+  it("shares one version check between concurrent callers and remembers only a pass", async () => {
+    const pool = new ProcessPool({ maxTurns: 1, maxProcesses: 1 });
+    let calls = 0;
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => (release = resolve));
+    const run = async () => {
+      calls += 1;
+      await gate;
+      return "ok" as const;
+    };
+    const all = [1, 2, 3, 4].map(() => pool.checkVersionOnce("acme", run));
+    release();
+    expect(await Promise.all(all)).toEqual(["ok", "ok", "ok", "ok"]);
+    expect(calls).toBe(1);
+    await pool.checkVersionOnce("acme", run);
+    expect(calls).toBe(1);
+    await pool.checkVersionOnce("/other", async () => ({ warning: "w" }));
+    let again = 0;
+    await pool.checkVersionOnce("/other", async () => (again += 1, "ok" as const));
+    expect(again).toBe(1);
+    await expect(
+      pool.checkVersionOnce("/bad", async () => {
+        throw new Error("old");
+      }),
+    ).rejects.toThrow("old");
+    await expect(pool.checkVersionOnce("/bad", async () => "ok" as const)).resolves.toBe("ok");
   });
 });
 
@@ -139,8 +177,8 @@ describe("ProcessPool.closeAll", () => {
     let exit!: () => void;
     const slow = member({ idle: false, exit: new Promise<void>((resolve) => (exit = resolve)) });
     const idle = member();
-    pool.add(slow.m);
-    pool.add(idle.m);
+    await pool.add(slow.m);
+    await pool.add(idle.m);
     let done = false;
     const closing = pool.closeAll().then(() => (done = true));
     await flush();
@@ -150,12 +188,12 @@ describe("ProcessPool.closeAll", () => {
     exit();
     await closing;
     await expect(pool.acquireTurn()).rejects.toMatchObject({ code: "server_error", retryable: true });
-    expect(() => pool.add(member().m)).toThrow(/shutting down/);
+    await expect(pool.add(member().m)).rejects.toThrow(/shutting down/);
   });
 
   it("stops waiting for a process that does not exit", async () => {
     const pool = new ProcessPool({ maxTurns: 1, maxProcesses: 1, closeWaitMs: 30 });
-    pool.add(member({ exit: new Promise<void>(() => {}) }).m);
+    await pool.add(member({ exit: new Promise<void>(() => {}) }).m);
     const started = Date.now();
     await pool.closeAll();
     expect(Date.now() - started).toBeLessThan(2_000);
@@ -178,8 +216,8 @@ describe("ProcessPool.closeAll", () => {
       throw new Error("boom");
     };
     const good = member();
-    pool.add(bad.m);
-    pool.add(good.m);
+    await pool.add(bad.m);
+    await pool.add(good.m);
     const [a, b] = [pool.closeAll(), pool.closeAll()];
     expect(a).toBe(b);
     await a;

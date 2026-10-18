@@ -1,8 +1,8 @@
 import { spawn, type ChildProcess } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterAll, afterEach, describe, expect, it } from "vitest";
+import { afterAll, afterEach, describe, expect, it, vi } from "vitest";
 import { FAKE_CURSOR_AGENT, fakeEnv } from "../../test/fixtures/paths.ts";
 import { inspectProcess, recordProcess, reapOnce, reapStale, type PidLockRecord } from "./pid-locks.ts";
 
@@ -191,7 +191,7 @@ describe("reapStale", () => {
   });
 
   it("does nothing for a home without pid locks", async () => {
-    await expect(reapStale(join(root, "never-created"), () => {})).resolves.toBeUndefined();
+    await expect(reapStale(join(root, "never-created"), () => {})).resolves.toBe(true);
   });
 
   it("kills nothing and keeps the lock when ps is unavailable", async () => {
@@ -225,5 +225,86 @@ describe("reapOnce", () => {
     await reapOnce(home, () => {});
     expect(await isAlive(child.pid)).toBe(true);
     expect(existsSync(file)).toBe(true);
+  });
+});
+
+describe("review hardening", () => {
+  it("reads a process start time the same under any TZ", async () => {
+    const child = await startAgent();
+    const tz = process.env.TZ;
+    try {
+      process.env.TZ = "UTC";
+      const utc = await inspectProcess(child.pid);
+      process.env.TZ = "Pacific/Auckland";
+      const auckland = await inspectProcess(child.pid);
+      expect(auckland).toEqual(utc);
+    } finally {
+      if (tz === undefined) delete process.env.TZ;
+      else process.env.TZ = tz;
+    }
+  });
+
+  it("does not remember an unavailable owner read", async () => {
+    vi.resetModules();
+    const fresh = await import("./pid-locks.ts");
+    const home = newHome();
+    const child = await startAgent();
+    const path = process.env.PATH;
+    process.env.PATH = join(root, "no-binaries-here");
+    try {
+      expect(await fresh.recordProcess(home, child.pid, () => {})).toBeUndefined();
+    } finally {
+      process.env.PATH = path;
+    }
+    const lock = await fresh.recordProcess(home, child.pid, () => {});
+    expect(lock).toBeDefined();
+    await lock!.release();
+  });
+
+  it("does not remember a reap that ps made impossible", async () => {
+    const home = newHome();
+    const child = await startAgent();
+    const file = write(home, await lockFor(child, await deadOwner()));
+    const path = process.env.PATH;
+    process.env.PATH = join(root, "no-binaries-here");
+    try {
+      await reapOnce(home, () => {});
+    } finally {
+      process.env.PATH = path;
+    }
+    expect(existsSync(file)).toBe(true);
+    await reapOnce(home, () => {});
+    expect(await isAlive(child.pid)).toBe(false);
+    expect(existsSync(file)).toBe(false);
+  });
+
+  it("keeps the lock and does not claim success when the process cannot be stopped", async () => {
+    const home = newHome();
+    const child = await startAgent();
+    const file = write(home, await lockFor(child, await deadOwner()));
+    const kill = vi.spyOn(process, "kill").mockImplementation(() => {
+      throw Object.assign(new Error("not permitted"), { code: "EPERM" });
+    });
+    const warnings: string[] = [];
+    try {
+      await reapStale(home, (m) => warnings.push(m));
+    } finally {
+      kill.mockRestore();
+    }
+    expect(await isAlive(child.pid)).toBe(true);
+    expect(existsSync(file)).toBe(true);
+    expect(warnings.some((m) => m.startsWith("Could not stop"))).toBe(true);
+    expect(warnings.some((m) => m.startsWith("Stopped"))).toBe(false);
+  });
+
+  it("removes its temporary file when the rename fails", async () => {
+    const home = newHome();
+    const child = await startAgent();
+    // A directory in the lock's place makes the rename fail.
+    mkdirSync(join(home, "pids", `${child.pid}.json`), { recursive: true });
+    const warnings: string[] = [];
+    expect(await recordProcess(home, child.pid, (m) => warnings.push(m))).toBeUndefined();
+    expect(warnings).toHaveLength(1);
+    expect(readdirSync(join(home, "pids")).filter((name) => name.endsWith(".tmp"))).toEqual([]);
   });
 });

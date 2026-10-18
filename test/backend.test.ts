@@ -293,6 +293,39 @@ describe("operations wiring (P17, P19)", () => {
     expect(JSON.stringify(after)).toContain("shutting down");
   });
 
+  it("resolves the unload only after a stubborn process has exited", async () => {
+    const services: Array<{ stop: () => Promise<void> }> = [];
+    const backends: Backend[] = [];
+    registerAdapters(
+      {
+        pluginConfig: {},
+        logger: { warn: () => {} },
+        registerCliBackend: (b: Backend) => backends.push(b),
+        registerService: (service: { stop: () => Promise<void> }) => services.push(service),
+      } as never,
+      ADAPTERS,
+    );
+    // The fake ignores SIGTERM, so it exits only when the plugin escalates to SIGKILL (about 2 s).
+    const running = turn(backends[0]!, "stubborn", "[[hang]]", {
+      FAKE_CURSOR_IGNORE_TERM: "1",
+      FAKE_CURSOR_IGNORE_STDIN_EOF: "1",
+      FAKE_CURSOR_LOG: join(scratch, "stubborn.jsonl"),
+    });
+    const pids = join(scratch, "stubborn", "openclaw-all-cli", "cursor-cli", "pids");
+    for (let i = 0; i < 100 && !(existsSync(pids) && readdirSync(pids).some((name) => name.endsWith(".json"))); i += 1) await sleep(50);
+    expect(readdirSync(pids).filter((name) => name.endsWith(".json"))).toHaveLength(1);
+    // Wait for the turn itself: before that the fake still dies on SIGTERM.
+    const log = join(scratch, "stubborn.jsonl");
+    for (let i = 0; i < 100 && !(existsSync(log) && readFileSync(log, "utf8").includes("session/prompt")); i += 1) await sleep(50);
+    const started = Date.now();
+    await services[0]!.stop();
+    expect(Date.now() - started).toBeGreaterThanOrEqual(1_500);
+    await sleep(150);
+    // The lock goes when the process has exited, so an empty directory means the stop waited for it.
+    expect(readdirSync(pids).filter((name) => name.endsWith(".json"))).toEqual([]);
+    await running;
+  });
+
   it("reaps the homes of the configured agents when fully loaded, and only then", async () => {
     const agentRoot = mkdtempSync(join(scratch, "reg-"));
     const agentDirOf = (id: string) => join(agentRoot, id);

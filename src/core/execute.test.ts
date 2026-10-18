@@ -28,14 +28,14 @@ import type { ExecuteContext, LiveSessionCapability, LiveSessionHandle } from ".
 const proxies = vi.hoisted(() => ({
   started: [] as McpProxy[],
   /** Called before the next proxy starts; a throw there fails the start. */
-  beforeStart: undefined as (() => void) | undefined,
+  beforeStart: undefined as (() => void | Promise<void>) | undefined,
 }));
 vi.mock("./mcp-proxy.ts", async (importOriginal) => {
   const actual = await importOriginal<typeof import("./mcp-proxy.ts")>();
   return {
     ...actual,
     startMcpProxy: async () => {
-      proxies.beforeStart?.();
+      await proxies.beforeStart?.();
       const proxy = await actual.startMcpProxy();
       proxies.started.push(proxy);
       return proxy;
@@ -46,6 +46,9 @@ vi.mock("./mcp-proxy.ts", async (importOriginal) => {
 const HOME = { dir: "/agent/openclaw-all-cli/acme-cli", env: { ACME_HOME: "/agent/openclaw-all-cli/acme-cli" } };
 
 type Script = (prompt: string, session: FakeSession) => AsyncGenerator<NormalizedEvent>;
+
+/** How long a closed FakeSession takes to exit, for tests that must observe the wait. */
+const fake = { exitDelayMs: 0 };
 
 class FakeSession implements CliSession {
   alive = true;
@@ -67,6 +70,12 @@ class FakeSession implements CliSession {
   }
   async close() {
     this.closed += 1;
+    this.alive = false;
+    if (fake.exitDelayMs > 0) setTimeout(this.exit, fake.exitDelayMs);
+    else this.exit();
+  }
+  /** The process dies on its own. */
+  die() {
     this.alive = false;
     this.exit();
   }
@@ -1694,7 +1703,7 @@ describe("createExecute concurrency caps and operations (P17, P19)", () => {
     const { adapter, opens } = makeAdapter();
     const pool = new ProcessPool({ maxTurns: 1, maxProcesses: 1 });
     // A busy process that the turn cap does not know about: a broken invariant.
-    pool.add({ isIdle: () => false, lastUsed: 0, close: () => {}, exited: async () => {} });
+    await pool.add({ isIdle: () => false, lastUsed: 0, close: () => {}, exited: async () => {} });
     const records = await run(createExecute(adapter, { home: HOME, pool }), makeCtx());
     expect(parsed(records)).toEqual([{ kind: "result", errorText: expect.stringContaining("busy") }]);
     expect(opens).toHaveLength(0);
@@ -1746,7 +1755,6 @@ describe("createExecute concurrency caps and operations (P17, P19)", () => {
       expect(proxies.started).toHaveLength(before);
       expect(pool.processes).toBe(0);
       expect(pool.turns).toBe(0);
-      expect(pool.versionChecked("acme")).toBe(false);
     });
 
     it("runs the turn with a warning when the version cannot be read, and checks again next time", async () => {
@@ -1888,14 +1896,221 @@ describe("createExecute concurrency caps and operations (P17, P19)", () => {
       const open = adapter.open;
       adapter.open = async (params) => {
         const session = await open(params);
+        // The lock exists before the open fails, so only the failure path can remove it.
+        await until(async () => locks(dir).length === 1);
+        expect(locks(dir)).toHaveLength(1);
         await session.close();
+        // The exit hook is not wired yet (the open has not returned), so the lock must still be there.
+        await sleep(100);
+        expect(locks(dir)).toHaveLength(1);
         throw new CliError({ code: "server_error", message: "handshake failed" });
       };
       const records = await run(createExecute(adapter, { home: { dir, env: {} } }), makeCtx());
       expect(parsed(records)).toEqual([{ kind: "result", errorText: "handshake failed" }]);
-      await until(async () => locks(dir).length === 0);
       expect(locks(dir)).toEqual([]);
       expect(child().pid).toBeGreaterThan(0);
     });
+  });
+});
+
+describe("createExecute pool hygiene (AD-14 review)", () => {
+  const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+  const gate = () => {
+    let open!: () => void;
+    const opened = new Promise<void>((resolve) => (open = resolve));
+    return { opened, open };
+  };
+  const warm = (live: LiveSessionCapability, extra: Partial<ExecuteContext> = {}) =>
+    makeCtx({ liveSession: live, env: usableEnv, ...extra });
+
+  it("gives the slot of a process that died while idle to the next turn", async () => {
+    const { adapter, sessions, opens } = makeAdapter();
+    const pool = new ProcessPool({ maxTurns: 1, maxProcesses: 1 });
+    const execute = createExecute(adapter, { home: HOME, pool });
+    const a = makeLive();
+    await run(execute, warm(a.live));
+    expect(pool.processes).toBe(1);
+    sessions[0]!.die();
+    await sleep(20);
+    // The exit hook closed the handle: nothing is left to evict.
+    expect(pool.processes).toBe(0);
+    const records = await run(execute, warm(makeLive().live));
+    expect(parsed(records).at(-1)).toMatchObject({ kind: "result" });
+    expect(opens).toHaveLength(2);
+  });
+
+  it("evicts a dead idle process even before its exit is seen", async () => {
+    const { adapter, sessions, opens } = makeAdapter();
+    const pool = new ProcessPool({ maxTurns: 1, maxProcesses: 1 });
+    const execute = createExecute(adapter, { home: HOME, pool });
+    await run(execute, warm(makeLive().live));
+    // Dead without an exit event: only `alive` says so.
+    sessions[0]!.alive = false;
+    const records = await run(execute, warm(makeLive().live));
+    expect(parsed(records).at(-1)).toMatchObject({ kind: "result" });
+    expect(opens).toHaveLength(2);
+    expect(pool.processes).toBe(1);
+  });
+
+  it("evicts the least recently used process, not the oldest created", async () => {
+    const { adapter, sessions } = makeAdapter();
+    const pool = new ProcessPool({ maxTurns: 1, maxProcesses: 2 });
+    const execute = createExecute(adapter, { home: HOME, pool });
+    const a = makeLive();
+    const b = makeLive();
+    await run(execute, warm(a.live));
+    await sleep(10);
+    await run(execute, warm(b.live));
+    await sleep(10);
+    // A serves another turn, so B is now the least recently used.
+    await run(execute, warm(a.live, { useResume: true, sessionId: "native-1", prompt: "again" }));
+    expect(sessions).toHaveLength(2);
+    await sleep(10);
+    await run(execute, warm(makeLive().live));
+    expect(sessions[1]?.closed).toBe(1);
+    expect(sessions[0]?.closed).toBe(0);
+  });
+
+  it("waits for the evicted process that holds a chat to exit before it loads that chat", async () => {
+    const order: string[] = [];
+    const { adapter, sessions } = makeAdapter();
+    const open = adapter.open;
+    adapter.open = async (params) => {
+      order.push(`open:${params.resumeSessionId ?? "new"}`);
+      return open(params);
+    };
+    const pool = new ProcessPool({ maxTurns: 1, maxProcesses: 1 });
+    const execute = createExecute(adapter, { home: HOME, pool });
+    await run(execute, warm(makeLive().live));
+    fake.exitDelayMs = 150;
+    try {
+      const started = Date.now();
+      sessions[0]!.waitForExit().then(() => order.push("exit:native-1"));
+      await run(execute, warm(makeLive().live, { useResume: true, sessionId: "native-1" }));
+      expect(Date.now() - started).toBeGreaterThanOrEqual(140);
+    } finally {
+      fake.exitDelayMs = 0;
+    }
+    expect(order).toEqual(["open:new", "exit:native-1", "open:native-1"]);
+  });
+
+  it("runs one version check for simultaneous first turns", async () => {
+    const { adapter, versionChecks, version } = makeAdapter();
+    const g = gate();
+    version.result = async () => (await g.opened, "ok" as const);
+    const pool = new ProcessPool({ maxTurns: 4, maxProcesses: 8 });
+    const turns = [1, 2, 3, 4].map((n) => run(createExecute(adapter, { home: home(`v${n}`), pool }), makeCtx()));
+    await sleep(30);
+    g.open();
+    await Promise.all(turns);
+    expect(versionChecks).toHaveLength(1);
+  });
+
+  describe("a discarded entry frees its process slot", () => {
+    it("when the run was superseded after the entry was created", async () => {
+      const { adapter, opens } = makeAdapter();
+      const pool = new ProcessPool({ maxTurns: 1, maxProcesses: 2 });
+      let checks = 0;
+      const ctx = makeCtx({
+        liveSession: makeLive().live,
+        assertCurrent: () => {
+          checks += 1;
+          if (checks >= 3) throw new Error("superseded");
+        },
+      });
+      await expect(run(createExecute(adapter, { home: HOME, pool }), ctx)).rejects.toThrow("superseded");
+      expect(opens).toHaveLength(0);
+      expect(pool.processes).toBe(0);
+    });
+
+    it("when the host refuses to register the handle", async () => {
+      const { adapter, opens } = makeAdapter();
+      const pool = new ProcessPool({ maxTurns: 1, maxProcesses: 2 });
+      const { live } = makeLive();
+      live.register = () => {
+        throw new Error("host refused");
+      };
+      await expect(run(createExecute(adapter, { home: HOME, pool }), makeCtx({ liveSession: live }))).rejects.toThrow("host refused");
+      expect(opens).toHaveLength(0);
+      expect(pool.processes).toBe(0);
+    });
+
+    it("when the MCP proxy cannot start", async () => {
+      const { adapter, opens } = makeAdapter();
+      const pool = new ProcessPool({ maxTurns: 1, maxProcesses: 2 });
+      proxies.beforeStart = () => {
+        throw new Error("no port");
+      };
+      try {
+        const records = await run(createExecute(adapter, { home: HOME, pool }), makeCtx());
+        expect(parsed(records)).toEqual([{ kind: "result", errorText: expect.stringContaining("no port") }]);
+      } finally {
+        proxies.beforeStart = undefined;
+      }
+      expect(opens).toHaveLength(0);
+      expect(pool.processes).toBe(0);
+    });
+  });
+
+  describe("unload during a start", () => {
+    it("while the proxy starts: nothing registers, nothing opens, the proxy is closed", async () => {
+      const { adapter, opens } = makeAdapter();
+      const { live, calls } = makeLive();
+      const pool = new ProcessPool({ maxTurns: 1, maxProcesses: 2 });
+      const g = gate();
+      proxies.beforeStart = () => g.opened;
+      const before = proxies.started.length;
+      try {
+        const turn = run(createExecute(adapter, { home: HOME, pool }), makeCtx({ liveSession: live }));
+        await sleep(30);
+        const closing = pool.closeAll();
+        g.open();
+        const records = await turn;
+        await closing;
+        expect(records.at(-1)).toMatchObject({ type: "result", is_error: true });
+        expect(JSON.stringify(records)).toMatch(/shutting down|closed/);
+      } finally {
+        proxies.beforeStart = undefined;
+      }
+      expect(opens).toHaveLength(0);
+      expect(calls.register).toBe(0);
+      expect(await proxyRefuses(proxies.started[before]!.url)).toBe(true);
+      expect(pool.processes).toBe(0);
+    });
+
+    it("while the open is pending: the open is aborted and no session is left", async () => {
+      const { adapter, sessions } = makeAdapter();
+      let signal: AbortSignal | undefined;
+      adapter.open = (params) =>
+        new Promise((_resolve, reject) => {
+          signal = params.signal;
+          params.signal?.addEventListener("abort", () => reject(new CliError({ code: "server_error", message: "open aborted" })));
+        });
+      const pool = new ProcessPool({ maxTurns: 1, maxProcesses: 2 });
+      const turn = run(createExecute(adapter, { home: HOME, pool }), makeCtx());
+      await sleep(40);
+      expect(signal?.aborted).toBe(false);
+      await pool.closeAll();
+      const records = await turn;
+      expect(signal?.aborted).toBe(true);
+      expect(records.at(-1)).toMatchObject({ type: "result", is_error: true });
+      expect(sessions).toHaveLength(0);
+      expect(pool.processes).toBe(0);
+    });
+  });
+
+  it("resolves closeAll only after the processes have exited", async () => {
+    const { adapter, sessions } = makeAdapter();
+    const pool = new ProcessPool({ maxTurns: 1, maxProcesses: 2 });
+    await run(createExecute(adapter, { home: HOME, pool }), makeCtx({ liveSession: makeLive().live, env: usableEnv }));
+    fake.exitDelayMs = 200;
+    try {
+      const started = Date.now();
+      await pool.closeAll();
+      expect(Date.now() - started).toBeGreaterThanOrEqual(180);
+      expect(sessions[0]?.alive).toBe(false);
+    } finally {
+      fake.exitDelayMs = 0;
+    }
   });
 });

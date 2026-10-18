@@ -17,7 +17,7 @@ export type PoolOptions = {
 
 /** A live process as the pool sees it. */
 export type PoolMember = {
-  /** True when no turn runs in it and it can be closed without losing work. */
+  /** True when no turn runs in it and it can be closed without losing work (a process that died while idle counts). */
   isIdle(): boolean;
   /** When it last served a turn, in ms. The least recently used idle process is evicted first. */
   lastUsed: number;
@@ -44,6 +44,7 @@ export class ProcessPool {
   private readonly waiters: Waiter[] = [];
   private readonly members = new Set<PoolMember>();
   private readonly checked = new Set<string>();
+  private readonly versionRuns = new Map<string, Promise<"ok" | { warning: string }>>();
   private closing: Promise<void> | undefined;
 
   constructor(private readonly options: PoolOptions) {}
@@ -110,13 +111,16 @@ export class ProcessPool {
   }
 
   /**
-   * Counts a new process. At the cap, the least recently used idle process is closed to make room.
-   * With none idle (a broken invariant: busy processes are bounded by running turns) it throws a
-   * retryable `overloaded`.
+   * Counts a new process, strictly: at the cap, the least recently used idle process is closed and
+   * its exit awaited (bounded) before the new one is counted, so a closing process never overlaps
+   * the cap for long, and a chat it held is free before the next process loads it. With none idle
+   * (a broken invariant: busy processes are bounded by running turns) it throws a retryable
+   * `overloaded`. A member whose process died while idle is evictable first.
    */
-  add(member: PoolMember): void {
-    if (this.closing) throw shuttingDown();
-    if (this.members.size >= this.options.maxProcesses) {
+  async add(member: PoolMember): Promise<void> {
+    for (;;) {
+      if (this.closing) throw shuttingDown();
+      if (this.members.size < this.options.maxProcesses) break;
       const victim = [...this.members].filter((m) => m.isIdle()).sort((a, b) => a.lastUsed - b.lastUsed)[0];
       if (!victim) {
         throw new CliError({
@@ -127,21 +131,46 @@ export class ProcessPool {
       }
       this.members.delete(victim);
       victim.close();
+      await this.waitExit(victim);
     }
     this.members.add(member);
+  }
+
+  private async waitExit(member: PoolMember): Promise<void> {
+    let timer: NodeJS.Timeout | undefined;
+    const gaveUp = new Promise<void>((resolve) => {
+      timer = setTimeout(resolve, this.options.closeWaitMs ?? POOL_CLOSE_WAIT_MS);
+    });
+    await Promise.race([member.exited().catch(() => {}), gaveUp]);
+    clearTimeout(timer);
   }
 
   remove(member: PoolMember): void {
     this.members.delete(member);
   }
 
-  /** True when the version check already passed for `key` (a command). Only success is kept. */
-  versionChecked(key: string): boolean {
-    return this.checked.has(key);
-  }
-
-  markVersionChecked(key: string): void {
-    this.checked.add(key);
+  /**
+   * Runs the version check once per key: concurrent callers share one run, and only a pass is
+   * remembered (a warning or a failure is tried again by the next process).
+   */
+  checkVersionOnce(key: string, run: () => Promise<"ok" | { warning: string }>): Promise<"ok" | { warning: string }> {
+    if (this.checked.has(key)) return Promise.resolve("ok");
+    let pending = this.versionRuns.get(key);
+    if (!pending) {
+      pending = run().then(
+        (result) => {
+          this.versionRuns.delete(key);
+          if (result === "ok") this.checked.add(key);
+          return result;
+        },
+        (error: unknown) => {
+          this.versionRuns.delete(key);
+          throw error;
+        },
+      );
+      this.versionRuns.set(key, pending);
+    }
+    return pending;
   }
 
   /**

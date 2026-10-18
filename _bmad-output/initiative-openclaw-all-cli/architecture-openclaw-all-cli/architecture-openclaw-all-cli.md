@@ -157,6 +157,7 @@ flowchart LR
   - **Orphans.** Each home holds a pid lock file; on startup the core kills stale owners recorded there.
   - **Idle processes.** Live processes close after 15 idle minutes.
   - **Unload.** Plugin unload closes all live processes.
+  - **Exception.** The throwaway process of a model listing has no pid lock and is not closed on unload; it lives for a few seconds.
   - **Platforms.** macOS and Linux are supported.
 
 ## Consistency Conventions

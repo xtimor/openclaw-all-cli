@@ -53,6 +53,25 @@ describe("config", () => {
       expect(capsOf(read)).toEqual({ maxTurns: 4, maxProcesses: 8 });
     });
 
+    it("keeps the command and resets only the caps when only the caps are at fault", () => {
+      const warnings: string[] = [];
+      const read = readBackendConfig(
+        { "acme-cli": { command: "/opt/acme", maxConcurrentTurns: 6, maxProcesses: 2 } },
+        "acme-cli",
+        (m) => warnings.push(m),
+      );
+      expect(read).toEqual({ command: "/opt/acme" });
+      expect(warnings).toHaveLength(1);
+      expect(warnings[0]).toMatch(/caps/);
+      expect(capsOf(read)).toEqual({ maxTurns: 4, maxProcesses: 8 });
+      // An out-of-range cap is handled the same when it reaches the plugin.
+      expect(readBackendConfig({ "acme-cli": { command: "x", maxProcesses: 99 } }, "acme-cli", () => {})).toEqual({ command: "x" });
+    });
+
+    it("drops everything when something other than the caps is invalid too", () => {
+      expect(readBackendConfig({ "acme-cli": { command: 5, maxProcesses: 99 } }, "acme-cli", () => {})).toEqual({});
+    });
+
     it("resolves the caps from the settings, with defaults of 4 turns and 8 processes", () => {
       expect(capsOf({})).toEqual({ maxTurns: 4, maxProcesses: 8 });
       expect(capsOf({ maxConcurrentTurns: 2 })).toEqual({ maxTurns: 2, maxProcesses: 8 });

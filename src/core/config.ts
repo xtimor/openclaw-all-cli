@@ -41,14 +41,30 @@ export function buildConfigJsonSchema(backendIds: readonly string[]) {
   return schema;
 }
 
-/** Reads one backend's settings. Invalid settings fall back to defaults and are reported. */
+const CAP_KEYS = ["maxConcurrentTurns", "maxProcesses"] as const;
+
+/**
+ * Reads one backend's settings. Invalid settings fall back to defaults and are reported. When
+ * only the caps are at fault (processes below turns, for example), the other valid settings, such
+ * as `command`, are kept and only the caps return to their defaults.
+ */
 export function readBackendConfig(
   pluginConfig: Record<string, unknown> | undefined,
   backendId: string,
   warn: (message: string) => void,
 ): BackendConfig {
-  const parsed = backendConfigSchema.safeParse(pluginConfig?.[backendId] ?? {});
+  const raw = pluginConfig?.[backendId] ?? {};
+  const parsed = backendConfigSchema.safeParse(raw);
   if (parsed.success) return parsed.data;
-  warn(`Ignoring invalid config for ${backendId}: ${parsed.error.issues.map((issue) => issue.message).join("; ")}`);
+  const reason = parsed.error.issues.map((issue) => issue.message).join("; ");
+  if (typeof raw === "object" && raw !== null && !Array.isArray(raw)) {
+    const withoutCaps = Object.fromEntries(Object.entries(raw).filter(([key]) => !(CAP_KEYS as readonly string[]).includes(key)));
+    const rest = backendConfigSchema.safeParse(withoutCaps);
+    if (rest.success) {
+      warn(`Ignoring the invalid caps for ${backendId}, using the defaults: ${reason}`);
+      return rest.data;
+    }
+  }
+  warn(`Ignoring invalid config for ${backendId}: ${reason}`);
   return {};
 }

@@ -67,6 +67,8 @@ type LiveEntry = {
   member: PoolMember;
   /** The open in progress, so the pool can wait for a process that is still starting. */
   opening?: Promise<unknown>;
+  /** Aborted by the handle's close, so a process that is still starting stops starting. */
+  stopOpening: AbortController;
   busy: boolean;
   idleTimer?: NodeJS.Timeout;
 };
@@ -196,8 +198,10 @@ export function createExecute(adapter: CliAdapter, options: ExecuteOptions): Cli
     const entry: LiveEntry = {
       key: reuseKey(ctx, home, authProfileId),
       busy: false,
+      stopOpening: new AbortController(),
       member: {
-        isIdle: () => !entry.busy && Boolean(entry.session?.alive),
+        // A process that died while idle is evictable too: it has nothing left to lose.
+        isIdle: () => !entry.busy && Boolean(entry.session),
         lastUsed: Date.now(),
         close: () => entry.handle.close("idle"),
         exited: async () => {
@@ -215,6 +219,7 @@ export function createExecute(adapter: CliAdapter, options: ExecuteOptions): Cli
         close: () => {
           if (entry.closed) return;
           entry.closed = true;
+          entry.stopOpening.abort();
           clearTimeout(entry.idleTimer);
           pool.remove(entry.member);
           releaseChat(entry);
@@ -225,10 +230,11 @@ export function createExecute(adapter: CliAdapter, options: ExecuteOptions): Cli
         waitForExit: () => entry.session?.waitForExit() ?? Promise.resolve(),
       },
     };
-    pool.add(entry.member);
+    await pool.add(entry.member);
     if (withMcp) {
+      let proxy: McpProxy;
       try {
-        entry.proxy = await startMcpProxy();
+        proxy = await startMcpProxy();
       } catch (error) {
         pool.remove(entry.member);
         throw new CliError(
@@ -240,6 +246,9 @@ export function createExecute(adapter: CliAdapter, options: ExecuteOptions): Cli
           { cause: error },
         );
       }
+      entry.proxy = proxy;
+      // The pool or the host closed the handle while the proxy started: the close found no proxy to stop.
+      if (entry.closed) void proxy.close();
     }
     return entry;
   }
@@ -313,24 +322,33 @@ export function createExecute(adapter: CliAdapter, options: ExecuteOptions): Cli
    * remembered; a CLI whose version cannot be read runs with a warning and is checked again.
    */
   async function ensureVersion(ctx: ExecuteContext): Promise<void> {
-    if (pool.versionChecked(ctx.command)) return;
-    const result = await adapter.checkVersion({
-      command: ctx.command,
-      env: { ...ctx.env, ...home.env },
-      ...(ctx.abortSignal ? { signal: ctx.abortSignal } : {}),
-    });
+    const result = await pool.checkVersionOnce(ctx.command, () =>
+      adapter.checkVersion({
+        command: ctx.command,
+        env: { ...ctx.env, ...home.env },
+        ...(ctx.abortSignal ? { signal: ctx.abortSignal } : {}),
+      }),
+    );
     ctx.abortSignal?.throwIfAborted();
-    if (result === "ok") pool.markVersionChecked(ctx.command);
-    else warn(result.warning);
+    if (result !== "ok") warn(result.warning);
   }
 
   /** Opens the process behind a registered entry. The proxy already points at the turn's target. */
   async function attachSession(entry: LiveEntry, ctx: ExecuteContext): Promise<OpenEntry> {
     const { proxy } = entry;
+    const closedError = () =>
+      new CliError({
+        code: "server_error",
+        message: "The live session was closed while the CLI was starting.",
+        retryable: true,
+      });
+    // Closed (unload, eviction, the host) before the open: no process may start.
+    if (entry.closed) throw closedError();
     const mode = modeOf(ctx);
     // A side question is a throwaway chat: it never resumes and never reaches the real one.
     const resumeSessionId = mode === "agent" && ctx.useResume && ctx.sessionId ? ctx.sessionId : undefined;
     if (resumeSessionId) await claimChat(entry, resumeSessionId, ctx.abortSignal);
+    if (entry.closed) throw closedError();
     // The process is recorded in the agent home from its spawn, so a killed Gateway leaves a trail (AD-14).
     let lock: Promise<ProcessLock | undefined> | undefined;
     const releaseLock = () => lock?.then((held) => held?.release());
@@ -361,7 +379,7 @@ export function createExecute(adapter: CliAdapter, options: ExecuteOptions): Cli
         onProcessStart: (pid) => {
           lock = recordProcess(home.dir, pid, warn);
         },
-        ...(ctx.abortSignal ? { signal: ctx.abortSignal } : {}),
+        signal: ctx.abortSignal ? AbortSignal.any([ctx.abortSignal, entry.stopOpening.signal]) : entry.stopOpening.signal,
       });
     } catch (error) {
       // A failed open has stopped its process: nothing is left to guard.
@@ -375,13 +393,16 @@ export function createExecute(adapter: CliAdapter, options: ExecuteOptions): Cli
     if (entry.closed) {
       // A failing close must not hide the reason the turn cannot run.
       await session.close().catch(() => {});
-      throw new CliError({
-        code: "server_error",
-        message: "The live session was closed while the CLI was starting.",
-        retryable: true,
-      });
+      throw closedError();
     }
     entry.session = session;
+    // A process that exits while idle gives its slot back at once; a running turn closes its own.
+    void session.waitForExit().then(
+      () => {
+        if (!entry.busy) entry.handle.close("abort");
+      },
+      () => {},
+    );
     // Whatever id the CLI ended up with is the chat this process holds (a new session, or a
     // load that moved the chat, has no claim yet or a claim on the old id).
     if (mode === "agent") {
@@ -440,6 +461,13 @@ export function createExecute(adapter: CliAdapter, options: ExecuteOptions): Cli
       } catch (error) {
         fresh.handle.close("abort");
         throw error;
+      }
+      // Closed while the proxy started (unload): never hand the host a closed handle.
+      if (fresh.closed) {
+        yield errorRecord(
+          new CliError({ code: "server_error", message: "The plugin is shutting down.", retryable: true }),
+        );
+        return;
       }
       // A host that tracks live sessions must know the process and activate its MCP grant before
       // the CLI connects: a CLI connects to its MCP servers while it opens the session, and one

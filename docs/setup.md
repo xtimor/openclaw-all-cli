@@ -57,7 +57,7 @@ All settings are optional. They live under `plugins.entries.openclaw-all-cli.con
 | `cursor-cli.maxConcurrentTurns` | `4` | Turns that run at once (1 to 64). More wait in order for a free slot. |
 | `cursor-cli.maxProcesses` | `8` | `cursor-agent` processes alive at once, idle ones included (1 to 64, at least `maxConcurrentTurns`). At the cap the least recently used idle process is closed. |
 
-Settings that are out of range, or a `maxProcesses` below `maxConcurrentTurns`, are ignored with a warning and the defaults apply. Keep both under OpenClaw's own limit of 16 live sessions.
+A value outside 1 to 64 (or not an integer) is rejected by OpenClaw's config validation before the plugin loads, so fix it in the config. A `maxProcesses` below `maxConcurrentTurns` passes that check: the plugin ignores both caps with a warning, keeps your other settings such as `command`, and uses the defaults. Keep both under OpenClaw's own limit of 16 live sessions.
 
 Isolation needs no setting: every agent gets its own Cursor home with the same fixed permissions (see [Cursor provider](providers/cursor.md)). Transport and API-key settings are documented here once they exist.
 

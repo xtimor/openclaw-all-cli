@@ -27,7 +27,8 @@ export function inspectProcess(pid: number): Promise<ProcessState> {
     execFile(
       "ps",
       ["-o", "stat=", "-o", "lstart=", "-p", String(pid)],
-      { timeout: PS_TIMEOUT_MS, env: { ...process.env, LC_ALL: "C" } },
+      // UTC and the C locale: the start time reads the same whatever zone or language the Gateway runs in.
+      { timeout: PS_TIMEOUT_MS, env: { ...process.env, LC_ALL: "C", TZ: "UTC" } },
       (error, stdout) => {
         if (error) {
           // `ps -p` exits 1 when no such process exists; anything else means `ps` cannot answer.
@@ -42,10 +43,13 @@ export function inspectProcess(pid: number): Promise<ProcessState> {
   });
 }
 
-let ownerState: Promise<ProcessState> | undefined;
-/** This process's own start time, read once. */
-function readOwner(): Promise<ProcessState> {
-  return (ownerState ??= inspectProcess(process.pid));
+let ownerState: ProcessState | undefined;
+/** This process's own start time, read once. A failed read is not kept: the next call asks again. */
+async function readOwner(): Promise<ProcessState> {
+  if (ownerState) return ownerState;
+  const state = await inspectProcess(process.pid);
+  if (state.kind === "alive") ownerState = state;
+  return state;
 }
 
 const warnedNoPs = new WeakSet<(message: string) => void>();
@@ -85,7 +89,12 @@ export async function recordProcess(
     };
     const temp = join(dir, `.${pid}.${randomUUID()}.tmp`);
     await writeFile(temp, JSON.stringify(record), { mode: 0o600 });
-    await rename(temp, file);
+    try {
+      await rename(temp, file);
+    } catch (error) {
+      await rm(temp, { force: true }).catch(() => {});
+      throw error;
+    }
     return { release: () => rm(file, { force: true }).catch(() => {}) };
   } catch (error) {
     warn(`Could not record CLI process ${pid}: ${error instanceof Error ? error.message : String(error)}`);
@@ -111,12 +120,14 @@ function parseLock(text: string, pid: number): PidLockRecord | undefined {
   return valid ? (record as PidLockRecord) : undefined;
 }
 
-function signal(pid: number, name: NodeJS.Signals): void {
+/** "denied" when the signal was refused (EPERM): the process is not ours to stop. A missing process counts as sent. */
+function signal(pid: number, name: NodeJS.Signals): "sent" | "denied" {
   try {
     process.kill(pid, name);
-  } catch {
-    // Already gone, or not ours to signal: the next inspection tells.
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "EPERM") return "denied";
   }
+  return "sent";
 }
 
 /** Waits until the process is gone or `timeoutMs` passes. True when it is gone. */
@@ -134,15 +145,16 @@ async function waitGone(pid: number, startTime: string, timeoutMs: number): Prom
 /**
  * Kills the processes a dead owner left in `<homeDir>/pids/` and deletes their locks. A lock whose
  * owner is alive, or whose pid now belongs to another process, kills nothing. Never throws.
+ * Resolves false when it could not finish because `ps` is unavailable, so the caller may try again.
  */
-export async function reapStale(homeDir: string, warn: (message: string) => void): Promise<void> {
+export async function reapStale(homeDir: string, warn: (message: string) => void): Promise<boolean> {
   const dir = join(homeDir, PIDS_DIR);
   let names: string[];
   try {
     names = await readdir(dir);
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code !== "ENOENT") warn(`Could not read "${dir}": ${String(error)}`);
-    return;
+    return true;
   }
   for (const name of names) {
     const match = /^(\d+)\.json$/.exec(name);
@@ -161,22 +173,33 @@ export async function reapStale(homeDir: string, warn: (message: string) => void
       const owner = await inspectProcess(lock.ownerPid);
       if (owner.kind === "unavailable") {
         warnNoPs(warn);
-        return;
+        return false;
       }
       // Its owner is a live Gateway (this one or another): the process is in use.
       if (owner.kind === "alive" && owner.startTime === lock.ownerStartTime) continue;
       const state = await inspectProcess(pid);
       if (state.kind === "unavailable") {
         warnNoPs(warn);
-        return;
+        return false;
       }
       if (state.kind === "alive" && state.startTime === lock.startTime) {
-        signal(pid, "SIGTERM");
-        if (!(await waitGone(pid, lock.startTime, REAP_KILL_GRACE_MS))) {
-          // Checked again right before the kill: the pid must still be the recorded process.
-          const again = await inspectProcess(pid);
-          if (again.kind === "alive" && again.startTime === lock.startTime) signal(pid, "SIGKILL");
-          await waitGone(pid, lock.startTime, REAP_KILL_GRACE_MS);
+        let gone = false;
+        if (signal(pid, "SIGTERM") === "sent") {
+          gone = await waitGone(pid, lock.startTime, REAP_KILL_GRACE_MS);
+          if (!gone) {
+            // Checked again right before the kill: the pid must still be the recorded process.
+            const again = await inspectProcess(pid);
+            if (again.kind === "alive" && again.startTime === lock.startTime) {
+              if (signal(pid, "SIGKILL") === "sent") gone = await waitGone(pid, lock.startTime, REAP_KILL_GRACE_MS);
+            } else {
+              gone = true;
+            }
+          }
+        }
+        if (!gone) {
+          // Still running: the lock stays, so the next start tries again.
+          warn(`Could not stop CLI process ${pid}, which a previous Gateway left running.`);
+          continue;
         }
         warn(`Stopped CLI process ${pid}, which a previous Gateway left running.`);
       }
@@ -186,6 +209,7 @@ export async function reapStale(homeDir: string, warn: (message: string) => void
       warn(`Could not reap the CLI process lock "${name}": ${error instanceof Error ? error.message : String(error)}`);
     }
   }
+  return true;
 }
 
 const reaped = new Map<string, Promise<void>>();
@@ -194,7 +218,14 @@ const reaped = new Map<string, Promise<void>>();
 export function reapOnce(homeDir: string, warn: (message: string) => void): Promise<void> {
   let run = reaped.get(homeDir);
   if (!run) {
-    run = reapStale(homeDir, warn).catch(() => {});
+    const started: Promise<void> = reapStale(homeDir, warn).then(
+      (complete) => {
+        // An unfinished reap (no `ps`) is not remembered: the next use of the home tries again.
+        if (!complete && reaped.get(homeDir) === started) reaped.delete(homeDir);
+      },
+      () => {},
+    );
+    run = started;
     reaped.set(homeDir, run);
   }
   return run;
