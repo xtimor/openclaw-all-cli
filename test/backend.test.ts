@@ -43,6 +43,16 @@ describe("cursor-cli backend", () => {
     expect(backend.parseJsonlEvent).toBeTypeOf("function");
   });
 
+  it("asks the host to clear the adapter's env keys from every turn, and keeps the logins (P17)", () => {
+    expect(backend.config.clearEnv).toEqual([...cursorAdapter.clearEnv]);
+    expect(backend.config.clearEnv).toContain("CURSOR_API_BASE_URL");
+    expect(backend.config.clearEnv).not.toContain("CURSOR_API_KEY");
+    // The backend declares no reliability: the host's watchdog defaults apply, like claude-cli.
+    expect(backend.config).not.toHaveProperty("reliability");
+    expect(backend).not.toHaveProperty("runtimeArtifact");
+    expect(backend.config).not.toHaveProperty("serialize");
+  });
+
   it("hands Cursor's own spellings of Auto to OpenClaw as model aliases", () => {
     expect(backend.config.modelAliases).toEqual({ "default[]": "auto", default: "auto" });
   });
@@ -166,6 +176,154 @@ describe("tool availability (AD-9)", () => {
     const undecided = buildCliBackend(adapter, { settings: {} });
     expect(undecided.nativeToolMode).toBe("always-on");
     expect(undecided.toolAvailabilityEnforcement).toBeUndefined();
+  });
+});
+
+describe("operations wiring (P17, P19)", () => {
+  const scratch = mkdtempSync(join(tmpdir(), "oac-backend-ops-"));
+  afterAll(() => rmSync(scratch, { recursive: true, force: true }));
+  type Backend = ReturnType<typeof buildCliBackend>;
+  const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+
+  async function turn(backend: Backend, name: string, prompt: string, env: Record<string, string> = {}) {
+    const prepared = await backend.prepareExecution!({ agentDir: join(scratch, name) } as never);
+    const records: Record<string, unknown>[] = [];
+    for await (const record of prepared!.execute!({
+      command: FAKE_CURSOR_AGENT,
+      args: ["acp"],
+      cwd: process.cwd(),
+      env: fakeEnv(env),
+      prompt,
+      modelId: "auto",
+      systemPrompt: "",
+      useResume: false,
+      timeoutMs: 10_000,
+      requestToolPermission: async () => ({ behavior: "deny", message: "no" }),
+      requestUserInput: async () => ({ status: "cancelled", message: "no" }),
+    })) {
+      records.push(record);
+    }
+    return records;
+  }
+
+  const entries = (file: string) =>
+    readFileSync(file, "utf8")
+      .trim()
+      .split("\n")
+      .map((line) => JSON.parse(line) as { method: string; t: number });
+
+  it("holds turns beyond maxConcurrentTurns until a slot frees, across agents", async () => {
+    const log = join(scratch, "cap.jsonl");
+    const env = { FAKE_CURSOR_LOG: log, FAKE_CURSOR_LOG_END: "1" };
+    const backend = buildCliBackend(cursorAdapter, { settings: { maxConcurrentTurns: 1, maxProcesses: 2 } });
+    const first = turn(backend, "cap-a", "[[sleep:400]]", env);
+    await sleep(100);
+    const second = turn(backend, "cap-b", "say:later", env);
+    const [a, b] = await Promise.all([first, second]);
+    expect(a.at(-1)).toMatchObject({ is_error: false });
+    expect(b.at(-1)).toMatchObject({ is_error: false });
+    const lines = entries(log);
+    const firstEnd = lines.find((line) => line.method === "prompt/end")!.t;
+    const prompts = lines.filter((line) => line.method === "session/prompt");
+    expect(prompts).toHaveLength(2);
+    expect(prompts[1]!.t).toBeGreaterThanOrEqual(firstEnd);
+  });
+
+  it("runs two agents at once under the defaults", async () => {
+    const log = join(scratch, "open.jsonl");
+    const env = { FAKE_CURSOR_LOG: log, FAKE_CURSOR_LOG_END: "1" };
+    const backend = buildCliBackend(cursorAdapter, { settings: {} });
+    await Promise.all([turn(backend, "open-a", "[[sleep:400]]", env), turn(backend, "open-b", "[[sleep:400]]", env)]);
+    const lines = entries(log);
+    const prompts = lines.filter((line) => line.method === "session/prompt");
+    const ends = lines.filter((line) => line.method === "prompt/end");
+    expect(prompts).toHaveLength(2);
+    // Both prompts started before either ended.
+    expect(Math.max(...prompts.map((line) => line.t))).toBeLessThan(Math.min(...ends.map((line) => line.t)));
+  });
+
+  it("fails a turn before any ACP session when the CLI is older than the floor", async () => {
+    const log = join(scratch, "old.jsonl");
+    const backend = buildCliBackend(cursorAdapter, { settings: {} });
+    const records = await turn(backend, "old", "say:hi", { FAKE_CURSOR_LOG: log, FAKE_CURSOR_VERSION: "2026.05.01-old" });
+    expect(records.at(-1)).toMatchObject({ type: "result", is_error: true });
+    expect(JSON.stringify(records)).toContain("2026.05.01");
+    expect(JSON.stringify(records)).toContain("2026.07.06");
+    expect(existsSync(log)).toBe(false);
+  });
+
+  it("reaps leftovers of a killed Gateway before a turn in a home the plugin has not met", async () => {
+    const dir = join(scratch, "reap-first-use", "openclaw-all-cli", "cursor-cli");
+    mkdirSync(join(dir, "pids"), { recursive: true });
+    const corrupt = join(dir, "pids", "4242.json");
+    writeFileSync(corrupt, "not json");
+    const warnings: string[] = [];
+    const backend = buildCliBackend(cursorAdapter, { settings: {}, warn: (m) => warnings.push(m) });
+    await turn(backend, "reap-first-use", "say:hi");
+    expect(existsSync(corrupt)).toBe(false);
+    expect(warnings.some((m) => m.includes("corrupt"))).toBe(true);
+  });
+
+  it("closes busy and idle processes when the plugin unloads, and refuses new turns", async () => {
+    const hooks: { dispose: Array<() => unknown>; services: Array<{ id: string; stop: () => unknown }> } = { dispose: [], services: [] };
+    const backends: Backend[] = [];
+    const warnings: string[] = [];
+    registerAdapters(
+      {
+        pluginConfig: {},
+        logger: { warn: (m: string) => warnings.push(m) },
+        registerCliBackend: (b: Backend) => backends.push(b),
+        lifecycle: { onDispose: (fn: () => unknown) => (hooks.dispose.push(fn), () => {}) },
+        registerService: (service: { id: string; stop: () => unknown }) => hooks.services.push(service),
+      } as never,
+      ADAPTERS,
+    );
+    expect(hooks.dispose).toHaveLength(1);
+    expect(hooks.services).toHaveLength(1);
+    const running = turn(backends[0]!, "unload", "[[hang]]");
+    const outcome = running.then((records) => records.at(-1));
+    await sleep(500);
+    await hooks.services[0]!.stop();
+    // The hung turn ended because its process was closed.
+    expect(await outcome).toMatchObject({ type: "result", is_error: true });
+    // Both hooks may run on a host that fires both; closing twice is harmless.
+    await hooks.dispose[0]!();
+    const after = await turn(backends[0]!, "unload", "say:hi");
+    expect(after.at(-1)).toMatchObject({ type: "result", is_error: true });
+    expect(JSON.stringify(after)).toContain("shutting down");
+  });
+
+  it("reaps the homes of the configured agents when fully loaded, and only then", async () => {
+    const agentRoot = mkdtempSync(join(scratch, "reg-"));
+    const agentDirOf = (id: string) => join(agentRoot, id);
+    const lock = (id: string) => {
+      const dir = join(agentDirOf(id), "openclaw-all-cli", "cursor-cli", "pids");
+      mkdirSync(dir, { recursive: true });
+      const file = join(dir, "4242.json");
+      writeFileSync(file, "broken");
+      return file;
+    };
+    const api = (mode: string) =>
+      ({
+        pluginConfig: {},
+        registrationMode: mode,
+        config: { agents: { entries: { work: {} } } },
+        runtime: { agent: { resolveAgentDir: (_cfg: unknown, id: string) => agentDirOf(id) } },
+        logger: { warn: () => {} },
+        registerCliBackend: () => {},
+      }) as never;
+    const discovery = [lock("main-d"), lock("work-d")];
+    registerAdapters(api("discovery"), ADAPTERS);
+    await sleep(300);
+    expect(discovery.every((file) => existsSync(file))).toBe(true);
+
+    const files = [lock("main"), lock("work"), lock("other")];
+    registerAdapters(api("full"), ADAPTERS);
+    await sleep(500);
+    expect(existsSync(files[0]!)).toBe(false);
+    expect(existsSync(files[1]!)).toBe(false);
+    // An agent the config does not name waits for its first use.
+    expect(existsSync(files[2]!)).toBe(true);
   });
 });
 
@@ -318,6 +476,18 @@ describe("synthetic auth provider entry", () => {
     ).resolves.toEqual({ apiKey: "openclaw:cursor-cli-native-auth", source: "Cursor CLI native auth", mode: "oauth" });
   });
 
+  it("probes the login without the adapter's cleared env keys", async () => {
+    const seen: Array<Record<string, string | undefined>> = [];
+    const spy = { ...cursorAdapter, probeAuth: async (p: { env: Record<string, string | undefined> }) => (seen.push(p.env), "available" as const) };
+    const spied = createSyntheticAuthProvider(spy as never) as unknown as typeof entry;
+    await spied.prepareSyntheticAuth({
+      provider: "cursor-cli",
+      config: config(FAKE_CURSOR_AGENT),
+      env: { PATH: "/bin", CURSOR_API_BASE_URL: "http://elsewhere", NODE_OPTIONS: "--require x", CURSOR_API_KEY: "key" },
+    });
+    expect(seen).toEqual([{ PATH: "/bin", CURSOR_API_KEY: "key" }]);
+  });
+
   it("returns nothing when the login is missing, the provider differs, or there is no config", async () => {
     await expect(
       entry.prepareSyntheticAuth({
@@ -367,6 +537,31 @@ describe("provider catalog entry", () => {
     };
     const result = await entry.catalog.run({ config, env: fakeEnv() });
     expect(result?.provider.models.every((model) => (model.input as string[]).includes("image"))).toBe(true);
+  });
+
+  it("lists the models, and probes, without the adapter's cleared env keys", async () => {
+    const seen: Array<Record<string, string | undefined>> = [];
+    const probe: typeof quickList.probeAuth = async (p) => (seen.push(p.env), "available");
+    const listed: Array<Record<string, string>> = [];
+    const adapter = {
+      ...quickList,
+      probeAuth: probe,
+      listModels: async (p: Parameters<typeof quickList.listModels>[0]) => (listed.push(p.env), quickList.listModels(p)),
+    };
+    const entry = createSyntheticAuthProvider(adapter, createModelCatalog(adapter)) as unknown as {
+      catalog: { run: (context: unknown) => Promise<Result> };
+    };
+    await entry.catalog.run({
+      config,
+      env: fakeEnv({ CURSOR_API_BASE_URL: "http://elsewhere", OTEL_SDK_DISABLED: "true", CURSOR_API_KEY: "key" }),
+    });
+    for (const env of [...seen, ...listed]) {
+      expect(env).not.toHaveProperty("CURSOR_API_BASE_URL");
+      expect(env).not.toHaveProperty("OTEL_SDK_DISABLED");
+      expect(env).toHaveProperty("CURSOR_API_KEY", "key");
+    }
+    expect(seen).toHaveLength(1);
+    expect(listed).toHaveLength(1);
   });
 
   it("offers only Auto, and does not start Cursor, without a login or API key", async () => {

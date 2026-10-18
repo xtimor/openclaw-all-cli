@@ -204,6 +204,11 @@ export type OpenParams = {
   mcpServers?: readonly McpServerSpec[];
   /** Answers a CLI permission request. */
   onPermissionRequest: (request: PermissionRequest) => Promise<PermissionDecision>;
+  /**
+   * Called once with the process ID as soon as the process exists, before any handshake, so the
+   * core can record it (AD-14). Not called when the process could not be started.
+   */
+  onProcessStart?: (pid: number) => void;
   signal?: AbortSignal;
 };
 
@@ -211,6 +216,8 @@ export type OpenParams = {
 export interface CliSession {
   /** The native session ID. */
   readonly sessionId: string;
+  /** The OS process ID, when the session runs in its own process. */
+  readonly pid?: number;
   /** False once the process exited or the session was closed. */
   readonly alive: boolean;
   /** Sends one prompt and yields the turn's events. The last event is `result` or `error`. */
@@ -253,6 +260,12 @@ export type ListModelsParams = {
   signal?: AbortSignal;
 };
 
+export type CheckVersionParams = {
+  command: string;
+  env: Record<string, string | undefined>;
+  signal?: AbortSignal;
+};
+
 /** What one CLI provider supplies to the core. Adapters import only this module and transports. */
 export interface CliAdapter {
   /** Short CLI name, for example `acme`. The backend ID is `<id>-cli`. */
@@ -274,6 +287,18 @@ export interface CliAdapter {
    * selection contains all of them.
    */
   readonly alwaysOnNativeTools: readonly string[];
+  /**
+   * Env keys the host removes from the Gateway's env before a turn, and the core removes before
+   * it lists models or probes the login: endpoint overrides, harness and debug switches. Never a
+   * key that carries the CLI's login.
+   */
+  readonly clearEnv: readonly string[];
+  /**
+   * Checks the installed CLI against `manifest.minVersion` (AD-14). Resolves `"ok"`, or a
+   * warning when the version cannot be read (the turn still runs). Throws `CliError`:
+   * `unsupported_version` for a version below the floor, `cli_not_found` for a missing binary.
+   */
+  checkVersion(params: CheckVersionParams): Promise<"ok" | { warning: string }>;
   /** Asks the CLI whether its own login works, without reading token material. */
   probeAuth(params: AuthProbeParams): Promise<AuthStatus>;
   /**

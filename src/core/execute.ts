@@ -3,6 +3,8 @@ import type { AgentHome } from "./home.ts";
 import { toRecord, type CoreRecord, type TurnSummary } from "./events.ts";
 import { startMcpProxy, type McpProxy } from "./mcp-proxy.ts";
 import { OPENCLAW_MCP_SERVER, readTurnTarget, type TurnTarget } from "./mcp-target.ts";
+import { recordProcess, type ProcessLock } from "./pid-locks.ts";
+import { ProcessPool, type PoolMember, type TurnSlot } from "./pool.ts";
 import { routePermission, type PermissionTurn } from "./permissions.ts";
 import {
   CliError,
@@ -35,6 +37,11 @@ export type ExecuteOptions = {
    * not). It is part of the reuse key: a process never serves another profile (AD-13).
    */
   authProfileId?: string;
+  /**
+   * The backend's limits (AD-14): the turn cap, the process cap, the version check memo, and
+   * close-all on unload. Absent: a private pool without limits.
+   */
+  pool?: ProcessPool;
 };
 
 type LiveEntry = {
@@ -56,6 +63,10 @@ type LiveEntry = {
   /** The chat this process holds, once open: `<home>\0<native session id>`. See `chats`. */
   chat?: string;
   handle: LiveSessionHandle;
+  /** The process as the pool counts it, from creation until the handle closes. */
+  member: PoolMember;
+  /** The open in progress, so the pool can wait for a process that is still starting. */
+  opening?: Promise<unknown>;
   busy: boolean;
   idleTimer?: NodeJS.Timeout;
 };
@@ -149,6 +160,7 @@ export function createExecute(adapter: CliAdapter, options: ExecuteOptions): Cli
   const warn = options.warn ?? (() => {});
   const mcp = options.mcp ?? true;
   const { authProfileId } = options;
+  const pool = options.pool ?? new ProcessPool({ maxTurns: Infinity, maxProcesses: Infinity });
 
   function reusable(ctx: ExecuteContext, live: LiveSessionCapability | undefined): OpenEntry | undefined {
     const current = live?.current();
@@ -172,17 +184,53 @@ export function createExecute(adapter: CliAdapter, options: ExecuteOptions): Cli
     }
   }
 
-  /** Creates the host handle and the proxy for a process that is not open yet. */
+  /**
+   * Creates the host handle and the proxy for a process that is not open yet, and counts it in
+   * the pool: at the process cap an idle process makes room, or the turn fails as `overloaded`.
+   */
   async function createEntry(
     ctx: ExecuteContext,
     live: LiveSessionCapability | undefined,
     withMcp: boolean,
   ): Promise<LiveEntry> {
-    let proxy: McpProxy | undefined;
+    const entry: LiveEntry = {
+      key: reuseKey(ctx, home, authProfileId),
+      busy: false,
+      member: {
+        isIdle: () => !entry.busy && Boolean(entry.session?.alive),
+        lastUsed: Date.now(),
+        close: () => entry.handle.close("idle"),
+        exited: async () => {
+          await entry.opening?.then(
+            () => {},
+            () => {},
+          );
+          await entry.session?.waitForExit();
+        },
+      },
+      handle: {
+        generation: randomUUID(),
+        fingerprint: live?.fingerprint ?? randomUUID(),
+        isIdle: () => !entry.busy && Boolean(entry.session?.alive),
+        close: () => {
+          if (entry.closed) return;
+          entry.closed = true;
+          clearTimeout(entry.idleTimer);
+          pool.remove(entry.member);
+          releaseChat(entry);
+          live?.remove(entry.handle);
+          void entry.session?.close();
+          void entry.proxy?.close();
+        },
+        waitForExit: () => entry.session?.waitForExit() ?? Promise.resolve(),
+      },
+    };
+    pool.add(entry.member);
     if (withMcp) {
       try {
-        proxy = await startMcpProxy();
+        entry.proxy = await startMcpProxy();
       } catch (error) {
+        pool.remove(entry.member);
         throw new CliError(
           {
             code: "server_error",
@@ -193,26 +241,6 @@ export function createExecute(adapter: CliAdapter, options: ExecuteOptions): Cli
         );
       }
     }
-    const entry: LiveEntry = {
-      proxy,
-      key: reuseKey(ctx, home, authProfileId),
-      busy: false,
-      handle: {
-        generation: randomUUID(),
-        fingerprint: live?.fingerprint ?? randomUUID(),
-        isIdle: () => !entry.busy && Boolean(entry.session?.alive),
-        close: () => {
-          if (entry.closed) return;
-          entry.closed = true;
-          clearTimeout(entry.idleTimer);
-          releaseChat(entry);
-          live?.remove(entry.handle);
-          void entry.session?.close();
-          void proxy?.close();
-        },
-        waitForExit: () => entry.session?.waitForExit() ?? Promise.resolve(),
-      },
-    };
     return entry;
   }
 
@@ -280,6 +308,22 @@ export function createExecute(adapter: CliAdapter, options: ExecuteOptions): Cli
     }
   }
 
+  /**
+   * AD-14: the first process of a backend and command waits for the CLI's version check. A pass is
+   * remembered; a CLI whose version cannot be read runs with a warning and is checked again.
+   */
+  async function ensureVersion(ctx: ExecuteContext): Promise<void> {
+    if (pool.versionChecked(ctx.command)) return;
+    const result = await adapter.checkVersion({
+      command: ctx.command,
+      env: { ...ctx.env, ...home.env },
+      ...(ctx.abortSignal ? { signal: ctx.abortSignal } : {}),
+    });
+    ctx.abortSignal?.throwIfAborted();
+    if (result === "ok") pool.markVersionChecked(ctx.command);
+    else warn(result.warning);
+  }
+
   /** Opens the process behind a registered entry. The proxy already points at the turn's target. */
   async function attachSession(entry: LiveEntry, ctx: ExecuteContext): Promise<OpenEntry> {
     const { proxy } = entry;
@@ -287,30 +331,45 @@ export function createExecute(adapter: CliAdapter, options: ExecuteOptions): Cli
     // A side question is a throwaway chat: it never resumes and never reaches the real one.
     const resumeSessionId = mode === "agent" && ctx.useResume && ctx.sessionId ? ctx.sessionId : undefined;
     if (resumeSessionId) await claimChat(entry, resumeSessionId, ctx.abortSignal);
-    const session = await adapter.open({
-      command: ctx.command,
-      args: ctx.args,
-      cwd: ctx.cwd,
-      env: { ...ctx.env, ...home.env },
-      modelId: ctx.modelId,
-      executionMode: mode,
-      ...(resumeSessionId ? { resumeSessionId } : {}),
-      // The CLI gets only the proxy: the host's per-run URL and token never leave the core.
-      ...(proxy
-        ? {
-            mcpServers: [
-              { name: OPENCLAW_MCP_SERVER, url: proxy.url, headers: { Authorization: `Bearer ${proxy.token}` } },
-            ],
-          }
-        : {}),
-      // The process outlives turns: each request goes to the turn running when it arrives. A side
-      // question has no tools to approve: every request is rejected and the host is never asked.
-      onPermissionRequest:
-        mode === "side-question"
-          ? async () => (!entry.turn || entry.turn.ended || ctx.abortSignal?.aborted ? "cancelled" : "reject_once")
-          : (request) => routePermission(entry.turn, request, warn),
-      ...(ctx.abortSignal ? { signal: ctx.abortSignal } : {}),
-    });
+    // The process is recorded in the agent home from its spawn, so a killed Gateway leaves a trail (AD-14).
+    let lock: Promise<ProcessLock | undefined> | undefined;
+    const releaseLock = () => lock?.then((held) => held?.release());
+    let session: CliSession;
+    try {
+      session = await adapter.open({
+        command: ctx.command,
+        args: ctx.args,
+        cwd: ctx.cwd,
+        env: { ...ctx.env, ...home.env },
+        modelId: ctx.modelId,
+        executionMode: mode,
+        ...(resumeSessionId ? { resumeSessionId } : {}),
+        // The CLI gets only the proxy: the host's per-run URL and token never leave the core.
+        ...(proxy
+          ? {
+              mcpServers: [
+                { name: OPENCLAW_MCP_SERVER, url: proxy.url, headers: { Authorization: `Bearer ${proxy.token}` } },
+              ],
+            }
+          : {}),
+        // The process outlives turns: each request goes to the turn running when it arrives. A side
+        // question has no tools to approve: every request is rejected and the host is never asked.
+        onPermissionRequest:
+          mode === "side-question"
+            ? async () => (!entry.turn || entry.turn.ended || ctx.abortSignal?.aborted ? "cancelled" : "reject_once")
+            : (request) => routePermission(entry.turn, request, warn),
+        onProcessStart: (pid) => {
+          lock = recordProcess(home.dir, pid, warn);
+        },
+        ...(ctx.abortSignal ? { signal: ctx.abortSignal } : {}),
+      });
+    } catch (error) {
+      // A failed open has stopped its process: nothing is left to guard.
+      await releaseLock();
+      throw error;
+    }
+    // The lock goes with the process, however the process ends.
+    void session.waitForExit().then(releaseLock, releaseLock);
     // The host may have closed the handle while the process was starting: the close found no
     // process to stop, so this one would leak and run against a closed proxy.
     if (entry.closed) {
@@ -346,7 +405,7 @@ export function createExecute(adapter: CliAdapter, options: ExecuteOptions): Cli
     return entry as OpenEntry;
   }
 
-  return async function* execute(ctx) {
+  async function* run(ctx: ExecuteContext): ReturnType<CliBackendExecute> {
     ctx.assertCurrent?.();
     ctx.abortSignal?.throwIfAborted();
     const sideQuestion = modeOf(ctx) === "side-question";
@@ -367,6 +426,7 @@ export function createExecute(adapter: CliAdapter, options: ExecuteOptions): Cli
       opened = true;
       let fresh: LiveEntry;
       try {
+        await ensureVersion(ctx);
         fresh = await createEntry(ctx, live, withMcp);
       } catch (error) {
         if (ctx.abortSignal?.aborted) throw error;
@@ -378,7 +438,7 @@ export function createExecute(adapter: CliAdapter, options: ExecuteOptions): Cli
       try {
         ctx.assertCurrent?.();
       } catch (error) {
-        void fresh.proxy?.close();
+        fresh.handle.close("abort");
         throw error;
       }
       // A host that tracks live sessions must know the process and activate its MCP grant before
@@ -388,7 +448,7 @@ export function createExecute(adapter: CliAdapter, options: ExecuteOptions): Cli
       try {
         live?.register(fresh.handle);
       } catch (error) {
-        void fresh.proxy?.close();
+        fresh.handle.close("abort");
         throw error;
       }
       try {
@@ -405,7 +465,9 @@ export function createExecute(adapter: CliAdapter, options: ExecuteOptions): Cli
           pointProxy(fresh.proxy, turnTarget);
           fresh.degraded = !turnTarget.ok;
         }
-        entry = await attachSession(fresh, ctx);
+        const opening = attachSession(fresh, ctx);
+        fresh.opening = opening;
+        entry = await opening;
       } catch (error) {
         fresh.handle.close("abort");
         if (ctx.abortSignal?.aborted) throw error;
@@ -482,12 +544,34 @@ export function createExecute(adapter: CliAdapter, options: ExecuteOptions): Cli
       active.turn = undefined;
       active.proxy?.clearTarget();
       active.busy = false;
+      active.member.lastUsed = Date.now();
       if (turnFailed || active.degraded || !live || !active.session.alive || ctx.abortSignal?.aborted) {
         active.handle.close("abort");
       } else {
         active.idleTimer = setTimeout(() => active.handle.close("idle"), idleMs);
         active.idleTimer.unref();
       }
+    }
+  }
+
+  return async function* execute(ctx) {
+    ctx.abortSignal?.throwIfAborted();
+    // AD-14: the turn slot comes first and is held for the whole turn. The wait has no timer of
+    // its own (AD-11): it ends on a free slot or on the host's abort.
+    let slot: TurnSlot;
+    try {
+      slot = await pool.acquireTurn(ctx.abortSignal);
+    } catch (error) {
+      if (ctx.abortSignal?.aborted) throw error;
+      // A superseded run must throw, not turn into an error record.
+      ctx.assertCurrent?.();
+      yield errorRecord(error);
+      return;
+    }
+    try {
+      yield* run(ctx);
+    } finally {
+      slot.release();
     }
   };
 }

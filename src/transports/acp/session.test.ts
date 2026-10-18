@@ -709,3 +709,39 @@ describe("AcpSession", () => {
     });
   });
 });
+
+describe("AcpSession process ID (AD-14)", () => {
+  it("reports the pid once, before the handshake, and exposes it on the session", async () => {
+    const seen: number[] = [];
+    const session = await start({ onProcessStart: (pid) => seen.push(pid) });
+    expect(seen).toHaveLength(1);
+    expect(session.pid).toBe(seen[0]);
+  });
+
+  it("reports the pid even when the handshake fails", async () => {
+    const seen: number[] = [];
+    await expect(
+      AcpSession.open(
+        options({ onProcessStart: (pid) => seen.push(pid), resumeSessionId: "x", env: { FAKE_CURSOR_LOAD_CRASH: "1" } }),
+      ),
+    ).rejects.toBeInstanceOf(CliError);
+    expect(seen).toHaveLength(1);
+  });
+
+  it("reports no pid for a binary that does not exist", async () => {
+    const seen: number[] = [];
+    await expect(
+      AcpSession.open(options({ command: "/nonexistent/agent", onProcessStart: (pid) => seen.push(pid) })),
+    ).rejects.toMatchObject({ code: "cli_not_found" });
+    expect(seen).toEqual([]);
+  });
+
+  it("is not broken by an observer that throws", async () => {
+    const session = await start({
+      onProcessStart: () => {
+        throw new Error("observer failed");
+      },
+    });
+    expect(session.alive).toBe(true);
+  });
+});

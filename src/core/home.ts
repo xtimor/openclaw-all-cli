@@ -1,4 +1,5 @@
 import { join } from "node:path";
+import { reapOnce } from "./pid-locks.ts";
 import { CliError, type CliAdapter, type HomeEnv } from "./ports.ts";
 
 /** A prepared per-agent CLI home (AD-6). */
@@ -15,12 +16,15 @@ export function homeDirFor(agentDir: string, backendId: string): string {
 
 /**
  * Derives the home from OpenClaw's `agentDir` and lets the adapter set it up. Without an
- * `agentDir` it throws: a shared home would let agents share config and chats.
+ * `agentDir` it throws: a shared home would let agents share config and chats. The first use of
+ * a home waits for the kill of the processes a dead Gateway left in it (AD-14), so a turn never
+ * opens beside an orphan.
  */
 export async function prepareAgentHome(
   adapter: CliAdapter,
   backendId: string,
   agentDir: string | undefined,
+  warn: (message: string) => void = () => {},
 ): Promise<AgentHome> {
   if (!agentDir?.trim()) {
     throw new CliError({
@@ -29,6 +33,7 @@ export async function prepareAgentHome(
     });
   }
   const dir = homeDirFor(agentDir, backendId);
+  await reapOnce(dir, warn);
   try {
     return { dir, env: await adapter.prepareHome(dir) };
   } catch (error) {

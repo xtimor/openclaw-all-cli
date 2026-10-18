@@ -1,3 +1,6 @@
+import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { describe, expect, it, vi } from "vitest";
 import { homeDirFor, prepareAgentHome } from "./home.ts";
 import { CliError, createManifest, type CliAdapter } from "./ports.ts";
@@ -11,6 +14,8 @@ function adapterWith(prepareHome: CliAdapter["prepareHome"]): CliAdapter {
     defaultModel: "acme-cli/auto",
     manifest: createManifest("1", {}),
     alwaysOnNativeTools: [],
+    clearEnv: [],
+    checkVersion: async () => "ok",
     probeAuth: async () => "available",
     listModels: async () => [],
     prepareHome,
@@ -62,5 +67,31 @@ describe("prepareAgentHome", () => {
       throw original;
     });
     await expect(prepareAgentHome(adapter, "acme-cli", "/agents/a")).rejects.toBe(original);
+  });
+
+  it("waits for the reap of the home's pid locks before it prepares the home, once per home", async () => {
+    const agentDir = mkdtempSync(join(tmpdir(), "oac-home-reap-"));
+    try {
+      const dir = homeDirFor(agentDir, "acme-cli");
+      mkdirSync(join(dir, "pids"), { recursive: true });
+      const corrupt = join(dir, "pids", "4242.json");
+      writeFileSync(corrupt, "{broken");
+      const warnings: string[] = [];
+      const seen: boolean[] = [];
+      const prepareHome = vi.fn(async () => {
+        seen.push(existsSync(corrupt));
+        return {};
+      });
+      await prepareAgentHome(adapterWith(prepareHome), "acme-cli", agentDir, (m) => warnings.push(m));
+      expect(seen).toEqual([false]);
+      expect(warnings).toHaveLength(1);
+      // A second use of the same home does not reap again.
+      writeFileSync(corrupt, "{broken again");
+      await prepareAgentHome(adapterWith(prepareHome), "acme-cli", agentDir, (m) => warnings.push(m));
+      expect(existsSync(corrupt)).toBe(true);
+      expect(warnings).toHaveLength(1);
+    } finally {
+      rmSync(agentDir, { recursive: true, force: true });
+    }
   });
 });

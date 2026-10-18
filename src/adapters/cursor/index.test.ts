@@ -11,8 +11,8 @@ import {
   type PermissionRequest,
 } from "../../core/ports.ts";
 import { PARITY_ROWS } from "../../core/ports.ts";
-import { CURSOR_PERMISSIONS, cursorAdapter, parseStatusOutput } from "./index.ts";
-import { cursorManifest } from "./manifest.ts";
+import { CURSOR_CLEAR_ENV, CURSOR_PERMISSIONS, cursorAdapter, parseStatusOutput } from "./index.ts";
+import { CURSOR_MIN_VERSION, cursorManifest } from "./manifest.ts";
 
 const open: CliSession[] = [];
 afterEach(async () => {
@@ -513,5 +513,98 @@ describe("cursor adapter", () => {
     expect(cursorManifest.rows.P4.status).toBe("approx");
     expect(cursorManifest.rows.P7.status).toBe("match");
     expect(cursorManifest.rows.P6.status).toBe("gap");
+  });
+});
+
+describe("cursor adapter operations (P17, P19)", () => {
+  const check = (extra: Record<string, string>, options: { command?: string; signal?: AbortSignal } = {}) =>
+    cursorAdapter.checkVersion({
+      command: options.command ?? FAKE_CURSOR_AGENT,
+      env: fakeEnv(extra),
+      ...(options.signal ? { signal: options.signal } : {}),
+    });
+
+  it("floors the version at the manifest's minimum", () => {
+    expect(cursorManifest.minVersion).toBe(CURSOR_MIN_VERSION);
+    expect(CURSOR_MIN_VERSION).toBe("2026.07.06");
+  });
+
+  it.each(["2026.10.16-e3cb207", "2026.07.06", "2026.07.06-abc", "2027.01.01-x", "cursor-agent 2026.10.16-e3cb207"])(
+    "accepts %s",
+    async (version) => {
+      await expect(check({ FAKE_CURSOR_VERSION: version })).resolves.toBe("ok");
+    },
+  );
+
+  it.each([
+    ["2026.05.01-abc", "2026.05.01"],
+    ["2026.07.05", "2026.07.05"],
+    ["2025.12.31-z", "2025.12.31"],
+  ])("fails %s as unsupported_version, naming the found and required versions and the update command", async (version, found) => {
+    const error = await check({ FAKE_CURSOR_VERSION: version }).catch((e: unknown) => e);
+    expect(error).toBeInstanceOf(CliError);
+    expect((error as CliError).code).toBe("unsupported_version");
+    expect((error as CliError).message).toContain(found);
+    expect((error as CliError).message).toContain("2026.07.06");
+    expect((error as CliError).message).toContain("cursor-agent update");
+  });
+
+  it("compares numerically, not as text", async () => {
+    await expect(check({ FAKE_CURSOR_VERSION: "2026.10.9" })).resolves.toBe("ok");
+    await expect(check({ FAKE_CURSOR_VERSION: "2026.7.6" })).resolves.toBe("ok");
+    await expect(check({ FAKE_CURSOR_VERSION: "2026.7.5" })).rejects.toMatchObject({ code: "unsupported_version" });
+  });
+
+  it("warns, and does not fail, when the version cannot be read", async () => {
+    const cases: Record<string, string>[] = [
+      { FAKE_CURSOR_VERSION: "no version here" },
+      { FAKE_CURSOR_VERSION: "2026.05.01-old", FAKE_CURSOR_VERSION_EXIT: "1" },
+    ];
+    for (const extra of cases) {
+      const result = await check(extra);
+      expect(result).toEqual({ warning: expect.stringContaining("not checked") });
+    }
+  });
+
+  it("warns when the check is cut off", async () => {
+    const controller = new AbortController();
+    controller.abort();
+    const result = await check({}, { signal: controller.signal });
+    expect(result).toEqual({ warning: expect.stringContaining("did not answer") });
+  });
+
+  it("fails a missing binary as cli_not_found, with the transport's wording", async () => {
+    const error = await check({}, { command: "/nonexistent/cursor-agent" }).catch((e: unknown) => e);
+    expect(error).toBeInstanceOf(CliError);
+    expect((error as CliError).code).toBe("cli_not_found");
+    expect((error as CliError).message).toBe(
+      'Could not find the CLI binary "/nonexistent/cursor-agent". Install it or set its path in the plugin config.',
+    );
+  });
+
+  it("clears endpoint, harness, debug, and telemetry keys, and keeps the logins", () => {
+    expect(cursorAdapter.clearEnv).toBe(CURSOR_CLEAR_ENV);
+    for (const key of ["CURSOR_API_BASE_URL", "CURSOR_API_ENDPOINT", "NODE_OPTIONS", "OTEL_EXPORTER_OTLP_ENDPOINT", "CURSOR_CONFIG_DIR"]) {
+      expect(CURSOR_CLEAR_ENV).toContain(key);
+    }
+    expect(CURSOR_CLEAR_ENV).not.toContain("CURSOR_API_KEY");
+    expect(CURSOR_CLEAR_ENV).not.toContain("CURSOR_AUTH_TOKEN");
+    expect(new Set(CURSOR_CLEAR_ENV).size).toBe(CURSOR_CLEAR_ENV.length);
+  });
+
+  it("reports the process ID as soon as it starts, before the session is open", async () => {
+    const pids: number[] = [];
+    const session = await cursorAdapter.open({
+      command: FAKE_CURSOR_AGENT,
+      args: cursorAdapter.launchArgs,
+      cwd: process.cwd(),
+      env: fakeEnv(),
+      modelId: "auto",
+      onPermissionRequest: async () => "reject_once",
+      onProcessStart: (pid) => pids.push(pid),
+    });
+    open.push(session);
+    expect(pids).toHaveLength(1);
+    expect(session.pid).toBe(pids[0]);
   });
 });

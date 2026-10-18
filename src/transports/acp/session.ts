@@ -61,6 +61,8 @@ export type AcpSessionOptions = {
   selectModel?: (available: readonly AcpModelInfo[], currentId: string | undefined) => string | null | undefined;
   /** Native session to resume with `session/load`. */
   resumeSessionId?: string;
+  /** Called once with the process ID right after the spawn, before the handshake. */
+  onProcessStart?: (pid: number) => void;
   /** Answers a permission request. Throwing counts as `cancelled`. */
   onPermissionRequest: (request: AcpPermissionRequest) => Promise<PermissionDecision>;
   /**
@@ -281,6 +283,10 @@ export class AcpSession implements CliSession {
     readonly models: readonly AcpModelInfo[],
   ) {}
 
+  get pid(): number | undefined {
+    return this.runtime.child.pid;
+  }
+
   get alive(): boolean {
     return !this.closed && !this.runtime.hasExited;
   }
@@ -294,6 +300,15 @@ export class AcpSession implements CliSession {
       env: options.env,
       stdio: ["pipe", "pipe", "pipe"],
     });
+
+    // A process that failed to spawn has no pid; its `error` event reports why.
+    if (child.pid !== undefined) {
+      try {
+        options.onProcessStart?.(child.pid);
+      } catch {
+        // A failing observer must not leak the process it was told about.
+      }
+    }
 
     const runtime: Runtime = {
       child,

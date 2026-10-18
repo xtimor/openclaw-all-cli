@@ -16,6 +16,8 @@ function makeAdapter(listModels: (params: ListModelsParams) => Promise<readonly 
     defaultModel: "acme-cli/auto",
     manifest: createManifest("1", {}),
     alwaysOnNativeTools: [],
+    clearEnv: [],
+    checkVersion: async () => "ok",
     probeAuth: async () => "available",
     prepareHome: async () => ({}),
     open: async () => {

@@ -5,8 +5,11 @@
 //
 //   FAKE_CURSOR_LOGGED_IN=0     `status` reports "Not logged in"
 //   FAKE_CURSOR_NO_ASK_MODE=1   the agent lists no "ask" mode
-//   FAKE_CURSOR_LOG=<file>      append one JSON line per request the agent receives; the
-//                               `initialize` line also carries CURSOR_CONFIG_DIR/CURSOR_DATA_DIR
+//   FAKE_CURSOR_LOG=<file>      append one JSON line per request the agent receives (with `t`, the epoch ms); the `initialize` line also carries
+//                               CURSOR_CONFIG_DIR/CURSOR_DATA_DIR
+//   FAKE_CURSOR_LOG_END=1       also log a `prompt/end` line when a prompt ends
+//   FAKE_CURSOR_VERSION=<text>  what `--version` prints (default "2026.10.14-fake")
+//   FAKE_CURSOR_VERSION_EXIT=<n> `--version` exits with this code after printing
 //   FAKE_CURSOR_DEFAULT_MODEL=m the exact model ID a new session starts with (default "default[]", Cursor's Auto)
 //   FAKE_CURSOR_MODEL_SURFACE=s how the agent reports its models: "both" (default; the `models` state and a
 //                               configOptions select, like cursor-agent), "state" (only `models`, switched
@@ -27,6 +30,7 @@
 // requests the permission the JSON describes ({toolCall, announce?, options?}; `announce` is sent first
 // as a `tool_call` update, like Cursor does), "[[hang]]" never
 // finishes until cancelled, "[[refuse]]" ends with stopReason refusal, "[[crash]]" exits, "say:<text>" replies with <text>.
+// "[[sleep:<ms>]]" waits <ms> before the reply (a turn that takes a while), then answers like any other prompt.
 // "[[recall]]" replies with the prompts the session has seen before this one ("recall:a|b"), including those from before a
 // `session/load` when FAKE_CURSOR_STORE is set.
 // "[[updates]]<json array>" sends each item as a `session/update` body, in order, a few ms apart, then ends the
@@ -39,12 +43,12 @@ import { createInterface } from "node:readline";
 
 const args = process.argv.slice(2);
 const log = (entry) => {
-  if (process.env.FAKE_CURSOR_LOG) appendFileSync(process.env.FAKE_CURSOR_LOG, `${JSON.stringify(entry)}\n`);
+  if (process.env.FAKE_CURSOR_LOG) appendFileSync(process.env.FAKE_CURSOR_LOG, `${JSON.stringify({ ...entry, t: Date.now() })}\n`);
 };
 
 if (args[0] === "--version") {
-  console.log("2026.10.14-fake");
-  process.exit(0);
+  console.log(process.env.FAKE_CURSOR_VERSION ?? "2026.10.14-fake");
+  process.exit(Number(process.env.FAKE_CURSOR_VERSION_EXIT ?? 0));
 }
 if (args[0] === "status") {
   if (process.env.FAKE_CURSOR_LOGGED_IN === "0") {
@@ -121,6 +125,8 @@ async function runPrompt(id, params) {
   session.history.push(text);
   saveSession(params.sessionId, session);
   update(params.sessionId, { sessionUpdate: "agent_thought_chunk", content: { type: "text", text: "thinking" } });
+  const sleep = /\[\[sleep:(\d+)\]\]/.exec(text);
+  if (sleep) await new Promise((resolve) => setTimeout(resolve, Number(sleep[1])));
   if (text.includes("[[crash]]")) process.exit(3);
   if (text.includes("[[refuse]]")) return reply(id, { stopReason: "refusal" });
   if (text.includes("[[hang]]")) {
@@ -306,7 +312,9 @@ rl.on("line", (line) => {
       }
       return reply(id, { configOptions: configOptions(sessions.get(params.sessionId)) });
     case "session/prompt":
-      return void runPrompt(id, params);
+      return void runPrompt(id, params).then(() => {
+        if (process.env.FAKE_CURSOR_LOG_END === "1") log({ method: "prompt/end", params: { sessionId: params.sessionId } });
+      });
     case "session/cancel":
       if (process.env.FAKE_CURSOR_IGNORE_CANCEL !== "1") cancelled.add(params.sessionId);
       return;

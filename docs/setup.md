@@ -13,7 +13,7 @@ How to run `cursor-cli/<model>` in your OpenClaw.
 | Cursor CLI (`cursor-agent`) | 2026.07.06 or later | `cursor-agent --version` |
 | Cursor plan | Headless CLI allowed (admins can disable it) | `cursor-agent status` |
 
-The plugin records the minimum `cursor-agent` version (2026.07.06) but does not enforce it yet. Older OpenClaw builds treat CLI backends as text-only, with no tools and no streaming. Older `cursor-agent` builds can corrupt `cli-config.json` when several agents run at once.
+The plugin runs `cursor-agent --version` before its first process and fails a turn on a build older than 2026.07.06 (`unsupported_version`). Older OpenClaw builds treat CLI backends as text-only, with no tools and no streaming. Older `cursor-agent` builds can corrupt `cli-config.json` when several agents run at once.
 
 ## 1. Sign in to Cursor
 
@@ -54,6 +54,10 @@ All settings are optional. They live under `plugins.entries.openclaw-all-cli.con
 | Key | Default | Meaning |
 | --- | --- | --- |
 | `cursor-cli.command` | `cursor-agent` | Path or name of the Cursor CLI. Set it when the Gateway's `PATH` does not include `cursor-agent`. |
+| `cursor-cli.maxConcurrentTurns` | `4` | Turns that run at once (1 to 64). More wait in order for a free slot. |
+| `cursor-cli.maxProcesses` | `8` | `cursor-agent` processes alive at once, idle ones included (1 to 64, at least `maxConcurrentTurns`). At the cap the least recently used idle process is closed. |
+
+Settings that are out of range, or a `maxProcesses` below `maxConcurrentTurns`, are ignored with a warning and the defaults apply. Keep both under OpenClaw's own limit of 16 live sessions.
 
 Isolation needs no setting: every agent gets its own Cursor home with the same fixed permissions (see [Cursor provider](providers/cursor.md)). Transport and API-key settings are documented here once they exist.
 
@@ -80,6 +84,11 @@ The first command must report `"status": "loaded"` and `cursor-cli` under `cliBa
 | `Cursor has no model "<name>" for this account` | The account does not have that model | Pick one from `openclaw models list --provider cursor-cli`, or check the plan |
 | Only `cursor-cli/auto` is listed | **No login:** the plugin lists nothing and logs nothing; after `cursor-agent login` (or setting `CURSOR_API_KEY`) the next read lists at once. **Failed listing:** the Gateway log says `Could not list the Cursor CLI models` and why; the failure is remembered for 30 seconds, and `openclaw models list --provider cursor-cli --refresh` waits it out | Fix the login or `cursor-agent`, then run the refresh (after 30 seconds when a listing failed) |
 | No `cursor-cli` models in the Gateway's list | The plugin is not loaded yet | Name a `cursor-cli/...` model as the default model so it loads at Gateway start |
+| `cursor-agent <version> is too old: this plugin needs 2026.07.06 or newer` (`unsupported_version`) | The installed `cursor-agent` is older than the minimum | Run `cursor-agent update` |
+| `All N CLI processes are busy` (`overloaded`) | The process cap is full of running turns (only possible when something broke the usual limits) | Retry; raise `maxProcesses`; report it if it repeats |
+| `The plugin is shutting down` | The Gateway is stopping or the plugin is reloading | Retry once the Gateway is back |
+| A log line `Stopped CLI process <pid>, which a previous Gateway left running` | A Gateway was killed and left `cursor-agent` running; the plugin cleaned it up | Nothing. Stop the Gateway with SIGTERM next time to avoid it |
+| `` `ps` is not available `` | The host has no `ps`, so processes are not recorded and a killed Gateway's leftovers are not cleaned | Install `ps` (procps); check for stray `cursor-agent` processes by hand |
 | `The CLI speaks ACP protocol N` | `cursor-agent` speaks a protocol this plugin does not | Run `cursor-agent update`, or update the plugin |
 | `The CLI rejected its login` | `cursor-agent` refused the ACP login | Run `cursor-agent login` and check `cursor-agent status` |
 | `CLI session not found` (`session_expired`) | Cursor does not know the chat: it belongs to another agent's home or was deleted. OpenClaw retries with a fresh chat and its own history only when it has history to reseed | Start a new chat with `/reset` |

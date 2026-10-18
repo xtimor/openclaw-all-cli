@@ -1,10 +1,11 @@
-import type { BackendConfig } from "./config.ts";
+import { capsOf, type BackendConfig } from "./config.ts";
 import { parseJsonlEvent } from "./events.ts";
 import { createExecute, errorRecord, type ExecuteOptions } from "./execute.ts";
 import { prepareAgentHome } from "./home.ts";
 import { deriveFlags } from "./manifest.ts";
 import { unenforceableNativeTools } from "./permissions.ts";
 import type { CliAdapter } from "./ports.ts";
+import { ProcessPool } from "./pool.ts";
 import type { CliBackendPlugin } from "./sdk-types.ts";
 
 /** The backend ID and model-ref prefix for an adapter (AD-1). */
@@ -22,6 +23,8 @@ export type BuildBackendOptions = {
   execute?: Pick<ExecuteOptions, "idleMs" | "abortGraceMs">;
   /** Receives warnings, for example a turn that runs without OpenClaw tools. */
   warn?: (message: string) => void;
+  /** The backend's limits (AD-14). Absent: a pool sized from `settings`. The registrar passes its own to close it on unload. */
+  pool?: ProcessPool;
 };
 
 /**
@@ -32,6 +35,7 @@ export function buildCliBackend(adapter: CliAdapter, options: BuildBackendOption
   const flags = deriveFlags(adapter.manifest);
   const command = options.settings.command ?? adapter.command;
   const args = [...adapter.launchArgs];
+  const pool = options.pool ?? new ProcessPool(capsOf(options.settings));
 
   return {
     id: backendIdFor(adapter),
@@ -70,6 +74,8 @@ export function buildCliBackend(adapter: CliAdapter, options: BuildBackendOption
             freshSessionRecovery: "invalidated-only" as const,
           }
         : {}),
+      // The host deletes these keys from the Gateway's env before a turn; the core applies the same list to its own probes.
+      clearEnv: [...adapter.clearEnv],
       output: "jsonl",
       input: "stdin",
       ...(flags.liveSession ? { liveSession: "claude-stdio" as const } : {}),
@@ -92,12 +98,13 @@ export function buildCliBackend(adapter: CliAdapter, options: BuildBackendOption
       // Only a selection the adapter enforces is confirmed; a run without one needs no confirmation.
       const enforced = ctx.toolAvailability ? { toolAvailabilityEnforced: true as const } : {};
       try {
-        const home = await prepareAgentHome(adapter, backendIdFor(adapter), ctx.agentDir);
+        const home = await prepareAgentHome(adapter, backendIdFor(adapter), ctx.agentDir, options.warn);
         return {
           ...enforced,
           execute: createExecute(adapter, {
             ...options.execute,
             home,
+            pool,
             mcp: flags.mcp,
             ...(ctx.authProfileId ? { authProfileId: ctx.authProfileId } : {}),
             ...(options.warn ? { warn: options.warn } : {}),

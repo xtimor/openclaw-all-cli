@@ -1,6 +1,7 @@
 import { nativeAuthMarkerFor, backendIdFor } from "./backend.ts";
 import { defaultCatalogRow, type CatalogRow, type ModelCatalog } from "./catalog.ts";
 import { readBackendConfig } from "./config.ts";
+import { withoutKeys } from "./env.ts";
 import { deriveFlags } from "./manifest.ts";
 import type { CliAdapter } from "./ports.ts";
 
@@ -68,7 +69,8 @@ export function createSyntheticAuthProvider(adapter: CliAdapter, catalog?: Model
               if (context.providerIds && !context.providerIds.some((id) => id.toLowerCase() === backendId)) return null;
               const pluginConfig = context.config?.plugins?.entries?.[PLUGIN_ID]?.config;
               const command = readBackendConfig(pluginConfig, backendId, () => {}).command ?? adapter.command;
-              const env = context.env ?? process.env;
+              // The listing and the probe run with the same clean env as a turn.
+              const env = withoutKeys(context.env ?? process.env, adapter.clearEnv);
               const status = await adapter.probeAuth({
                 command,
                 env,
@@ -95,7 +97,7 @@ export function createSyntheticAuthProvider(adapter: CliAdapter, catalog?: Model
       const settings = readBackendConfig(pluginConfig, backendId, () => {});
       const status = await adapter.probeAuth({
         command: settings.command ?? adapter.command,
-        env: context.env ?? process.env,
+        env: withoutKeys(context.env ?? process.env, adapter.clearEnv),
         ...(context.signal ? { signal: context.signal } : {}),
       });
       context.signal?.throwIfAborted();

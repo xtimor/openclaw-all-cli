@@ -9,6 +9,7 @@ import {
   CliError,
   type AuthProbeParams,
   type AuthStatus,
+  type CheckVersionParams,
   type CliAdapter,
   type CliModel,
   type CliSession,
@@ -18,7 +19,7 @@ import {
   type McpServerSpec,
   type OpenParams,
 } from "../../core/ports.ts";
-import { cursorManifest } from "./manifest.ts";
+import { CURSOR_MIN_VERSION, cursorManifest } from "./manifest.ts";
 import { buildCursorCatalog, selectCursorModel } from "./models.ts";
 import { CURSOR_ALWAYS_ON_NATIVE_TOOLS, toCanonicalRequest } from "./permissions.ts";
 import { describeCursorToolCall } from "./tool-display.ts";
@@ -27,6 +28,53 @@ const PROBE_TIMEOUT_MS = 5_000;
 
 /** Longest a model listing may take: `cursor-agent acp` needs a few seconds to start a session. */
 const LIST_MODELS_TIMEOUT_MS = 30_000;
+
+/**
+ * Env keys the host removes from a turn's env (AD-14): endpoint overrides, harness and debug
+ * switches, and telemetry exporters that would redirect or change a turn (seen in the 2026.10.16
+ * bundle). `CURSOR_API_KEY` and `CURSOR_AUTH_TOKEN` are logins (P2) and stay. `CURSOR_CONFIG_DIR`
+ * and `CURSOR_DATA_DIR` go because the per-agent home sets them (AD-6).
+ */
+export const CURSOR_CLEAR_ENV: readonly string[] = [
+  "CURSOR_API_BASE_URL",
+  "CURSOR_API_ENDPOINT",
+  "CURSOR_WEBSITE_URL",
+  "CURSOR_CONVERSATION_ID",
+  "CURSOR_REQUEST_ID",
+  "CURSOR_AGENT_PERSIST_SESSION",
+  "CURSOR_AGENT_DEBUG_PORT",
+  "CURSOR_AGENT_DEBUG_LIVE_BG",
+  "CURSOR_AGENT_COMPLETED_PATH",
+  "CURSOR_AGENT_CLI_LOCAL_MODE",
+  "CURSOR_AGENT_CLI_AUTHLESS_MODE",
+  "CURSOR_LOCAL_AGENT_HEADERS",
+  "CURSOR_STATSIG_OVERRIDES",
+  "CURSOR_HARNESS_TEST_NAME",
+  "CURSOR_HARNESS_RUN_ID",
+  "CURSOR_HARNESS_PROMPT_CATEGORY",
+  "CURSOR_ASKPASS_SOCKET",
+  "CURSOR_ASKPASS_SECRET",
+  "CURSOR_CLI",
+  "CURSOR_CONFIG_DIR",
+  "CURSOR_DATA_DIR",
+  "NODE_OPTIONS",
+  "OTEL_EXPORTER_OTLP_ENDPOINT",
+  "OTEL_EXPORTER_OTLP_HEADERS",
+  "OTEL_EXPORTER_OTLP_LOGS_ENDPOINT",
+  "OTEL_EXPORTER_OTLP_LOGS_HEADERS",
+  "OTEL_EXPORTER_OTLP_LOGS_PROTOCOL",
+  "OTEL_EXPORTER_OTLP_METRICS_ENDPOINT",
+  "OTEL_EXPORTER_OTLP_METRICS_HEADERS",
+  "OTEL_EXPORTER_OTLP_METRICS_PROTOCOL",
+  "OTEL_EXPORTER_OTLP_PROTOCOL",
+  "OTEL_EXPORTER_OTLP_TRACES_ENDPOINT",
+  "OTEL_EXPORTER_OTLP_TRACES_HEADERS",
+  "OTEL_EXPORTER_OTLP_TRACES_PROTOCOL",
+  "OTEL_LOGS_EXPORTER",
+  "OTEL_METRICS_EXPORTER",
+  "OTEL_SDK_DISABLED",
+  "OTEL_TRACES_EXPORTER",
+];
 
 /** Reads `cursor-agent status` output: negations ("not ...", "logged out") first, then "logged in", "signed in", or "authenticated". */
 export function parseStatusOutput(output: string): AuthStatus {
@@ -48,6 +96,59 @@ async function probeAuth(params: AuthProbeParams): Promise<AuthStatus> {
   if (result.kind === "timeout") return "unreadable";
   if (result.code !== 0) return "missing";
   return parseStatusOutput(`${result.stdout}\n${result.stderr}`);
+}
+
+/** `YYYY.MM.DD` from `cursor-agent --version` (`2026.10.16-e3cb207`), as numbers. */
+function parseVersion(text: string): [number, number, number] | undefined {
+  const match = /\b(\d{4})\.(\d{1,2})\.(\d{1,2})\b/.exec(text);
+  return match ? [Number(match[1]), Number(match[2]), Number(match[3])] : undefined;
+}
+
+function compareVersions(a: readonly number[], b: readonly number[]): number {
+  for (let i = 0; i < Math.max(a.length, b.length); i += 1) {
+    const diff = (a[i] ?? 0) - (b[i] ?? 0);
+    if (diff !== 0) return diff;
+  }
+  return 0;
+}
+
+/**
+ * AD-14: runs `cursor-agent --version` and compares it with the manifest's floor. A missing binary
+ * and a version below the floor fail the turn; a version that cannot be read only warns, because
+ * the install may print something this check does not know.
+ */
+async function checkVersion(params: CheckVersionParams): Promise<"ok" | { warning: string }> {
+  const result = await runCommand(params.command, ["--version"], {
+    env: params.env,
+    timeoutMs: PROBE_TIMEOUT_MS,
+    ...(params.signal ? { signal: params.signal } : {}),
+  });
+  if (result.kind === "spawn-error") {
+    if (result.error.code === "ENOENT") {
+      throw new CliError({
+        code: "cli_not_found",
+        message: `Could not find the CLI binary "${params.command}". Install it or set its path in the plugin config.`,
+      });
+    }
+    return { warning: `Could not run "${params.command} --version" (${result.error.message}), so its version is not checked.` };
+  }
+  if (result.kind === "timeout") {
+    return { warning: `"${params.command} --version" did not answer in time, so its version is not checked.` };
+  }
+  const output = `${result.stdout}\n${result.stderr}`;
+  const found = result.code === 0 ? parseVersion(output) : undefined;
+  if (!found) {
+    return { warning: `Could not read the version of "${params.command}", so it is not checked against ${CURSOR_MIN_VERSION}.` };
+  }
+  const floor = parseVersion(CURSOR_MIN_VERSION)!;
+  if (compareVersions(found, floor) < 0) {
+    const text = found.map((part, index) => (index === 0 ? String(part) : String(part).padStart(2, "0"))).join(".");
+    throw new CliError({
+      code: "unsupported_version",
+      message: `cursor-agent ${text} is too old: this plugin needs ${CURSOR_MIN_VERSION} or newer. Run \`cursor-agent update\`.`,
+    });
+  }
+  return "ok";
 }
 
 /** AD-9: the same for every agent. Native read, grep, and glob stay open; the MCP proxy is allowed. */
@@ -126,6 +227,7 @@ function open(params: OpenParams): Promise<CliSession> {
       }
       return id;
     },
+    ...(params.onProcessStart ? { onProcessStart: params.onProcessStart } : {}),
     ...(params.resumeSessionId && !sideQuestion ? { resumeSessionId: params.resumeSessionId } : {}),
     ...(params.mcpServers?.length && !sideQuestion ? { mcpServers: params.mcpServers.map(toAcpMcpServer) } : {}),
     describeToolCall: describeCursorToolCall,
@@ -204,6 +306,8 @@ export const cursorAdapter: CliAdapter = {
   modelAliases: { "default[]": "auto", default: "auto" },
   manifest: cursorManifest,
   alwaysOnNativeTools: CURSOR_ALWAYS_ON_NATIVE_TOOLS,
+  clearEnv: CURSOR_CLEAR_ENV,
+  checkVersion,
   probeAuth,
   prepareHome,
   open,

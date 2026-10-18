@@ -4,12 +4,17 @@ import type { AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterAll, describe, expect, it, vi } from "vitest";
+import { spawn, type ChildProcess } from "node:child_process";
+import { existsSync, readdirSync } from "node:fs";
 import { createExecute } from "./execute.ts";
+import { inspectProcess } from "./pid-locks.ts";
+import { ProcessPool } from "./pool.ts";
 import type { McpProxy } from "./mcp-proxy.ts";
 import { parseJsonlEvent } from "./events.ts";
 import { SETTINGS_PATH_ENV } from "./mcp-target.ts";
 import {
   CliError,
+  type CheckVersionParams,
   type CliAdapter,
   type CliSession,
   type NormalizedEvent,
@@ -80,6 +85,8 @@ const okTurn: Script = async function* (prompt) {
 function makeAdapter(script: Script = okTurn, nativeId?: (params: OpenParams, count: number) => string) {
   const sessions: FakeSession[] = [];
   const opens: OpenParams[] = [];
+  const versionChecks: CheckVersionParams[] = [];
+  const version: { result: () => Promise<"ok" | { warning: string }> } = { result: async () => "ok" };
   const adapter: CliAdapter = {
     id: "acme",
     displayName: "Acme",
@@ -88,6 +95,11 @@ function makeAdapter(script: Script = okTurn, nativeId?: (params: OpenParams, co
     defaultModel: "acme-cli/auto",
     manifest: createManifest("1", {}),
     alwaysOnNativeTools: ["read"],
+    clearEnv: [],
+    checkVersion: async (params) => {
+      versionChecks.push(params);
+      return version.result();
+    },
     probeAuth: async () => "available",
     listModels: async () => [],
     prepareHome: async (home) => ({ ACME_HOME: home }),
@@ -98,7 +110,7 @@ function makeAdapter(script: Script = okTurn, nativeId?: (params: OpenParams, co
       return session;
     },
   };
-  return { adapter, sessions, opens };
+  return { adapter, sessions, opens, versionChecks, version };
 }
 
 function makeLive() {
@@ -1538,5 +1550,352 @@ describe("createExecute side questions (P18)", () => {
     await run(execute, makeCtx({ liveSession: live, env: usableEnv, useResume: true, sessionId: "native-1" }));
     expect(opens).toHaveLength(2);
     expect(sessions[0]?.prompts).toHaveLength(2);
+  });
+});
+
+describe("createExecute concurrency caps and operations (P17, P19)", () => {
+  const gate = () => {
+    let open!: () => void;
+    const opened = new Promise<void>((resolve) => (open = resolve));
+    return { opened, open };
+  };
+  const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+
+  /** A script that holds the turn until its gate opens. */
+  const gated = (g: { opened: Promise<void> }, log: string[] = []): Script =>
+    async function* (prompt) {
+      log.push(`start:${prompt}`);
+      await g.opened;
+      log.push(`end:${prompt}`);
+      yield { kind: "result", text: prompt, stopReason: "end_turn" };
+    };
+
+  it("runs two agents at once under the default caps", async () => {
+    const g = gate();
+    const log: string[] = [];
+    const a = makeAdapter(gated(g, log));
+    const b = makeAdapter(gated(g, log));
+    const pool = new ProcessPool({ maxTurns: 4, maxProcesses: 8 });
+    const first = run(createExecute(a.adapter, { home: home("a"), pool }), makeCtx({ prompt: "a" }));
+    const second = run(createExecute(b.adapter, { home: home("b"), pool }), makeCtx({ prompt: "b" }));
+    await sleep(30);
+    expect(log).toEqual(["start:a", "start:b"]);
+    g.open();
+    await Promise.all([first, second]);
+  });
+
+  it("holds a turn over the cap in FIFO order until a slot frees", async () => {
+    const gates = [gate(), gate(), gate()];
+    const log: string[] = [];
+    let n = 0;
+    const script: Script = async function* (prompt) {
+      const mine = gates[n++]!;
+      log.push(`start:${prompt}`);
+      await mine.opened;
+      yield { kind: "result", text: prompt, stopReason: "end_turn" };
+    };
+    const { adapter } = makeAdapter(script);
+    const pool = new ProcessPool({ maxTurns: 1, maxProcesses: 2 });
+    const execute = createExecute(adapter, { home: HOME, pool });
+    const turns = ["one", "two", "three"].map((prompt) => run(execute, makeCtx({ prompt })));
+    await sleep(30);
+    expect(log).toEqual(["start:one"]);
+    expect(pool.queued).toBe(2);
+    gates[0]!.open();
+    await sleep(30);
+    expect(log).toEqual(["start:one", "start:two"]);
+    gates[1]!.open();
+    await sleep(30);
+    gates[2]!.open();
+    await Promise.all(turns);
+    expect(log).toEqual(["start:one", "start:two", "start:three"]);
+    expect(pool.turns).toBe(0);
+  });
+
+  it("lets an aborted waiter leave the queue: it throws the abort, runs nothing, holds no slot", async () => {
+    const g = gate();
+    const { adapter, opens } = makeAdapter(gated(g));
+    const pool = new ProcessPool({ maxTurns: 1, maxProcesses: 2 });
+    const execute = createExecute(adapter, { home: HOME, pool });
+    const first = run(execute, makeCtx({ prompt: "first" }));
+    await sleep(20);
+    const controller = new AbortController();
+    const waiting = run(execute, makeCtx({ prompt: "waiting", abortSignal: controller.signal }));
+    const outcome = expect(waiting).rejects.toThrow("stop");
+    await sleep(20);
+    controller.abort(new Error("stop"));
+    await outcome;
+    expect(pool.queued).toBe(0);
+    expect(opens).toHaveLength(1);
+    g.open();
+    await first;
+    expect(pool.turns).toBe(0);
+  });
+
+  it("releases the slot on a failed open, an error result, and an abort", async () => {
+    const pool = new ProcessPool({ maxTurns: 1, maxProcesses: 2 });
+    const failing = makeAdapter();
+    failing.adapter.open = async () => {
+      throw new CliError({ code: "server_error", message: "no start", retryable: true });
+    };
+    await run(createExecute(failing.adapter, { home: HOME, pool }), makeCtx());
+    expect(pool.turns).toBe(0);
+
+    const erroring = makeAdapter(async function* () {
+      yield { kind: "error", error: { code: "rate_limit", retryable: true, message: "slow" } };
+    });
+    await run(createExecute(erroring.adapter, { home: HOME, pool }), makeCtx());
+    expect(pool.turns).toBe(0);
+
+    const hanging: Script = async function* (_prompt, session) {
+      while (session.cancelled === 0) await sleep(5);
+      yield { kind: "error", error: { code: "unknown", retryable: false, message: "cancelled" } };
+    };
+    const aborting = makeAdapter(hanging);
+    const controller = new AbortController();
+    const turn = run(createExecute(aborting.adapter, { home: HOME, pool }), makeCtx({ abortSignal: controller.signal }));
+    const outcome = expect(turn).rejects.toThrow();
+    await sleep(30);
+    controller.abort(new Error("stop"));
+    await outcome;
+    expect(pool.turns).toBe(0);
+
+    // The pool still serves a turn.
+    const ok = makeAdapter();
+    expect(parsed(await run(createExecute(ok.adapter, { home: HOME, pool }), makeCtx())).at(-1)).toMatchObject({ kind: "result" });
+  });
+
+  it("releases the slot when the consumer stops reading", async () => {
+    const pool = new ProcessPool({ maxTurns: 1, maxProcesses: 2 });
+    const { adapter } = makeAdapter();
+    const iterator = createExecute(adapter, { home: HOME, pool })(makeCtx())[Symbol.asyncIterator]();
+    await iterator.next();
+    expect(pool.turns).toBe(1);
+    await iterator.return?.();
+    expect(pool.turns).toBe(0);
+  });
+
+  it("closes the least recently used idle process when the process cap is full", async () => {
+    const { adapter, sessions } = makeAdapter();
+    const pool = new ProcessPool({ maxTurns: 1, maxProcesses: 2 });
+    const lives = [makeLive(), makeLive(), makeLive()];
+    const execute = createExecute(adapter, { home: HOME, pool });
+    for (const [index, l] of lives.entries()) {
+      await run(execute, makeCtx({ liveSession: l.live, env: usableEnv, sessionId: `own-${index}` }));
+      await sleep(5);
+    }
+    expect(sessions).toHaveLength(3);
+    expect(sessions.map((session) => session.closed)).toEqual([1, 0, 0]);
+    expect(pool.processes).toBe(2);
+    expect(lives[0]!.calls.remove).toBe(1);
+  });
+
+  it("fails retryably as overloaded, and releases the slot, when no process is idle", async () => {
+    const { adapter, opens } = makeAdapter();
+    const pool = new ProcessPool({ maxTurns: 1, maxProcesses: 1 });
+    // A busy process that the turn cap does not know about: a broken invariant.
+    pool.add({ isIdle: () => false, lastUsed: 0, close: () => {}, exited: async () => {} });
+    const records = await run(createExecute(adapter, { home: HOME, pool }), makeCtx());
+    expect(parsed(records)).toEqual([{ kind: "result", errorText: expect.stringContaining("busy") }]);
+    expect(opens).toHaveLength(0);
+    expect(pool.turns).toBe(0);
+  });
+
+  it("counts a process from its creation to its close, and never leaks an entry on a failed start", async () => {
+    const { adapter } = makeAdapter();
+    const pool = new ProcessPool({ maxTurns: 1, maxProcesses: 4 });
+    const { live } = makeLive();
+    const execute = createExecute(adapter, { home: HOME, pool });
+    await run(execute, makeCtx({ liveSession: live, env: usableEnv }));
+    expect(pool.processes).toBe(1);
+    await run(execute, makeCtx({ env: usableEnv }));
+    expect(pool.processes).toBe(1);
+    adapter.open = async () => {
+      throw new CliError({ code: "server_error", message: "no start" });
+    };
+    await run(execute, makeCtx({ liveSession: makeLive().live }));
+    expect(pool.processes).toBe(1);
+  });
+
+  describe("version check", () => {
+    it("runs once per command, before the first process, and remembers a pass", async () => {
+      const { adapter, versionChecks, opens } = makeAdapter();
+      const pool = new ProcessPool({ maxTurns: 2, maxProcesses: 4 });
+      const execute = createExecute(adapter, { home: HOME, pool });
+      await run(execute, makeCtx());
+      // A new execute per turn, like prepareExecution: the memo lives on the pool.
+      await run(createExecute(adapter, { home: HOME, pool }), makeCtx());
+      expect(versionChecks).toHaveLength(1);
+      expect(versionChecks[0]).toMatchObject({ command: "acme", env: { PATH: "/bin", ACME_HOME: HOME.env.ACME_HOME } });
+      expect(opens).toHaveLength(2);
+      await run(execute, makeCtx({ command: "/other/acme" }));
+      expect(versionChecks).toHaveLength(2);
+    });
+
+    it("fails the turn with the adapter's error and starts no process", async () => {
+      const { adapter, version, opens } = makeAdapter();
+      version.result = async () => {
+        throw new CliError({ code: "unsupported_version", message: "found 2026.05.01, need 2026.07.06" });
+      };
+      const pool = new ProcessPool({ maxTurns: 1, maxProcesses: 4 });
+      const before = proxies.started.length;
+      const records = await run(createExecute(adapter, { home: HOME, pool }), makeCtx({ env: usableEnv }));
+      expect(records.at(-1)).toMatchObject({ type: "result", is_error: true });
+      expect(parsed(records)).toEqual([{ kind: "result", errorText: "found 2026.05.01, need 2026.07.06" }]);
+      expect(opens).toHaveLength(0);
+      expect(proxies.started).toHaveLength(before);
+      expect(pool.processes).toBe(0);
+      expect(pool.turns).toBe(0);
+      expect(pool.versionChecked("acme")).toBe(false);
+    });
+
+    it("runs the turn with a warning when the version cannot be read, and checks again next time", async () => {
+      const { adapter, version, versionChecks, opens } = makeAdapter();
+      version.result = async () => ({ warning: "Could not read the version" });
+      const warnings: string[] = [];
+      const pool = new ProcessPool({ maxTurns: 1, maxProcesses: 4 });
+      const execute = createExecute(adapter, { home: HOME, pool, warn: (m) => warnings.push(m) });
+      await run(execute, makeCtx());
+      await run(execute, makeCtx());
+      expect(opens).toHaveLength(2);
+      expect(versionChecks).toHaveLength(2);
+      expect(warnings.filter((m) => m === "Could not read the version")).toHaveLength(2);
+    });
+
+    it("reports a missing binary as cli_not_found", async () => {
+      const { adapter, version } = makeAdapter();
+      version.result = async () => {
+        throw new CliError({ code: "cli_not_found", message: 'Could not find the CLI binary "acme".' });
+      };
+      const records = await run(createExecute(adapter, { home: HOME }), makeCtx());
+      expect(parsed(records)).toEqual([{ kind: "result", errorText: 'Could not find the CLI binary "acme".' }]);
+    });
+
+    it("throws the abort when the signal aborts during the check", async () => {
+      const { adapter, version, opens } = makeAdapter();
+      const controller = new AbortController();
+      version.result = async () => {
+        controller.abort(new Error("stop"));
+        return "ok";
+      };
+      await expect(run(createExecute(adapter, { home: HOME }), makeCtx({ abortSignal: controller.signal }))).rejects.toThrow("stop");
+      expect(opens).toHaveLength(0);
+    });
+  });
+
+  describe("unload", () => {
+    it("closes busy and idle processes, waits for their exits, and refuses new turns afterwards", async () => {
+      const idle = makeAdapter();
+      const busy = makeAdapter(async function* (_prompt, session) {
+        while (session.alive) await sleep(5);
+        yield { kind: "error", error: { code: "unknown", retryable: false, message: "closed" } };
+      });
+      const pool = new ProcessPool({ maxTurns: 2, maxProcesses: 4 });
+      const idleLive = makeLive();
+      await run(createExecute(idle.adapter, { home: home("idle"), pool }), makeCtx({ liveSession: idleLive.live, env: usableEnv }));
+      const running = run(createExecute(busy.adapter, { home: home("busy"), pool }), makeCtx());
+      await sleep(30);
+      expect(pool.processes).toBe(2);
+      await pool.closeAll();
+      expect(idle.sessions[0]?.closed).toBe(1);
+      expect(busy.sessions[0]?.closed).toBe(1);
+      expect(idle.sessions[0]?.alive).toBe(false);
+      expect(idleLive.calls.remove).toBe(1);
+      await running;
+
+      const records = await run(createExecute(idle.adapter, { home: home("idle"), pool }), makeCtx());
+      expect(parsed(records)).toEqual([{ kind: "result", errorText: expect.stringContaining("shutting down") }]);
+      expect(idle.opens).toHaveLength(1);
+    });
+
+    it("closes a process that is still starting once the open returns", async () => {
+      const { adapter, sessions } = makeAdapter();
+      const g = gate();
+      const open = adapter.open;
+      adapter.open = async (params) => {
+        await g.opened;
+        return open(params);
+      };
+      const pool = new ProcessPool({ maxTurns: 1, maxProcesses: 2 });
+      const turn = run(createExecute(adapter, { home: HOME, pool }), makeCtx());
+      await sleep(30);
+      const closing = pool.closeAll();
+      g.open();
+      await closing;
+      const records = await turn;
+      expect(sessions[0]?.closed).toBe(1);
+      expect(records.at(-1)).toMatchObject({ type: "result", is_error: true });
+    });
+  });
+
+  describe("pid locks", () => {
+    const children: ChildProcess[] = [];
+    afterAll(() => {
+      for (const child of children) child.kill("SIGKILL");
+    });
+    const homeDir = mkdtempSync(join(tmpdir(), "oac-execute-locks-"));
+    afterAll(() => rmSync(homeDir, { recursive: true, force: true }));
+
+    /** An adapter whose process is a real child, reported to the core the way the transport does. */
+    function adapterWithProcess() {
+      const harness = makeAdapter();
+      let started: ChildProcess | undefined;
+      harness.adapter.open = async (params) => {
+        const child = spawn(process.execPath, ["-e", "setTimeout(() => {}, 60000)"], { stdio: "ignore" });
+        children.push(child);
+        started = child;
+        await new Promise((resolve) => child.once("spawn", resolve));
+        params.onProcessStart?.(child.pid!);
+        const exited = new Promise<void>((resolve) => child.once("exit", () => resolve()));
+        return {
+          sessionId: "pid-session",
+          get alive() {
+            return child.exitCode === null && child.signalCode === null;
+          },
+          prompt: (text: string) => okTurn(text, undefined as never),
+          cancel: async () => {},
+          close: async () => {
+            child.kill("SIGKILL");
+            await exited;
+          },
+          waitForExit: () => exited,
+        };
+      };
+      return { ...harness, child: () => started! };
+    }
+    const locks = (dir: string) => (existsSync(join(dir, "pids")) ? readdirSync(join(dir, "pids")).filter((n) => n.endsWith(".json")) : []);
+    const until = async (condition: () => boolean | Promise<boolean>) => {
+      for (let i = 0; i < 100 && !(await condition()); i += 1) await sleep(20);
+    };
+
+    it("records the process before the handshake ends and removes the lock when it exits", async () => {
+      const dir = join(homeDir, "a");
+      const { adapter, child } = adapterWithProcess();
+      const { live } = makeLive();
+      const execute = createExecute(adapter, { home: { dir, env: {} }, idleMs: 60_000 });
+      await run(execute, makeCtx({ liveSession: live, env: usableEnv }));
+      await until(async () => locks(dir).length === 1);
+      expect(locks(dir)).toEqual([`${child().pid}.json`]);
+      live.current()?.close("abort");
+      await until(async () => locks(dir).length === 0);
+      expect(locks(dir)).toEqual([]);
+      expect((await inspectProcess(child().pid!)).kind).toBe("gone");
+    });
+
+    it("removes the lock of a process whose open failed", async () => {
+      const dir = join(homeDir, "b");
+      const { adapter, child } = adapterWithProcess();
+      const open = adapter.open;
+      adapter.open = async (params) => {
+        const session = await open(params);
+        await session.close();
+        throw new CliError({ code: "server_error", message: "handshake failed" });
+      };
+      const records = await run(createExecute(adapter, { home: { dir, env: {} } }), makeCtx());
+      expect(parsed(records)).toEqual([{ kind: "result", errorText: "handshake failed" }]);
+      await until(async () => locks(dir).length === 0);
+      expect(locks(dir)).toEqual([]);
+      expect(child().pid).toBeGreaterThan(0);
+    });
   });
 });

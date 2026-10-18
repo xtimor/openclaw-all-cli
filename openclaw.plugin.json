@@ -30,6 +30,16 @@
           "command": {
             "type": "string",
             "minLength": 1
+          },
+          "maxConcurrentTurns": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 64
+          },
+          "maxProcesses": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 64
           }
         },
         "additionalProperties": false

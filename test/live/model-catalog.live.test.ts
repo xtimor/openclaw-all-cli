@@ -48,10 +48,11 @@ describeLive("model catalog and model selection in the isolated OpenClaw (P1, P2
     }
   }, LIVE_TIMEOUT_MS);
 
+  // The Gateway stop and `openclaw config unset` take about 10 s together: more than vitest's default hook timeout.
   afterAll(async () => {
     await gateway?.stop();
     openclaw(["config", "unset", "agents.defaults.model.primary"]);
-  });
+  }, 120_000);
 
   it("lists the account's Cursor models as cursor-cli/<name>, available", async () => {
     expect(rows.length).toBeGreaterThan(2);

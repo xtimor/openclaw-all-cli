@@ -116,6 +116,17 @@ OpenClaw loads the plugin before the first turn only when your config names a `c
 
 Every model is declared as text-only to OpenClaw, because images (P13) are still a `spike` row: image attachments are not routed to Cursor models until the adapter sends them.
 
+## Operations
+
+Limits, version floor, and cleanup for the `cursor-agent` processes the plugin starts.
+
+- **Caps.** Per backend, at most `maxConcurrentTurns` turns run at once (default 4) and at most `maxProcesses` `cursor-agent` processes exist, idle ones included (default 8; at least `maxConcurrentTurns`). A turn over the cap waits its turn in order and starts when a slot frees. The plugin sets no timer for that wait: it ends when a slot is free or when OpenClaw aborts the turn, and OpenClaw's own no-output watchdog may end a long wait first. When the process cap is full, the least recently used idle process is closed to make room. Both numbers sit under OpenClaw's global limit of 16 live sessions. Set them in the plugin config (see [Setup](../setup.md)).
+- **Version check.** Before the first process of a command, the plugin runs `cursor-agent --version` and compares it with the minimum, 2026.07.06. An older build fails the turn with `unsupported_version`, naming the found and the required version and telling you to run `cursor-agent update`; no ACP session starts. A version the plugin cannot read (a failed or slow `--version`, unknown text) only logs a warning and the turn runs; the check repeats for the next process. A pass is remembered per command until the Gateway restarts. A missing binary fails the turn the same way as at spawn (`Could not find the CLI binary`).
+- **Orphans.** `cursor-agent acp` ignores a closed stdin and stays up when its Gateway is killed. The plugin writes `<home>/pids/<pid>.json` (mode 0600) for each process it starts, with the process and the Gateway's start times, and deletes it when the process exits. When a Gateway starts and loads the plugin it kills the processes recorded for the configured agents; any other agent's home is cleaned the first time it is used, before its first process opens. A process is killed (SIGTERM, then SIGKILL after 2 seconds) only when its recorded pid and start time still match and the Gateway that started it is gone. A lock whose Gateway is alive, or whose pid now belongs to another process, is left alone. Without `ps` nothing is recorded or killed, and the log says so.
+- **Unload.** When the Gateway stops or the plugin reloads, every process of every backend is closed and the stop waits (at most 3 seconds) for the exits. New turns after that fail with a retryable "shutting down" error.
+- **Timers.** The plugin adds none. OpenClaw's no-output and overall watchdogs, and `--timeout`, abort the turn; the plugin then cancels Cursor and closes the process after a 5 second grace. A warm process closes after 15 idle minutes.
+- **Clean environment.** OpenClaw removes the keys in the backend's `clearEnv` from the Gateway's environment before a turn, and the plugin removes the same keys for the model listing and the login check: Cursor endpoint overrides (`CURSOR_API_BASE_URL`, `CURSOR_API_ENDPOINT`, `CURSOR_WEBSITE_URL`), its harness and debug switches, `CURSOR_CONFIG_DIR` and `CURSOR_DATA_DIR` (the per-agent home sets them), `NODE_OPTIONS`, and the `OTEL_*` exporters. `CURSOR_API_KEY` and `CURSOR_AUTH_TOKEN` stay: they are logins.
+
 ## Parity with `claude-cli`
 
 | # | Feature | Status | Notes |
@@ -136,12 +147,13 @@ Every model is declared as text-only to OpenClaw, because images (P13) are still
 | P14 | Native and manual compaction | spike | |
 | P15 | History reseed | approx | Needs a Cursor API-key profile |
 | P16 | Usage per turn | gap | ACP reports no usage; the input side can be estimated from Cursor's session store, output cannot |
-| P17 | Clean env, watchdog, timeouts | match | OpenClaw's watchdog and timeouts apply |
+| P17 | Clean env, watchdog, timeouts | match | OpenClaw's watchdog and timeouts end a turn through its abort signal and the plugin adds no timer; `clearEnv` drops endpoint, harness, debug, and telemetry keys; per backend 4 turns and 8 processes by default; a pid lock per process and reaping of a killed Gateway's orphans; every process closed on unload. See Operations. Live test: `test/live/operations.live.test.ts` |
 | P18 | Side questions without tools | approx | A side question runs in `ask` mode with no MCP server, no resume, and every permission request rejected; no OpenClaw tool, shell, or write. Cursor cannot switch off native `read`, `grep`, and `glob` per run, so they stay reachable and the model may read files. Live test: `test/live/session-resume.live.test.ts` |
-| P19 | Binary detection, live tests | approx | OpenClaw finds `cursor-agent` on `PATH`. The minimum version 2026.07.06 is recorded but not enforced yet |
+| P19 | Binary detection, live tests | approx | OpenClaw finds `cursor-agent` on `PATH`; the plugin checks `cursor-agent --version` against the minimum 2026.07.06 before the first process and fails the turn below it (`unsupported_version`). OpenClaw's `runtimeArtifact` check cannot describe Cursor's bash launcher install, so it is not declared. Live test: `test/live/operations.live.test.ts` |
 
 ## Known limits
 
+- **A model listing is not tracked.** The throwaway `cursor-agent` process behind a model listing (a few seconds) is closed by the listing itself, but it has no pid lock and is not closed on unload; a Gateway killed in that window can leave one.
 - **No usage.** Cursor's ACP reports no token counts, so OpenClaw records none for a turn.
 - **No OpenClaw system prompt or skills yet.** The model sees only the prompt text and OpenClaw's tools.
 - **No warm process across turns with OpenClaw 2026.10.3.** Each turn restarts the process and resumes it with `session/load`, because OpenClaw's live-session check sees a different MCP settings path every turn.

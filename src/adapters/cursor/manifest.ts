@@ -24,7 +24,7 @@ export const cursorManifest = createManifest(CURSOR_MIN_VERSION, {
   P14: { status: "spike", note: "not researched" },
   P15: { status: "approx", note: "reseed needs a Cursor API-key profile" },
   P16: { status: "gap", note: "ACP reports no usage; the input side is estimable from the session store, output is not" },
-  P17: { status: "match", note: "host watchdog and clean env" },
+  P17: { status: "match", note: "the host's no-output and overall watchdogs end a turn and abort its signal (the backend declares no reliability, like claude-cli, so the host defaults apply); the core cancels, closes the process after a 5 s grace, and adds no timer; config.clearEnv drops endpoint, harness, debug and telemetry keys from the turn's env (the catalog and auth probe drop the same keys); per backend 4 turns and 8 processes by default, a pid lock per process in the agent home, orphans of a killed Gateway reaped at the next start, and every process closed on unload" },
   P18: { status: "approx", note: "a side question (executionMode side-question) opens a throwaway session in ask mode with no MCP server and no resume, rejects every permission request without asking the host, and reports no session id; the backend sets sideQuestionToolMode disabled, but Cursor cannot switch off native read, grep and glob per run, so the model may still read files; it runs no shell and no write" },
-  P19: { status: "approx", note: "OpenClaw finds cursor-agent on PATH; the minimum version is recorded, not enforced" },
+  P19: { status: "approx", note: "OpenClaw finds cursor-agent on PATH; the plugin runs cursor-agent --version before the first process of a command and fails the turn below the minimum (unsupported_version); a version it cannot read only warns; the host's runtimeArtifact policy cannot describe Cursor's bash launcher install, so it is not declared" },
 });
