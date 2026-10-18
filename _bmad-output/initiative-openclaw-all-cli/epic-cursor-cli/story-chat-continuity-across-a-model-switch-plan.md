@@ -3,7 +3,7 @@ title: 'Chat continuity across a model switch'
 type: 'feature'
 ticket: '11'
 created: '2026-10-18'
-status: 'in-progress'
+status: done
 baseline_revision: 'f1927df2417f3039dd949666c230e7f7798eaf15'
 route: 'full'
 route_source: 'auto'
@@ -17,7 +17,8 @@ context:
   - '{project-root}/_bmad-output/initiative-openclaw-all-cli/architecture-openclaw-all-cli/architecture-openclaw-all-cli.md'
   - '{project-root}/MEMORY.md'
 warnings: [oversized]
-deferred: []
+deferred:
+  - 'Lost chat with a profile (AC3): a pre-register probe that the native chat exists, before live.register, would let the host retry run; fragile and changes resume behavior. Host-blocked on OpenClaw 2026.10.3.'
 ---
 
 <intent-contract>
@@ -87,12 +88,16 @@ deferred: []
 - The proxy exists even when the first turn has no usable settings, so a degraded first turn still gets the note (matrix row). The existing fake-agent restart test now sees the note in the chat store (`recall:` text), and was updated.
 - Unit tests: `execute.test.ts` (9 note cases), `manifest.test.ts` (history flag), `backend.test.ts` (reseed flag, end-to-end note with the fake agent). The fake agent is used through `test/backend.test.ts`; the stub `FakeSession` covers the rest.
 - Live (`test/live/history-continuity.live.test.ts`, real Cursor, mock API model, Gateway on 18913, profile added in (b) and removed in `afterAll`): (a), (b), (d) pass as written; (e) recorded: the model called `sessions_history` and gave the API-turn fact.
-- Deviation, AC3 / (c): the host builds `historyPrompt=present` for a lost chat with the profile (effect of the reseed flag), but its fresh retry does not run on OpenClaw 2026.10.3. Through a Gateway `clearCliSessionInStore` patches a stale session entry (`activeWriterRunId` differs; confirmed with a temporary log in the host module, restored) so the host rethrows `session_expired`; under `--local` the retry runs but fails with `CLI MCP client grant is no longer valid` . Not fixable without changing host or resume behavior (Never list). Test (c) asserts the history prompt and `session_expired` and records the retry outcome. The docs, P15 notes, and MEMORY say so.
+- Deviation, AC3 / (c): the host builds `historyPrompt=present` for a lost chat with the profile, but its fresh retry cannot run on OpenClaw 2026.10.3. The host mints one MCP loopback grant per run. The fresh retry reuses the same prepared backend, so it gets no new grant. In the first attempt the plugin's `live.register` stores the run's own grant token; `session/load` fails, the plugin closes its handle, and `live.remove` revokes that token; the retry's register/activate then throws `CLI MCP client grant is no longer valid`. Skipping the close does not help (the host closes the record itself on a fresh retry). Through a Gateway the retry is blocked earlier: the host's session-entry copy has a stale `activeWriterRunId`, so it cannot clear the failed binding. So a lost chat is host-blocked in both paths on OpenClaw 2026.10.3. The only plugin-side fix would be a probe that the native chat exists before `live.register` (fragile, changes resume behavior); deferred. Test (c) asserts the history prompt and `session_expired` and records the retry outcome.
 - Ticket 1.10 was not rebased against: no concurrent change to `execute.ts` was present in this checkout.
 
 ## Plan Change Log
 
 ## Review Triage Log
+
+- Patched: AC3 explanation corrected (verified grant chain, deferred probe); backend test title matches what it runs; live test restores the prior default model; note size stated as ~380 chars (~90 tokens); docs say the reseed flag also builds the history prompt on resumed turns and after MCP/system-prompt/cwd invalidation.
+- Removed test "sends no note to a side question": a side question never gets a proxy, so it could not fail; the `freshChat` flag already needs a proxy.
+- Accepted limit: `freshChat` is cleared before `prompt()`, so a first prompt that fails before Cursor stores it leaves the next turn without the note (Known limits in docs/providers/cursor.md). No code change.
 
 ## Design Notes
 

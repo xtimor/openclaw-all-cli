@@ -562,15 +562,6 @@ describe("createExecute continuity note (P15)", () => {
     expect(sessions.map((session) => session.prompts[0])).toEqual([withNote("hi"), withNote("hi")]);
   });
 
-  it("sends no note to a side question", async () => {
-    const { adapter, sessions } = makeAdapter();
-    await run(
-      createExecute(adapter, { home: HOME, continuity: true }),
-      makeCtx({ executionMode: "side-question", env: usableEnv }),
-    );
-    expect(sessions[0]?.prompts).toEqual(["hi"]);
-  });
-
   it("sends no note when MCP is off", async () => {
     const { adapter, sessions } = makeAdapter();
     await run(createExecute(adapter, { home: HOME, continuity: true, mcp: false }), makeCtx());

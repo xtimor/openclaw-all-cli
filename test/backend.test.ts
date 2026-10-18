@@ -104,7 +104,7 @@ describe("cursor-cli backend", () => {
     expect(events.at(-1)).toMatchObject({ kind: "result", text: "pong", sessionId: "fake-session-1" });
   });
 
-  it("starts a fresh chat's first prompt with the continuity note, and a resumed chat's without it (P15)", async () => {
+  it("starts a fresh chat's first prompt with the continuity note (P15)", async () => {
     const settings = join(scratch, "continuity-settings.json");
     writeFileSync(settings, JSON.stringify({ mcpServers: { openclaw: { url: "http://127.0.0.1:1/mcp", headers: {} } } }));
     const log = join(scratch, "continuity.jsonl");

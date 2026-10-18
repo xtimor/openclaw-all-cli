@@ -20,6 +20,7 @@ describeLive("chat continuity across a model switch (P15)", () => {
   let gateway: TestGateway;
   let mock: ChildProcess | undefined;
   let profileAdded = false;
+  let priorPrimary: string | undefined;
 
   const word = (label: string) => `${label}-${randomBytes(3).toString("hex").toUpperCase()}`;
   const sessionId = (label: string) => `live-history-${label}-${Date.now()}`;
@@ -93,6 +94,8 @@ describeLive("chat continuity across a model switch (P15)", () => {
       models: [{ id: "echo", name: "echo" }],
     });
     expect(openclaw(["config", "set", "models.providers.mockapi", provider, "--strict-json"]).status).toBe(0);
+    const prior = openclaw(["config", "get", "agents.defaults.model.primary", "--json"]);
+    priorPrimary = prior.status === 0 && prior.stdout.trim().startsWith('"') ? (JSON.parse(prior.stdout.trim()) as string) : undefined;
     expect(openclaw(["config", "set", "agents.defaults.model.primary", "cursor-cli/auto"]).status).toBe(0);
     gateway = await startGateway(PORT);
   }, LIVE_TIMEOUT_MS);
@@ -102,7 +105,8 @@ describeLive("chat continuity across a model switch (P15)", () => {
     await gateway?.stop();
     if (profileAdded) openclaw(["models", "auth", "logout", PROFILE, "--yes"]);
     openclaw(["config", "unset", "models.providers.mockapi"]);
-    openclaw(["config", "unset", "agents.defaults.model.primary"]);
+    if (priorPrimary) openclaw(["config", "set", "agents.defaults.model.primary", priorPrimary]);
+    else openclaw(["config", "unset", "agents.defaults.model.primary"]);
     mock?.kill("SIGTERM");
     rmSync(root, { recursive: true, force: true });
   }, 180_000);
