@@ -8,7 +8,7 @@ baseline_revision: 'bd4a0ce10420d9647345dd189d36856dd5eb1818'
 route: 'full'
 route_source: 'auto'
 risk: 'medium'
-review: ''
+review: 'thorough'
 review_source: ''
 lenses_ran: []
 review_loop_iteration: 0
