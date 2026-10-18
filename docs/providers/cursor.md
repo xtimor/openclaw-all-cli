@@ -149,21 +149,23 @@ After a turn ends with a result, the plugin exchanges `CURSOR_API_KEY` for a sho
 
 - **Needs `CURSOR_API_KEY`** in the Gateway's environment. With a login only, no usage is recorded and no request is made.
 - **Where the key goes.** Only to `api2.cursor.sh`, the host `cursor-agent` already talks to. The key and the token stay in memory; no log line, warning, or file holds them, or a response body. Redirects are not followed.
-- **Cost.** The ledger shows the event about 1 s after the turn, so the turn closes about 1 to 2 s later, and at most 6 s later when the event does not appear. The reply text has already streamed by then. A cancelled turn stops waiting at once.
+- **Cost.** The ledger shows the event about 1 s after the turn, so the turn closes about 1 to 2 s later, and at most about 6 s later when the event does not appear (every request is cut at that deadline). The reply text has already streamed by then. A cancelled turn stops waiting at once.
 - **The ledger is undocumented.** When it fails the reply still reaches OpenClaw, without usage:
 
 | Situation | Result |
 | --- | --- |
 | No `CURSOR_API_KEY` | No usage, no request |
 | Key rejected (exchange answers 401 or 403) | No usage; the ledger is skipped for this key for 10 minutes; one warning |
-| Ledger answer changed (400, 404, 415, or no `usageEventsDisplay` list) | No usage; 10 minutes off; one warning |
+| Ledger answer changed (400, 404, 415, or an events field that is not a list) | No usage; 10 minutes off; one warning |
 | Token expired (RPC answers 401) | Exchanged again once and retried; a second 401 counts as a rejected key |
-| 5xx, 429, network error, or a request over 3 s | No usage for this turn, quietly |
-| No event within 6 s, or three such failures in a row | No usage; after the third in a row, 10 minutes off and one warning |
+| 5xx, 429, 403 from the ledger, network error, or a request over 3 s | Tried again at the next poll while time remains; then no usage for this turn, quietly |
+| No event within 6 s (an answer with no events field counts as this), or three such failures in a row | No usage; after the third in a row, 10 minutes off and one warning |
 
 - **Team accounts are untested.** The ledger may list nothing without a team id; such a turn ends like "no event" and the third in a row turns usage off for 10 minutes.
 - **Behind an HTTP proxy.** Node's `fetch` ignores `HTTPS_PROXY` unless the Gateway starts with `NODE_USE_ENV_PROXY=1`. Without it the calls fail as network errors and usage stays 0.
-- **Rare overlap.** If a turn's lookup failed and the next turn of the same chat starts within 5 s of the earlier turn's event, the next turn also counts that event.
+- **Several events in one turn.** The turn's events already visible at the poll are summed; an event that appears after that poll is not added (no extra poll, to keep the latency). Cursor wrote one event per turn in every probe.
+- **Host clock skew.** An event is matched by Cursor's timestamp against this host's clock with 5 s of slack. A host clock more than 5 s off makes usage silently 0 until the miss streak starts its 10 minute cooldown.
+- **Rare overlap.** Within one Gateway run a turn never counts an event stamped before the previous turn of its chat ended. The record of that is in memory (bounded to 1000 chats) and is lost on a Gateway restart, so the first turn after a restart can still count an older event of the same chat that lies inside the 5 s window.
 
 Live test: `test/live/usage.live.test.ts`.
 
@@ -197,6 +199,7 @@ Live test: `test/live/usage.live.test.ts`.
 - **A side question takes a turn slot.** A side question, or any nested turn, holds a turn slot like every other turn: with `maxConcurrentTurns` 1 it waits for the running turn.
 - **`worker-server` children.** `cursor-agent` may start a `worker-server` child that is not recorded and can outlive a reaped or closed parent for a few minutes; "no `cursor-agent` process left" holds for the recorded `acp` process only.
 - **A model listing is not tracked.** The throwaway `cursor-agent` process behind a model listing (a few seconds) is closed by the listing itself, but it has no pid lock and is not closed on unload; a Gateway killed in that window can leave one.
+- **Usage and a skewed clock.** A host clock more than 5 s off Cursor's makes usage 0 until the cooldown (see Usage).
 - **Usage needs an API key.** With a Cursor login only (no `CURSOR_API_KEY`), OpenClaw records 0 tokens for a turn. See Usage.
 - **No OpenClaw system prompt or skills yet.** The model sees only the prompt text and OpenClaw's tools.
 - **No warm process across turns with OpenClaw 2026.10.3.** Each turn restarts the process and resumes it with `session/load`, because OpenClaw's live-session check sees a different MCP settings path every turn.

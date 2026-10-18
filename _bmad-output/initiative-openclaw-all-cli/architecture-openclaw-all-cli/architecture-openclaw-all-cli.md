@@ -236,7 +236,7 @@ sequenceDiagram
 | --- | --- | --- |
 | CAP-1 model selection, auth | `src/plugin.ts`, `src/adapters/cursor/` | AD-1, AD-10 |
 | CAP-2 streaming | `src/core/` events, `src/transports/acp/` | AD-3, AD-4, AD-11 |
-| CAP-3 usage | adapter `usage` event, or the optional `readUsage` port (core `readTurnUsage`) that fills the result record after a turn; Cursor reads its usage ledger | AD-3, AD-4 |
+| CAP-3 usage | adapter `usage` event, or the optional `readUsage` port (core `readTurnUsage`) that fills the result record after a turn; Cursor reads its usage ledger | AD-3, AD-4. The Cursor adapter keeps an in-memory per-session map (bounded to 1000 sessions) of consumed ledger stamps and read end times for usage matching; it is lost on a Gateway restart, which can reopen the overlap case for the first turn after a restart. |
 | CAP-4 resume | host binding, adapter `open` | AD-5, AD-13 |
 | CAP-5 portability | OpenClaw reseed and `sessions_history` tool | AD-5 |
 | CAP-6 OpenClaw tools | `src/core/` MCP proxy | AD-9, AD-12 |

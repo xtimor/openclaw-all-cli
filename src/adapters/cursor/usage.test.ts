@@ -218,8 +218,19 @@ describe("cursor usage reader", () => {
     expect(stub.requests).toHaveLength(0);
   });
 
-  it("treats an answer without usageEventsDisplay as a changed RPC", async () => {
-    stub.events = () => ({ something: "else" });
+  it.each([{}, { totalUsageEventsCount: 0 }])("treats an answer without the events list (%j) as no event yet", async (answer) => {
+    // Proto3 JSON drops an empty list.
+    stub.events = () => answer;
+    const reader = createCursorUsageReader({ ...FAST, deadlineMs: 30 });
+    expect(await reader.read(query())).toEqual({});
+    expect(await reader.read(query())).toEqual({});
+    // It counts toward the miss streak, but is not a changed RPC.
+    const third = await reader.read(query());
+    expect(third.warning).toMatch(/unavailable for 3 turns/);
+  });
+
+  it.each([{ usageEventsDisplay: "nope" }, { usageEventsDisplay: {} }, "text", null])("treats a present non-array (%j) as a changed RPC", async (answer) => {
+    stub.events = () => answer;
     const report = await createCursorUsageReader(FAST).read(query());
     expect(report.warning).toMatch(/unexpected ledger answer/);
   });
@@ -230,25 +241,151 @@ describe("cursor usage reader", () => {
     expect(report.warning).toContain(EXCHANGE);
   });
 
-  it.each([500, 503, 429])("answers quietly to a transient %i", async (status) => {
+  it.each([500, 503, 429, 403])("retries at the next poll after a transient %i", async (status) => {
     stub.eventStatuses = [status];
     serve(event());
-    const reader = createCursorUsageReader(FAST);
-    expect(await reader.read(query())).toEqual({});
-    // The next turn works again.
-    expect((await reader.read(query())).usage).toEqual(FULL);
+    const report = await createCursorUsageReader(FAST).read(query());
+    expect(report).toEqual({ usage: FULL });
+    expect(stub.count(EVENTS)).toBe(2);
   });
 
-  it("answers quietly to a network error and to a request timeout", async () => {
-    const reader = createCursorUsageReader(FAST);
+  it.each([500, 429, 403])("answers quietly when %i lasts to the deadline, as one miss", async (status) => {
+    stub.eventStatuses = Array<number>(50).fill(status);
+    const reader = createCursorUsageReader({ ...FAST, deadlineMs: 60, missStreak: 2 });
+    expect(await reader.read(query())).toEqual({});
+    stub.eventStatuses = [];
+    serve();
+    const second = await reader.read(query({ sessionId: "next" }));
+    expect(second.warning).toMatch(/unavailable for 2 turns/);
+  });
+
+  it("answers quietly to a network error", async () => {
+    const reader = createCursorUsageReader({ ...FAST, deadlineMs: 40 });
     const dead = await startLedgerStub();
     const deadUrl = dead.url;
     await dead.close();
     expect(await reader.read(query({ env: { CURSOR_API_KEY: KEY, [USAGE_URL_ENV]: deadUrl } }))).toEqual({});
+  });
 
-    stub.delayMs = 400;
-    const slow = createCursorUsageReader({ ...FAST, requestTimeoutMs: 50 });
-    expect(await slow.read(query())).toEqual({});
+  it("gives up a slow request after the request timeout and polls again", async () => {
+    serve(event());
+    stub.eventDelays = [600];
+    const reader = createCursorUsageReader({ ...FAST, requestTimeoutMs: 50, deadlineMs: 3000 });
+    const started = Date.now();
+    expect((await reader.read(query())).usage).toEqual(FULL);
+    expect(Date.now() - started).toBeLessThan(450);
+  });
+
+  it("never holds the read much past the deadline, however slow the ledger is", async () => {
+    stub.delayMs = 2000;
+    serve(event());
+    const reader = createCursorUsageReader({ ...FAST, requestTimeoutMs: 1500, deadlineMs: 150 });
+    const started = Date.now();
+    expect(await reader.read(query())).toEqual({});
+    expect(Date.now() - started).toBeLessThan(400);
+  });
+
+  it("never holds the read past the deadline through a slow exchange either", async () => {
+    stub.delayMs = 2000;
+    const reader = createCursorUsageReader({ ...FAST, requestTimeoutMs: 1500, deadlineMs: 150 });
+    const started = Date.now();
+    expect(await reader.read(query())).toEqual({});
+    expect(Date.now() - started).toBeLessThan(400);
+    expect(stub.count(EVENTS)).toBe(0);
+  });
+
+  it("does not count the previous turn's event when that turn's read found nothing", async () => {
+    const reader = createCursorUsageReader({ ...FAST, deadlineMs: 40 });
+    const t0 = Date.now() - 1000;
+    // Turn N: its event exists, but its read sees an empty ledger and gives up.
+    serve();
+    await reader.read(query({ startedAt: t0 - 2000, endedAt: t0 }));
+    const earlier = event({ at: t0 - 1500 });
+    // Turn N+1 starts now, well inside the 5 s skew window of the old event.
+    serve(earlier);
+    expect(await reader.read(query())).toEqual({});
+    const own = event({ at: Date.now() + 10, tokenUsage: { inputTokens: 3 } });
+    serve(own, earlier);
+    expect((await reader.read(query())).usage).toEqual({ input: 3, output: 0, cacheRead: 0, cacheWrite: 0, total: 3 });
+  });
+
+  it("does not count an older event of the session when nothing was consumed yet (after a restart)", async () => {
+    const now = Date.now();
+    serve(event({ at: now - 60_000 }));
+    const report = await createCursorUsageReader({ ...FAST, deadlineMs: 30 }).read(query({ startedAt: now, endedAt: now }));
+    expect(report).toEqual({});
+  });
+
+  it("marks an event without counts consumed and answers at once, without a miss", async () => {
+    const reader = createCursorUsageReader({ ...FAST, deadlineMs: 5000, missStreak: 1 });
+    serve(event({ tokenUsage: {} }));
+    const started = Date.now();
+    expect(await reader.read(query())).toEqual({});
+    expect(Date.now() - started).toBeLessThan(500);
+    expect(stub.count(EVENTS)).toBe(1);
+    // missStreak 1 would have started a cooldown (and a warning) had it counted as a miss.
+    serve(event({ at: Date.now() + 20 }));
+    expect((await reader.read(query())).usage).toEqual(FULL);
+  });
+
+  it("reads further pages while the oldest event is still inside the window", async () => {
+    const now = Date.now();
+    const others = (page: number) =>
+      Array.from({ length: 3 }, (_, i) => event({ conversationId: `other-${page}-${i}`, at: now + 100 - page * 10 - i }));
+    stub.events = ({ page }) => ({
+      usageEventsDisplay: page === 1 ? others(1) : page === 2 ? others(2) : [event({ at: now + 20 }), ...others(3).slice(0, 2)],
+    });
+    const reader = createCursorUsageReader({ ...FAST, pageSize: 3 });
+    expect((await reader.read(query({ startedAt: now, endedAt: now }))).usage).toEqual(FULL);
+    expect(stub.requests.filter((r) => r.path === EVENTS).map((r) => JSON.parse(r.body).page)).toEqual([1, 2, 3]);
+  });
+
+  it("stops paging at the cap and when the page is older than the window", async () => {
+    const now = Date.now();
+    stub.events = () => ({ usageEventsDisplay: Array.from({ length: 3 }, (_, i) => event({ conversationId: `o${i}`, at: now + 50 })) });
+    await createCursorUsageReader({ ...FAST, pageSize: 3, deadlineMs: 5 }).read(query({ startedAt: now, endedAt: now }));
+    const pages = stub.requests.filter((r) => r.path === EVENTS).map((r) => JSON.parse(r.body).page);
+    expect(Math.max(...pages)).toBeLessThanOrEqual(3);
+
+    stub.requests.length = 0;
+    stub.events = () => ({ usageEventsDisplay: Array.from({ length: 3 }, (_, i) => event({ conversationId: `o${i}`, at: now - 60_000 })) });
+    await createCursorUsageReader({ ...FAST, pageSize: 3, deadlineMs: 5 }).read(query({ startedAt: now, endedAt: now }));
+    expect(stub.requests.filter((r) => r.path === EVENTS).every((r) => JSON.parse(r.body).page === 1)).toBe(true);
+  });
+
+  it("warns once when concurrent turns share a rejected exchange", async () => {
+    stub.exchangeStatus = 401;
+    stub.delayMs = 30;
+    const reader = createCursorUsageReader(FAST);
+    const reports = await Promise.all([1, 2, 3, 4].map((n) => reader.read(query({ sessionId: `s${n}` }))));
+    expect(reports.filter((report) => report.warning)).toHaveLength(1);
+    expect(stub.count(EXCHANGE)).toBe(1);
+  });
+
+  it("does not follow a redirect with the key, and answers without usage", async () => {
+    const target = await startLedgerStub();
+    try {
+      stub.redirectTo = target.url;
+      const report = await createCursorUsageReader({ ...FAST, deadlineMs: 40 }).read(query());
+      expect(report.usage).toBeUndefined();
+      expect(stub.count(EXCHANGE)).toBeGreaterThan(0);
+      expect(target.requests).toHaveLength(0);
+      expect(JSON.stringify(report)).not.toContain(KEY);
+    } finally {
+      await target.close();
+    }
+  });
+
+  it("never starts a cooldown from aborted reads", async () => {
+    const reader = createCursorUsageReader({ ...FAST, missStreak: 2, firstPollMs: 200, deadlineMs: 2000 });
+    for (let i = 0; i < 6; i += 1) {
+      const controller = new AbortController();
+      const pending = reader.read(query({ signal: controller.signal, sessionId: `a${i}` }));
+      setTimeout(() => controller.abort(), 10);
+      expect(await pending).toEqual({});
+    }
+    serve(event({ conversationId: "fresh" }));
+    expect((await reader.read(query({ sessionId: "fresh" }))).usage).toEqual(FULL);
   });
 
   it("starts a cooldown after three turns in a row without usage, with one warning", async () => {
@@ -342,6 +479,18 @@ describe("matchTurnEvents", () => {
     );
     expect(result.usage).toEqual({ input: 10, output: 5, cacheRead: 0, cacheWrite: 0, total: 15 });
     expect(result.latest).toBe(1200);
+  });
+
+  it("ignores unsafe counts and keeps the total finite", () => {
+    const big = Number.MAX_SAFE_INTEGER;
+    const result = matchTurnEvents(
+      [ev(1200, { inputTokens: big, outputTokens: big }), ev(1300, { inputTokens: big, cacheReadTokens: 1e300, cacheWriteTokens: 1.5 })],
+      base,
+    );
+    expect(result.usage?.input).toBe(big);
+    expect(result.usage?.cacheRead).toBe(0);
+    expect(result.usage?.cacheWrite).toBe(0);
+    expect(Number.isSafeInteger(result.usage?.total)).toBe(true);
   });
 
   it("reports latest even when every count is zero", () => {

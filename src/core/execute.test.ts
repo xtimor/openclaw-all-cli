@@ -2310,4 +2310,37 @@ describe("createExecute usage port", () => {
     await outcome;
     expect(sessions[0]?.closed).toBe(1);
   });
+
+  it("reads usage after the open tool is closed and before the result", async () => {
+    const toolTurn: Script = async function* () {
+      yield { kind: "toolStart", toolCallId: "t1", name: "read" };
+      yield { kind: "result", text: "done", stopReason: "end_turn" };
+    };
+    const { adapter } = makeAdapter(toolTurn);
+    const order: string[] = [];
+    adapter.readUsage = async () => {
+      order.push("readUsage");
+      return {};
+    };
+    for await (const record of createExecute(adapter, { home: HOME })(makeCtx())) {
+      const kind = (record as { event?: { kind?: string } }).event?.kind;
+      if (kind === "toolStart" || kind === "toolResult" || kind === "result") order.push(kind);
+    }
+    expect(order).toEqual(["toolStart", "toolResult", "readUsage", "result"]);
+  });
+
+  it("takes startedAt before the prompt runs, not after the result", async () => {
+    const slow: Script = async function* () {
+      await new Promise((resolve) => setTimeout(resolve, 80));
+      yield { kind: "result", text: "done", stopReason: "end_turn" };
+    };
+    const { adapter } = makeAdapter(slow);
+    const queries: UsageQuery[] = [];
+    adapter.readUsage = async (query) => {
+      queries.push(query);
+      return {};
+    };
+    await run(createExecute(adapter, { home: HOME }), makeCtx());
+    expect(queries[0]!.endedAt - queries[0]!.startedAt).toBeGreaterThanOrEqual(70);
+  });
 });

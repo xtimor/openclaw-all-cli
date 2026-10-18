@@ -18,7 +18,8 @@ context:
   - '{project-root}/MEMORY.md'
   - '{project-root}/_bmad-output/initiative-openclaw-all-cli/epic-cursor-cli/spike-where-cursor-usage-comes-from-on-acp.md'
 warnings: [oversized]
-deferred: []
+deferred:
+  - 'Host clock skew over 5 s against Cursor: turn usage is silently 0 until the miss-streak cooldown. No code; documented in Known limits.'
 ---
 
 <intent-contract>
@@ -48,7 +49,7 @@ deferred: []
 | Ledger lag | Event appears on the 3rd poll | Same usage; result ~3 s after the turn | No error expected |
 | Never appears | 200s, no event for the session within 6 s of the turn end | Result without usage | Quiet; counts toward the miss streak |
 | Two turns, one session | Turn 2 polls while turn 1's event is still in the list | Turn 2 gets only its own event (window and last-consumed mark) | No error expected |
-| Several events, one turn | Two events for the session in the window | Summed | No error expected |
+| Several events, one turn | Two events for the session in the window | Summed (the events already visible at the poll) | No error expected |
 | Other conversations | Newer events of other sessions, the IDE, other agents | Ignored | No error expected |
 | Event without `tokenUsage` / missing counts | e.g. no `cacheWriteTokens` | Missing count 0; all zero → no usage | No error expected |
 | No API key (login only) | `CURSOR_API_KEY` empty | Result at once, no usage, no network call | Quiet (documented) |
@@ -114,6 +115,17 @@ deferred: []
 ## Plan Change Log
 
 ## Review Triage Log
+
+Review (4 lenses) after the first build; all items fixed in the working tree, 1.10 not re-committed by the worker.
+
+- Fixed: every request, the exchange included, is capped at `min(requestTimeoutMs, deadline - now)` and no poll starts past the deadline; tests with a slow ledger and a slow exchange.
+- Fixed: lower bound per session is max(consumed stamp, previous read's `endedAt`), recorded for every read; test for a turn whose read found nothing.
+- Fixed: a ledger answer without `usageEventsDisplay` is "no event yet"; only a present non-array is a changed RPC.
+- Fixed: transient errors (network, timeout, 5xx, 429, ledger 403) retry at the next poll and count as one miss at the end; cooldown warning only on entering the cooldown; a matched event without counts is consumed and answers at once without a miss; up to 3 pages are read while the oldest event is inside the window; counts must be safe integers and sums are clamped.
+- Documented, no code: events that appear after the first matching poll are not added (latency); host clock skew over 5 s (deferred, frontmatter and Known limits); the restart-lost session map (architecture CAP-3 row).
+- Accepted: the token exchange is one request shared by concurrent turns, so it ignores a single turn's abort signal on purpose; it is still bounded by the deadline.
+- Accepted (item 16): the override URL's protection rests on the host stripping `clearEnv` keys from every turn (MEMORY.md, entry 8) and is not testable in-process; `index.test.ts` checks the key is in `CURSOR_CLEAR_ENV`, and the live test runs through the real host.
+- Mutation checks (each fails the named test when reverted): late `startedAt`, usage read before the tool close, plain `signal` without the timeout, no `endedAt` bound, `redirect: "follow"`.
 
 ## Design Notes
 

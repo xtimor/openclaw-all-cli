@@ -52,8 +52,11 @@ type LedgerEvent = {
 
 const asCount = (value: unknown): number => {
   const n = typeof value === "string" && value.trim() ? Number(value) : value;
-  return typeof n === "number" && Number.isFinite(n) && n > 0 ? n : 0;
+  return typeof n === "number" && Number.isSafeInteger(n) && n > 0 ? n : 0;
 };
+
+/** Adds counts without ever leaving the safe-integer range, so a total is always finite. */
+const addCounts = (a: number, b: number): number => Math.min(a + b, Number.MAX_SAFE_INTEGER);
 
 const asMillis = (value: unknown): number | undefined => {
   const n = typeof value === "string" && value.trim() ? Number(value) : value;
@@ -80,16 +83,19 @@ export function matchTurnEvents(
     if (stamp === undefined || stamp < window.notBefore) continue;
     if (window.after !== undefined && stamp <= window.after) continue;
     const tokens = event.tokenUsage ?? {};
-    input += asCount(tokens.inputTokens);
-    output += asCount(tokens.outputTokens);
-    cacheRead += asCount(tokens.cacheReadTokens);
-    cacheWrite += asCount(tokens.cacheWriteTokens);
+    input = addCounts(input, asCount(tokens.inputTokens));
+    output = addCounts(output, asCount(tokens.outputTokens));
+    cacheRead = addCounts(cacheRead, asCount(tokens.cacheReadTokens));
+    cacheWrite = addCounts(cacheWrite, asCount(tokens.cacheWriteTokens));
     latest = latest === undefined ? stamp : Math.max(latest, stamp);
   }
-  const total = input + output + cacheRead + cacheWrite;
+  const total = addCounts(addCounts(input, output), addCounts(cacheRead, cacheWrite));
   if (latest === undefined || total === 0) return { ...(latest !== undefined ? { latest } : {}) };
   return { usage: { input, output, cacheRead, cacheWrite, total }, latest };
 }
+
+/** Pages read per poll at most. */
+const MAX_PAGES = 3;
 
 /** How a ledger call failed. The message holds the path and status only. */
 class LedgerError extends Error {
@@ -145,8 +151,12 @@ export function createCursorUsageReader(options: CursorUsageOptions = {}) {
   const tokenMarginMs = options.tokenMarginMs ?? TOKEN_MARGIN_MS;
 
   const keys = new Map<string, KeyState>();
-  /** Newest event stamp a turn consumed, per session id; oldest dropped past the cap. */
-  const consumed = new Map<string, number>();
+  /**
+   * Per session id: the newest event stamp a turn consumed, and when the last read ended (found or
+   * not). Events at or before either belong to an earlier turn. Bounded, oldest dropped; lost on a
+   * restart.
+   */
+  const sessions = new Map<string, { stamp: number; endedAt: number }>();
 
   const stateFor = (key: string): KeyState => {
     const id = createHash("sha256").update(key).digest("hex");
@@ -158,13 +168,20 @@ export function createCursorUsageReader(options: CursorUsageOptions = {}) {
     return state;
   };
 
-  const markConsumed = (sessionId: string, stamp: number) => {
-    consumed.delete(sessionId);
-    consumed.set(sessionId, stamp);
-    if (consumed.size > MAX_TRACKED_SESSIONS) consumed.delete(consumed.keys().next().value as string);
+  const remember = (sessionId: string, update: { stamp?: number; endedAt?: number }) => {
+    const old = sessions.get(sessionId) ?? { stamp: 0, endedAt: 0 };
+    sessions.delete(sessionId);
+    sessions.set(sessionId, {
+      stamp: Math.max(old.stamp, update.stamp ?? 0),
+      endedAt: Math.max(old.endedAt, update.endedAt ?? 0),
+    });
+    if (sessions.size > MAX_TRACKED_SESSIONS) sessions.delete(sessions.keys().next().value as string);
   };
 
-  async function post(url: string, path: string, bearer: string, body: string, extra: Record<string, string>, signal?: AbortSignal) {
+  /** `budgetMs` caps the request; the shared exchange takes the budget of the turn that starts it. */
+  async function post(url: string, path: string, bearer: string, body: string, extra: Record<string, string>, budgetMs: number, signal?: AbortSignal) {
+    if (budgetMs <= 0) throw new LedgerError("transient", path);
+    const timeout = AbortSignal.timeout(Math.min(requestTimeoutMs, budgetMs));
     let response: Response;
     try {
       response = await fetch(url + path, {
@@ -173,43 +190,33 @@ export function createCursorUsageReader(options: CursorUsageOptions = {}) {
         body,
         // The key must not follow a redirect to another host.
         redirect: "error",
-        signal: signal ? AbortSignal.any([signal, AbortSignal.timeout(requestTimeoutMs)]) : AbortSignal.timeout(requestTimeoutMs),
+        signal: signal ? AbortSignal.any([signal, timeout]) : timeout,
       });
     } catch {
       throw new LedgerError("transient", path);
     }
     const status = response.status;
-    if (status === 401) {
-      await response.body?.cancel().catch(() => {});
-      throw new Unauthorized(path);
-    }
-    if (status === 403 && path === EXCHANGE_PATH) {
-      await response.body?.cancel().catch(() => {});
-      throw new LedgerError("rejected", path, status);
-    }
-    if (status === 400 || status === 404 || status === 415) {
-      await response.body?.cancel().catch(() => {});
-      throw new LedgerError("changed", path, status);
-    }
-    if (status !== 200) {
-      await response.body?.cancel().catch(() => {});
-      throw new LedgerError("transient", path, status);
-    }
+    if (status !== 200) await response.body?.cancel().catch(() => {});
+    if (status === 401) throw new Unauthorized(path);
+    if (status === 403 && path === EXCHANGE_PATH) throw new LedgerError("rejected", path, status);
+    if (status === 400 || status === 404 || status === 415) throw new LedgerError("changed", path, status);
+    if (status !== 200) throw new LedgerError("transient", path, status);
     try {
       return (await response.json()) as unknown;
     } catch {
-      throw new LedgerError("changed", path, status);
+      // The body may also have been cut off by the timeout.
+      throw new LedgerError(timeout.aborted ? "transient" : "changed", path, status);
     }
   }
 
-  /** One exchange shared by concurrent turns of a key. */
-  function accessToken(key: string, state: KeyState, url: string, fresh: boolean): Promise<string> {
+  /** One exchange shared by concurrent turns of a key (it ignores a single turn's abort on purpose). */
+  function accessToken(key: string, state: KeyState, url: string, fresh: boolean, deadline: number): Promise<string> {
     const now = Date.now();
     if (!fresh && state.token && state.token.expiresAt > now) return Promise.resolve(state.token.value);
     if (state.exchange) return state.exchange;
     const exchange = (async () => {
       try {
-        const body = await post(url, EXCHANGE_PATH, key, "{}", {});
+        const body = await post(url, EXCHANGE_PATH, key, "{}", {}, deadline - Date.now());
         const value = (body as { accessToken?: unknown } | null)?.accessToken;
         if (typeof value !== "string" || !value) throw new LedgerError("changed", EXCHANGE_PATH, 200);
         state.token = { value, expiresAt: tokenExpiry(value, Date.now(), tokenMarginMs) };
@@ -227,14 +234,17 @@ export function createCursorUsageReader(options: CursorUsageOptions = {}) {
     return exchange;
   }
 
-  async function fetchEvents(key: string, state: KeyState, url: string, signal?: AbortSignal): Promise<LedgerEvent[]> {
-    const body = JSON.stringify({ page: 1, pageSize });
+  async function fetchPage(key: string, state: KeyState, url: string, page: number, deadline: number, signal?: AbortSignal): Promise<LedgerEvent[]> {
+    const body = JSON.stringify({ page, pageSize });
     const headers = { "Connect-Protocol-Version": "1" };
     for (let attempt = 0; ; attempt += 1) {
-      const token = await accessToken(key, state, url, attempt > 0);
+      const token = await accessToken(key, state, url, attempt > 0, deadline);
       try {
-        const json = (await post(url, EVENTS_PATH, token, body, headers, signal)) as { usageEventsDisplay?: unknown } | null;
-        if (!json || !Array.isArray(json.usageEventsDisplay)) throw new LedgerError("changed", EVENTS_PATH, 200);
+        const json = (await post(url, EVENTS_PATH, token, body, headers, deadline - Date.now(), signal)) as { usageEventsDisplay?: unknown } | null;
+        if (!json || typeof json !== "object") throw new LedgerError("changed", EVENTS_PATH, 200);
+        // Proto3 JSON drops an empty list: no field means no events yet.
+        if (json.usageEventsDisplay === undefined) return [];
+        if (!Array.isArray(json.usageEventsDisplay)) throw new LedgerError("changed", EVENTS_PATH, 200);
         return json.usageEventsDisplay as LedgerEvent[];
       } catch (error) {
         if (!(error instanceof Unauthorized)) throw error;
@@ -244,37 +254,65 @@ export function createCursorUsageReader(options: CursorUsageOptions = {}) {
     }
   }
 
+  /** The newest events; more pages only while the oldest event seen is still inside the turn's window. */
+  async function fetchEvents(key: string, state: KeyState, url: string, window: { sessionId: string; notBefore: number; after?: number }, deadline: number, signal?: AbortSignal) {
+    const events: LedgerEvent[] = [];
+    for (let page = 1; page <= MAX_PAGES; page += 1) {
+      const batch = await fetchPage(key, state, url, page, deadline, signal);
+      events.push(...batch);
+      const match = matchTurnEvents(events, window);
+      if (match.latest !== undefined) return match;
+      const stamps = batch.map((event) => asMillis(event?.timestamp)).filter((stamp): stamp is number => stamp !== undefined);
+      if (batch.length < pageSize || stamps.length === 0 || Math.min(...stamps) <= window.notBefore) break;
+    }
+    return matchTurnEvents(events, window);
+  }
+
   async function read(query: UsageQuery): Promise<UsageReport> {
     const key = query.env.CURSOR_API_KEY?.trim();
     if (!key) return {};
+    try {
+      return await readWithKey(key, query);
+    } finally {
+      remember(query.sessionId, { endedAt: query.endedAt });
+    }
+  }
+
+  async function readWithKey(key: string, query: UsageQuery): Promise<UsageReport> {
     const state = stateFor(key);
     if (state.cooldownUntil > Date.now()) return {};
     const url = (query.env[USAGE_URL_ENV]?.trim() || DEFAULT_BASE_URL).replace(/\/+$/, "");
     const { signal } = query;
-    const window = { sessionId: query.sessionId, notBefore: query.startedAt - skewMs };
+    const seen = sessions.get(query.sessionId);
+    const after = Math.max(seen?.stamp ?? 0, seen?.endedAt ?? 0);
+    const window = { sessionId: query.sessionId, notBefore: query.startedAt - skewMs, ...(after > 0 ? { after } : {}) };
     const deadline = query.endedAt + deadlineMs;
 
     const coolDown = (warning: string): UsageReport => {
+      const first = state.cooldownUntil <= Date.now();
       state.cooldownUntil = Date.now() + cooldownMs;
       state.misses = 0;
-      return { warning: `${warning}; usage is off for ${Math.round(cooldownMs / 60_000)} min` };
+      return first ? { warning: `${warning}; usage is off for ${Math.round(cooldownMs / 60_000)} min` } : {};
     };
 
     let last = "no event for the session";
+    let wait = firstPollMs;
     try {
-      let wait = firstPollMs;
-      for (;;) {
+      while (Date.now() < deadline) {
         await sleep(wait, signal);
         if (signal?.aborted) return {};
+        if (Date.now() >= deadline) break;
         wait = pollIntervalMs;
         try {
-          const events = await fetchEvents(key, state, url, signal);
-          const after = consumed.get(query.sessionId);
-          const match = matchTurnEvents(events, after === undefined ? window : { ...window, after });
-          if (match.usage) {
-            if (match.latest !== undefined) markConsumed(query.sessionId, match.latest);
-            state.misses = 0;
-            return { usage: match.usage };
+          const match = await fetchEvents(key, state, url, window, deadline, signal);
+          if (match.latest !== undefined) {
+            // An event of the turn: consumed, even when it carries no counts.
+            remember(query.sessionId, { stamp: match.latest });
+            if (match.usage) {
+              state.misses = 0;
+              return { usage: match.usage };
+            }
+            return {};
           }
           last = "no event for the session";
         } catch (error) {
@@ -282,10 +320,9 @@ export function createCursorUsageReader(options: CursorUsageOptions = {}) {
           if (!(error instanceof LedgerError)) throw error;
           if (error.kind === "rejected") return coolDown(`Cursor usage: the API key was rejected (${error.message})`);
           if (error.kind === "changed") return coolDown(`Cursor usage: unexpected ledger answer (${error.message})`);
+          // Transient: try again at the next poll while time remains.
           last = error.message;
-          break;
         }
-        if (Date.now() + pollIntervalMs > deadline) break;
       }
     } catch {
       last = "internal error";
