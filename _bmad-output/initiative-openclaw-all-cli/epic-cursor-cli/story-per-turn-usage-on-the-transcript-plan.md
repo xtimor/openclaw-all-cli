@@ -107,6 +107,7 @@ deferred: []
 - `P16` set to `approx` (not `match`: needs the key, adds up to 6 s, undocumented RPC). Manifest, docs, parity matrix, spine CAP-3 and open-question row updated.
 - Test helper `test/fixtures/ledger-stub.ts` (local `node:http` ledger) serves both unit test files.
 - Live: `test/live/usage.live.test.ts` passes (2 tests, ~72 s) with real Cursor: the transcript entry equals the ledger's event field by field; the second turn of the same chat gets only its own event. The test needs `NODE_USE_ENV_PROXY=1` on this host.
+- Whole live suite (background, `NODE_USE_ENV_PROXY=1`): 10 files, 33 tests passed, 1477 s. Unit run: 22 files passed, 514 tests passed, 33 live skipped.
 - Gateway log checked: no API key, no `exchange_user_api_key`/ledger body text.
 
 
