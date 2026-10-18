@@ -17,6 +17,7 @@ describe("manifest", () => {
       mcp: false,
       toolPolicy: false,
       images: false,
+      sideQuestion: false,
     });
     expect(
       deriveFlags(
@@ -28,13 +29,14 @@ describe("manifest", () => {
           P13: { status: "gap", note: "" },
         }),
       ),
-    ).toEqual({ liveSession: true, resume: true, mcp: true, toolPolicy: true, images: false });
+    ).toEqual({ liveSession: true, resume: true, mcp: true, toolPolicy: true, images: false, sideQuestion: false });
     expect(deriveFlags(createManifest("1", { P4: { status: "gap", note: "" }, P5: { status: "spike", note: "" } }))).toEqual({
       liveSession: false,
       resume: false,
       mcp: false,
       toolPolicy: false,
       images: false,
+      sideQuestion: false,
     });
   });
 
@@ -42,6 +44,11 @@ describe("manifest", () => {
     expect(deriveFlags(createManifest("1", { P13: { status: "match", note: "" } })).images).toBe(true);
     expect(deriveFlags(createManifest("1", { P13: { status: "approx", note: "" } })).images).toBe(true);
     expect(deriveFlags(createManifest("1", { P13: { status: "spike", note: "" } })).images).toBe(false);
+  });
+
+  it("derives side questions from P18 alone", () => {
+    expect(deriveFlags(createManifest("1", { P18: { status: "approx", note: "" } })).sideQuestion).toBe(true);
+    expect(deriveFlags(createManifest("1", { P18: { status: "spike", note: "" } })).sideQuestion).toBe(false);
   });
 
   it("keeps PARITY_ROWS in step with the parity matrix", () => {

@@ -12,6 +12,7 @@ import {
   type CliAdapter,
   type CliModel,
   type CliSession,
+  type ExecutionMode,
   type HomeEnv,
   type ListModelsParams,
   type McpServerSpec,
@@ -91,7 +92,17 @@ function toAcpMcpServer(server: McpServerSpec) {
   };
 }
 
+/**
+ * The Cursor mode per kind of run. Both use `ask`: it has no edit tool and still asks for what
+ * the host approves. A side question differs in what it is handed, not in the mode: no MCP
+ * server, no resume, and the core rejects every permission request.
+ */
+const MODE_BY_EXECUTION: Record<ExecutionMode, string> = { agent: "ask", "side-question": "ask" };
+
 function open(params: OpenParams): Promise<CliSession> {
+  const executionMode = params.executionMode ?? "agent";
+  // The core already hands a side question neither; the adapter does not rely on it.
+  const sideQuestion = executionMode === "side-question";
   return AcpSession.open({
     command: params.command,
     args: params.args,
@@ -102,7 +113,7 @@ function open(params: OpenParams): Promise<CliSession> {
     // Cursor applies native edits without asking in agent mode, so only the per-agent `Write(**)`
     // deny stops them. `ask` mode has no edit tool at all and still asks for (and runs) what the
     // host approves, so it stays as the second lock (checked against cursor-agent 2026.10.16).
-    requiredModeId: "ask",
+    requiredModeId: MODE_BY_EXECUTION[executionMode],
     // The turn's model name maps onto the exact ID Cursor reports (brackets and commas included).
     selectModel: (offered) => {
       const id = selectCursorModel(params.modelId, offered);
@@ -115,8 +126,8 @@ function open(params: OpenParams): Promise<CliSession> {
       }
       return id;
     },
-    ...(params.resumeSessionId ? { resumeSessionId: params.resumeSessionId } : {}),
-    ...(params.mcpServers?.length ? { mcpServers: params.mcpServers.map(toAcpMcpServer) } : {}),
+    ...(params.resumeSessionId && !sideQuestion ? { resumeSessionId: params.resumeSessionId } : {}),
+    ...(params.mcpServers?.length && !sideQuestion ? { mcpServers: params.mcpServers.map(toAcpMcpServer) } : {}),
     describeToolCall: describeCursorToolCall,
     // A request the mapping cannot name goes to the core unnamed: the core rejects it after its
     // turn check, so a late one is `cancelled`.

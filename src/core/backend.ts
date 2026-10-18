@@ -54,11 +54,22 @@ export function buildCliBackend(adapter: CliAdapter, options: BuildBackendOption
           hostOwnedTools: ["exec", "process"],
         }
       : {}),
+    // P18: the host runs a side question (`executionMode: "side-question"`) without OpenClaw's
+    // tools; the adapter opens it in its read-only mode with no MCP server and rejects every
+    // permission request. Native readers the CLI keeps open stay (see the P18 row).
+    ...(flags.sideQuestion ? { sideQuestionToolMode: "disabled" as const } : {}),
     config: {
       command,
       args,
       // OpenClaw resumes only when `resumeArgs` is set; the adapter resumes by ID itself.
-      ...(flags.resume ? { resumeArgs: args } : {}),
+      ...(flags.resume
+        ? {
+            resumeArgs: args,
+            // P5: a resume the CLI refuses is a `session_expired` error. The host then starts a
+            // fresh chat with its own history only when the error proves the chat is gone.
+            freshSessionRecovery: "invalidated-only" as const,
+          }
+        : {}),
       output: "jsonl",
       input: "stdin",
       ...(flags.liveSession ? { liveSession: "claude-stdio" as const } : {}),
@@ -88,6 +99,7 @@ export function buildCliBackend(adapter: CliAdapter, options: BuildBackendOption
             ...options.execute,
             home,
             mcp: flags.mcp,
+            ...(ctx.authProfileId ? { authProfileId: ctx.authProfileId } : {}),
             ...(options.warn ? { warn: options.warn } : {}),
           }),
         };

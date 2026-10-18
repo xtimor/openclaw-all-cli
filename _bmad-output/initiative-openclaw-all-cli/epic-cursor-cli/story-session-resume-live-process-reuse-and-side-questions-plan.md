@@ -63,12 +63,12 @@ deferred: []
 ## Tasks & Acceptance
 
 **Execution:**
-- [ ] `src/core/execute.ts`, `backend.ts`, adapter -- reuse key with mode and auth profile; side-question run without tools
-- [ ] `src/transports/acp/session.ts` -- foreign/stale id to `session_expired`; settle recovery with the host's behavior
-- [ ] live probe -- two processes resuming one chat (spec Q4): record the result in Implementation Notes and the spine's open question row
-- [ ] unit tests -- every matrix row with the fake agent
-- [ ] live tests (gated) -- a follow-up turn answers about the first with only the new prompt sent, also after the Gateway restarts; `/reset` starts a fresh chat (the model does not know the earlier fact); another agent's home cannot resume this chat; a side question runs without OpenClaw tools
-- [ ] docs, manifest, parity P4, P5, P18 -- match behavior and evidence
+- [x] `src/core/execute.ts`, `backend.ts`, adapter -- reuse key with mode and auth profile; side-question run without tools
+- [x] `src/transports/acp/session.ts` -- foreign/stale id to `session_expired`; settle recovery with the host's behavior
+- [x] live probe -- two processes resuming one chat (spec Q4): record the result in Implementation Notes and the spine's open question row
+- [x] unit tests -- every matrix row with the fake agent
+- [x] live tests (gated) -- a follow-up turn answers about the first with only the new prompt sent, also after the Gateway restarts; `/reset` starts a fresh chat (the model does not know the earlier fact); another agent's home cannot resume this chat; a side question runs without OpenClaw tools
+- [x] docs, manifest, parity P4, P5, P18 -- match behavior and evidence
 
 **Acceptance Criteria:**
 - Given a chat with an earlier fact, when a follow-up turn runs (also after a Gateway restart), then the answer uses the fact and only the new prompt was sent.
@@ -77,6 +77,16 @@ deferred: []
 - Given a side question, when it runs, then no OpenClaw tool is offered.
 
 ## Implementation Notes
+
+- **Reuse key (AD-13).** `execute.ts` keys a warm process on `[modelId, mode, cwd, home.dir, authProfileId]`; the native session ID is checked on the session. `authProfileId` is known only to `prepareExecution`, not to `execute`, so `backend.ts` passes it into `createExecute` options (one execute per run; the key, not the closure, decides reuse). Mode comes from `ctx.executionMode`. The mode part is defense in depth: the host gives a side question no live session, and the core ignores `ctx.liveSession` for one, so a side question never reaches the reuse check.
+- **Id changes.** `session/load` normally answers for the id it was given; `readMovedSessionId` takes an extra `sessionId` field when an agent moves the chat. The core emits the session's id on every turn (it already did), so the host stores the new one.
+- **Stale or foreign id.** `session/load` failures with JSON-RPC `-32602` (what real Cursor returns for an id its home lacks) or a not-found wording become `session_expired` with the text `CLI session not found: ...`. The host classifies the failure from the message text (`isCliSessionExpiredErrorMessage`), not from our code, so the phrase is load-bearing. Other load failures stay `server_error`. Known soft spot: `-32602` also covers bad `mcpServers`, which would read as an expired chat; Cursor gives no finer code.
+- **Host recovery (recorded).** The backend sets `freshSessionRecovery: "invalidated-only"` (what `claude-cli` uses). Real OpenClaw 2026.10.3, checked against the isolated install: the failure arrives as `FailoverError reason=session_expired`; the host retries with a fresh chat only when it has a history prompt to reseed (needs a Cursor API-key profile, parity P15); without one (this host: `historyPrompt=none`) the turn fails. The host clears a failed chat binding only for `claude-cli` (`isClaudeCliProvider` in `attempt-execution.runtime`), so for `cursor-cli` every later turn fails the same way until `/reset`. The plugin cannot clear it (AD-5); documented in the provider doc and setup troubleshooting. The retry-with-history path is unverified live.
+- **Side question.** `ctx.executionMode === "side-question"`: no proxy, no `mcpServers`, no settings file read, no resume (`resumeSessionId` dropped in the core and again in the adapter), every permission request answered `reject_once` without asking the host (`cancelled` after the turn ended), and no `sessionId` event or result session id (the chat is thrown away; the host also runs it with `sessionMode: "none"` and no live session). Cursor mode is `ask` for both kinds of run. `sideQuestionToolMode: "disabled"` is set because the plan lists it and without it the host refuses `/btw` for a backend with native tools (`cannot run with tools disabled because it exposes native tools`). Cursor cannot switch off native read, grep, glob per run (a static no-readers home is possible, not built), so P18 is `approx` and the docs say the model may still read files; no shell, write, or OpenClaw tool. The throwaway session directory stays in the agent's `acp-sessions` (not cleaned up).
+- **Spec Q4, live probe (2026-10-18, cursor-agent 2026.10.16, real account).** Process A creates a chat (fact PELICAN-42). Process B, alive beside A, `session/load`s the same id without error and recalls the fact. A then adds HERON-7; B does not know it (B lists only PELICAN-42); A knows both. After both close, a third process loads the chat and sees PELICAN-42 and HERON-7: B's turns are not in the stored chat. Result: loading works, but each process keeps its own view and the last writer wins, so it is not safe. Behavior: the core keeps at most one process per chat (`chats` registry keyed by home and native id): an idle holder is closed before the new process loads, a holder mid-turn makes the new turn fail with a retryable `server_error`. In the host flow `live.restart()` already closes the previous handle, so this only guards the gaps.
+- **Fake agent.** `FAKE_CURSOR_STORE=<dir>` (a chat store per home: unique ids, history, `session/load` of an absent id fails `Invalid params`), `FAKE_CURSOR_LOAD_RENAMES=1`, prompt `[[recall]]`.
+- **Verified.** `npm run typecheck && npm run build && npx vitest run`; live (`OPENCLAW_ALL_CLI_LIVE=1 npx vitest run test/live`, real cursor-agent with `CURSOR_API_KEY`) `test/live/session-resume.live.test.ts`: warm follow-up with only the new prompt, restart resume, `/reset` forgets, foreign home `session_expired`, side question, one process per chat, and two real `openclaw agent --local` runs (resume, then a deleted native chat fails `reason=session_expired`). One live run hit a transient Cursor `resource_exhausted` message and passed on rerun.
+- **Not done.** Retry-with-history after `session_expired` (needs an API-key profile); `/reset` and `/btw` driven through a real Gateway chat command (`/reset` is covered at the `createExecute` level and by a fresh `--session-id`; `/btw` only at the `createExecute` level with the real CLI); cleanup of a side question's throwaway session directory.
 
 ## Plan Change Log
 

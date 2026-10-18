@@ -211,6 +211,39 @@ function readModelFacts(
   return { offered, ...(currentId ? { currentId } : {}), ...(option ? { option } : {}) };
 }
 
+/** The ID an agent answers `session/load` with when it moved the chat; undefined when it did not. */
+function readMovedSessionId(result: object): string | undefined {
+  const id = (result as { sessionId?: unknown }).sessionId;
+  return typeof id === "string" && id.trim() ? id : undefined;
+}
+
+/** JSON-RPC "invalid params": how an agent refuses a `session/load` for an ID it does not have. */
+const INVALID_PARAMS = -32602;
+const UNKNOWN_SESSION = /\b(invalid params|not found|no such|does not exist|unknown session)\b/i;
+
+/**
+ * A `session/load` that failed. An agent that does not know the ID (another agent's home, a
+ * deleted chat) refuses it: that is `session_expired`, so the host can recover the way its
+ * `freshSessionRecovery` says and nothing silently starts a new chat. The message carries
+ * "session not found" because the host reads the text to classify the failure. Anything else
+ * (a dead pipe, a timeout) is a failed process, not a lost chat.
+ */
+function resumeError(error: unknown, sessionId: string): CliError {
+  if (error instanceof CliError) return error;
+  const message = error instanceof Error ? error.message : String(error);
+  const code = (error as { code?: unknown } | null)?.code;
+  if (code === INVALID_PARAMS || UNKNOWN_SESSION.test(message)) {
+    return new CliError(
+      {
+        code: "session_expired",
+        message: `CLI session not found: the CLI does not know session "${sessionId}" in this agent's home (the chat belongs to another agent or was deleted), so it cannot resume. ${message}`,
+      },
+      { cause: error },
+    );
+  }
+  return toCliError(error, "server_error", "The CLI could not resume the session");
+}
+
 function mapUsage(usage: acp.Usage | null | undefined): NormalizedUsage | undefined {
   if (!usage) return undefined;
   return {
@@ -527,12 +560,14 @@ async function setup(
   if (options.resumeSessionId) {
     try {
       const loaded = await connection.loadSession({ sessionId: options.resumeSessionId, ...base });
-      sessionId = options.resumeSessionId;
+      // ACP's load answers for the ID it was given; an agent that moves the chat to another ID
+      // says so in an extra `sessionId` field. The new ID is the one the host must keep.
+      sessionId = readMovedSessionId(loaded) ?? options.resumeSessionId;
       modes = loaded.modes;
       modelState = readModelState(loaded);
       configOptions = loaded.configOptions;
     } catch (error) {
-      throw toCliError(error, "session_expired", "The CLI could not resume the session");
+      throw resumeError(error, options.resumeSessionId);
     }
   } else {
     try {

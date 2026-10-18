@@ -6,6 +6,8 @@ export type DerivedFlags = {
   liveSession: boolean;
   /** P5: the adapter resumes a native session. */
   resume: boolean;
+  /** P18: a side question runs without OpenClaw's tools and is rejected every permission request. */
+  sideQuestion: boolean;
   /** P7: OpenClaw's tools reach the CLI through the MCP proxy. */
   mcp: boolean;
   /** P10: the host may select the run's native tools; the backend enforces what it can (AD-9). */
@@ -22,6 +24,6 @@ function decided(manifest: CapabilityManifest, id: ParityRowId): boolean {
 export function deriveFlags(manifest: CapabilityManifest): DerivedFlags {
   return {
     liveSession: decided(manifest, "P4"), resume: decided(manifest, "P5"), mcp: decided(manifest, "P7"),
-    toolPolicy: decided(manifest, "P10"), images: decided(manifest, "P13"),
+    toolPolicy: decided(manifest, "P10"), images: decided(manifest, "P13"), sideQuestion: decided(manifest, "P18"),
   };
 }

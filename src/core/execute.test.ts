@@ -77,7 +77,7 @@ const okTurn: Script = async function* (prompt) {
   yield { kind: "result", text: `echo:${prompt}`, stopReason: "end_turn" };
 };
 
-function makeAdapter(script: Script = okTurn) {
+function makeAdapter(script: Script = okTurn, nativeId?: (params: OpenParams, count: number) => string) {
   const sessions: FakeSession[] = [];
   const opens: OpenParams[] = [];
   const adapter: CliAdapter = {
@@ -93,7 +93,7 @@ function makeAdapter(script: Script = okTurn) {
     prepareHome: async (home) => ({ ACME_HOME: home }),
     open: async (params) => {
       opens.push(params);
-      const session = new FakeSession(`native-${sessions.length + 1}`, script);
+      const session = new FakeSession(nativeId?.(params, sessions.length + 1) ?? `native-${sessions.length + 1}`, script);
       sessions.push(session);
       return session;
     },
@@ -1246,5 +1246,232 @@ describe("createExecute native tool events (AD-3)", () => {
     };
     const records = await run(createExecute(makeAdapter(failing).adapter, { home: HOME }), makeCtx());
     expect(parsed(records).map((event) => event.kind)).toEqual(["sessionId", "toolStart", "toolResult", "result"]);
+  });
+});
+
+const home = (name: string) => ({ dir: `/agent/${name}/openclaw-all-cli/acme-cli`, env: { ACME_HOME: name } });
+
+describe("createExecute reuse key and resume (AD-5, AD-13)", () => {
+  it("reuses the warm process for a follow-up turn and sends only the new prompt", async () => {
+    const { adapter, sessions, opens } = makeAdapter();
+    const { live } = makeLive();
+    const h = home("follow-up");
+    await run(createExecute(adapter, { home: h, authProfileId: "p1" }), makeCtx({ liveSession: live, env: usableEnv, prompt: "first" }));
+    // The host builds a new execute per run; the key, not the closure, decides reuse.
+    const records = await run(
+      createExecute(adapter, { home: h, authProfileId: "p1" }),
+      makeCtx({ liveSession: live, env: usableEnv, useResume: true, sessionId: "native-1", prompt: "second" }),
+    );
+    expect(opens).toHaveLength(1);
+    expect(sessions[0]?.prompts).toEqual(["first", "second"]);
+    expect(parsed(records).at(-1)).toMatchObject({ kind: "result", sessionId: "native-1" });
+  });
+
+  it("resumes the id the host passes in a new process after a Gateway restart", async () => {
+    const { adapter, opens } = makeAdapter(okTurn, (params, count) => params.resumeSessionId ?? `native-${count}`);
+    const records = await run(
+      createExecute(adapter, { home: home("restart") }),
+      makeCtx({ liveSession: makeLive().live, env: usableEnv, useResume: true, sessionId: "native-42" }),
+    );
+    expect(opens).toHaveLength(1);
+    expect(opens[0]?.resumeSessionId).toBe("native-42");
+    expect(parsed(records)[0]).toEqual({ kind: "sessionId", sessionId: "native-42" });
+  });
+
+  it("starts a new session when the host passes no resume id, and emits its id", async () => {
+    const { adapter, opens } = makeAdapter();
+    const records = await run(
+      createExecute(adapter, { home: home("reset") }),
+      // /reset: the host keeps a stale id around but says not to resume.
+      makeCtx({ useResume: false, sessionId: "native-old" }),
+    );
+    expect(opens[0]?.resumeSessionId).toBeUndefined();
+    expect(parsed(records)[0]).toEqual({ kind: "sessionId", sessionId: "native-1" });
+  });
+
+  it("opens a new process when the auth profile differs", async () => {
+    const { adapter, sessions, opens } = makeAdapter();
+    const { live } = makeLive();
+    const h = home("auth");
+    await run(createExecute(adapter, { home: h, authProfileId: "work" }), makeCtx({ liveSession: live, env: usableEnv }));
+    await run(
+      createExecute(adapter, { home: h, authProfileId: "personal" }),
+      makeCtx({ liveSession: live, env: usableEnv, useResume: true, sessionId: "native-1" }),
+    );
+    expect(opens).toHaveLength(2);
+    expect(sessions[0]?.closed).toBe(1);
+  });
+
+  it("opens a new process when a profile appears or goes away", async () => {
+    const { adapter, opens } = makeAdapter();
+    const { live } = makeLive();
+    const h = home("auth-none");
+    await run(createExecute(adapter, { home: h }), makeCtx({ liveSession: live, env: usableEnv }));
+    await run(
+      createExecute(adapter, { home: h, authProfileId: "work" }),
+      makeCtx({ liveSession: live, env: usableEnv, useResume: true, sessionId: "native-1" }),
+    );
+    expect(opens).toHaveLength(2);
+  });
+
+  it("emits the id the CLI ended up with when it differs from the resumed one, and reuses by that id", async () => {
+    const { adapter, sessions, opens } = makeAdapter(okTurn, (params) => (params.resumeSessionId ? `${params.resumeSessionId}-moved` : "native-1"));
+    const { live } = makeLive();
+    const execute = createExecute(adapter, { home: home("moved") });
+    const records = await run(execute, makeCtx({ liveSession: live, env: usableEnv, useResume: true, sessionId: "native-1" }));
+    expect(parsed(records)[0]).toEqual({ kind: "sessionId", sessionId: "native-1-moved" });
+    expect(parsed(records).at(-1)).toMatchObject({ kind: "result", sessionId: "native-1-moved" });
+
+    // The host stored the new id; the old one no longer names this process.
+    await run(execute, makeCtx({ liveSession: live, env: usableEnv, useResume: true, sessionId: "native-1-moved" }));
+    expect(opens).toHaveLength(1);
+    expect(sessions[0]?.prompts).toHaveLength(2);
+  });
+
+  it("reports a chat the CLI does not know as session_expired, without starting a fresh chat", async () => {
+    const { adapter, opens } = makeAdapter();
+    adapter.open = async (params) => {
+      opens.push(params);
+      throw new CliError({ code: "session_expired", message: "CLI session not found: nope" });
+    };
+    const warnings: string[] = [];
+    const records = await run(
+      createExecute(adapter, { home: home("foreign"), warn: (message) => warnings.push(message) }),
+      makeCtx({ useResume: true, sessionId: "someone-elses" }),
+    );
+    expect(records.at(-1)).toMatchObject({
+      type: "result",
+      is_error: true,
+      event: { kind: "error", error: { code: "session_expired", message: expect.stringContaining("session not found") } },
+    });
+    // One open, with the id: no silent second open without it.
+    expect(opens.map((open) => open.resumeSessionId)).toEqual(["someone-elses"]);
+    expect(parsed(records)).toEqual([{ kind: "result", errorText: expect.stringContaining("session not found") }]);
+  });
+
+  describe("two processes, one chat", () => {
+    it("closes an idle process that holds the chat before it loads the chat in another", async () => {
+      const order: string[] = [];
+      const { adapter, sessions } = makeAdapter(okTurn, (params, count) => params.resumeSessionId ?? `native-${count}`);
+      const open = adapter.open;
+      adapter.open = async (params) => {
+        order.push(`open${params.resumeSessionId ? ":resume" : ""}`);
+        return open(params);
+      };
+      const h = home("two-idle");
+      const first = makeLive();
+      const second = makeLive();
+      await run(createExecute(adapter, { home: h }), makeCtx({ liveSession: first.live, env: usableEnv, useResume: true, sessionId: "chat-1" }));
+      const original = sessions[0]!;
+      const close = original.close.bind(original);
+      original.close = async () => {
+        order.push("close-holder");
+        return close();
+      };
+      await run(createExecute(adapter, { home: h }), makeCtx({ liveSession: second.live, env: usableEnv, useResume: true, sessionId: "chat-1" }));
+      expect(order).toEqual(["open:resume", "close-holder", "open:resume"]);
+      expect(original.alive).toBe(false);
+      expect(sessions[1]?.alive).toBe(true);
+      second.current()?.close("abort");
+    });
+
+    it("refuses to load a chat another process is still running a turn in", async () => {
+      let release!: () => void;
+      const gate = new Promise<void>((resolve) => (release = resolve));
+      const slow: Script = async function* () {
+        await gate;
+        yield { kind: "result", text: "late", stopReason: "end_turn" };
+      };
+      const { adapter, opens } = makeAdapter(slow, (params, count) => params.resumeSessionId ?? `native-${count}`);
+      const h = home("two-busy");
+      const first = makeLive();
+      const running = run(createExecute(adapter, { home: h }), makeCtx({ liveSession: first.live, env: usableEnv, useResume: true, sessionId: "chat-2" }));
+      await new Promise((resolve) => setTimeout(resolve, 30));
+      const records = await run(
+        createExecute(adapter, { home: h }),
+        makeCtx({ liveSession: makeLive().live, env: usableEnv, useResume: true, sessionId: "chat-2" }),
+      );
+      expect(records.at(-1)).toMatchObject({ is_error: true, event: { kind: "error", error: { retryable: true } } });
+      expect(opens).toHaveLength(1);
+      release();
+      await running;
+      first.current()?.close("abort");
+    });
+
+    it("lets two agents use the same native id", async () => {
+      const { adapter, opens } = makeAdapter(okTurn, (params, count) => params.resumeSessionId ?? `native-${count}`);
+      const a = makeLive();
+      const b = makeLive();
+      await run(createExecute(adapter, { home: home("agent-a") }), makeCtx({ liveSession: a.live, env: usableEnv, useResume: true, sessionId: "same" }));
+      await run(createExecute(adapter, { home: home("agent-b") }), makeCtx({ liveSession: b.live, env: usableEnv, useResume: true, sessionId: "same" }));
+      expect(opens).toHaveLength(2);
+      expect(a.current()?.isIdle()).toBe(true);
+      a.current()?.close("abort");
+      b.current()?.close("abort");
+    });
+  });
+});
+
+describe("createExecute side questions (P18)", () => {
+  const sideCtx = (overrides: Partial<ExecuteContext> = {}) =>
+    makeCtx({ executionMode: "side-question", env: usableEnv, ...overrides });
+
+  it("opens a throwaway session with no MCP server, no proxy, and no resume", async () => {
+    const { adapter, opens, sessions } = makeAdapter();
+    const before = proxies.started.length;
+    const records = await run(createExecute(adapter, { home: HOME }), sideCtx({ useResume: true, sessionId: "native-1" }));
+    expect(opens).toHaveLength(1);
+    expect(opens[0]).toMatchObject({ executionMode: "side-question" });
+    expect(opens[0]?.mcpServers).toBeUndefined();
+    expect(opens[0]?.resumeSessionId).toBeUndefined();
+    expect(proxies.started).toHaveLength(before);
+    expect(parsed(records)).toEqual([
+      { kind: "text", text: "he" },
+      { kind: "text", text: "llo" },
+      { kind: "result", text: "echo:hi", usage: { input: 3, output: 5 } },
+    ]);
+    // Nothing for the host to bind to the chat.
+    expect(records.some((record) => (record as { event?: { kind?: string } }).event?.kind === "sessionId")).toBe(false);
+    expect(sessions[0]?.closed).toBe(1);
+  });
+
+  it("rejects every permission request and never asks the host", async () => {
+    const decisions: PermissionDecision[] = [];
+    const script: Script = async function* () {
+      decisions.push(
+        await harness.opens[0]!.onPermissionRequest({ title: "`ls`", toolName: "exec", toolInput: { command: "ls" } }),
+        await harness.opens[0]!.onPermissionRequest({ title: "read", toolName: "read", toolInput: { path: "/x" } }),
+      );
+      yield { kind: "result", text: "done", stopReason: "end_turn" };
+    };
+    const harness = makeAdapter(script);
+    const requestToolPermission = vi.fn(async () => ({ behavior: "allow" as const, updatedInput: {} }));
+    await run(createExecute(harness.adapter, { home: HOME }), sideCtx({ requestToolPermission }));
+    expect(decisions).toEqual(["reject_once", "reject_once"]);
+    expect(requestToolPermission).not.toHaveBeenCalled();
+  });
+
+  it("answers cancelled to a request after the turn ended", async () => {
+    const { adapter, opens } = makeAdapter();
+    await run(createExecute(adapter, { home: HOME }), sideCtx());
+    await expect(opens[0]!.onPermissionRequest({ title: "late" })).resolves.toBe("cancelled");
+  });
+
+  it("neither reuses nor disturbs the chat's warm process", async () => {
+    const { adapter, sessions, opens } = makeAdapter();
+    const { live, calls } = makeLive();
+    const execute = createExecute(adapter, { home: home("beside") });
+    await run(execute, makeCtx({ liveSession: live, env: usableEnv }));
+    // The host gives a side question no live session; even if one were passed, it is not used.
+    await run(execute, sideCtx({ liveSession: live, useResume: true, sessionId: "native-1" }));
+    expect(opens).toHaveLength(2);
+    expect(calls.restart).toBe(1);
+    expect(calls.register).toBe(1);
+    expect(sessions[0]?.closed).toBe(0);
+    expect(sessions[1]?.closed).toBe(1);
+
+    await run(execute, makeCtx({ liveSession: live, env: usableEnv, useResume: true, sessionId: "native-1" }));
+    expect(opens).toHaveLength(2);
+    expect(sessions[0]?.prompts).toHaveLength(2);
   });
 });

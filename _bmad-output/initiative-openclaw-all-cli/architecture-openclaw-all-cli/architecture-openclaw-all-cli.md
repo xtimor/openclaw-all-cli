@@ -255,7 +255,7 @@ sequenceDiagram
 | Where does Cursor ACP usage come from? Answered by the spike: no exact source on ACP; input side is estimable from the session store (about 2%), output is not; hooks did not fire here. Shipping without usage is a last resort (user). Choice for entry 10: `epic-cursor-cli/spike-where-cursor-usage-comes-from-on-acp.md`. | CAP-3, epic entry 9 |
 | Does the Gemini-mode settings file always carry the loopback URL and headers in `execute` env? | AD-12, CAP-6 |
 | Is a Cursor API key billed against the subscription (spec Q3)? | CAP-5 reseed setup |
-| Can two Cursor processes resume one chat safely (spec Q4)? | AD-13 |
+| Can two Cursor processes resume one chat safely (spec Q4)? Answered by a live probe (2026-10-18, cursor-agent 2026.10.16): no. Both load the chat without an error, but each keeps its own view and a turn in one is invisible to the other; the stored chat keeps one process's turns. The core therefore allows one process per chat (it closes an idle holder, refuses while one is mid-turn). | AD-13 |
 | Is OpenClaw #148584 (plugin skipped at Gateway startup) fixed? | CAP-1 |
 | Does Cursor ACP honor skills (`--plugin-dir`), a system prompt, images, compaction? | Parity rows P11–P14 |
 

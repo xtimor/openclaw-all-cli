@@ -4,7 +4,13 @@ import { toRecord, type CoreRecord, type TurnSummary } from "./events.ts";
 import { startMcpProxy, type McpProxy } from "./mcp-proxy.ts";
 import { OPENCLAW_MCP_SERVER, readTurnTarget, type TurnTarget } from "./mcp-target.ts";
 import { routePermission, type PermissionTurn } from "./permissions.ts";
-import { CliError, type CliAdapter, type CliSession, type NormalizedEvent } from "./ports.ts";
+import {
+  CliError,
+  type CliAdapter,
+  type CliSession,
+  type ExecutionMode,
+  type NormalizedEvent,
+} from "./ports.ts";
 import type { CliBackendExecute, ExecuteContext, LiveSessionCapability, LiveSessionHandle } from "./sdk-types.ts";
 
 /** AD-14: live processes close after 15 idle minutes. */
@@ -24,6 +30,11 @@ export type ExecuteOptions = {
    * core starts no proxy, hands the CLI no MCP server, and reads no settings file. Default true.
    */
   mcp?: boolean;
+  /**
+   * The auth profile the host picked for the run (`prepareExecution` knows it, `execute` does
+   * not). It is part of the reuse key: a process never serves another profile (AD-13).
+   */
+  authProfileId?: string;
 };
 
 type LiveEntry = {
@@ -42,6 +53,8 @@ type LiveEntry = {
   turn?: PermissionTurn;
   /** What must match for the process to serve the next turn (AD-13). */
   key: string;
+  /** The chat this process holds, once open: `<home>\0<native session id>`. See `chats`. */
+  chat?: string;
   handle: LiveSessionHandle;
   busy: boolean;
   idleTimer?: NodeJS.Timeout;
@@ -52,8 +65,25 @@ type OpenEntry = LiveEntry & { session: CliSession };
 /** Live processes by their host handle. The host owns the lifecycle; this only finds the process. */
 const entries = new WeakMap<LiveSessionHandle, LiveEntry>();
 
-function reuseKey(ctx: ExecuteContext, home: AgentHome): string {
-  return JSON.stringify([ctx.modelId, ctx.cwd, home.dir]);
+/**
+ * The open processes by the native chat they hold. Two processes that load one chat each keep
+ * their own view and the last writer wins (live probe, spec Q4), so at most one process holds a
+ * chat: opening a resume closes an idle holder first.
+ */
+const chats = new Map<string, LiveEntry>();
+
+function chatKey(home: AgentHome, sessionId: string): string {
+  return JSON.stringify([home.dir, sessionId]);
+}
+
+/** A side question runs beside the chat, never in it (AD-13: mode is part of the reuse key). */
+function modeOf(ctx: ExecuteContext): ExecutionMode {
+  return ctx.executionMode === "side-question" ? "side-question" : "agent";
+}
+
+/** AD-13: model, mode, working directory, home, and auth profile. The native session ID is checked on the session. */
+function reuseKey(ctx: ExecuteContext, home: AgentHome, authProfileId: string | undefined): string {
+  return JSON.stringify([ctx.modelId, modeOf(ctx), ctx.cwd, home.dir, authProfileId ?? null]);
 }
 
 function composePrompt(ctx: ExecuteContext): string {
@@ -118,6 +148,7 @@ export function createExecute(adapter: CliAdapter, options: ExecuteOptions): Cli
   const { home } = options;
   const warn = options.warn ?? (() => {});
   const mcp = options.mcp ?? true;
+  const { authProfileId } = options;
 
   function reusable(ctx: ExecuteContext, live: LiveSessionCapability | undefined): OpenEntry | undefined {
     const current = live?.current();
@@ -125,7 +156,7 @@ export function createExecute(adapter: CliAdapter, options: ExecuteOptions): Cli
     const entry = entries.get(current);
     if (!entry?.session || entry.busy || entry.degraded || !entry.session.alive) return undefined;
     if (!ctx.useResume || ctx.sessionId !== entry.session.sessionId) return undefined;
-    return entry.key === reuseKey(ctx, home) ? (entry as OpenEntry) : undefined;
+    return entry.key === reuseKey(ctx, home, authProfileId) ? (entry as OpenEntry) : undefined;
   }
 
   /**
@@ -142,9 +173,13 @@ export function createExecute(adapter: CliAdapter, options: ExecuteOptions): Cli
   }
 
   /** Creates the host handle and the proxy for a process that is not open yet. */
-  async function createEntry(ctx: ExecuteContext, live: LiveSessionCapability | undefined): Promise<LiveEntry> {
+  async function createEntry(
+    ctx: ExecuteContext,
+    live: LiveSessionCapability | undefined,
+    withMcp: boolean,
+  ): Promise<LiveEntry> {
     let proxy: McpProxy | undefined;
-    if (mcp) {
+    if (withMcp) {
       try {
         proxy = await startMcpProxy();
       } catch (error) {
@@ -160,7 +195,7 @@ export function createExecute(adapter: CliAdapter, options: ExecuteOptions): Cli
     }
     const entry: LiveEntry = {
       proxy,
-      key: reuseKey(ctx, home),
+      key: reuseKey(ctx, home, authProfileId),
       busy: false,
       handle: {
         generation: randomUUID(),
@@ -170,6 +205,7 @@ export function createExecute(adapter: CliAdapter, options: ExecuteOptions): Cli
           if (entry.closed) return;
           entry.closed = true;
           clearTimeout(entry.idleTimer);
+          releaseChat(entry);
           live?.remove(entry.handle);
           void entry.session?.close();
           void proxy?.close();
@@ -180,16 +216,45 @@ export function createExecute(adapter: CliAdapter, options: ExecuteOptions): Cli
     return entry;
   }
 
+  function releaseChat(entry: LiveEntry): void {
+    if (entry.chat && chats.get(entry.chat) === entry) chats.delete(entry.chat);
+    entry.chat = undefined;
+  }
+
+  /**
+   * Makes sure no other process holds the chat this one is about to load. An idle holder is
+   * closed (this turn is the newest word on the chat). A holder that is mid-turn means two turns
+   * of one chat at once, which the host's lanes should prevent: refuse rather than fork the chat.
+   */
+  async function claimChat(entry: LiveEntry, sessionId: string): Promise<void> {
+    const holder = chats.get(chatKey(home, sessionId));
+    if (!holder || holder === entry) return;
+    if (holder.busy) {
+      throw new CliError({
+        code: "server_error",
+        message: "Another turn of this chat is still running in a CLI process, so the chat cannot be resumed yet.",
+        retryable: true,
+      });
+    }
+    holder.handle.close("restart");
+    await holder.session?.waitForExit().catch(() => {});
+  }
+
   /** Opens the process behind a registered entry. The proxy already points at the turn's target. */
   async function attachSession(entry: LiveEntry, ctx: ExecuteContext): Promise<OpenEntry> {
     const { proxy } = entry;
+    const mode = modeOf(ctx);
+    // A side question is a throwaway chat: it never resumes and never reaches the real one.
+    const resumeSessionId = mode === "agent" && ctx.useResume && ctx.sessionId ? ctx.sessionId : undefined;
+    if (resumeSessionId) await claimChat(entry, resumeSessionId);
     const session = await adapter.open({
       command: ctx.command,
       args: ctx.args,
       cwd: ctx.cwd,
       env: { ...ctx.env, ...home.env },
       modelId: ctx.modelId,
-      ...(ctx.useResume && ctx.sessionId ? { resumeSessionId: ctx.sessionId } : {}),
+      executionMode: mode,
+      ...(resumeSessionId ? { resumeSessionId } : {}),
       // The CLI gets only the proxy: the host's per-run URL and token never leave the core.
       ...(proxy
         ? {
@@ -198,8 +263,12 @@ export function createExecute(adapter: CliAdapter, options: ExecuteOptions): Cli
             ],
           }
         : {}),
-      // The process outlives turns: each request goes to the turn running when it arrives.
-      onPermissionRequest: (request) => routePermission(entry.turn, request, warn),
+      // The process outlives turns: each request goes to the turn running when it arrives. A side
+      // question has no tools to approve: every request is rejected and the host is never asked.
+      onPermissionRequest:
+        mode === "side-question"
+          ? async () => (!entry.turn || entry.turn.ended || ctx.abortSignal?.aborted ? "cancelled" : "reject_once")
+          : (request) => routePermission(entry.turn, request, warn),
       ...(ctx.abortSignal ? { signal: ctx.abortSignal } : {}),
     });
     // The host may have closed the handle while the process was starting: the close found no
@@ -214,6 +283,11 @@ export function createExecute(adapter: CliAdapter, options: ExecuteOptions): Cli
       });
     }
     entry.session = session;
+    // Whatever id the CLI ended up with is the chat this process holds.
+    if (mode === "agent") {
+      entry.chat = chatKey(home, session.sessionId);
+      chats.set(entry.chat, entry);
+    }
     // The proxy ends with its process, however the process ends.
     if (proxy) {
       void session.waitForExit().then(
@@ -228,9 +302,14 @@ export function createExecute(adapter: CliAdapter, options: ExecuteOptions): Cli
   return async function* execute(ctx) {
     ctx.assertCurrent?.();
     ctx.abortSignal?.throwIfAborted();
-    const live = ctx.liveSession;
+    const sideQuestion = modeOf(ctx) === "side-question";
+    // The host gives a side question no live session; if it ever did, the side question must not
+    // restart or replace the chat's process.
+    const live = sideQuestion ? undefined : ctx.liveSession;
+    // A side question gets no OpenClaw tools: no proxy, no MCP server, no settings file read.
+    const withMcp = mcp && !sideQuestion;
 
-    const turnTarget: TurnTarget = mcp ? await readTurnTarget(ctx.env) : { ok: false, reason: "MCP is off" };
+    const turnTarget: TurnTarget = withMcp ? await readTurnTarget(ctx.env) : { ok: false, reason: "MCP is off" };
     ctx.abortSignal?.throwIfAborted();
     let entry = reusable(ctx, live);
     if (!entry && live) await live.restart();
@@ -241,7 +320,7 @@ export function createExecute(adapter: CliAdapter, options: ExecuteOptions): Cli
       opened = true;
       let fresh: LiveEntry;
       try {
-        fresh = await createEntry(ctx, live);
+        fresh = await createEntry(ctx, live, withMcp);
       } catch (error) {
         if (ctx.abortSignal?.aborted) throw error;
         // A superseded run must throw, not turn into an error record.
@@ -315,8 +394,10 @@ export function createExecute(adapter: CliAdapter, options: ExecuteOptions): Cli
       }
       ctx.abortSignal?.throwIfAborted();
 
-      const summary: TurnSummary = { sessionId: active.session.sessionId };
-      yield toRecord({ kind: "sessionId", sessionId: active.session.sessionId });
+      // The host binds the chat to the id the CLI ended up with, so every turn names it, also when
+      // `session/load` returned another one. A side question's chat is thrown away: no id.
+      const summary: TurnSummary = sideQuestion ? {} : { sessionId: active.session.sessionId };
+      if (!sideQuestion) yield toRecord({ kind: "sessionId", sessionId: active.session.sessionId });
 
       let closed = false;
       // Each event goes to the host as it arrives; nothing waits for the turn to end.

@@ -82,7 +82,9 @@ The first command must report `"status": "loaded"` and `cursor-cli` under `cliBa
 | No `cursor-cli` models in the Gateway's list | The plugin is not loaded yet | Name a `cursor-cli/...` model as the default model so it loads at Gateway start |
 | `The CLI speaks ACP protocol N` | `cursor-agent` speaks a protocol this plugin does not | Run `cursor-agent update`, or update the plugin |
 | `The CLI rejected its login` | `cursor-agent` refused the ACP login | Run `cursor-agent login` and check `cursor-agent status` |
-| `The CLI could not resume the session` / `cannot load a session` | Cursor lost the stored chat, or the build cannot load sessions | Start a new chat with `/reset`; run `cursor-agent update` |
+| `CLI session not found` (`session_expired`) | Cursor does not know the chat: it belongs to another agent's home or was deleted. OpenClaw retries with a fresh chat and its own history only when it has history to reseed | Start a new chat with `/reset` |
+| `The CLI cannot load a session` | This `cursor-agent` build cannot resume chats | Run `cursor-agent update` |
+| `Another turn of this chat is still running in a CLI process` | Two turns reached one chat at the same time | Retry once the first turn is done |
 | `The CLI does not list models` | The `cursor-agent` build reports no model list | Use `cursor-cli/auto`, or run `cursor-agent update` |
 | `A turn is already running in this session` | Two turns reached one Cursor process | Wait for the first turn; if it repeats, report it in the repository issue tracker |
 | `The CLI refused the request` | Cursor declined the prompt | Rephrase the prompt, or check the plan's content rules |

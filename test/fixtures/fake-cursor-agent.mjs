@@ -16,15 +16,23 @@
 //   FAKE_CURSOR_IGNORE_TERM=1   SIGTERM does nothing (only SIGKILL stops the process)
 //   FAKE_CURSOR_IGNORE_STDIN_EOF=1  the process stays up when stdin closes
 //   FAKE_CURSOR_NO_INIT=1       `initialize` is never answered (a hanging handshake)
+//   FAKE_CURSOR_STORE=<dir>     a chat store, like a Cursor home: `session/new` saves the session as a file there
+//                               (with a unique ID), every prompt is appended to it, and `session/load` of an ID with
+//                               no file fails with "Invalid params". Point two agents at two dirs to model two homes.
+//   FAKE_CURSOR_LOAD_RENAMES=1  `session/load` answers with `sessionId: "<id>-moved"`, the way an agent that moved the chat would
 //
 // Prompt text steers a turn: "[[ask-permission]]" requests a shell permission, "[[ask-json]]<json>"
 // requests the permission the JSON describes ({toolCall, announce?, options?}; `announce` is sent first
 // as a `tool_call` update, like Cursor does), "[[hang]]" never
 // finishes until cancelled, "[[refuse]]" ends with stopReason refusal, "[[crash]]" exits, "say:<text>" replies with <text>.
+// "[[recall]]" replies with the prompts the session has seen before this one ("recall:a|b"), including those from before a
+// `session/load` when FAKE_CURSOR_STORE is set.
 // "[[updates]]<json array>" sends each item as a `session/update` body, in order, a few ms apart, then ends the
 // turn. An item `{"$":"say","text":"..."}` sends a message chunk, `{"$":"crash"}` exits, `{"$":"ask","toolCall":{...}}` sends a permission request and waits for the answer, `{"$":"hang"}` waits for a
 // cancel and answers `cancelled`, `{"$":"wait","ms":n}` pauses. Use it to script tool calls the way Cursor sends them.
-import { appendFileSync } from "node:fs";
+import { randomUUID } from "node:crypto";
+import { appendFileSync, existsSync, readFileSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
 import { createInterface } from "node:readline";
 
 const args = process.argv.slice(2);
@@ -51,6 +59,11 @@ if (args[0] !== "acp") {
 
 if (process.env.FAKE_CURSOR_IGNORE_TERM === "1") process.on("SIGTERM", () => {});
 
+const storeDir = process.env.FAKE_CURSOR_STORE;
+const storeFile = (id) => join(storeDir, `${id}.json`);
+const saveSession = (id, session) => {
+  if (storeDir) writeFileSync(storeFile(id), JSON.stringify({ history: session.history }));
+};
 const sessions = new Map();
 let nextSession = 1;
 let nextRequestId = 1000;
@@ -102,6 +115,9 @@ async function runPrompt(id, params) {
   const text = params.prompt.map((block) => block.text ?? "").join("\n");
   cancelled.delete(params.sessionId);
   session.prompts += 1;
+  const before = [...session.history];
+  session.history.push(text);
+  saveSession(params.sessionId, session);
   update(params.sessionId, { sessionUpdate: "agent_thought_chunk", content: { type: "text", text: "thinking" } });
   if (text.includes("[[crash]]")) process.exit(3);
   if (text.includes("[[refuse]]")) return reply(id, { stopReason: "refusal" });
@@ -204,7 +220,7 @@ async function runPrompt(id, params) {
     });
     return reply(id, { stopReason: "end_turn" });
   }
-  const say = /say:(.*)/.exec(text)?.[1];
+  const say = text.includes("[[recall]]") ? `recall:${before.join("|")}` : /say:(.*)/.exec(text)?.[1];
   const answer = say ?? `Hi from fake cursor (model ${session.model}, prompt ${session.prompts})`;
   for (const piece of answer.match(/.{1,12}/g) ?? [answer]) {
     update(params.sessionId, { sessionUpdate: "agent_message_chunk", content: { type: "text", text: piece } });
@@ -242,17 +258,27 @@ rl.on("line", (line) => {
     case "authenticate":
       return reply(id, {});
     case "session/new": {
-      const sessionId = `fake-session-${nextSession++}`;
-      const session = { model: process.env.FAKE_CURSOR_DEFAULT_MODEL ?? "default[]", mode: "agent", prompts: 0 };
+      const sessionId = storeDir ? `fake-session-${randomUUID().slice(0, 8)}` : `fake-session-${nextSession++}`;
+      const session = { model: process.env.FAKE_CURSOR_DEFAULT_MODEL ?? "default[]", mode: "agent", prompts: 0, history: [] };
       sessions.set(sessionId, session);
+      saveSession(sessionId, session);
       return reply(id, { sessionId, modes: modes(), configOptions: configOptions(session), ...modelFields(session) });
     }
     case "session/load": {
-      const session = { model: process.env.FAKE_CURSOR_DEFAULT_MODEL ?? "default[]", mode: "agent", prompts: 0, loaded: true };
-      sessions.set(params.sessionId, session);
+      if (storeDir && !existsSync(storeFile(params.sessionId))) return fail(id, -32602, "Invalid params");
+      const history = storeDir ? JSON.parse(readFileSync(storeFile(params.sessionId), "utf8")).history : [];
+      const session = { model: process.env.FAKE_CURSOR_DEFAULT_MODEL ?? "default[]", mode: "agent", prompts: 0, history, loaded: true };
+      const moved = process.env.FAKE_CURSOR_LOAD_RENAMES === "1" ? `${params.sessionId}-moved` : undefined;
+      sessions.set(moved ?? params.sessionId, session);
+      if (moved) saveSession(moved, session);
       // Like a real agent, replay history as updates before answering.
       update(params.sessionId, { sessionUpdate: "agent_message_chunk", content: { type: "text", text: "HISTORY" } });
-      return reply(id, { modes: modes(), configOptions: configOptions(session), ...modelFields(session) });
+      return reply(id, {
+        ...(moved ? { sessionId: moved } : {}),
+        modes: modes(),
+        configOptions: configOptions(session),
+        ...modelFields(session),
+      });
     }
     case "session/set_mode":
       sessions.get(params.sessionId).mode = params.modeId;

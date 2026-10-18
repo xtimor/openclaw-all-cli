@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterAll, describe, expect, it, vi } from "vitest";
@@ -28,7 +28,11 @@ describe("cursor-cli backend", () => {
       input: "stdin",
       liveSession: "claude-stdio",
       sessionMode: "existing",
+      // P5: only an error that proves the chat is gone may start a fresh one.
+      freshSessionRecovery: "invalidated-only",
     });
+    // P18: the host runs a side question without OpenClaw's tools.
+    expect(backend.sideQuestionToolMode).toBe("disabled");
     expect(backend).toMatchObject({
       bundleMcp: true,
       bundleMcpMode: "gemini-system-settings",
@@ -403,5 +407,148 @@ describe("provider catalog entry", () => {
   it("is the entry the plugin ships", () => {
     const shipped = (provider as unknown as { catalog?: unknown }[])[0]!;
     expect(shipped.catalog).toBeTypeOf("object");
+  });
+});
+
+describe("session resume and side questions (P4, P5, P18)", () => {
+  const scratch = mkdtempSync(join(tmpdir(), "oac-backend-resume-"));
+  afterAll(() => rmSync(scratch, { recursive: true, force: true }));
+  const backend = buildCliBackend(cursorAdapter, { settings: {} });
+  const workspace = join(scratch, "workspace");
+  mkdirSync(workspace);
+
+  type Parsed = Record<string, unknown> | null;
+  /** One prepared turn, as the host runs it: prepareExecution, then execute. */
+  async function turn(
+    agentDir: string,
+    prompt: string,
+    extra: { env?: Record<string, string>; sessionId?: string; useResume?: boolean; executionMode?: "agent" | "side-question"; authProfileId?: string } = {},
+  ) {
+    const { env, sessionId, useResume, executionMode, authProfileId } = extra;
+    const prepared = await backend.prepareExecution!({
+      agentDir,
+      ...(executionMode ? { executionMode } : {}),
+      ...(authProfileId ? { authProfileId } : {}),
+    } as never);
+    const records: Record<string, unknown>[] = [];
+    for await (const record of prepared!.execute!({
+      command: FAKE_CURSOR_AGENT,
+      args: ["acp"],
+      cwd: workspace,
+      env: fakeEnv(env),
+      prompt,
+      modelId: "auto",
+      systemPrompt: "",
+      useResume: useResume ?? false,
+      ...(sessionId ? { sessionId } : {}),
+      ...(executionMode ? { executionMode } : {}),
+      timeoutMs: 10_000,
+      requestToolPermission: async () => ({ behavior: "deny", message: "no" }),
+      requestUserInput: async () => ({ status: "cancelled", message: "no" }),
+    })) {
+      records.push(record);
+    }
+    const events = records.map((record) => backend.parseJsonlEvent!(JSON.stringify(record), {} as never) as unknown as Parsed);
+    const last = events.at(-1) as { text?: string; errorText?: string; sessionId?: string } | null;
+    return { records, events, last };
+  }
+
+  it("keeps the chat across a restart, answers the fact, and sends only the new prompt", async () => {
+    const chats = mkdtempSync(join(scratch, "chats-"));
+    const agentDir = join(scratch, "restart-agent");
+    const env = { FAKE_CURSOR_STORE: chats };
+    const first = await turn(agentDir, "remember: banana", { env });
+    const id = first.last!.sessionId!;
+    expect(id).toMatch(/^fake-session-/);
+
+    // A new Gateway: a new process, resumed by the id the host stored.
+    const log = join(scratch, "restart.jsonl");
+    const second = await turn(agentDir, "[[recall]]", { env: { ...env, FAKE_CURSOR_LOG: log }, sessionId: id, useResume: true });
+    expect(second.last).toMatchObject({ kind: "result", text: "recall:remember: banana", sessionId: id });
+    const prompts = readFileSync(log, "utf8")
+      .trim()
+      .split("\n")
+      .map((line) => JSON.parse(line))
+      .filter((entry) => entry.method === "session/prompt");
+    expect(prompts).toHaveLength(1);
+    expect(prompts[0].params.prompt).toEqual([{ type: "text", text: "[[recall]]" }]);
+  });
+
+  it("starts a fresh chat on /reset, which passes no resume id", async () => {
+    const chats = mkdtempSync(join(scratch, "chats-"));
+    const agentDir = join(scratch, "reset-agent");
+    const env = { FAKE_CURSOR_STORE: chats };
+    const first = await turn(agentDir, "remember: banana", { env });
+    const reset = await turn(agentDir, "[[recall]]", { env, sessionId: first.last!.sessionId!, useResume: false });
+    expect(reset.last).toMatchObject({ kind: "result", text: "recall:" });
+    expect(reset.last!.sessionId).not.toBe(first.last!.sessionId);
+  });
+
+  it("fails another agent's chat as session_expired, in words the host classifies, without a fresh chat", async () => {
+    const chats = mkdtempSync(join(scratch, "chats-"));
+    const owner = await turn(join(scratch, "owner-agent"), "remember: banana", { env: { FAKE_CURSOR_STORE: chats } });
+    // Another agent has its own home, so its Cursor does not know the id.
+    const stranger = mkdtempSync(join(scratch, "chats-"));
+    const log = join(scratch, "foreign.jsonl");
+    const foreign = await turn(join(scratch, "other-agent"), "[[recall]]", {
+      env: { FAKE_CURSOR_STORE: stranger, FAKE_CURSOR_LOG: log },
+      sessionId: owner.last!.sessionId!,
+      useResume: true,
+    });
+    expect(foreign.records.at(-1)).toMatchObject({
+      type: "result",
+      is_error: true,
+      event: { kind: "error", error: { code: "session_expired" } },
+    });
+    expect(foreign.last?.errorText).toMatch(/session not found/i);
+    const methods = readFileSync(log, "utf8").trim().split("\n").map((line) => JSON.parse(line).method);
+    expect(methods).toContain("session/load");
+    expect(methods).not.toContain("session/new");
+    expect(methods).not.toContain("session/prompt");
+  });
+
+  it("runs a side question in ask mode with no MCP server and no resume, and reports no session id", async () => {
+    const chats = mkdtempSync(join(scratch, "chats-"));
+    const agentDir = join(scratch, "side-agent");
+    const env = { FAKE_CURSOR_STORE: chats };
+    const chat = await turn(agentDir, "remember: banana", { env });
+    const log = join(scratch, "side.jsonl");
+    const side = await turn(agentDir, "say:42", {
+      env: { ...env, FAKE_CURSOR_LOG: log },
+      sessionId: chat.last!.sessionId!,
+      useResume: true,
+      executionMode: "side-question",
+    });
+    expect(side.last).toMatchObject({ kind: "result", text: "42" });
+    expect(side.last!.sessionId).toBeUndefined();
+    const requests = readFileSync(log, "utf8").trim().split("\n").map((line) => JSON.parse(line));
+    const methods = requests.map((entry) => entry.method);
+    expect(methods).not.toContain("session/load");
+    expect(requests.find((entry) => entry.method === "session/new").params.mcpServers).toEqual([]);
+    expect(requests.find((entry) => entry.method === "session/set_mode").params).toMatchObject({ modeId: "ask" });
+  });
+
+  it("gives a side question no OpenClaw tools even when the host wrote its MCP settings", async () => {
+    const dir = mkdtempSync(join(scratch, "settings-"));
+    const file = join(dir, "settings.json");
+    writeFileSync(file, JSON.stringify({ mcpServers: { openclaw: { url: "http://127.0.0.1:1/mcp", headers: {} } } }));
+    const log = join(scratch, "side-settings.jsonl");
+    const env = { FAKE_CURSOR_LOG: log, GEMINI_CLI_SYSTEM_SETTINGS_PATH: file };
+    await turn(join(scratch, "side-settings-agent"), "say:agent", { env: { ...env, FAKE_CURSOR_LOG: join(scratch, "agent-settings.jsonl") } });
+    await turn(join(scratch, "side-settings-agent"), "say:side", { env, executionMode: "side-question" });
+    const created = readFileSync(log, "utf8").trim().split("\n").map((line) => JSON.parse(line)).find((entry) => entry.method === "session/new");
+    expect(created.params.mcpServers).toEqual([]);
+    const agentRequests = readFileSync(join(scratch, "agent-settings.jsonl"), "utf8").trim().split("\n").map((line) => JSON.parse(line));
+    expect(agentRequests.find((entry) => entry.method === "session/new").params.mcpServers).toHaveLength(1);
+  });
+
+  it("still refuses an unenforceable native selection for a side question", async () => {
+    await expect(
+      backend.prepareExecution!({
+        agentDir: join(scratch, "refuse-agent"),
+        executionMode: "side-question",
+        toolAvailability: { native: [], openClaw: [] },
+      } as never),
+    ).rejects.toThrow(/keeps native read, grep, glob on/);
   });
 });

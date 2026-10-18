@@ -59,3 +59,8 @@
   - `pgrep -x openclaw-gateway` fails (name over 15 chars): use `pgrep -f "^openclaw-gateway"`.
   - `cursor-agent status` prints `✓ Logged in as <email>` when logged in.
   - A listing leaves `<config dir>/acp-sessions/<sessionId>` behind; the adapter removes exactly that directory after closing the session. A shared catalog load takes no caller's signal; each caller races its own.
+- Session resume (entry 7, 2026-10-18, cursor-agent 2026.10.16 / OpenClaw 2026.10.3):
+  - Real Cursor: `session/load` of an id the home lacks gives JSON-RPC `-32602 Invalid params` (also for another agent's home). Two processes can load one chat; each keeps its own view, last writer wins (spec Q4: unsafe), so the core holds one process per chat.
+  - The host classifies a backend error from its message text, not our code: `session not found` / `session expired` etc. make `FailoverError reason=session_expired`. It retries a fresh chat only with a history prompt (needs an API-key profile) and clears a failed binding only for `claude-cli`; for `cursor-cli` a lost chat fails every turn until `/reset`.
+  - A side question reaches `execute` with `ctx.executionMode: "side-question"`, no `liveSession`, `useResume: false`; `sideQuestionToolMode: "disabled"` is required or the host refuses `/btw` for a backend with native tools. `authProfileId` exists only in `prepareExecution`, not in `execute`.
+  - The host's `resumeSession=` log value is a hash, not the native id. Fake agent: `FAKE_CURSOR_STORE`, `FAKE_CURSOR_LOAD_RENAMES`, `[[recall]]`.

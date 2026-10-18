@@ -97,6 +97,68 @@ describe("AcpSession", () => {
     expect(requests(file).map((entry) => entry.method)).not.toContain("session/new");
   });
 
+  describe("resume", () => {
+    const store = () => {
+      const dir = mkdtempSync(join(tmpdir(), "oac-acp-store-"));
+      dirs.push(dir);
+      return dir;
+    };
+
+    it("keeps the chat's context across a restart: a new process loads what the first one saw", async () => {
+      const chats = store();
+      const first = await start({ env: { FAKE_CURSOR_STORE: chats } });
+      await collect(first.prompt("remember: banana"));
+      await first.close();
+
+      const second = await start({ resumeSessionId: first.sessionId, env: { FAKE_CURSOR_STORE: chats } });
+      expect(second.sessionId).toBe(first.sessionId);
+      const events = await collect(second.prompt("[[recall]]"));
+      expect(events.at(-1)).toMatchObject({ kind: "result", text: "recall:remember: banana" });
+    });
+
+    it("starts an empty chat without a resume id", async () => {
+      const chats = store();
+      const first = await start({ env: { FAKE_CURSOR_STORE: chats } });
+      await collect(first.prompt("remember: banana"));
+      const fresh = await start({ env: { FAKE_CURSOR_STORE: chats } });
+      expect(fresh.sessionId).not.toBe(first.sessionId);
+      const events = await collect(fresh.prompt("[[recall]]"));
+      expect(events.at(-1)).toMatchObject({ kind: "result", text: "recall:" });
+    });
+
+    it("fails a chat this home does not hold as session_expired, with a message the host classifies", async () => {
+      const mine = store();
+      const other = store();
+      const first = await start({ env: { FAKE_CURSOR_STORE: other } });
+      await expect(start({ resumeSessionId: first.sessionId, env: { FAKE_CURSOR_STORE: mine } })).rejects.toSatisfy(
+        (error: unknown) =>
+          error instanceof CliError &&
+          error.code === "session_expired" &&
+          /session not found/i.test(error.message) &&
+          error.message.includes(first.sessionId) &&
+          !error.retryable,
+      );
+    });
+
+    it("answers with the ID the agent moved the chat to", async () => {
+      const chats = store();
+      const first = await start({ env: { FAKE_CURSOR_STORE: chats } });
+      const second = await start({
+        resumeSessionId: first.sessionId,
+        env: { FAKE_CURSOR_STORE: chats, FAKE_CURSOR_LOAD_RENAMES: "1" },
+      });
+      expect(second.sessionId).toBe(`${first.sessionId}-moved`);
+      const events = await collect(second.prompt("say:still works"));
+      expect(events.at(-1)).toMatchObject({ kind: "result", text: "still works" });
+    });
+
+    it("does not call a dead process a lost chat", async () => {
+      await expect(start({ resumeSessionId: "x", env: { FAKE_CURSOR_NO_INIT: "1" }, signal: AbortSignal.timeout(300) })).rejects.not.toMatchObject({
+        code: "session_expired",
+      });
+    });
+  });
+
   const FAST = "fake-fast[speed=fast,fast=true]";
 
   it("selects a listed model through the configOptions select and rejects an unknown one", async () => {

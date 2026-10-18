@@ -181,6 +181,12 @@ export type McpServerSpec = {
   headers: Readonly<Record<string, string>>;
 };
 
+/**
+ * What a turn is for. `agent` is the chat itself. `side-question` is a throwaway question beside
+ * it: no OpenClaw tools, every permission request rejected, never resumed (parity row P18).
+ */
+export type ExecutionMode = "agent" | "side-question";
+
 export type OpenParams = {
   /** The CLI binary, absolute or on PATH. */
   command: string;
@@ -190,6 +196,8 @@ export type OpenParams = {
   cwd: string;
   env: Record<string, string>;
   modelId: string;
+  /** Defaults to `agent`. A side question has no `resumeSessionId` and no `mcpServers`. */
+  executionMode?: ExecutionMode;
   /** The native session ID to resume. Set only when OpenClaw says to resume. */
   resumeSessionId?: string;
   /** MCP servers for the native session, given at both new and resumed sessions. */

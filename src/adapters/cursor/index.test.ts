@@ -308,6 +308,35 @@ describe("cursor adapter", () => {
     }
   });
 
+  it("opens a side question in ask mode and never resumes or hands it an MCP server", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "oac-cursor-"));
+    try {
+      const file = join(dir, "requests.jsonl");
+      const session = await cursorAdapter.open({
+        command: FAKE_CURSOR_AGENT,
+        args: cursorAdapter.launchArgs,
+        cwd: process.cwd(),
+        env: fakeEnv({ FAKE_CURSOR_LOG: file }),
+        modelId: "auto",
+        executionMode: "side-question",
+        // The core hands a side question neither; the adapter ignores them anyway.
+        resumeSessionId: "native-9",
+        mcpServers: [{ name: "openclaw", url: "http://127.0.0.1:4711/mcp", headers: {} }],
+        onPermissionRequest: async () => "reject_once",
+      });
+      open.push(session);
+      const requests = readFileSync(file, "utf8")
+        .trim()
+        .split("\n")
+        .map((line) => JSON.parse(line));
+      expect(requests.map((entry) => entry.method)).not.toContain("session/load");
+      expect(requests.find((entry) => entry.method === "session/new").params.mcpServers).toEqual([]);
+      expect(requests.find((entry) => entry.method === "session/set_mode").params).toMatchObject({ modeId: "ask" });
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   it("refuses to run without Cursor's read-only mode", async () => {
     await expect(
       cursorAdapter.open({
