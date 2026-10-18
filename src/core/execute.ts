@@ -4,6 +4,7 @@ import { toRecord, type CoreRecord, type TurnSummary } from "./events.ts";
 import { startMcpProxy, type McpProxy } from "./mcp-proxy.ts";
 import { OPENCLAW_MCP_SERVER, readTurnTarget, type TurnTarget } from "./mcp-target.ts";
 import { recordProcess, type ProcessLock } from "./pid-locks.ts";
+import { capabilityMismatch, missingCapabilities } from "./manifest.ts";
 import { readTurnUsage } from "./usage.ts";
 import { ProcessPool, type PoolMember, type TurnSlot } from "./pool.ts";
 import { routePermission, type PermissionTurn } from "./permissions.ts";
@@ -33,6 +34,16 @@ export type ExecuteOptions = {
    * core starts no proxy, hands the CLI no MCP server, and reads no settings file. Default true.
    */
   mcp?: boolean;
+  /**
+   * Whether the CLI's permission requests go to the host (parity row P9). When false every request
+   * is rejected like a side question's and the host is never asked. Default true.
+   */
+  approvals?: boolean;
+  /**
+   * Whether the core asks the adapter for a turn's usage when the CLI reports none (parity row
+   * P16). Default true.
+   */
+  usage?: boolean;
   /**
    * The auth profile the host picked for the run (`prepareExecution` knows it, `execute` does
    * not). It is part of the reuse key: a process never serves another profile (AD-13).
@@ -178,6 +189,8 @@ export function createExecute(adapter: CliAdapter, options: ExecuteOptions): Cli
   const warn = options.warn ?? (() => {});
   const mcp = options.mcp ?? true;
   const continuity = options.continuity ?? false;
+  const approvals = options.approvals ?? true;
+  const readsUsage = options.usage ?? true;
   const { authProfileId } = options;
   const pool = options.pool ?? new ProcessPool({ maxTurns: Infinity, maxProcesses: Infinity });
 
@@ -400,7 +413,7 @@ export function createExecute(adapter: CliAdapter, options: ExecuteOptions): Cli
         // The process outlives turns: each request goes to the turn running when it arrives. A side
         // question has no tools to approve: every request is rejected and the host is never asked.
         onPermissionRequest:
-          mode === "side-question"
+          mode === "side-question" || !approvals
             ? async () => (!entry.turn || entry.turn.ended || ctx.abortSignal?.aborted ? "cancelled" : "reject_once")
             : (request) => routePermission(entry.turn, request, warn),
         onProcessStart: (pid) => {
@@ -421,6 +434,15 @@ export function createExecute(adapter: CliAdapter, options: ExecuteOptions): Cli
       // A failing close must not hide the reason the turn cannot run.
       await session.close().catch(() => {});
       throw closedError();
+    }
+    // AD-10: the CLI must report what the manifest's decided rows need. Nothing was sent yet.
+    if (session.capabilities) {
+      const missing = missingCapabilities(adapter.manifest, session.capabilities);
+      if (missing.length > 0) {
+        // A failing close must not hide the reason the turn cannot run.
+        await session.close().catch(() => {});
+        throw capabilityMismatch(adapter.displayName, missing);
+      }
     }
     entry.session = session;
     // P15: a chat opened without a resume ID has no earlier turns of the conversation in its context.
@@ -582,7 +604,7 @@ export function createExecute(adapter: CliAdapter, options: ExecuteOptions): Cli
           closed = true;
           for (const record of tools.closeOpen()) yield record;
         }
-        if (event.kind === "result" && !summary.usage) {
+        if (event.kind === "result" && readsUsage && !summary.usage) {
           summary.usage = await readTurnUsage(
             adapter,
             {

@@ -4,6 +4,7 @@ import { Readable, Writable } from "node:stream";
 import * as acp from "@agentclientprotocol/sdk";
 import {
   CliError,
+  type CliCapability,
   type CliErrorCode,
   type CliSession,
   type NormalizedEvent,
@@ -281,6 +282,8 @@ export class AcpSession implements CliSession {
     private readonly command: string,
     /** The models the agent offered when the session started. */
     readonly models: readonly AcpModelInfo[],
+    /** What the agent reported in `initialize`, in the core's names. */
+    readonly capabilities: ReadonlySet<CliCapability>,
   ) {}
 
   get pid(): number | undefined {
@@ -407,7 +410,7 @@ export class AcpSession implements CliSession {
 
     try {
       const started = await Promise.race([setup(connection, options), died]);
-      return new AcpSession(started.sessionId, runtime, connection, options.command, started.models);
+      return new AcpSession(started.sessionId, runtime, connection, options.command, started.models, started.capabilities);
     } catch (error) {
       // A dead process closes its pipes before `exit` fires, and the pipe error can win the race
       // against the exit: give the exit a moment, so a death is reported as one (retryable).
@@ -560,7 +563,7 @@ export class AcpSession implements CliSession {
 async function setup(
   connection: acp.ClientSideConnection,
   options: AcpSessionOptions,
-): Promise<{ sessionId: string; models: AcpModelInfo[] }> {
+): Promise<{ sessionId: string; models: AcpModelInfo[]; capabilities: ReadonlySet<CliCapability> }> {
   const init = await connection.initialize({
     protocolVersion: acp.PROTOCOL_VERSION,
     clientCapabilities: {},
@@ -578,14 +581,25 @@ async function setup(
       message: "The CLI cannot load a session, so the conversation cannot resume.",
     });
   }
+  const caps = init.agentCapabilities;
+  const capabilities = new Set<CliCapability>();
+  if (caps?.loadSession === true) capabilities.add("resumeSession");
+  if (caps?.mcpCapabilities?.http === true) capabilities.add("httpMcp");
+  if (caps?.promptCapabilities?.image === true) capabilities.add("imagePrompts");
   if (options.authMethodId) {
     const methods = init.authMethods;
-    if (!methods || methods.some((method) => method.id === options.authMethodId)) {
-      try {
-        await connection.authenticate({ methodId: options.authMethodId });
-      } catch (error) {
-        throw toCliError(error, "auth", "The CLI rejected its login");
+    // An absent list is today's behavior: log in. An empty list needs no login. A list without
+    // the adapter's method means the login the adapter relies on is gone.
+    if (!methods) {
+      await login(connection, options.authMethodId);
+    } else if (methods.length > 0) {
+      if (!methods.some((method) => method.id === options.authMethodId)) {
+        throw new CliError({
+          code: "capability_mismatch",
+          message: `The CLI offered no "${options.authMethodId}" login method (it lists ${methods.map((method) => `"${method.id}"`).join(", ")}). Update the CLI.`,
+        });
       }
+      await login(connection, options.authMethodId);
     }
   }
 
@@ -633,7 +647,15 @@ async function setup(
 
   const facts = readModelFacts(modelState, configOptions);
   if (options.selectModel || options.modelId) await switchModel(connection, sessionId, facts, options);
-  return { sessionId, models: facts.offered };
+  return { sessionId, models: facts.offered, capabilities };
+}
+
+async function login(connection: acp.ClientSideConnection, methodId: string): Promise<void> {
+  try {
+    await connection.authenticate({ methodId });
+  } catch (error) {
+    throw toCliError(error, "auth", "The CLI rejected its login");
+  }
 }
 
 /**

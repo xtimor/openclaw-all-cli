@@ -39,11 +39,16 @@ export function buildCliBackend(adapter: CliAdapter, options: BuildBackendOption
 
   return {
     id: backendIdFor(adapter),
-    liveTest: {
-      defaultModelRef: adapter.defaultModel,
-      defaultImageProbe: false,
-      defaultMcpProbe: false,
-    },
+    // P19: the host's live-test defaults, read only by its own tests, never at runtime.
+    ...(flags.liveTest
+      ? {
+          liveTest: {
+            defaultModelRef: adapter.defaultModel,
+            defaultImageProbe: flags.images,
+            defaultMcpProbe: flags.mcp,
+          },
+        }
+      : {}),
     // P10: the host selects native tools per run through `ctx.toolAvailability`; `prepareExecution`
     // confirms only a selection it enforces. Without that, the host fails closed for restricted runs.
     ...(flags.toolPolicy
@@ -55,9 +60,10 @@ export function buildCliBackend(adapter: CliAdapter, options: BuildBackendOption
           // MCP proxy (AD-12) reads it. The file is the only reason these flags are set.
           bundleMcp: true,
           bundleMcpMode: "gemini-system-settings" as const,
-          hostOwnedTools: ["exec", "process"],
         }
       : {}),
+    // P8: the host serves its own exec tools in place of the CLI's native shell.
+    ...(flags.hostTools ? { hostOwnedTools: ["exec", "process"] } : {}),
     // P18: the host runs a side question (`executionMode: "side-question"`) without OpenClaw's
     // tools; the adapter opens it in its read-only mode with no MCP server and rejects every
     // permission request. Native readers the CLI keeps open stay (see the P18 row).
@@ -74,15 +80,16 @@ export function buildCliBackend(adapter: CliAdapter, options: BuildBackendOption
             freshSessionRecovery: "invalidated-only" as const,
           }
         : {}),
-      // The host deletes these keys from the Gateway's env before a turn; the core applies the same list to its own probes.
-      clearEnv: [...adapter.clearEnv],
+      // P17: the host deletes these keys from the Gateway's env before a turn; the core applies the same list to its own probes.
+      ...(flags.cleanEnv ? { clearEnv: [...adapter.clearEnv] } : {}),
       output: "jsonl",
       input: "stdin",
       ...(flags.liveSession ? { liveSession: "claude-stdio" as const } : {}),
       // P15: lets the host retry a lost chat with its own history (same as `claude-cli`).
       ...(flags.history ? { reseedFromRawTranscriptWhenUncompacted: true } : {}),
       sessionMode: "existing",
-      ...(adapter.modelAliases ? { modelAliases: { ...adapter.modelAliases } } : {}),
+      // P1: the adapter's own spellings of its models.
+      ...(flags.models && adapter.modelAliases ? { modelAliases: { ...adapter.modelAliases } } : {}),
     },
     parseJsonlEvent: (line) => parseJsonlEvent(line),
     prepareExecution: async (ctx) => {
@@ -108,6 +115,8 @@ export function buildCliBackend(adapter: CliAdapter, options: BuildBackendOption
             home,
             pool,
             mcp: flags.mcp,
+            approvals: flags.approvals,
+            usage: flags.usage,
             continuity: flags.history && flags.mcp,
             ...(ctx.authProfileId ? { authProfileId: ctx.authProfileId } : {}),
             ...(options.warn ? { warn: options.warn } : {}),

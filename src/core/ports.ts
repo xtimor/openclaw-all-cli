@@ -128,7 +128,21 @@ export type ParityRowId = (typeof PARITY_ROWS)[number];
 /** `match` and `approx` and `gap` are decisions; `spike` and `tbd` are open questions. */
 export type ParityStatus = "match" | "approx" | "gap" | "spike" | "tbd";
 
-export type ParityRow = { status: ParityStatus; note: string };
+/**
+ * What a CLI session can report at open, in the core's own words (AD-2): the transport maps its
+ * protocol's fields onto these names.
+ */
+export type CliCapability = "resumeSession" | "httpMcp" | "imagePrompts";
+
+export type ParityRow = {
+  status: ParityStatus;
+  note: string;
+  /**
+   * Capabilities the CLI must report at open while the row is decided (`match` or `approx`).
+   * The core fails the turn with `capability_mismatch` when one is missing (AD-10).
+   */
+  requires?: readonly CliCapability[];
+};
 
 export type CapabilityManifest = {
   /** Lowest CLI version the adapter supports. */
@@ -220,6 +234,8 @@ export interface CliSession {
   readonly pid?: number;
   /** False once the process exited or the session was closed. */
   readonly alive: boolean;
+  /** What the CLI reported at open. Absent: the session reports nothing and is not checked. */
+  readonly capabilities?: ReadonlySet<CliCapability>;
   /** Sends one prompt and yields the turn's events. The last event is `result` or `error`. */
   prompt(text: string): AsyncIterable<NormalizedEvent>;
   /** Asks the CLI to stop the running turn and answers pending permission requests `cancelled`. */

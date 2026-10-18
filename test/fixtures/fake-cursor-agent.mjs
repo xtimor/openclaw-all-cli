@@ -22,6 +22,9 @@
 //   FAKE_CURSOR_STORE=<dir>     a chat store, like a Cursor home: `session/new` saves the session as a file there
 //                               (with a unique ID), every prompt is appended to it, and `session/load` of an ID with
 //                               no file fails with "Invalid params". Point two agents at two dirs to model two homes.
+//   FAKE_CURSOR_CAPS=<json>     shallow-merged into `initialize`'s agentCapabilities (default: the real report, `loadSession`,
+//                               `mcpCapabilities{http,sse}`, `promptCapabilities{image}`); e.g. {"mcpCapabilities":{"http":false}}
+//   FAKE_CURSOR_AUTH_METHODS=<json> replaces `initialize`'s authMethods (default `[{id:"cursor_login"}]`)
 //   FAKE_CURSOR_LOAD_ERROR=<json> `session/load` fails with the JSON-RPC error {code, message, data?}
 //   FAKE_CURSOR_LOAD_CRASH=1    the process exits while `session/load` runs
 //   FAKE_CURSOR_LOAD_RENAMES=1  `session/load` answers with `sessionId: "<id>-moved"`, the way an agent that moved the chat would
@@ -259,9 +262,17 @@ rl.on("line", (line) => {
       if (process.env.FAKE_CURSOR_NO_INIT === "1") return;
       return reply(id, {
         protocolVersion: Number(process.env.FAKE_CURSOR_PROTOCOL ?? 1),
-        agentCapabilities: { loadSession: true, promptCapabilities: { image: true } },
-        authMethods: [{ id: "cursor_login", name: "Cursor login" }],
-        agentInfo: { name: "fake-cursor-agent", version: "0" },
+        // The shape real cursor-agent 2026.10.16 reports (no agentInfo).
+        agentCapabilities: {
+          loadSession: true,
+          mcpCapabilities: { http: true, sse: true },
+          promptCapabilities: { audio: false, embeddedContext: false, image: true },
+          sessionCapabilities: { list: {} },
+          ...(process.env.FAKE_CURSOR_CAPS ? JSON.parse(process.env.FAKE_CURSOR_CAPS) : {}),
+        },
+        authMethods: process.env.FAKE_CURSOR_AUTH_METHODS
+          ? JSON.parse(process.env.FAKE_CURSOR_AUTH_METHODS)
+          : [{ id: "cursor_login", name: "Cursor login" }],
       });
     case "authenticate":
       return reply(id, {});

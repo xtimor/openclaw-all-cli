@@ -5,6 +5,7 @@ import { afterAll, describe, expect, it, vi } from "vitest";
 import { ADAPTERS } from "../src/registry.ts";
 import { CURSOR_PERMISSIONS, cursorAdapter } from "../src/adapters/cursor/index.ts";
 import { createManifest } from "../src/core/ports.ts";
+import { FLAG_ROWS } from "../src/core/manifest.ts";
 import { backendIdFor, buildCliBackend, nativeAuthMarkerFor } from "../src/core/backend.ts";
 import { createConfigValidator, registerAdapters } from "../src/core/register.ts";
 import provider from "../src/provider-discovery.ts";
@@ -41,6 +42,8 @@ describe("cursor-cli backend", () => {
       toolAvailabilityEnforcement: "prepare-execution",
     });
     expect(backend.parseJsonlEvent).toBeTypeOf("function");
+    // P19 with P7 and P13: the host's live-test defaults.
+    expect(backend.liveTest).toEqual({ defaultModelRef: "cursor-cli/auto", defaultImageProbe: false, defaultMcpProbe: true });
   });
 
   it("asks the host to clear the adapter's env keys from every turn, and keeps the logins (P17)", () => {
@@ -384,6 +387,179 @@ describe("operations wiring (P17, P19)", () => {
     expect(existsSync(files[1]!)).toBe(false);
     // An agent the config does not name waits for its first use.
     expect(existsSync(files[2]!)).toBe(true);
+  });
+});
+
+describe("backend fields by parity row (AD-10)", () => {
+  /** The backend's own fields, one name per top-level field and per `config` field. */
+  const fieldsOf = (backend: ReturnType<typeof buildCliBackend>) =>
+    [
+      ...Object.keys(backend).filter((key) => key !== "config"),
+      ...Object.keys(backend.config).map((key) => `config.${key}`),
+    ].sort();
+  const withRows = (rows: Parameters<typeof createManifest>[1]) =>
+    buildCliBackend({ ...cursorAdapter, manifest: createManifest(cursorAdapter.manifest.minVersion, rows) }, { settings: {} });
+
+  const STRUCTURAL = [
+    "id",
+    "nativeToolMode",
+    "parseJsonlEvent",
+    "prepareExecution",
+    "config.args",
+    "config.command",
+    "config.input",
+    "config.output",
+    "config.sessionMode",
+  ];
+
+  it("has only structural fields when every row is undecided", () => {
+    const backend = withRows({});
+    expect(fieldsOf(backend)).toEqual([...STRUCTURAL].sort());
+    expect(backend.nativeToolMode).toBe("always-on");
+  });
+
+  // The fields each decided row adds. P2, P9, P13 and P16 add none: their mechanisms live in the
+  // provider entry (P2, P13, P1's catalog) and in execute (P9, P16), and the live-test probes need P19 too.
+  const ADDS: Record<string, string[]> = {
+    P1: ["config.modelAliases"],
+    P2: [],
+    P4: ["config.liveSession"],
+    P5: ["config.resumeArgs", "config.freshSessionRecovery"],
+    P7: ["bundleMcp", "bundleMcpMode"],
+    P8: ["hostOwnedTools"],
+    P9: [],
+    P10: ["toolAvailabilityEnforcement"],
+    P13: [],
+    P15: ["config.reseedFromRawTranscriptWhenUncompacted"],
+    P16: [],
+    P17: ["config.clearEnv"],
+    P18: ["sideQuestionToolMode"],
+    P19: ["liveTest"],
+  };
+
+  it("covers every flag's row", () => {
+    expect(Object.keys(ADDS).sort()).toEqual(Object.values(FLAG_ROWS).sort());
+  });
+
+  it.each(Object.entries(ADDS))("adds exactly row %s's fields when only it is decided", (row, added) => {
+    expect(fieldsOf(withRows({ [row]: { status: "approx", note: "" } }))).toEqual([...STRUCTURAL, ...added].sort());
+  });
+
+  it("sets the live-test probes from P19 together with P13 and P7", () => {
+    const rows = (images: boolean, mcp: boolean) => ({
+      P19: { status: "approx" as const, note: "" },
+      ...(images ? { P13: { status: "approx" as const, note: "" } } : {}),
+      ...(mcp ? { P7: { status: "approx" as const, note: "" } } : {}),
+    });
+    expect(withRows(rows(false, false)).liveTest).toEqual({ defaultModelRef: "cursor-cli/auto", defaultImageProbe: false, defaultMcpProbe: false });
+    expect(withRows(rows(true, true)).liveTest).toEqual({ defaultModelRef: "cursor-cli/auto", defaultImageProbe: true, defaultMcpProbe: true });
+  });
+
+  it("registers the Cursor backend with the same fields as before this check, except the MCP probe", () => {
+    expect(fieldsOf(buildCliBackend(cursorAdapter, { settings: {} }))).toEqual(
+      [
+        ...STRUCTURAL,
+        "bundleMcp",
+        "bundleMcpMode",
+        "hostOwnedTools",
+        "toolAvailabilityEnforcement",
+        "sideQuestionToolMode",
+        "liveTest",
+        "config.modelAliases",
+        "config.clearEnv",
+        "config.liveSession",
+        "config.resumeArgs",
+        "config.freshSessionRecovery",
+        "config.reseedFromRawTranscriptWhenUncompacted",
+      ].sort(),
+    );
+  });
+});
+
+describe("capability check (AD-10)", () => {
+  const scratch = mkdtempSync(join(tmpdir(), "oac-backend-caps-"));
+  afterAll(() => rmSync(scratch, { recursive: true, force: true }));
+
+  async function turn(adapter: typeof cursorAdapter, name: string, caps: Record<string, unknown>, useResume = false) {
+    const backend = buildCliBackend(adapter, { settings: {} });
+    const log = join(scratch, `${name}.jsonl`);
+    const prepared = await backend.prepareExecution!({ agentDir: join(scratch, name) } as never);
+    const records: Array<Record<string, any>> = [];
+    for await (const record of prepared!.execute!({
+      command: FAKE_CURSOR_AGENT,
+      args: ["acp"],
+      cwd: process.cwd(),
+      env: fakeEnv({ FAKE_CURSOR_LOG: log, FAKE_CURSOR_CAPS: JSON.stringify(caps) }),
+      prompt: "say:pong",
+      modelId: "auto",
+      systemPrompt: "",
+      useResume,
+      timeoutMs: 10_000,
+      requestToolPermission: async () => ({ behavior: "deny", message: "no" }),
+      requestUserInput: async () => ({ status: "cancelled", message: "no" }),
+    })) {
+      records.push(record);
+    }
+    const methods = existsSync(log)
+      ? readFileSync(log, "utf8").trim().split("\n").map((line) => JSON.parse(line).method as string)
+      : [];
+    return { records, methods };
+  }
+  const withRow = (row: string, status: "spike" | "match") => ({
+    ...cursorAdapter,
+    manifest: createManifest(cursorAdapter.manifest.minVersion, {
+      ...cursorAdapter.manifest.rows,
+      [row]: { ...cursorAdapter.manifest.rows[row as "P7"], status },
+    }),
+  });
+
+  it("fails the turn without sending the prompt when the CLI reports no HTTP MCP (P7)", async () => {
+    const { records, methods } = await turn(cursorAdapter, "no-http", { mcpCapabilities: { http: false } });
+    expect(records.at(-1)).toMatchObject({
+      type: "result",
+      is_error: true,
+      event: { kind: "error", error: { code: "capability_mismatch", retryable: false } },
+    });
+    expect(records.at(-1)!.event.error.message).toMatch(/does not report HTTP MCP servers \(parity row P7\)/);
+    expect(methods).toContain("session/new");
+    expect(methods).not.toContain("session/prompt");
+  });
+
+  it("fails on the first turn of a new chat when the CLI cannot load sessions (P5)", async () => {
+    const { records, methods } = await turn(cursorAdapter, "no-load", { loadSession: false });
+    expect(records.at(-1)!.event.error).toMatchObject({ code: "capability_mismatch" });
+    expect(records.at(-1)!.event.error.message).toMatch(/session resume \(parity row P5\)/);
+    expect(methods).not.toContain("session/prompt");
+  });
+
+  it("keeps the transport's own message for a resume without loadSession", async () => {
+    const { records, methods } = await turn(cursorAdapter, "no-load-resume", { loadSession: false }, true);
+    expect(records.at(-1)!.event.error).toMatchObject({ code: "capability_mismatch" });
+    expect(methods).not.toContain("session/load");
+    expect(methods).not.toContain("session/prompt");
+  });
+
+  it("lists every missing row in one error", async () => {
+    const { records } = await turn(cursorAdapter, "both", { loadSession: false, mcpCapabilities: { http: false } });
+    expect(records.at(-1)!.event.error.message).toMatch(/\(parity row P5\).*\(parity row P7\)/);
+  });
+
+  it("runs the turn when the row is undecided", async () => {
+    const { records, methods } = await turn(withRow("P7", "spike"), "undecided", { mcpCapabilities: { http: false } });
+    expect(records.at(-1)).toMatchObject({ type: "result", is_error: false });
+    expect(methods).toContain("session/prompt");
+  });
+
+  it("passes a CLI that reports more than the manifest claims", async () => {
+    const { records } = await turn(cursorAdapter, "more", { mcpCapabilities: { http: true, sse: true }, promptCapabilities: { image: false } });
+    expect(records.at(-1)).toMatchObject({ type: "result", is_error: false });
+  });
+
+  it("does not check an undecided image row, and does when it is decided (P13)", async () => {
+    const caps = { promptCapabilities: { image: false } };
+    expect((await turn(cursorAdapter, "img-spike", caps)).records.at(-1)).toMatchObject({ is_error: false });
+    const decided = await turn(withRow("P13", "match"), "img-match", caps);
+    expect(decided.records.at(-1)!.event.error.message).toMatch(/image prompts \(parity row P13\)/);
   });
 });
 

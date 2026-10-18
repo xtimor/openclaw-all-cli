@@ -51,12 +51,16 @@ type DiscoveryContext = {
  */
 export function createSyntheticAuthProvider(adapter: CliAdapter, catalog?: ModelCatalog) {
   const backendId = backendIdFor(adapter);
+  const flags = deriveFlags(adapter.manifest);
+  // P17: the probes and the listing run with the same clean env as a turn.
+  const probeEnv = (env: Record<string, string | undefined> | undefined) =>
+    flags.cleanEnv ? withoutKeys(env ?? process.env, adapter.clearEnv) : { ...(env ?? process.env) };
   return {
     id: backendId,
     label: adapter.displayName,
     docsPath: "/providers/models",
     auth: [] as never[],
-    ...(catalog
+    ...(catalog && flags.models
       ? {
           /**
            * The account's models, listed by the CLI itself. Without a working login the CLI cannot
@@ -70,7 +74,7 @@ export function createSyntheticAuthProvider(adapter: CliAdapter, catalog?: Model
               const pluginConfig = context.config?.plugins?.entries?.[PLUGIN_ID]?.config;
               const command = readBackendConfig(pluginConfig, backendId, () => {}).command ?? adapter.command;
               // The listing and the probe run with the same clean env as a turn.
-              const env = withoutKeys(context.env ?? process.env, adapter.clearEnv);
+              const env = probeEnv(context.env);
               const status = await adapter.probeAuth({
                 command,
                 env,
@@ -78,7 +82,7 @@ export function createSyntheticAuthProvider(adapter: CliAdapter, catalog?: Model
               });
               context.signal?.throwIfAborted();
               // Images are offered only when the manifest decided the adapter handles them (P13).
-              const input: Array<"text" | "image"> = deriveFlags(adapter.manifest).images ? ["text", "image"] : ["text"];
+              const input: Array<"text" | "image"> = flags.images ? ["text", "image"] : ["text"];
               const rows =
                 status === "available"
                   ? await catalog.list({ command, env, ...(context.signal ? { signal: context.signal } : {}) })
@@ -92,12 +96,14 @@ export function createSyntheticAuthProvider(adapter: CliAdapter, catalog?: Model
       : {}),
     async prepareSyntheticAuth(context: DiscoveryContext) {
       context.signal?.throwIfAborted();
+      // P2: undecided, the CLI's login does not count as auth and nothing is probed.
+      if (!flags.auth) return undefined;
       if (!context.config || context.provider?.toLowerCase() !== backendId) return undefined;
       const pluginConfig = context.config.plugins?.entries?.[PLUGIN_ID]?.config;
       const settings = readBackendConfig(pluginConfig, backendId, () => {});
       const status = await adapter.probeAuth({
         command: settings.command ?? adapter.command,
-        env: withoutKeys(context.env ?? process.env, adapter.clearEnv),
+        env: probeEnv(context.env),
         ...(context.signal ? { signal: context.signal } : {}),
       });
       context.signal?.throwIfAborted();
