@@ -112,7 +112,7 @@ Do not send a Cursor slug to Claude Code, and do not send a Claude alias to Curs
 
 | Step | What runs | Primary | Fallback |
 | --- | --- | --- | --- |
-| `plan` | worker on `bmad-build-auto`, `ticket <ref>`, with `Halt after planning.` | `{agent.model_build}` | `{agent.model_build_fallback}` |
+| `plan` | worker on `bmad-build-auto`, `ticket <ref>`, with `Halt after planning.` | `{agent.model_plan}` | `{agent.model_plan_fallback}` |
 | `approve` | the user approves the ticket or its plan; you hold as `waiting_for_user` | — | — |
 | `build` | worker on `bmad-build-auto`, invocation `ticket <ref>`, plus `thorough` when the review depth is `thorough`. A retry after a work failure uses the rework model | `{agent.model_build}` | `{agent.model_build_fallback}` |
 | `review` | worker on `bmad-build-auto`, invocation `ticket <ref>` (a `built` plan routes to a follow-up review), plus `thorough` when the review depth is `thorough` | `{agent.model_review}` | `{agent.model_review_fallback}` |

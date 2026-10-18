@@ -36,12 +36,15 @@ persistent_facts = [
 # with that step's `_fallback` and name both models in the boundary line and run
 # log. Slugs must be in the runtime's allowed list.
 #
-#   model_build      -- the bmad-build-auto worker: plans, implements, runs its own review
+#   model_plan       -- the planning step: bmad-build-auto halted after planning (the plan, its risk, and its route)
+#   model_build      -- the bmad-build-auto worker: implements and runs its own review
 #   model_rework     -- a build retried after a work failure, a different family from the build
 #   model_review     -- cross-family follow-up review pass, deliberately not the build's family
 #   model_consult    -- PM / architect / analyst / UX consults
 #   model_brainstorm -- bmad-brainstorming on open calls
 
+model_plan = "claude-opus-5-5-high"
+model_plan_fallback = "grok-4.7-xhigh"
 model_build = "gpt-5.3-codex-high"
 model_build_fallback = "grok-4.7-xhigh"
 model_rework = "claude-sonnet-5-5-high"
@@ -94,6 +97,8 @@ ticket_done_at = "done"
 # dispatch; the Agent tool applies it only when the skill asks, and the skill does.
 # This table stays last: keys after it would belong to it, not to [agent].
 [agent.claude]
+model_plan = "opus"
+model_plan_fallback = "sonnet"
 model_build = "sonnet"
 model_build_fallback = "opus"
 model_rework = "sonnet"

@@ -18,7 +18,7 @@ Check the step's precondition too, because a plan can outlive the truth it was b
 
 ## The steps
 
-**`plan`** dispatches the build worker with `ticket <ref>. Halt after planning.` A good result is the plan at `ready-for-dev`; `approve` follows.
+**`plan`** dispatches the planning worker on `{agent.model_plan}` (not the build model) with `ticket <ref>. Halt after planning.` Planning needs no sub-agents, so it runs in a worker even when the orchestrator runs at the top level; do not write the plan in the orchestrator's own session, whatever model that session runs on. A good result is the plan at `ready-for-dev`; `approve` follows, then `build` runs on `{agent.model_build}`.
 
 **`approve`** is the entry's `plan_checkpoint`. Show the user the ticket, or the plan path with its intent and risk in three lines, and hold as `waiting_for_user` per `references/hold-and-resume.md`. An approval is logged and the run continues. Requested changes are the user's to make or to dictate; apply them to the plan outside its `<intent-contract>` unless they change the intent itself, commit, and continue.
 
