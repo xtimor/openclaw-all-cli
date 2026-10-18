@@ -110,7 +110,7 @@ flowchart LR
 - **Binds:** CAP-6, CAP-7, CAP-11
 - **Prevents:** OpenClaw tools reaching the model by different paths per adapter; a native shell or writer running on the host; adapters re-implementing tool filtering.
 - **Rule:**
-  - **OpenClaw tools.** They reach the model only through the MCP proxy (AD-12). Backends set `bundleMcp: true`, `bundleMcpMode: "gemini-system-settings"`, `nativeToolMode: "selectable"`, `toolAvailabilityEnforcement: "prepare-execution"`, and `hostOwnedTools: ["exec", "process"]`. `prepareExecution` returns `toolAvailabilityEnforced: true`. The host filters the OpenClaw tool list, and adapters never translate `tools.allow`/`deny`.
+  - **OpenClaw tools.** They reach the model only through the MCP proxy (AD-12). Backends set `bundleMcp: true`, `bundleMcpMode: "gemini-system-settings"`, `nativeToolMode: "selectable"`, `toolAvailabilityEnforcement: "prepare-execution"`, and `hostOwnedTools: ["exec", "process"]`. `prepareExecution` returns `toolAvailabilityEnforced: true` only when the host passes a tool availability for the turn; it is not always set. Cursor cannot switch off its native read, grep, and glob per run, so those stay open (below), and `exec`/`process` reach the model only if the plugin serves them itself (entry 19). The host filters the OpenClaw tool list, and adapters never translate `tools.allow`/`deny`.
   - **Per-agent permissions.** These are the same for every agent:
     - deny native shell, write, edit, delete, and web fetch;
     - allow the proxy's MCP server;

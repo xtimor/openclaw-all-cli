@@ -191,9 +191,20 @@ title = "Parity live suite and success-signal demo"
 description = "Collects every row's live test into one suite, adds tests for rows no entry owns, a check that no file is written in the workspace (AD-7), and the spec's success-signal scenario end to end."
 verify = "`OPENCLAW_ALL_CLI_LIVE=1` runs the suite green in the isolated OpenClaw, and the success-signal scenario passes."
 covers = ["CAP-11"]
-after = [16]
+after = [16, 19]
 hitl = false
 risk = "medium"
+
+[[entry]]
+id = 19
+type = "story"
+title = "Plugin-served exec tool for the model"
+description = "Real OpenClaw gives a plugin backend's model no shell: the host serves its owned tools (exec, process) only to the execution-args mode. Serves a policy-checked exec tool from the plugin's own MCP proxy so a Cursor turn can run commands under OpenClaw's approval and sandbox rules; keeps native Shell denied (AD-9)."
+verify = "In a real OpenClaw turn on cursor-cli/<model>, asking the model to run a shell command runs it through the plugin's exec tool, OpenClaw's approval prompt appears when policy requires it, a denied command does not run, and Cursor's native Shell stays denied."
+covers = ["CAP-6", "CAP-7"]
+after = [4, 5]
+hitl = false
+risk = "high"
 
 [[entry]]
 id = 18
