@@ -2006,6 +2006,56 @@ describe("createExecute pool hygiene (AD-14 review)", () => {
     expect(versionChecks).toHaveLength(1);
   });
 
+  it("keeps the version floor for a turn whose neighbour aborted the shared check", async () => {
+    const { adapter, version, versionChecks, opens } = makeAdapter();
+    const g = gate();
+    version.result = async () => {
+      await g.opened;
+      throw new CliError({ code: "unsupported_version", message: "too old" });
+    };
+    const pool = new ProcessPool({ maxTurns: 2, maxProcesses: 4 });
+    const controller = new AbortController();
+    const a = run(createExecute(adapter, { home: home("va"), pool }), makeCtx({ abortSignal: controller.signal }));
+    const aOutcome = expect(a).rejects.toThrow("stop");
+    await sleep(20);
+    const b = run(createExecute(adapter, { home: home("vb"), pool }), makeCtx());
+    await sleep(20);
+    controller.abort(new Error("stop"));
+    await aOutcome;
+    g.open();
+    expect(parsed(await b)).toEqual([{ kind: "result", errorText: "too old" }]);
+    expect(versionChecks).toHaveLength(1);
+    expect(versionChecks[0]?.signal).toBeUndefined();
+    expect(opens).toHaveLength(0);
+  });
+
+  it("ends a turn promptly when it aborts while an evicted process is still exiting", async () => {
+    const { adapter, sessions, opens } = makeAdapter();
+    const pool = new ProcessPool({ maxTurns: 2, maxProcesses: 1 });
+    const execute = createExecute(adapter, { home: HOME, pool });
+    await run(execute, warm(makeLive().live));
+    fake.exitDelayMs = 2_000;
+    try {
+      const controller = new AbortController();
+      const before = proxies.started.length;
+      const turn = run(execute, warm(makeLive().live, { abortSignal: controller.signal }));
+      const outcome = expect(turn).rejects.toThrow("stop");
+      await sleep(50);
+      const started = Date.now();
+      controller.abort(new Error("stop"));
+      await outcome;
+      expect(Date.now() - started).toBeLessThan(500);
+      // No proxy and no process for the aborted turn, and its slot and count are free.
+      expect(proxies.started).toHaveLength(before);
+      expect(opens).toHaveLength(1);
+      expect(pool.turns).toBe(0);
+      expect(pool.processes).toBe(0);
+      expect(sessions[0]?.closed).toBe(1);
+    } finally {
+      fake.exitDelayMs = 0;
+    }
+  });
+
   describe("a discarded entry frees its process slot", () => {
     it("when the run was superseded after the entry was created", async () => {
       const { adapter, opens } = makeAdapter();

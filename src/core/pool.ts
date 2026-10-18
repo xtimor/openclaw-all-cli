@@ -117,9 +117,10 @@ export class ProcessPool {
    * (a broken invariant: busy processes are bounded by running turns) it throws a retryable
    * `overloaded`. A member whose process died while idle is evictable first.
    */
-  async add(member: PoolMember): Promise<void> {
+  async add(member: PoolMember, signal?: AbortSignal): Promise<void> {
     for (;;) {
       if (this.closing) throw shuttingDown();
+      signal?.throwIfAborted();
       if (this.members.size < this.options.maxProcesses) break;
       const victim = [...this.members].filter((m) => m.isIdle()).sort((a, b) => a.lastUsed - b.lastUsed)[0];
       if (!victim) {
@@ -131,18 +132,30 @@ export class ProcessPool {
       }
       this.members.delete(victim);
       victim.close();
-      await this.waitExit(victim);
+      await this.waitExit(victim, signal);
     }
+    signal?.throwIfAborted();
     this.members.add(member);
   }
 
-  private async waitExit(member: PoolMember): Promise<void> {
+  /** Waits for the exit, at most the close wait; an abort of `signal` stops the wait and throws its reason. */
+  private async waitExit(member: PoolMember, signal?: AbortSignal): Promise<void> {
     let timer: NodeJS.Timeout | undefined;
+    let onAbort: (() => void) | undefined;
     const gaveUp = new Promise<void>((resolve) => {
       timer = setTimeout(resolve, this.options.closeWaitMs ?? POOL_CLOSE_WAIT_MS);
     });
-    await Promise.race([member.exited().catch(() => {}), gaveUp]);
-    clearTimeout(timer);
+    const aborted = new Promise<never>((_resolve, reject) => {
+      onAbort = () => reject(signal?.reason);
+      signal?.addEventListener("abort", onAbort, { once: true });
+    });
+    aborted.catch(() => {});
+    try {
+      await Promise.race([member.exited().catch(() => {}), gaveUp, ...(signal ? [aborted] : [])]);
+    } finally {
+      clearTimeout(timer);
+      if (onAbort) signal?.removeEventListener("abort", onAbort);
+    }
   }
 
   remove(member: PoolMember): void {

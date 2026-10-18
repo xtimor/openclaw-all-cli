@@ -230,7 +230,7 @@ export function createExecute(adapter: CliAdapter, options: ExecuteOptions): Cli
         waitForExit: () => entry.session?.waitForExit() ?? Promise.resolve(),
       },
     };
-    await pool.add(entry.member);
+    await pool.add(entry.member, ctx.abortSignal);
     if (withMcp) {
       let proxy: McpProxy;
       try {
@@ -322,14 +322,24 @@ export function createExecute(adapter: CliAdapter, options: ExecuteOptions): Cli
    * remembered; a CLI whose version cannot be read runs with a warning and is checked again.
    */
   async function ensureVersion(ctx: ExecuteContext): Promise<void> {
-    const result = await pool.checkVersionOnce(ctx.command, () =>
-      adapter.checkVersion({
-        command: ctx.command,
-        env: { ...ctx.env, ...home.env },
-        ...(ctx.abortSignal ? { signal: ctx.abortSignal } : {}),
-      }),
+    // The run is shared by simultaneous turns, so it takes no caller's signal (the adapter times it
+    // out itself); each caller stops waiting on its own abort.
+    const shared = pool.checkVersionOnce(ctx.command, () =>
+      adapter.checkVersion({ command: ctx.command, env: { ...ctx.env, ...home.env } }),
     );
-    ctx.abortSignal?.throwIfAborted();
+    const signal = ctx.abortSignal;
+    let onAbort: (() => void) | undefined;
+    const result = await (signal
+      ? Promise.race([
+          shared,
+          new Promise<never>((_resolve, reject) => {
+            signal.throwIfAborted();
+            onAbort = () => reject(signal.reason);
+            signal.addEventListener("abort", onAbort, { once: true });
+          }),
+        ]).finally(() => onAbort && signal.removeEventListener("abort", onAbort))
+      : shared);
+    signal?.throwIfAborted();
     if (result !== "ok") warn(result.warning);
   }
 

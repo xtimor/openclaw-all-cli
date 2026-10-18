@@ -3,7 +3,7 @@ title: 'Concurrency caps and operations'
 type: 'feature'
 ticket: '8'
 created: '2026-10-18'
-status: 'in-progress'
+status: done
 baseline_revision: '8188cf52650e89ce23f9b32bf9336e866e99a798'
 route: 'full'
 route_source: 'auto'
@@ -114,6 +114,8 @@ deferred: []
 ## Review Triage Log
 
 Thorough review (4 lenses), all patched in the follow-up change: (1) dead idle process kept its slot: evictable and freed on exit; (2) out-of-range caps: host rejects, docs and matrix corrected, `readBackendConfig` keeps other settings; (3) failed-open lock test made deterministic (fails without `releaseLock`); (4) discarded-entry slot tests (superseded, register throws, proxy fails), each shown to fail when its cleanup is reverted; (5) `TZ=UTC`; (6) unavailable owner read/reap not memoized; (7) a process that survives the kill keeps its lock and is not reported as stopped (EPERM too); (8) temp file removed on rename failure; (9) close aborts a starting open, no open/register after close; (10) admission waits for the evicted process's exit; (11) one version check for concurrent turns; (12) LRU execute test; (13) unload tests observe the exit wait; (14) docs, spine exception line, MEMORY.
+
+Follow-up review: (a) the shared `--version` run took the first caller's signal, so its abort gave neighbours a false warning: the run now takes no signal and each caller races its own abort (test: A aborts, B still gets `unsupported_version`); (b) `pool.add` ignored the turn's abort during the eviction wait: it now takes the signal, stops waiting, and the turn throws before any proxy work (test: abort ends the turn in under 500 ms with slot and process count free). The execute-level LRU test still guards `lastUsed`, but it would also pass on the code before the patch; it is not evidence for the patch.
 
 ## Design Notes
 
