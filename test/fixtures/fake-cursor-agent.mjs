@@ -19,6 +19,8 @@
 //   FAKE_CURSOR_STORE=<dir>     a chat store, like a Cursor home: `session/new` saves the session as a file there
 //                               (with a unique ID), every prompt is appended to it, and `session/load` of an ID with
 //                               no file fails with "Invalid params". Point two agents at two dirs to model two homes.
+//   FAKE_CURSOR_LOAD_ERROR=<json> `session/load` fails with the JSON-RPC error {code, message, data?}
+//   FAKE_CURSOR_LOAD_CRASH=1    the process exits while `session/load` runs
 //   FAKE_CURSOR_LOAD_RENAMES=1  `session/load` answers with `sessionId: "<id>-moved"`, the way an agent that moved the chat would
 //
 // Prompt text steers a turn: "[[ask-permission]]" requests a shell permission, "[[ask-json]]<json>"
@@ -72,7 +74,7 @@ const cancelled = new Set();
 
 const send = (message) => process.stdout.write(`${JSON.stringify({ jsonrpc: "2.0", ...message })}\n`);
 const reply = (id, result) => send({ id, result });
-const fail = (id, code, message) => send({ id, error: { code, message } });
+const fail = (id, code, message, data) => send({ id, error: { code, message, ...(data === undefined ? {} : { data }) } });
 const update = (sessionId, body) => send({ method: "session/update", params: { sessionId, update: body } });
 
 const modes = () => ({
@@ -265,7 +267,15 @@ rl.on("line", (line) => {
       return reply(id, { sessionId, modes: modes(), configOptions: configOptions(session), ...modelFields(session) });
     }
     case "session/load": {
-      if (storeDir && !existsSync(storeFile(params.sessionId))) return fail(id, -32602, "Invalid params");
+      if (process.env.FAKE_CURSOR_LOAD_CRASH === "1") process.exit(3);
+      if (process.env.FAKE_CURSOR_LOAD_ERROR) {
+        const error = JSON.parse(process.env.FAKE_CURSOR_LOAD_ERROR);
+        return fail(id, error.code, error.message, error.data);
+      }
+      // Like real Cursor: bare "Invalid params" with the reason in `data`.
+      if (storeDir && !existsSync(storeFile(params.sessionId))) {
+        return fail(id, -32602, "Invalid params", { message: `Session "${params.sessionId}" not found` });
+      }
       const history = storeDir ? JSON.parse(readFileSync(storeFile(params.sessionId), "utf8")).history : [];
       const session = { model: process.env.FAKE_CURSOR_DEFAULT_MODEL ?? "default[]", mode: "agent", prompts: 0, history, loaded: true };
       const moved = process.env.FAKE_CURSOR_LOAD_RENAMES === "1" ? `${params.sessionId}-moved` : undefined;

@@ -1398,6 +1398,71 @@ describe("createExecute reuse key and resume (AD-5, AD-13)", () => {
       first.current()?.close("abort");
     });
 
+    it("keeps exactly one process when two turns resume one chat at once", async () => {
+      let release!: () => void;
+      const gate = new Promise<void>((resolve) => (release = resolve));
+      const { adapter, sessions } = makeAdapter(okTurn, (params, count) => params.resumeSessionId ?? `native-${count}`);
+      const open = adapter.open;
+      // Both turns reach the open before either process exists.
+      adapter.open = async (params) => {
+        await gate;
+        return open(params);
+      };
+      const h = home("two-race");
+      const one = makeLive();
+      const two = makeLive();
+      const ctx = (liveSession: LiveSessionCapability) =>
+        makeCtx({ liveSession, env: usableEnv, useResume: true, sessionId: "chat-race" });
+      const first = run(createExecute(adapter, { home: h }), ctx(one.live));
+      const second = run(createExecute(adapter, { home: h }), ctx(two.live));
+      await new Promise((resolve) => setTimeout(resolve, 50));
+      release();
+      const results = await Promise.all([first, second]);
+
+      const failed = results.filter((records) => records.at(-1)?.is_error === true);
+      expect(failed).toHaveLength(1);
+      expect(failed[0]!.at(-1)).toMatchObject({ event: { kind: "error", error: { retryable: true } } });
+      expect(sessions).toHaveLength(1);
+      expect(sessions.filter((session) => session.alive)).toHaveLength(1);
+      one.current()?.close("abort");
+      two.current()?.close("abort");
+    });
+
+    it("fails retryable, and opens nothing, when the closed holder does not exit in time", async () => {
+      const { adapter, sessions, opens } = makeAdapter(okTurn, (params, count) => params.resumeSessionId ?? `native-${count}`);
+      const h = home("two-stuck");
+      const first = makeLive();
+      await run(createExecute(adapter, { home: h }), makeCtx({ liveSession: first.live, env: usableEnv, useResume: true, sessionId: "chat-stuck" }));
+      // A process that ignores its close and never exits.
+      sessions[0]!.waitForExit = () => new Promise<void>(() => {});
+      const records = await run(
+        createExecute(adapter, { home: h, abortGraceMs: 30 }),
+        makeCtx({ liveSession: makeLive().live, env: usableEnv, useResume: true, sessionId: "chat-stuck" }),
+      );
+      expect(records.at(-1)).toMatchObject({
+        is_error: true,
+        event: { kind: "error", error: { retryable: true, message: expect.stringContaining("did not exit") } },
+      });
+      expect(opens).toHaveLength(1);
+    });
+
+    it("stops waiting for the closed holder when the new turn is aborted", async () => {
+      const { adapter, sessions, opens } = makeAdapter(okTurn, (params, count) => params.resumeSessionId ?? `native-${count}`);
+      const h = home("two-abort");
+      await run(createExecute(adapter, { home: h }), makeCtx({ liveSession: makeLive().live, env: usableEnv, useResume: true, sessionId: "chat-abort" }));
+      sessions[0]!.waitForExit = () => new Promise<void>(() => {});
+      const controller = new AbortController();
+      const turn = run(
+        createExecute(adapter, { home: h, abortGraceMs: 60_000 }),
+        makeCtx({ liveSession: makeLive().live, env: usableEnv, useResume: true, sessionId: "chat-abort", abortSignal: controller.signal }),
+      );
+      const outcome = expect(turn).rejects.toThrow("stop");
+      await new Promise((resolve) => setTimeout(resolve, 30));
+      controller.abort(new Error("stop"));
+      await outcome;
+      expect(opens).toHaveLength(1);
+    });
+
     it("lets two agents use the same native id", async () => {
       const { adapter, opens } = makeAdapter(okTurn, (params, count) => params.resumeSessionId ?? `native-${count}`);
       const a = makeLive();

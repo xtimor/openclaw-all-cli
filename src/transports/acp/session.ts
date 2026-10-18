@@ -217,26 +217,40 @@ function readMovedSessionId(result: object): string | undefined {
   return typeof id === "string" && id.trim() ? id : undefined;
 }
 
-/** JSON-RPC "invalid params": how an agent refuses a `session/load` for an ID it does not have. */
-const INVALID_PARAMS = -32602;
-const UNKNOWN_SESSION = /\b(invalid params|not found|no such|does not exist|unknown session)\b/i;
+/**
+ * Whether an error says the *session* is unknown. A bare JSON-RPC `-32602`, or a "not found" about
+ * anything else (an API key, a workspace), is not enough: only a phrase tied to "session" counts.
+ * The reference CLI answers a missing chat with `Invalid params` and `data.message` `Session "<id>" not
+ * found` (checked 2026-10-18), so the detail is read too.
+ */
+const SESSION_UNKNOWN =
+  /\bsession\b[^.\n]{0,200}\b(not found|does not exist|doesn't exist|unknown|no such|expired)\b|\b(no such|unknown|invalid) session\b/i;
+
+function errorDetail(error: unknown): string {
+  const parts = [error instanceof Error ? error.message : String(error)];
+  const data = (error as { data?: unknown } | null)?.data;
+  if (typeof data === "string") parts.push(data);
+  else if (isRecord(data)) {
+    for (const value of Object.values(data)) if (typeof value === "string") parts.push(value);
+  }
+  return parts.join(" ");
+}
 
 /**
- * A `session/load` that failed. An agent that does not know the ID (another agent's home, a
- * deleted chat) refuses it: that is `session_expired`, so the host can recover the way its
+ * A `session/load` that failed. An agent that says it does not know the session (another agent's
+ * home, a deleted chat) is `session_expired`, so the host can recover the way its
  * `freshSessionRecovery` says and nothing silently starts a new chat. The message carries
- * "session not found" because the host reads the text to classify the failure. Anything else
- * (a dead pipe, a timeout) is a failed process, not a lost chat.
+ * "session not found" because the host reads the text to classify the failure. Anything else (a
+ * dead pipe, a timeout, a bare invalid-params) is a failed process, not a lost chat.
  */
 function resumeError(error: unknown, sessionId: string): CliError {
   if (error instanceof CliError) return error;
-  const message = error instanceof Error ? error.message : String(error);
-  const code = (error as { code?: unknown } | null)?.code;
-  if (code === INVALID_PARAMS || UNKNOWN_SESSION.test(message)) {
+  const detail = errorDetail(error);
+  if (SESSION_UNKNOWN.test(detail)) {
     return new CliError(
       {
         code: "session_expired",
-        message: `CLI session not found: the CLI does not know session "${sessionId}" in this agent's home (the chat belongs to another agent or was deleted), so it cannot resume. ${message}`,
+        message: `CLI session not found: the CLI does not know session "${sessionId}" in this agent's home (the chat belongs to another agent or was deleted), so it cannot resume. ${detail}`,
       },
       { cause: error },
     );
@@ -380,10 +394,18 @@ export class AcpSession implements CliSession {
       const started = await Promise.race([setup(connection, options), died]);
       return new AcpSession(started.sessionId, runtime, connection, options.command, started.models);
     } catch (error) {
+      // A dead process closes its pipes before `exit` fires, and the pipe error can win the race
+      // against the exit: give the exit a moment, so a death is reported as one (retryable).
+      // A deliberate answer (a lost chat, a missing capability) is not a death, whatever follows.
+      const deliberate = error instanceof CliError && error.code !== "server_error";
+      if (!deliberate) {
+        await Promise.race([runtime.exited, new Promise((resolve) => setTimeout(resolve, EXIT_SETTLE_MS))]);
+      }
+      const diedOnItsOwn = runtime.hasExited;
       terminate(runtime);
       await runtime.exited;
       options.signal?.throwIfAborted();
-      if (runtime.spawnError) throw deathError(runtime, options.command);
+      if (runtime.spawnError || (diedOnItsOwn && !deliberate)) throw deathError(runtime, options.command);
       throw toCliError(error, "server_error", "The CLI session failed to start");
     } finally {
       options.signal?.removeEventListener("abort", stopOnAbort);

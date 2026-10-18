@@ -152,10 +152,29 @@ describe("AcpSession", () => {
       expect(events.at(-1)).toMatchObject({ kind: "result", text: "still works" });
     });
 
-    it("does not call a dead process a lost chat", async () => {
-      await expect(start({ resumeSessionId: "x", env: { FAKE_CURSOR_NO_INIT: "1" }, signal: AbortSignal.timeout(300) })).rejects.not.toMatchObject({
-        code: "session_expired",
-      });
+    it("does not call a process that dies during session/load a lost chat", async () => {
+      await expect(start({ resumeSessionId: "x", env: { FAKE_CURSOR_LOAD_CRASH: "1" } })).rejects.toSatisfy(
+        (error: unknown) => error instanceof CliError && error.code === "server_error" && error.retryable,
+      );
+    });
+
+    it.each([
+      ["a bare invalid-params", { code: -32602, message: "Invalid params" }],
+      ["a not-found about something else", { code: -32602, message: "Invalid params", data: { message: "API key not found" } }],
+      ["a missing workspace", { code: -32603, message: "workspace does not exist" }],
+    ])("keeps %s as server_error, not a lost chat", async (_name, error) => {
+      await expect(
+        start({ resumeSessionId: "x", env: { FAKE_CURSOR_LOAD_ERROR: JSON.stringify(error) } }),
+      ).rejects.toMatchObject({ code: "server_error" });
+    });
+
+    it.each([
+      ["in the message", { code: -32602, message: "Session x not found" }],
+      ["in the detail, as Cursor sends it", { code: -32602, message: "Invalid params", data: { message: 'Session "x" not found' } }],
+    ])("reads a session that is unknown %s as session_expired", async (_name, error) => {
+      await expect(
+        start({ resumeSessionId: "x", env: { FAKE_CURSOR_LOAD_ERROR: JSON.stringify(error) } }),
+      ).rejects.toMatchObject({ code: "session_expired" });
     });
   });
 
