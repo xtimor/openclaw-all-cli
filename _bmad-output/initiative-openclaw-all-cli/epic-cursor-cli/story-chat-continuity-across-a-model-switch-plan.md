@@ -3,7 +3,7 @@ title: 'Chat continuity across a model switch'
 type: 'feature'
 ticket: '11'
 created: '2026-10-18'
-status: 'draft'
+status: 'ready-for-dev'
 baseline_revision: 'f1927df2417f3039dd949666c230e7f7798eaf15'
 route: 'full'
 route_source: 'auto'
@@ -105,3 +105,9 @@ deferred: []
 - `npm run dev:install && OPENCLAW_ALL_CLI_LIVE=1 npx vitest run test/live/history-continuity.live.test.ts` -- expected: (a) to (d) pass with real `cursor-agent` and `CURSOR_API_KEY`; (e) recorded
 - `OPENCLAW_ALL_CLI_LIVE=1 npx vitest run test/live` -- expected: the suite still passes
 - `scripts/dev-openclaw.sh run models auth list` and `pgrep -f "^openclaw-gateway"` after the run -- expected: no profile, no Gateway left
+
+## Auto Run Result
+
+- Status: ready-for-dev (halted after planning, as the invocation asked).
+- Planning evidence (2026-10-18, OpenClaw 2026.10.3, cursor-agent 2026.10.16, real Cursor via `CURSOR_API_KEY`, local mock API provider, isolated state restored afterwards): a switch from an API model gives `historyPrompt=none` with and without a `cursor-cli` `api_key` profile (`reason=auth-unknown`); without a hint Cursor answered wrongly from another session; with a hint it called `sessions_history` through the MCP proxy and answered correctly (Gateway only, not `--local`); a `cursor-cli`-only chat with the profile passes the boundary; an API turn after cursor turns sees their text.
+- Open: Cursor API-key billing (spec Q3) stays open; it changes no task.
