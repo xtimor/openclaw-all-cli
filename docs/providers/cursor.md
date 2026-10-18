@@ -139,7 +139,33 @@ Limits, version floor, and cleanup for the `cursor-agent` processes the plugin s
 - **Orphans.** `cursor-agent acp` ignores a closed stdin and stays up when its Gateway is killed. The plugin writes `<home>/pids/<pid>.json` (mode 0600) for each process it starts, with the process and the Gateway's start times, and deletes it when the process exits. When a Gateway starts and loads the plugin it kills the processes recorded for the configured agents; any other agent's home is cleaned the first time it is used, before its first process opens. A process is killed (SIGTERM, then SIGKILL after 2 seconds) only when its recorded pid and start time still match and the Gateway that started it is gone. A lock whose Gateway is alive, or whose pid now belongs to another process, is left alone. Without `ps` nothing is recorded or killed, and the log says so.
 - **Unload.** When the Gateway stops or the plugin reloads, every process of every backend is closed and the stop waits (at most 3 seconds) for the exits. New turns after that fail with a retryable "shutting down" error.
 - **Timers.** The plugin adds none. OpenClaw's no-output and overall watchdogs, and `--timeout`, abort the turn; the plugin then cancels Cursor and closes the process after a 5 second grace. A warm process closes after 15 idle minutes.
-- **Clean environment.** OpenClaw removes the keys in the backend's `clearEnv` from the Gateway's environment before a turn, and the plugin removes the same keys for the model listing and the login check: Cursor endpoint overrides (`CURSOR_API_BASE_URL`, `CURSOR_API_ENDPOINT`, `CURSOR_WEBSITE_URL`), its harness and debug switches, `CURSOR_CONFIG_DIR` and `CURSOR_DATA_DIR` (the per-agent home sets them), `NODE_OPTIONS`, and the `OTEL_*` exporters. `CURSOR_API_KEY` and `CURSOR_AUTH_TOKEN` stay: they are logins.
+- **Clean environment.** OpenClaw removes the keys in the backend's `clearEnv` from the Gateway's environment before a turn, and the plugin removes the same keys for the model listing and the login check: Cursor endpoint overrides (`CURSOR_API_BASE_URL`, `CURSOR_API_ENDPOINT`, `CURSOR_WEBSITE_URL`), its harness and debug switches, `CURSOR_CONFIG_DIR` and `CURSOR_DATA_DIR` (the per-agent home sets them), `NODE_OPTIONS`, and the `OTEL_*` exporters. `OPENCLAW_ALL_CLI_CURSOR_USAGE_URL` (a test override of the usage ledger address) is removed too, so a Gateway environment cannot redirect the key. `CURSOR_API_KEY` and `CURSOR_AUTH_TOKEN` stay: they are logins.
+
+## Usage
+
+Cursor's ACP reports no token counts, so the plugin reads them from Cursor's server-side usage ledger, the same numbers `cursor-agent -p` prints. Each model request is a ledger event keyed by the ACP session id.
+
+After a turn ends with a result, the plugin exchanges `CURSOR_API_KEY` for a short-lived access token (`POST /auth/exchange_user_api_key`), then polls `POST /aiserver.v1.DashboardService/GetFilteredUsageEvents` for an event of the turn's session stamped inside the turn's time window. It puts `input` (Cursor's `inputTokens`, which excludes cache), `output`, `cacheRead`, `cacheWrite`, and their sum on the result, and OpenClaw writes them on the assistant entry of its transcript. Two turns of one chat each get only their own event.
+
+- **Needs `CURSOR_API_KEY`** in the Gateway's environment. With a login only, no usage is recorded and no request is made.
+- **Where the key goes.** Only to `api2.cursor.sh`, the host `cursor-agent` already talks to. The key and the token stay in memory; no log line, warning, or file holds them, or a response body. Redirects are not followed.
+- **Cost.** The ledger shows the event about 1 s after the turn, so the turn closes about 1 to 2 s later, and at most 6 s later when the event does not appear. The reply text has already streamed by then. A cancelled turn stops waiting at once.
+- **The ledger is undocumented.** When it fails the reply still reaches OpenClaw, without usage:
+
+| Situation | Result |
+| --- | --- |
+| No `CURSOR_API_KEY` | No usage, no request |
+| Key rejected (exchange answers 401 or 403) | No usage; the ledger is skipped for this key for 10 minutes; one warning |
+| Ledger answer changed (400, 404, 415, or no `usageEventsDisplay` list) | No usage; 10 minutes off; one warning |
+| Token expired (RPC answers 401) | Exchanged again once and retried; a second 401 counts as a rejected key |
+| 5xx, 429, network error, or a request over 3 s | No usage for this turn, quietly |
+| No event within 6 s, or three such failures in a row | No usage; after the third in a row, 10 minutes off and one warning |
+
+- **Team accounts are untested.** The ledger may list nothing without a team id; such a turn ends like "no event" and the third in a row turns usage off for 10 minutes.
+- **Behind an HTTP proxy.** Node's `fetch` ignores `HTTPS_PROXY` unless the Gateway starts with `NODE_USE_ENV_PROXY=1`. Without it the calls fail as network errors and usage stays 0.
+- **Rare overlap.** If a turn's lookup failed and the next turn of the same chat starts within 5 s of the earlier turn's event, the next turn also counts that event.
+
+Live test: `test/live/usage.live.test.ts`.
 
 ## Parity with `claude-cli`
 
@@ -160,7 +186,7 @@ Limits, version floor, and cleanup for the `cursor-agent` processes the plugin s
 | P13 | Images | spike | |
 | P14 | Native and manual compaction | spike | |
 | P15 | History reseed and fallback prelude | approx | The backend sets `reseedFromRawTranscriptWhenUncompacted`, so with a Cursor API-key profile OpenClaw builds its history prompt for a lost `cursor-cli` chat (its fresh retry did not run on 2026.10.3 in the live probe). OpenClaw never copies history across a switch from an API model (auth boundary), so the first prompt of a fresh chat carries a note that points the model to `sessions_history`. The fallback prelude is a gap: OpenClaw builds it only for `claude-cli`; a model that takes over still reads the cursor turns from the transcript. See Chat continuity across a model switch. Live test: `test/live/history-continuity.live.test.ts` |
-| P16 | Usage per turn | gap | ACP reports no usage; the input side can be estimated from Cursor's session store, output cannot |
+| P16 | Usage per turn | approx | Read after each turn from Cursor's usage ledger with `CURSOR_API_KEY` (see Usage): exact when it answers, up to 6 s added to the turn's close, none without the key or when the undocumented ledger fails. Live test: `test/live/usage.live.test.ts` |
 | P17 | Clean env, watchdog, timeouts | match | OpenClaw's watchdog and timeouts end a turn through its abort signal and the plugin adds no timer; `clearEnv` drops endpoint, harness, debug, and telemetry keys; per backend 4 turns and 8 processes by default; a pid lock per process and reaping of a killed Gateway's orphans; every process closed on unload. See Operations. Live test: `test/live/operations.live.test.ts` |
 | P18 | Side questions without tools | approx | A side question runs in `ask` mode with no MCP server, no resume, and every permission request rejected; no OpenClaw tool, shell, or write. Cursor cannot switch off native `read`, `grep`, and `glob` per run, so they stay reachable and the model may read files. Live test: `test/live/session-resume.live.test.ts` |
 | P19 | Binary detection, live tests | approx | OpenClaw finds `cursor-agent` on `PATH`; the plugin checks `cursor-agent --version` against the minimum 2026.07.06 before the first process and fails the turn below it (`unsupported_version`). OpenClaw's `runtimeArtifact` check cannot describe Cursor's bash launcher install, so it is not declared. Live test: `test/live/operations.live.test.ts` |
@@ -171,7 +197,7 @@ Limits, version floor, and cleanup for the `cursor-agent` processes the plugin s
 - **A side question takes a turn slot.** A side question, or any nested turn, holds a turn slot like every other turn: with `maxConcurrentTurns` 1 it waits for the running turn.
 - **`worker-server` children.** `cursor-agent` may start a `worker-server` child that is not recorded and can outlive a reaped or closed parent for a few minutes; "no `cursor-agent` process left" holds for the recorded `acp` process only.
 - **A model listing is not tracked.** The throwaway `cursor-agent` process behind a model listing (a few seconds) is closed by the listing itself, but it has no pid lock and is not closed on unload; a Gateway killed in that window can leave one.
-- **No usage.** Cursor's ACP reports no token counts, so OpenClaw records none for a turn.
+- **Usage needs an API key.** With a Cursor login only (no `CURSOR_API_KEY`), OpenClaw records 0 tokens for a turn. See Usage.
 - **No OpenClaw system prompt or skills yet.** The model sees only the prompt text and OpenClaw's tools.
 - **No warm process across turns with OpenClaw 2026.10.3.** Each turn restarts the process and resumes it with `session/load`, because OpenClaw's live-session check sees a different MCP settings path every turn.
 - **Native read, grep, and glob stay reachable, also in a side question.** `Read(**)` is allowed, and Cursor's `grep` and `glob` are not blocked by a `Read` rule. So a run that selects no native tools is refused (see Permissions and tool availability). A second, static home that also denies `Grep(**)` and `Glob(**)` would lift this (checked: those rules make grep and glob return nothing); it is not built.

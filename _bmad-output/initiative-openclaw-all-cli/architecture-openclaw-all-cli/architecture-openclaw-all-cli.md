@@ -236,7 +236,7 @@ sequenceDiagram
 | --- | --- | --- |
 | CAP-1 model selection, auth | `src/plugin.ts`, `src/adapters/cursor/` | AD-1, AD-10 |
 | CAP-2 streaming | `src/core/` events, `src/transports/acp/` | AD-3, AD-4, AD-11 |
-| CAP-3 usage | adapter `usage` event | AD-3, AD-4 (source open) |
+| CAP-3 usage | adapter `usage` event, or the optional `readUsage` port (core `readTurnUsage`) that fills the result record after a turn; Cursor reads its usage ledger | AD-3, AD-4 |
 | CAP-4 resume | host binding, adapter `open` | AD-5, AD-13 |
 | CAP-5 portability | OpenClaw reseed and `sessions_history` tool | AD-5 |
 | CAP-6 OpenClaw tools | `src/core/` MCP proxy | AD-9, AD-12 |
@@ -253,7 +253,7 @@ sequenceDiagram
 | --- | --- |
 | Does the host accept `liveSession: "claude-stdio"` from a third-party `execute` backend? Answered yes by epic entry 1 (OpenClaw 2026.10.3 accepts it from this plugin), so AD-8 stands unamended and its fallback lane is not built. | AD-8, first backend story |
 | Does a third-party plugin's synthetic auth (`nonSecretAuthMarkers`) count as auth? | CAP-1 |
-| Where does Cursor ACP usage come from? Answered by the spike: no exact source on ACP; input side is estimable from the session store (about 2%), output is not; hooks did not fire here. Shipping without usage is a last resort (user). Choice for entry 10: `epic-cursor-cli/spike-where-cursor-usage-comes-from-on-acp.md`. | CAP-3, epic entry 9 |
+| Where does Cursor ACP usage come from? Answered by the spike: no exact source on ACP; input side is estimable from the session store (about 2%), output is not; hooks did not fire here. Shipping without usage is a last resort (user). Answered after entry 9: Cursor's server usage ledger (exact, needs `CURSOR_API_KEY`), read through the optional `readUsage` port; see the spike addendum and entry 10. | CAP-3, epic entry 9 |
 | Does the Gemini-mode settings file always carry the loopback URL and headers in `execute` env? | AD-12, CAP-6 |
 | Is a Cursor API key billed against the subscription (spec Q3)? | CAP-5 reseed setup |
 | Can two Cursor processes resume one chat safely (spec Q4)? Answered by a live probe (2026-10-18, cursor-agent 2026.10.16): no. Both load the chat without an error, but each keeps its own view and a turn in one is invisible to the other; the stored chat keeps one process's turns. The core therefore allows one process per chat (it closes an idle holder, refuses while one is mid-turn). | AD-13 |

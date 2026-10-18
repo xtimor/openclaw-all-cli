@@ -26,6 +26,8 @@ use_isolated_env() {
   export PATH="$NODE_DIR/bin:${FAKE_BIN_DIR:+$FAKE_BIN_DIR:}$PATH"
   export OPENCLAW_STATE_DIR="$STATE_DIR"
   export OPENCLAW_CONFIG_PATH="$CONFIG_PATH"
+  # Node's fetch ignores HTTP(S)_PROXY unless this is set; the plugin's usage ledger calls need it behind a proxy.
+  export NODE_USE_ENV_PROXY="${NODE_USE_ENV_PROXY:-1}"
 }
 
 install_node() {

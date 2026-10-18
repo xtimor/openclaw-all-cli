@@ -4,6 +4,7 @@ import { toRecord, type CoreRecord, type TurnSummary } from "./events.ts";
 import { startMcpProxy, type McpProxy } from "./mcp-proxy.ts";
 import { OPENCLAW_MCP_SERVER, readTurnTarget, type TurnTarget } from "./mcp-target.ts";
 import { recordProcess, type ProcessLock } from "./pid-locks.ts";
+import { readTurnUsage } from "./usage.ts";
 import { ProcessPool, type PoolMember, type TurnSlot } from "./pool.ts";
 import { routePermission, type PermissionTurn } from "./permissions.ts";
 import {
@@ -569,6 +570,7 @@ export function createExecute(adapter: CliAdapter, options: ExecuteOptions): Cli
       // The note goes once, on the first prompt of a fresh chat; it is not part of the host's transcript.
       const note = active.freshChat ? CONTINUITY_NOTE : undefined;
       active.freshChat = false;
+      const startedAt = Date.now();
       for await (const event of active.session.prompt(composePrompt(ctx, note))) {
         if (event.kind === "usage") {
           summary.usage = event.usage;
@@ -579,6 +581,19 @@ export function createExecute(adapter: CliAdapter, options: ExecuteOptions): Cli
         if (event.kind === "result" || event.kind === "error") {
           closed = true;
           for (const record of tools.closeOpen()) yield record;
+        }
+        if (event.kind === "result" && !summary.usage) {
+          summary.usage = await readTurnUsage(
+            adapter,
+            {
+              sessionId: active.session.sessionId,
+              startedAt,
+              endedAt: Date.now(),
+              env: { ...ctx.env, ...home.env },
+              ...(ctx.abortSignal ? { signal: ctx.abortSignal } : {}),
+            },
+            warn,
+          );
         }
         yield toRecord(event satisfies NormalizedEvent, summary);
       }

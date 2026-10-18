@@ -3,8 +3,8 @@ title: 'Per-turn usage on the transcript'
 type: 'feature'
 ticket: '10'
 created: '2026-10-18'
-status: 'ready-for-dev'
-baseline_revision: ''
+status: 'in-progress'
+baseline_revision: '92674710cc49a0d59530f0009aec6e814a8c294c'
 route: 'full'
 route_source: 'auto'
 risk: 'medium'
@@ -82,16 +82,16 @@ deferred: []
 ## Tasks & Acceptance
 
 **Execution:**
-- [ ] `src/core/ports.ts`, `src/core/usage.ts` -- port types and the helper -- generic seam (AD-2, AD-3).
-- [ ] `src/core/execute.ts` -- `startedAt` and the call in the `result` branch -- the only hot-path change; rebase on 1.11.
-- [ ] `src/adapters/cursor/usage.ts` -- exchange, token cache, polling, matching, cooldown and miss streak, quiet degrade -- the ledger client.
-- [ ] `src/adapters/cursor/index.ts`, `manifest.ts` -- wire `readUsage`, clear-env entry, P16 note.
-- [ ] `src/core/usage.test.ts`, `src/core/execute.test.ts` -- stub adapter: usage on the result record; port skipped when the session gave usage, on `error`, without the port; throw and `warning` (→ `warn`) handled; abort ends the wait; query holds the session id, `startedAt <= endedAt`, and the home env.
-- [ ] `src/adapters/cursor/usage.test.ts` -- local `node:http` ledger stub on 127.0.0.1 via the URL override: every matrix row (no key makes zero requests; request headers and body; warnings and thrown messages never contain the key or token; one exchange for concurrent reads), plus `matchTurnEvents` cases.
-- [ ] `src/adapters/cursor/index.test.ts` -- real `cursorAdapter` + fake agent + stub through `createExecute`: the stub serves an event for the session id the `sessionId` record names; `parseJsonlEvent` of the result line gives those counts; without a key the result has no usage and the stub saw no request; `clearEnv` includes the override.
-- [ ] `test/live/usage.live.test.ts` (gated, P16) -- real Cursor, `openclaw agent --local --model cursor-cli/auto --json`: (a) one turn: the new `acp-sessions/<id>` gives the session id; the newest `cursor-cli` assistant entry in `transcript_events` (read with `node:sqlite`, read-only) equals the ledger's event(s) for that id, fetched by the test's own code, field by field, with input + cacheRead > 0 and output > 0; (b) a second turn in the same OpenClaw session: its entry equals its own event and differs from turn 1's.
-- [ ] `scripts/dev-openclaw.sh`, `package.json` -- env proxy switch for the Gateway and live runs.
-- [ ] Docs -- `docs/providers/cursor.md`: new "Usage" section (source, needs `CURSOR_API_KEY`, the key goes only to `api2.cursor.sh`, which `cursor-agent` already uses; the turn closes about 1-2 s later, up to 6 s; failure table; team accounts untested; proxy), P16 row, Known limits (login only: no usage); `docs/setup.md`: key also enables usage, `NODE_USE_ENV_PROXY=1` behind an HTTP proxy, troubleshooting "usage shows 0" with the warning texts; parity matrix P16; architecture spine CAP-3 row and the usage open-question row (answered: ledger); MEMORY: probed facts above, the live result, `NODE_USE_ENV_PROXY`.
+- [x] `src/core/ports.ts`, `src/core/usage.ts` -- port types and the helper -- generic seam (AD-2, AD-3).
+- [x] `src/core/execute.ts` -- `startedAt` and the call in the `result` branch -- the only hot-path change; rebase on 1.11.
+- [x] `src/adapters/cursor/usage.ts` -- exchange, token cache, polling, matching, cooldown and miss streak, quiet degrade -- the ledger client.
+- [x] `src/adapters/cursor/index.ts`, `manifest.ts` -- wire `readUsage`, clear-env entry, P16 note.
+- [x] `src/core/usage.test.ts`, `src/core/execute.test.ts` -- stub adapter: usage on the result record; port skipped when the session gave usage, on `error`, without the port; throw and `warning` (→ `warn`) handled; abort ends the wait; query holds the session id, `startedAt <= endedAt`, and the home env.
+- [x] `src/adapters/cursor/usage.test.ts` -- local `node:http` ledger stub on 127.0.0.1 via the URL override: every matrix row (no key makes zero requests; request headers and body; warnings and thrown messages never contain the key or token; one exchange for concurrent reads), plus `matchTurnEvents` cases.
+- [x] `src/adapters/cursor/index.test.ts` -- real `cursorAdapter` + fake agent + stub through `createExecute`: the stub serves an event for the session id the `sessionId` record names; `parseJsonlEvent` of the result line gives those counts; without a key the result has no usage and the stub saw no request; `clearEnv` includes the override.
+- [x] `test/live/usage.live.test.ts` (gated, P16) -- real Cursor, `openclaw agent --local --model cursor-cli/auto --json`: (a) one turn: the new `acp-sessions/<id>` gives the session id; the newest `cursor-cli` assistant entry in `transcript_events` (read with `node:sqlite`, read-only) equals the ledger's event(s) for that id, fetched by the test's own code, field by field, with input + cacheRead > 0 and output > 0; (b) a second turn in the same OpenClaw session: its entry equals its own event and differs from turn 1's.
+- [x] `scripts/dev-openclaw.sh`, `package.json` -- env proxy switch for the Gateway and live runs.
+- [x] Docs -- `docs/providers/cursor.md`: new "Usage" section (source, needs `CURSOR_API_KEY`, the key goes only to `api2.cursor.sh`, which `cursor-agent` already uses; the turn closes about 1-2 s later, up to 6 s; failure table; team accounts untested; proxy), P16 row, Known limits (login only: no usage); `docs/setup.md`: key also enables usage, `NODE_USE_ENV_PROXY=1` behind an HTTP proxy, troubleshooting "usage shows 0" with the warning texts; parity matrix P16; architecture spine CAP-3 row and the usage open-question row (answered: ledger); MEMORY: probed facts above, the live result, `NODE_USE_ENV_PROXY`.
 
 **Acceptance Criteria:**
 - Given `CURSOR_API_KEY` and a live Cursor turn through OpenClaw, when the turn ends, then its assistant transcript entry carries input, output, cacheRead, and cacheWrite equal to Cursor's ledger numbers for that ACP session.
@@ -100,6 +100,15 @@ deferred: []
 - Given `src/core/`, when the import-boundary test runs, then it still passes (no CLI named, adapters import only ports and transports).
 
 ## Implementation Notes
+
+- Built on top of 1.11 (already committed; baseline `92674710`). `execute.ts` change is `startedAt` before `prompt` plus one block in the `result` branch.
+- Cursor reader: `redirect: "error"` on every request so the key cannot follow a redirect; 403 on the exchange is a rejected key, 403 elsewhere is transient (matrix lists only 400/404/415 as "RPC changed"). A fresh token is used for at least 500 ms even if its `exp` margin has passed, so a short-lived token is not re-exchanged on every poll; `tokenMarginMs` is a test option beyond the plan's list.
+- Transient failure ends the turn's polling at once (matrix: "no usage this turn"); only "no event yet" keeps polling until 6 s after `endedAt`.
+- `P16` set to `approx` (not `match`: needs the key, adds up to 6 s, undocumented RPC). Manifest, docs, parity matrix, spine CAP-3 and open-question row updated.
+- Test helper `test/fixtures/ledger-stub.ts` (local `node:http` ledger) serves both unit test files.
+- Live: `test/live/usage.live.test.ts` passes (2 tests, ~72 s) with real Cursor: the transcript entry equals the ledger's event field by field; the second turn of the same chat gets only its own event. The test needs `NODE_USE_ENV_PROXY=1` on this host.
+- Gateway log checked: no API key, no `exchange_user_api_key`/ledger body text.
+
 
 ## Plan Change Log
 

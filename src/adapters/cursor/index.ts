@@ -23,6 +23,7 @@ import { CURSOR_MIN_VERSION, cursorManifest } from "./manifest.ts";
 import { buildCursorCatalog, selectCursorModel } from "./models.ts";
 import { CURSOR_ALWAYS_ON_NATIVE_TOOLS, toCanonicalRequest } from "./permissions.ts";
 import { describeCursorToolCall } from "./tool-display.ts";
+import { createCursorUsageReader, USAGE_URL_ENV } from "./usage.ts";
 
 const PROBE_TIMEOUT_MS = 5_000;
 
@@ -55,6 +56,8 @@ export const CURSOR_CLEAR_ENV: readonly string[] = [
   "CURSOR_ASKPASS_SOCKET",
   "CURSOR_ASKPASS_SECRET",
   "CURSOR_CLI",
+  // Moves the usage ledger calls, which carry the API key (tests only): a Gateway env must not redirect it.
+  USAGE_URL_ENV,
   "CURSOR_CONFIG_DIR",
   "CURSOR_DATA_DIR",
   "NODE_OPTIONS",
@@ -296,6 +299,9 @@ async function removeListingSession(env: Record<string, string | undefined>, ses
   await rm(join(configDir, "acp-sessions", sessionId), { recursive: true, force: true }).catch(() => {});
 }
 
+/** One reader per plugin: its token cache and cooldowns outlive a turn. */
+const usageReader = createCursorUsageReader();
+
 export const cursorAdapter: CliAdapter = {
   id: "cursor",
   displayName: "Cursor CLI",
@@ -312,4 +318,5 @@ export const cursorAdapter: CliAdapter = {
   prepareHome,
   open,
   listModels,
+  readUsage: usageReader.read,
 };

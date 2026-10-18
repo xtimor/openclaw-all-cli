@@ -2,6 +2,10 @@ import { mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, wr
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { startLedgerStub } from "../../../test/fixtures/ledger-stub.ts";
+import { createExecute } from "../../core/execute.ts";
+import { parseJsonlEvent } from "../../core/events.ts";
+import { USAGE_URL_ENV } from "./usage.ts";
 import { FAKE_CURSOR_AGENT, fakeEnv } from "../../../test/fixtures/paths.ts";
 import {
   CliError,
@@ -606,5 +610,77 @@ describe("cursor adapter operations (P17, P19)", () => {
     open.push(session);
     expect(pids).toHaveLength(1);
     expect(session.pid).toBe(pids[0]);
+  });
+});
+
+describe("cursor usage through the core", () => {
+  const home = { dir: mkdtempSync(join(tmpdir(), "oac-cursor-usage-")), env: {} as Record<string, string> };
+  let stub: Awaited<ReturnType<typeof startLedgerStub>>;
+  beforeEach(async () => {
+    stub = await startLedgerStub();
+  });
+  afterEach(async () => {
+    await stub.close();
+  });
+
+  /** Runs one turn on the fake agent; the stub serves an event for the session id the turn announces. */
+  async function turn(apiKey: string | undefined) {
+    const execute = createExecute(cursorAdapter, { home, mcp: false });
+    const env = fakeEnv({ [USAGE_URL_ENV]: stub.url, ...(apiKey ? { CURSOR_API_KEY: apiKey } : {}) });
+    const lines: string[] = [];
+    const ctx = {
+      command: FAKE_CURSOR_AGENT,
+      args: [...cursorAdapter.launchArgs],
+      cwd: process.cwd(),
+      env,
+      prompt: "say:hi",
+      modelId: "auto",
+      systemPrompt: "",
+      useResume: false,
+      timeoutMs: 30_000,
+      requestToolPermission: async () => ({ behavior: "deny" as const, message: "no" }),
+      requestUserInput: async () => ({ status: "cancelled" as const, message: "no" }),
+    };
+    {
+      for await (const record of execute(ctx)) {
+        const line = JSON.stringify(record);
+        lines.push(line);
+        const parsed = parseJsonlEvent(line);
+        for (const item of parsed === null ? [] : Array.isArray(parsed) ? parsed : [parsed]) {
+          const sessionId = (item as { sessionId?: string }).sessionId;
+          if (sessionId && !("text" in item)) {
+            stub.events = () => ({
+              usageEventsDisplay: [
+                {
+                  conversationId: sessionId,
+                  timestamp: String(Date.now()),
+                  tokenUsage: { inputTokens: 11, outputTokens: 22, cacheReadTokens: 33 },
+                },
+              ],
+            });
+          }
+        }
+      }
+    }
+    const result = lines.map((line) => parseJsonlEvent(line)).flat().filter(Boolean).at(-1) as Record<string, unknown>;
+    return result;
+  }
+
+  it("puts the ledger's counts on the result the host parses", async () => {
+    const result = await turn("key-usage-wired");
+    expect(result).toMatchObject({ usage: { input: 11, output: 22, cacheRead: 33, cacheWrite: 0, total: 66 } });
+    expect(stub.count("/aiserver.v1.DashboardService/GetFilteredUsageEvents")).toBeGreaterThan(0);
+  });
+
+  it("leaves usage off and calls nothing without a key", async () => {
+    const result = await turn(undefined);
+    expect(result).toMatchObject({ text: "hi" });
+    expect((result as { usage?: unknown }).usage).toBeUndefined();
+    expect(stub.requests).toHaveLength(0);
+  });
+
+  it("clears the base URL override from the host's turn env", () => {
+    expect(cursorAdapter.clearEnv).toContain(USAGE_URL_ENV);
+    expect(CURSOR_CLEAR_ENV).toContain("OPENCLAW_ALL_CLI_CURSOR_USAGE_URL");
   });
 });

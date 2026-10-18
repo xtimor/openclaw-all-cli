@@ -266,6 +266,23 @@ export type CheckVersionParams = {
   signal?: AbortSignal;
 };
 
+/** What the core tells an adapter about a finished turn, to look up its usage (times are epoch ms). */
+export type UsageQuery = {
+  /** The native session id the turn ran in. */
+  sessionId: string;
+  /** Just before the prompt was sent. */
+  startedAt: number;
+  /** When the CLI reported the turn's result. */
+  endedAt: number;
+  /** The turn's env: the host's plus the per-agent home's. */
+  env: Readonly<Record<string, string | undefined>>;
+  /** Aborts when the host cancels the turn; the wait ends at once. */
+  signal?: AbortSignal;
+};
+
+/** `usage` is absent when the adapter has none; `warning` is a short log line (no secrets, no response bodies). */
+export type UsageReport = { usage?: NormalizedUsage; warning?: string };
+
 /** What one CLI provider supplies to the core. Adapters import only this module and transports. */
 export interface CliAdapter {
   /** Short CLI name, for example `acme`. The backend ID is `<id>-cli`. */
@@ -314,4 +331,11 @@ export interface CliAdapter {
    * `name` is unique and stable; `open` accepts it as `OpenParams.modelId`. Throws `CliError` only.
    */
   listModels(params: ListModelsParams): Promise<readonly CliModel[]>;
+  /**
+   * Optional. Looks up the turn's token usage for a CLI that does not report it in-session. The
+   * core calls it once per turn that ended with `result` and has no `usage` event, after the
+   * closing tool records. The adapter bounds its own time (AD-11) and answers `{}` when it has no
+   * usage; by contract it does not throw, and the core treats a throw as no usage.
+   */
+  readUsage?(query: UsageQuery): Promise<UsageReport>;
 }

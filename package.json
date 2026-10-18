@@ -12,7 +12,7 @@
     "build": "rm -rf dist && tsc -p tsconfig.build.json",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
-    "test:live": "OPENCLAW_ALL_CLI_LIVE=1 vitest run test/live",
+    "test:live": "NODE_USE_ENV_PROXY=1 OPENCLAW_ALL_CLI_LIVE=1 vitest run test/live",
     "dev:setup": "scripts/dev-openclaw.sh setup",
     "dev:install": "scripts/dev-openclaw.sh install",
     "dev:openclaw": "scripts/dev-openclaw.sh run",

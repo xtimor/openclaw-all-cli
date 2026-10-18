@@ -21,6 +21,7 @@ import {
   type OpenParams,
   type PermissionDecision,
   type PermissionRequest,
+  type UsageQuery,
 } from "./ports.ts";
 import { createManifest } from "./ports.ts";
 import type { ExecuteContext, LiveSessionCapability, LiveSessionHandle } from "./sdk-types.ts";
@@ -2226,5 +2227,87 @@ describe("createExecute pool hygiene (AD-14 review)", () => {
     } finally {
       fake.exitDelayMs = 0;
     }
+  });
+});
+
+describe("createExecute usage port", () => {
+  const noUsageTurn: Script = async function* (prompt) {
+    yield { kind: "text", text: "hi" };
+    yield { kind: "result", text: `echo:${prompt}`, stopReason: "end_turn" };
+  };
+  const resultOf = (records: Record<string, unknown>[]) => parsed(records).at(-1);
+
+  it("puts the port's usage on the result record, after the tool records", async () => {
+    const { adapter } = makeAdapter(noUsageTurn);
+    const queries: UsageQuery[] = [];
+    adapter.readUsage = async (query) => {
+      queries.push(query);
+      return { usage: { input: 7, output: 2, cacheRead: 1, cacheWrite: 0, total: 10 } };
+    };
+    const records = await run(createExecute(adapter, { home: HOME }), makeCtx({ env: { PATH: "/bin", K: "v" } }));
+    expect(resultOf(records)).toMatchObject({ kind: "result", usage: { input: 7, output: 2, cacheRead: 1, cacheWrite: 0, total: 10 } });
+    expect(queries).toHaveLength(1);
+    expect(queries[0]).toMatchObject({ sessionId: "native-1", env: { PATH: "/bin", K: "v", ACME_HOME: HOME.dir } });
+    expect(queries[0]!.startedAt).toBeLessThanOrEqual(queries[0]!.endedAt);
+  });
+
+  it("skips the port when the session reported usage", async () => {
+    const { adapter } = makeAdapter();
+    const readUsage = vi.fn(async () => ({ usage: { input: 99 } }));
+    adapter.readUsage = readUsage;
+    const records = await run(createExecute(adapter, { home: HOME }), makeCtx());
+    expect(resultOf(records)).toMatchObject({ usage: { input: 3, output: 5 } });
+    expect(readUsage).not.toHaveBeenCalled();
+  });
+
+  it("skips the port on an error result and works without the port", async () => {
+    const failing: Script = async function* () {
+      yield { kind: "error", error: { code: "unknown", retryable: false, message: "bad" } };
+    };
+    const failed = makeAdapter(failing);
+    const readUsage = vi.fn(async () => ({ usage: { input: 1 } }));
+    failed.adapter.readUsage = readUsage;
+    await run(createExecute(failed.adapter, { home: HOME }), makeCtx());
+    expect(readUsage).not.toHaveBeenCalled();
+
+    const plain = makeAdapter(noUsageTurn);
+    const records = await run(createExecute(plain.adapter, { home: HOME }), makeCtx());
+    expect(resultOf(records)).toMatchObject({ kind: "result" });
+    expect((records.at(-1) as { usage?: unknown }).usage).toBeUndefined();
+  });
+
+  it("runs for a side question too", async () => {
+    const { adapter } = makeAdapter(noUsageTurn);
+    adapter.readUsage = async () => ({ usage: { input: 4, total: 4 } });
+    const records = await run(createExecute(adapter, { home: HOME }), makeCtx({ executionMode: "side-question" }));
+    expect(resultOf(records)).toMatchObject({ usage: { input: 4, total: 4 } });
+  });
+
+  it("forwards the warning and survives a throw", async () => {
+    const warnings: string[] = [];
+    const warned = makeAdapter(noUsageTurn);
+    warned.adapter.readUsage = async () => ({ warning: "usage is off" });
+    const first = await run(createExecute(warned.adapter, { home: HOME, warn: (m) => warnings.push(m) }), makeCtx());
+    expect(warnings).toContain("usage is off");
+    expect((first.at(-1) as { usage?: unknown }).usage).toBeUndefined();
+
+    const thrown = makeAdapter(noUsageTurn);
+    thrown.adapter.readUsage = async () => {
+      throw new Error("boom");
+    };
+    const second = await run(createExecute(thrown.adapter, { home: HOME }), makeCtx());
+    expect(resultOf(second)).toMatchObject({ kind: "result", text: "echo:hi" });
+  });
+
+  it("ends the wait at once when the turn is aborted", async () => {
+    const { adapter, sessions } = makeAdapter(noUsageTurn);
+    adapter.readUsage = () => new Promise<never>(() => {});
+    const controller = new AbortController();
+    const turn = run(createExecute(adapter, { home: HOME }), makeCtx({ abortSignal: controller.signal }));
+    const outcome = expect(turn).rejects.toThrow();
+    await new Promise((resolve) => setTimeout(resolve, 30));
+    controller.abort(new Error("stop"));
+    await outcome;
+    expect(sessions[0]?.closed).toBe(1);
   });
 });
