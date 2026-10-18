@@ -3,7 +3,7 @@ title: 'Chat continuity across a model switch'
 type: 'feature'
 ticket: '11'
 created: '2026-10-18'
-status: 'ready-for-dev'
+status: 'in-progress'
 baseline_revision: 'f1927df2417f3039dd949666c230e7f7798eaf15'
 route: 'full'
 route_source: 'auto'
@@ -68,12 +68,12 @@ deferred: []
 ## Tasks & Acceptance
 
 **Execution:**
-- [ ] `src/core/manifest.ts`, `src/core/backend.ts` -- `history` flag; reseed config flag; pass `continuity` -- host reseed parity with `claude-cli`.
-- [ ] `src/core/execute.ts` -- continuity note on the first prompt of a fresh agent chat with a proxy -- the switch gap.
-- [ ] `src/core/execute.test.ts`, `test/backend.test.ts`, `src/core/manifest.test.ts` -- with the fake agent and `FAKE_CURSOR_LOG` prompt text, one test per matrix row that the plugin decides: note on a fresh chat (and on top of a `<conversation_history>` prompt), none on resume, warm reuse, side question, MCP off, `continuity` off; config has the reseed flag exactly when P15 is decided.
-- [ ] `test/fixtures/mock-openai-api.mjs`, `test/live/harness.ts` -- mock API model; stdin input.
-- [ ] `test/live/history-continuity.live.test.ts` (new, gated, title names P15; one Gateway; random code words; config, profile and mock removed in `afterAll`) -- (a) no profile: a `mockapi/echo` turn states a word, then a `cursor-cli/auto` turn on the same `--session-id` gives it back; `--json` `toolSummary.tools` holds `sessions_history`; Gateway log `historyPrompt=none`. (b) The same with the profile (key from `CURSOR_API_KEY` on stdin); the log shows `reason=auth-unknown`. (c) With the profile, a `cursor-cli`-only chat whose native chat is deleted: the next turn returns the fact, and the log shows `historyPrompt=present`. (d) After (a), an API turn: the mock's logged request carries (a)'s `cursor-cli` user text and reply. (e) Probe cursor → API → cursor: record whether the model fetched the API-turn fact; no assertion.
-- [ ] Docs -- `docs/providers/cursor.md`: new section "Chat continuity across a model switch" (the note, `sessions_history`, what the profile does and does not do, the prelude gap, `--local` has no Gateway for the tool), P15 row; `docs/setup.md`: rewrite the optional API-key paragraph (the `paste-api-key` command; the key only authorizes OpenClaw's reseed and is not handed to `cursor-agent`, so use the same key as `CURSOR_API_KEY` or the login account; billing is open, spec Q3), troubleshooting row "after a switch the model does not know earlier turns" (check `sessions_history` is not denied, run through a Gateway); parity matrix P15; `src/adapters/cursor/manifest.ts` P15; MEMORY facts (boundary, `auth-unknown` on a switch, profile command, mock provider, `--verbose on` takes a value, `sessions_history` needs a Gateway).
+- [x] `src/core/manifest.ts`, `src/core/backend.ts` -- `history` flag; reseed config flag; pass `continuity` -- host reseed parity with `claude-cli`.
+- [x] `src/core/execute.ts` -- continuity note on the first prompt of a fresh agent chat with a proxy -- the switch gap.
+- [x] `src/core/execute.test.ts`, `test/backend.test.ts`, `src/core/manifest.test.ts` -- with the fake agent and `FAKE_CURSOR_LOG` prompt text, one test per matrix row that the plugin decides: note on a fresh chat (and on top of a `<conversation_history>` prompt), none on resume, warm reuse, side question, MCP off, `continuity` off; config has the reseed flag exactly when P15 is decided.
+- [x] `test/fixtures/mock-openai-api.mjs`, `test/live/harness.ts` -- mock API model; stdin input.
+- [x] `test/live/history-continuity.live.test.ts` (new, gated, title names P15; one Gateway; random code words; config, profile and mock removed in `afterAll`) -- (a) no profile: a `mockapi/echo` turn states a word, then a `cursor-cli/auto` turn on the same `--session-id` gives it back; `--json` `toolSummary.tools` holds `sessions_history`; Gateway log `historyPrompt=none`. (b) The same with the profile (key from `CURSOR_API_KEY` on stdin); the log shows `reason=auth-unknown`. (c) With the profile, a `cursor-cli`-only chat whose native chat is deleted: the next turn returns the fact, and the log shows `historyPrompt=present`. (d) After (a), an API turn: the mock's logged request carries (a)'s `cursor-cli` user text and reply. (e) Probe cursor → API → cursor: record whether the model fetched the API-turn fact; no assertion.
+- [x] Docs -- `docs/providers/cursor.md`: new section "Chat continuity across a model switch" (the note, `sessions_history`, what the profile does and does not do, the prelude gap, `--local` has no Gateway for the tool), P15 row; `docs/setup.md`: rewrite the optional API-key paragraph (the `paste-api-key` command; the key only authorizes OpenClaw's reseed and is not handed to `cursor-agent`, so use the same key as `CURSOR_API_KEY` or the login account; billing is open, spec Q3), troubleshooting row "after a switch the model does not know earlier turns" (check `sessions_history` is not denied, run through a Gateway); parity matrix P15; `src/adapters/cursor/manifest.ts` P15; MEMORY facts (boundary, `auth-unknown` on a switch, profile command, mock provider, `--verbose on` takes a value, `sessions_history` needs a Gateway).
 
 **Acceptance Criteria:**
 - Given a chat whose earlier turn ran on an API model, with no Cursor API-key profile, when the user switches to `cursor-cli` and asks about that turn, then the reply gives the earlier fact correctly.
@@ -82,6 +82,13 @@ deferred: []
 - Given an API turn after `cursor-cli` turns, when it runs, then the API model's request holds the `cursor-cli` turns' text.
 
 ## Implementation Notes
+
+- Core: `deriveFlags` has `history` (P15 decided). The backend sets `reseedFromRawTranscriptWhenUncompacted` when `history`, and passes `continuity: history && mcp`. `execute.ts` exports `CONTINUITY_NOTE`; `attachSession` sets `entry.freshChat` for an agent chat opened without a resume id that has a proxy; the first prompt of that process carries the note (before `prependContext`) and clears the mark.
+- The proxy exists even when the first turn has no usable settings, so a degraded first turn still gets the note (matrix row). The existing fake-agent restart test now sees the note in the chat store (`recall:` text), and was updated.
+- Unit tests: `execute.test.ts` (9 note cases), `manifest.test.ts` (history flag), `backend.test.ts` (reseed flag, end-to-end note with the fake agent). The fake agent is used through `test/backend.test.ts`; the stub `FakeSession` covers the rest.
+- Live (`test/live/history-continuity.live.test.ts`, real Cursor, mock API model, Gateway on 18913, profile added in (b) and removed in `afterAll`): (a), (b), (d) pass as written; (e) recorded: the model called `sessions_history` and gave the API-turn fact.
+- Deviation, AC3 / (c): the host builds `historyPrompt=present` for a lost chat with the profile (effect of the reseed flag), but its fresh retry does not run on OpenClaw 2026.10.3. Through a Gateway `clearCliSessionInStore` patches a stale session entry (`activeWriterRunId` differs; confirmed with a temporary log in the host module, restored) so the host rethrows `session_expired`; under `--local` the retry runs but fails with `CLI MCP client grant is no longer valid` . Not fixable without changing host or resume behavior (Never list). Test (c) asserts the history prompt and `session_expired` and records the retry outcome. The docs, P15 notes, and MEMORY say so.
+- Ticket 1.10 was not rebased against: no concurrent change to `execute.ts` was present in this checkout.
 
 ## Plan Change Log
 

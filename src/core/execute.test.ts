@@ -6,7 +6,7 @@ import { join } from "node:path";
 import { afterAll, describe, expect, it, vi } from "vitest";
 import { spawn, type ChildProcess } from "node:child_process";
 import { existsSync, readdirSync } from "node:fs";
-import { createExecute } from "./execute.ts";
+import { CONTINUITY_NOTE, createExecute } from "./execute.ts";
 import { inspectProcess } from "./pid-locks.ts";
 import { ProcessPool } from "./pool.ts";
 import type { McpProxy } from "./mcp-proxy.ts";
@@ -514,6 +514,79 @@ describe("createExecute", () => {
       makeCtx({ promptContext: { prependContext: "before", appendContext: "after" } }),
     );
     expect(sessions[0]?.prompts).toEqual(["before\n\nhi\n\nafter"]);
+  });
+});
+
+describe("createExecute continuity note (P15)", () => {
+  const withNote = (text: string) => `${CONTINUITY_NOTE}\n\n${text}`;
+
+  it("puts the note first on the first prompt of a fresh chat, then never again on the warm process", async () => {
+    const { adapter, sessions, opens } = makeAdapter();
+    const { live } = makeLive();
+    const execute = createExecute(adapter, { home: HOME, continuity: true });
+    await run(execute, makeCtx({ liveSession: live, env: usableEnv, promptContext: { prependContext: "before" } }));
+    await run(execute, makeCtx({ liveSession: live, env: usableEnv, useResume: true, sessionId: "native-1", prompt: "again" }));
+    expect(opens).toHaveLength(1);
+    expect(sessions[0]?.prompts).toEqual([withNote("before\n\nhi"), "again"]);
+  });
+
+  it("names OpenClaw and its tool, and no CLI", () => {
+    expect(CONTINUITY_NOTE).toContain("sessions_history");
+    expect(CONTINUITY_NOTE).toContain("OpenClaw");
+    expect(CONTINUITY_NOTE).toContain("if that tool is available");
+    expect(CONTINUITY_NOTE).not.toMatch(/cursor|acme/i);
+  });
+
+  it("adds the note on top of the host's history prompt", async () => {
+    const { adapter, sessions } = makeAdapter();
+    const history = "<conversation_history>\nuser: code word is kiwi\n</conversation_history>\n\nwhat was it?";
+    await run(createExecute(adapter, { home: HOME, continuity: true }), makeCtx({ env: usableEnv, prompt: history }));
+    expect(sessions[0]?.prompts).toEqual([withNote(history)]);
+  });
+
+  it("sends no note when the turn resumes a chat", async () => {
+    const { adapter, sessions } = makeAdapter();
+    await run(
+      createExecute(adapter, { home: HOME, continuity: true }),
+      makeCtx({ env: usableEnv, useResume: true, sessionId: "native-42" }),
+    );
+    expect(sessions[0]?.prompts).toEqual(["hi"]);
+  });
+
+  it("sends a note again when a restart opens a fresh chat", async () => {
+    const { adapter, sessions } = makeAdapter();
+    const execute = createExecute(adapter, { home: HOME, continuity: true });
+    await run(execute, makeCtx({ env: usableEnv }));
+    // /reset: no resume id.
+    await run(execute, makeCtx({ env: usableEnv, useResume: false }));
+    expect(sessions.map((session) => session.prompts[0])).toEqual([withNote("hi"), withNote("hi")]);
+  });
+
+  it("sends no note to a side question", async () => {
+    const { adapter, sessions } = makeAdapter();
+    await run(
+      createExecute(adapter, { home: HOME, continuity: true }),
+      makeCtx({ executionMode: "side-question", env: usableEnv }),
+    );
+    expect(sessions[0]?.prompts).toEqual(["hi"]);
+  });
+
+  it("sends no note when MCP is off", async () => {
+    const { adapter, sessions } = makeAdapter();
+    await run(createExecute(adapter, { home: HOME, continuity: true, mcp: false }), makeCtx());
+    expect(sessions[0]?.prompts).toEqual(["hi"]);
+  });
+
+  it("sends no note unless continuity is on", async () => {
+    const { adapter, sessions } = makeAdapter();
+    await run(createExecute(adapter, { home: HOME }), makeCtx({ env: usableEnv }));
+    expect(sessions[0]?.prompts).toEqual(["hi"]);
+  });
+
+  it("sends the note even when the first turn has no usable settings", async () => {
+    const { adapter, sessions } = makeAdapter();
+    await run(createExecute(adapter, { home: HOME, continuity: true, warn: () => {} }), makeCtx());
+    expect(sessions[0]?.prompts).toEqual([withNote("hi")]);
   });
 });
 

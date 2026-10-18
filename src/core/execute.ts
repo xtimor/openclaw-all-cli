@@ -42,7 +42,20 @@ export type ExecuteOptions = {
    * close-all on unload. Absent: a private pool without limits.
    */
   pool?: ProcessPool;
+  /**
+   * Parity row P15: the first prompt of a fresh agent chat that has the MCP proxy starts with a
+   * note that points the model to OpenClaw's `sessions_history`. Default false.
+   */
+  continuity?: boolean;
 };
+
+/**
+ * AD-2, AD-5: names OpenClaw and its tool, never a CLI. The host refuses to copy history across
+ * an auth boundary, so the model reads it through a tool that stays under OpenClaw's policy.
+ */
+export const CONTINUITY_NOTE =
+  "[OpenClaw] This chat is part of an OpenClaw conversation. Turns answered by other models, before this chat started or between your turns, are not in your context. " +
+  'When the user refers to something you cannot see here, read the conversation with the OpenClaw tool `sessions_history` (sessionKey "current") before you answer, if that tool is available.';
 
 type LiveEntry = {
   /** Set once the process is open; the handle exists (and is registered) before that. */
@@ -69,6 +82,8 @@ type LiveEntry = {
   opening?: Promise<unknown>;
   /** Aborted by the handle's close, so a process that is still starting stops starting. */
   stopOpening: AbortController;
+  /** The process opened a fresh agent chat and has not sent its first prompt yet (P15). */
+  freshChat?: boolean;
   busy: boolean;
   idleTimer?: NodeJS.Timeout;
 };
@@ -99,9 +114,9 @@ function reuseKey(ctx: ExecuteContext, home: AgentHome, authProfileId: string | 
   return JSON.stringify([ctx.modelId, modeOf(ctx), ctx.cwd, home.dir, authProfileId ?? null]);
 }
 
-function composePrompt(ctx: ExecuteContext): string {
+function composePrompt(ctx: ExecuteContext, note?: string): string {
   const { prependContext, appendContext } = ctx.promptContext ?? {};
-  return [prependContext, ctx.prompt, appendContext].filter((part): part is string => Boolean(part)).join("\n\n");
+  return [note, prependContext, ctx.prompt, appendContext].filter((part): part is string => Boolean(part)).join("\n\n");
 }
 
 /**
@@ -161,6 +176,7 @@ export function createExecute(adapter: CliAdapter, options: ExecuteOptions): Cli
   const { home } = options;
   const warn = options.warn ?? (() => {});
   const mcp = options.mcp ?? true;
+  const continuity = options.continuity ?? false;
   const { authProfileId } = options;
   const pool = options.pool ?? new ProcessPool({ maxTurns: Infinity, maxProcesses: Infinity });
 
@@ -406,6 +422,8 @@ export function createExecute(adapter: CliAdapter, options: ExecuteOptions): Cli
       throw closedError();
     }
     entry.session = session;
+    // P15: a chat opened without a resume ID has no earlier turns of the conversation in its context.
+    entry.freshChat = continuity && mode === "agent" && !resumeSessionId && Boolean(proxy);
     // A process that exits while idle gives its slot back at once; a running turn closes its own.
     void session.waitForExit().then(
       () => {
@@ -548,7 +566,10 @@ export function createExecute(adapter: CliAdapter, options: ExecuteOptions): Cli
 
       let closed = false;
       // Each event goes to the host as it arrives; nothing waits for the turn to end.
-      for await (const event of active.session.prompt(composePrompt(ctx))) {
+      // The note goes once, on the first prompt of a fresh chat; it is not part of the host's transcript.
+      const note = active.freshChat ? CONTINUITY_NOTE : undefined;
+      active.freshChat = false;
+      for await (const event of active.session.prompt(composePrompt(ctx, note))) {
         if (event.kind === "usage") {
           summary.usage = event.usage;
           continue;

@@ -19,3 +19,6 @@ export function fakeEnv(extra: Record<string, string> = {}): Record<string, stri
   // Never inherit a real CURSOR_CONFIG_DIR from the developer's shell.
   return { ...env, CURSOR_CONFIG_DIR: mkdtempSync(join(tmpdir(), "oac-fake-cursor-")), ...extra };
 }
+
+/** A local OpenAI-compatible API stand-in for live tests that need an API model beside the CLI. */
+export const MOCK_API_SCRIPT = fileURLToPath(new URL("./mock-openai-api.mjs", import.meta.url));

@@ -24,7 +24,7 @@ export type OpenClawResult = { status: number | null; stdout: string; stderr: st
 /** Runs `openclaw <args>` in the isolated setup from `scripts/dev-openclaw.sh`. */
 export function openclaw(
   args: string[],
-  options: { timeoutMs?: number; env?: Record<string, string> } = {},
+  options: { timeoutMs?: number; env?: Record<string, string>; input?: string } = {},
 ): OpenClawResult {
   // OpenClaw mutes its output when it sees a test runner's variables.
   const env = {
@@ -35,6 +35,7 @@ export function openclaw(
     encoding: "utf8",
     timeout: options.timeoutMs ?? 180_000,
     env,
+    ...(options.input === undefined ? {} : { input: options.input }),
   });
   return { status: result.status, stdout: result.stdout ?? "", stderr: result.stderr ?? "" };
 }
@@ -42,7 +43,7 @@ export function openclaw(
 /** Like `openclaw`, for calls that run at the same time as others or as the test. */
 export function openclawAsync(
   args: string[],
-  options: { timeoutMs?: number; env?: Record<string, string> } = {},
+  options: { timeoutMs?: number; env?: Record<string, string>; input?: string } = {},
 ): Promise<OpenClawResult> {
   const env = {
     ...Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.startsWith("VITEST") && key !== "NODE_ENV")),
@@ -52,6 +53,7 @@ export function openclawAsync(
     const child = spawn(DEV_SCRIPT, ["run", ...args], { env });
     let stdout = "";
     let stderr = "";
+    if (options.input !== undefined) child.stdin.end(options.input);
     child.stdout.on("data", (chunk: Buffer) => (stdout += chunk.toString("utf8")));
     child.stderr.on("data", (chunk: Buffer) => (stderr += chunk.toString("utf8")));
     const timer = setTimeout(() => child.kill("SIGKILL"), options.timeoutMs ?? 180_000);

@@ -79,6 +79,8 @@ export function buildCliBackend(adapter: CliAdapter, options: BuildBackendOption
       output: "jsonl",
       input: "stdin",
       ...(flags.liveSession ? { liveSession: "claude-stdio" as const } : {}),
+      // P15: lets the host retry a lost chat with its own history (same as `claude-cli`).
+      ...(flags.history ? { reseedFromRawTranscriptWhenUncompacted: true } : {}),
       sessionMode: "existing",
       ...(adapter.modelAliases ? { modelAliases: { ...adapter.modelAliases } } : {}),
     },
@@ -106,6 +108,7 @@ export function buildCliBackend(adapter: CliAdapter, options: BuildBackendOption
             home,
             pool,
             mcp: flags.mcp,
+            continuity: flags.history && flags.mcp,
             ...(ctx.authProfileId ? { authProfileId: ctx.authProfileId } : {}),
             ...(options.warn ? { warn: options.warn } : {}),
           }),

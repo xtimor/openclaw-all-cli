@@ -26,7 +26,13 @@ cursor-agent status
 
 Each agent runs Cursor with its own config and chat store under `<agentDir>/openclaw-all-cli/cursor-cli/`, which the plugin creates. The plugin does not copy or change the login. Where Cursor keeps the login in its config directory instead of the Keychain, the per-agent home may not see it (not yet checked on a host without a Keychain); set `CURSOR_API_KEY` for the Gateway there.
 
-**Optional: Cursor API key.** Create a user API key in the Cursor Dashboard. Add it as an OpenClaw `api_key` auth profile if you want OpenClaw to replay chat history into a fresh Cursor session.
+**Optional: Cursor API key profile.** Create a user API key in the Cursor Dashboard and save it as an OpenClaw `api_key` profile for `cursor-cli`:
+
+```sh
+printf '%s\n' "$KEY" | openclaw models auth paste-api-key --provider cursor-cli
+```
+
+It prints `Auth profile: cursor-cli:manual (cursor-cli/api_key)`; remove it with `openclaw models auth logout cursor-cli:manual --yes`. The profile only lets OpenClaw build a history prompt from a `cursor-cli` chat's own turns, for a fresh Cursor chat after the chat was lost (OpenClaw 2026.10.3 did not complete that retry in the live probe). The key is not handed to `cursor-agent`: use the same key as `CURSOR_API_KEY` in the Gateway's environment, or an account that is logged in. It does not carry history across a switch from an API model; the plugin's note and `sessions_history` do (see [Cursor provider](providers/cursor.md#chat-continuity-across-a-model-switch)). Whether a key is billed differently from the login is not settled yet.
 
 ## 2. Install the plugin
 
@@ -91,7 +97,8 @@ The first command must report `"status": "loaded"` and `cursor-cli` under `cliBa
 | `` `ps` is not available `` | The host has no `ps`, so processes are not recorded and a killed Gateway's leftovers are not cleaned | Install `ps` (procps); check for stray `cursor-agent` processes by hand |
 | `The CLI speaks ACP protocol N` | `cursor-agent` speaks a protocol this plugin does not | Run `cursor-agent update`, or update the plugin |
 | `The CLI rejected its login` | `cursor-agent` refused the ACP login | Run `cursor-agent login` and check `cursor-agent status` |
-| `CLI session not found` (`session_expired`) | Cursor does not know the chat: it belongs to another agent's home or was deleted. OpenClaw retries with a fresh chat and its own history only when it has history to reseed | Start a new chat with `/reset` |
+| After a switch the model does not know the earlier turns | OpenClaw does not copy history from another model into `cursor-cli`; the model reads it with `sessions_history`. That tool is denied (`tools.deny`), or the chat runs with `--local`, which has no Gateway for it | Remove `sessions_history` from `tools.deny`; run the chat through a Gateway |
+| `CLI session not found` (`session_expired`) | Cursor does not know the chat: it belongs to another agent's home or was deleted. OpenClaw may retry with a fresh chat and its own history only when it has history to reseed (2026.10.3 did not in the live probe) | Start a new chat with `/reset` |
 | `The CLI cannot load a session` | This `cursor-agent` build cannot resume chats | Run `cursor-agent update` |
 | `Another turn of this chat is still running in a CLI process` | Two turns reached one chat at the same time | Retry once the first turn is done |
 | `The CLI does not list models` | The `cursor-agent` build reports no model list | Use `cursor-cli/auto`, or run `cursor-agent update` |

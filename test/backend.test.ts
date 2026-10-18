@@ -57,6 +57,15 @@ describe("cursor-cli backend", () => {
     expect(backend.config.modelAliases).toEqual({ "default[]": "auto", default: "auto" });
   });
 
+  it("lets the host reseed a lost chat from its transcript exactly when P15 is decided", () => {
+    expect(backend.config.reseedFromRawTranscriptWhenUncompacted).toBe(true);
+    const undecided = buildCliBackend(
+      { ...cursorAdapter, manifest: createManifest("1", { ...cursorAdapter.manifest.rows, P15: { status: "spike", note: "" } }) },
+      { settings: {} },
+    );
+    expect(undecided.config).not.toHaveProperty("reseedFromRawTranscriptWhenUncompacted");
+  });
+
   it("takes the binary from the plugin config", () => {
     const custom = buildCliBackend(cursorAdapter, { settings: { command: "/opt/cursor-agent" } });
     expect(custom.config.command).toBe("/opt/cursor-agent");
@@ -93,6 +102,24 @@ describe("cursor-cli backend", () => {
   it("runs a prepared turn end to end against an ACP agent", async () => {
     const { events } = await runTurn(join(scratch, "end-to-end"));
     expect(events.at(-1)).toMatchObject({ kind: "result", text: "pong", sessionId: "fake-session-1" });
+  });
+
+  it("starts a fresh chat's first prompt with the continuity note, and a resumed chat's without it (P15)", async () => {
+    const settings = join(scratch, "continuity-settings.json");
+    writeFileSync(settings, JSON.stringify({ mcpServers: { openclaw: { url: "http://127.0.0.1:1/mcp", headers: {} } } }));
+    const log = join(scratch, "continuity.jsonl");
+    const env = { FAKE_CURSOR_LOG: log, GEMINI_CLI_SYSTEM_SETTINGS_PATH: settings };
+    const prompts = () =>
+      readFileSync(log, "utf8")
+        .trim()
+        .split("\n")
+        .map((line) => JSON.parse(line) as { method: string; params: { prompt: Array<{ text: string }> } })
+        .filter((line) => line.method === "session/prompt")
+        .map((line) => line.params.prompt.map((part) => part.text).join(""));
+    await runTurn(join(scratch, "continuity"), env);
+    expect(prompts()).toHaveLength(1);
+    expect(prompts()[0]).toContain("sessions_history");
+    expect(prompts()[0]).toMatch(/say:pong$/);
   });
 
   it("gives each agent its own home with the static permissions and leaves the workspace alone", async () => {
@@ -692,7 +719,9 @@ describe("session resume and side questions (P4, P5, P18)", () => {
     // A new Gateway: a new process, resumed by the id the host stored.
     const log = join(scratch, "restart.jsonl");
     const second = await turn(agentDir, "[[recall]]", { env: { ...env, FAKE_CURSOR_LOG: log }, sessionId: id, useResume: true });
-    expect(second.last).toMatchObject({ kind: "result", text: "recall:remember: banana", sessionId: id });
+    // P15: the first prompt of the fresh chat carried the continuity note, and the chat keeps it.
+    expect(second.last).toMatchObject({ kind: "result", sessionId: id });
+    expect(second.last!.text).toMatch(/^recall:\[OpenClaw\].*sessions_history.*remember: banana$/s);
     const prompts = readFileSync(log, "utf8")
       .trim()
       .split("\n")

@@ -18,6 +18,7 @@ describe("manifest", () => {
       toolPolicy: false,
       images: false,
       sideQuestion: false,
+      history: false,
     });
     expect(
       deriveFlags(
@@ -29,7 +30,7 @@ describe("manifest", () => {
           P13: { status: "gap", note: "" },
         }),
       ),
-    ).toEqual({ liveSession: true, resume: true, mcp: true, toolPolicy: true, images: false, sideQuestion: false });
+    ).toEqual({ liveSession: true, resume: true, mcp: true, toolPolicy: true, images: false, sideQuestion: false, history: false });
     expect(deriveFlags(createManifest("1", { P4: { status: "gap", note: "" }, P5: { status: "spike", note: "" } }))).toEqual({
       liveSession: false,
       resume: false,
@@ -37,7 +38,15 @@ describe("manifest", () => {
       toolPolicy: false,
       images: false,
       sideQuestion: false,
+      history: false,
     });
+  });
+
+  it("derives history from P15 alone", () => {
+    expect(deriveFlags(createManifest("1", { P15: { status: "approx", note: "" } })).history).toBe(true);
+    expect(deriveFlags(createManifest("1", { P15: { status: "match", note: "" } })).history).toBe(true);
+    expect(deriveFlags(createManifest("1", { P15: { status: "gap", note: "" } })).history).toBe(false);
+    expect(deriveFlags(createManifest("1", { P15: { status: "spike", note: "" } })).history).toBe(false);
   });
 
   it("derives images from P13 alone", () => {

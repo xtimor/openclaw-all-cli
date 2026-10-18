@@ -14,6 +14,8 @@ export type DerivedFlags = {
   toolPolicy: boolean;
   /** P13: the adapter sends images to the CLI. */
   images: boolean;
+  /** P15: the host may reseed a fresh chat from its own transcript, and the first prompt points to `sessions_history`. */
+  history: boolean;
 };
 
 function decided(manifest: CapabilityManifest, id: ParityRowId): boolean {
@@ -24,6 +26,6 @@ function decided(manifest: CapabilityManifest, id: ParityRowId): boolean {
 export function deriveFlags(manifest: CapabilityManifest): DerivedFlags {
   return {
     liveSession: decided(manifest, "P4"), resume: decided(manifest, "P5"), mcp: decided(manifest, "P7"),
-    toolPolicy: decided(manifest, "P10"), images: decided(manifest, "P13"), sideQuestion: decided(manifest, "P18"),
+    toolPolicy: decided(manifest, "P10"), images: decided(manifest, "P13"), history: decided(manifest, "P15"), sideQuestion: decided(manifest, "P18"),
   };
 }
