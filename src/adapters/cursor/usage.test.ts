@@ -285,6 +285,14 @@ describe("cursor usage reader", () => {
     expect(Date.now() - started).toBeLessThan(400);
   });
 
+  it("does not sleep a whole poll interval past the deadline", async () => {
+    serve();
+    const reader = createCursorUsageReader({ ...FAST, pollIntervalMs: 1000, deadlineMs: 300 });
+    const started = Date.now();
+    expect(await reader.read(query())).toEqual({});
+    expect(Date.now() - started).toBeLessThan(450);
+  });
+
   it("never holds the read past the deadline through a slow exchange either", async () => {
     stub.delayMs = 2000;
     const reader = createCursorUsageReader({ ...FAST, requestTimeoutMs: 1500, deadlineMs: 150 });
@@ -294,22 +302,48 @@ describe("cursor usage reader", () => {
     expect(stub.count(EVENTS)).toBe(0);
   });
 
-  it("does not count the previous turn's event when that turn's read found nothing", async () => {
-    const reader = createCursorUsageReader({ ...FAST, deadlineMs: 40 });
-    const t0 = Date.now() - 1000;
-    // Turn N: its event exists, but its read sees an empty ledger and gives up.
-    serve();
-    await reader.read(query({ startedAt: t0 - 2000, endedAt: t0 }));
-    const earlier = event({ at: t0 - 1500 });
-    // Turn N+1 starts now, well inside the 5 s skew window of the old event.
-    serve(earlier);
+  it("does not count the event an earlier turn consumed", async () => {
+    const reader = createCursorUsageReader(FAST);
+    const t0 = Date.now();
+    const first = event({ at: t0 + 10 });
+    serve(first);
+    expect((await reader.read(query({ startedAt: t0, endedAt: t0 }))).usage).toEqual(FULL);
+    // Turn 2 starts at once, inside the skew window of the consumed event.
+    serve(first);
     expect(await reader.read(query())).toEqual({});
-    const own = event({ at: Date.now() + 10, tokenUsage: { inputTokens: 3 } });
-    serve(own, earlier);
-    expect((await reader.read(query())).usage).toEqual({ input: 3, output: 0, cacheRead: 0, cacheWrite: 0, total: 3 });
   });
 
-  it("does not count an older event of the session when nothing was consumed yet (after a restart)", async () => {
+  it("counts an earlier turn's unconsumed event inside the skew slack (chosen: overcount rather than drop the next turn)", async () => {
+    const reader = createCursorUsageReader({ ...FAST, deadlineMs: 40 });
+    const t0 = Date.now() - 1000;
+    serve();
+    await reader.read(query({ startedAt: t0 - 2000, endedAt: t0 }));
+    serve(event({ at: t0 - 1500 }));
+    expect((await reader.read(query())).usage).toEqual(FULL);
+  });
+
+  it("ignores an unconsumed event older than the skew slack", async () => {
+    const reader = createCursorUsageReader({ ...FAST, deadlineMs: 40 });
+    const t0 = Date.now() - 1000;
+    serve();
+    await reader.read(query({ startedAt: t0 - 8000, endedAt: t0 }));
+    serve(event({ at: t0 - 7000 }));
+    expect(await reader.read(query())).toEqual({});
+  });
+
+  it("still gives back-to-back turns their usage when the host clock is ahead of Cursor's", async () => {
+    const reader = createCursorUsageReader(FAST);
+    const ahead = 2000; // Cursor's stamps trail this host's clock by 2 s
+    const at = () => Date.now() - ahead + 10;
+    serve(event({ at: at() }));
+    expect((await reader.read(query())).usage).toEqual(FULL);
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    const second = event({ at: at(), tokenUsage: { inputTokens: 9 } });
+    serve(second, event({ at: at() - 30 }));
+    expect((await reader.read(query())).usage).toEqual({ input: 9, output: 0, cacheRead: 0, cacheWrite: 0, total: 9 });
+  });
+
+  it("does not count an older event of the session when nothing was consumed yet (turn-window rule, e.g. after a restart)", async () => {
     const now = Date.now();
     serve(event({ at: now - 60_000 }));
     const report = await createCursorUsageReader({ ...FAST, deadlineMs: 30 }).read(query({ startedAt: now, endedAt: now }));
@@ -340,17 +374,35 @@ describe("cursor usage reader", () => {
     expect(stub.requests.filter((r) => r.path === EVENTS).map((r) => JSON.parse(r.body).page)).toEqual([1, 2, 3]);
   });
 
-  it("stops paging at the cap and when the page is older than the window", async () => {
+  it("reads all pages of a turn whose events straddle pages", async () => {
+    const now = Date.now();
+    stub.events = ({ page }) => ({
+      usageEventsDisplay:
+        page === 1
+          ? [event({ at: now + 50, tokenUsage: { inputTokens: 1 } }), event({ conversationId: "o1", at: now + 40 })]
+          : page === 2
+            ? [event({ at: now + 30, tokenUsage: { inputTokens: 10 } }), event({ conversationId: "o2", at: now + 20 })]
+            : [event({ conversationId: "o3", at: now - 60_000 }), event({ conversationId: "o4", at: now - 61_000 })],
+    });
+    const reader = createCursorUsageReader({ ...FAST, pageSize: 2, pollIntervalMs: 5000, deadlineMs: 300 });
+    expect((await reader.read(query({ startedAt: now, endedAt: now }))).usage).toEqual({ input: 11, output: 0, cacheRead: 0, cacheWrite: 0, total: 11 });
+    expect(stub.requests.filter((r) => r.path === EVENTS).map((r) => JSON.parse(r.body).page)).toEqual([1, 2, 3]);
+  });
+
+  it("stops paging at the cap of 3 pages", async () => {
     const now = Date.now();
     stub.events = () => ({ usageEventsDisplay: Array.from({ length: 3 }, (_, i) => event({ conversationId: `o${i}`, at: now + 50 })) });
-    await createCursorUsageReader({ ...FAST, pageSize: 3, deadlineMs: 5 }).read(query({ startedAt: now, endedAt: now }));
-    const pages = stub.requests.filter((r) => r.path === EVENTS).map((r) => JSON.parse(r.body).page);
-    expect(Math.max(...pages)).toBeLessThanOrEqual(3);
+    const reader = createCursorUsageReader({ ...FAST, pageSize: 3, pollIntervalMs: 5000, deadlineMs: 300 });
+    expect(await reader.read(query({ startedAt: now, endedAt: now }))).toEqual({});
+    expect(stub.count(EVENTS)).toBe(3);
+  });
 
-    stub.requests.length = 0;
+  it("stops paging when the page is older than the window", async () => {
+    const now = Date.now();
     stub.events = () => ({ usageEventsDisplay: Array.from({ length: 3 }, (_, i) => event({ conversationId: `o${i}`, at: now - 60_000 })) });
-    await createCursorUsageReader({ ...FAST, pageSize: 3, deadlineMs: 5 }).read(query({ startedAt: now, endedAt: now }));
-    expect(stub.requests.filter((r) => r.path === EVENTS).every((r) => JSON.parse(r.body).page === 1)).toBe(true);
+    const reader = createCursorUsageReader({ ...FAST, pageSize: 3, pollIntervalMs: 5000, deadlineMs: 300 });
+    expect(await reader.read(query({ startedAt: now, endedAt: now }))).toEqual({});
+    expect(stub.count(EVENTS)).toBe(1);
   });
 
   it("warns once when concurrent turns share a rejected exchange", async () => {

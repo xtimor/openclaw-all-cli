@@ -3,7 +3,7 @@ title: 'Per-turn usage on the transcript'
 type: 'feature'
 ticket: '10'
 created: '2026-10-18'
-status: 'in-progress'
+status: done
 baseline_revision: '92674710cc49a0d59530f0009aec6e814a8c294c'
 route: 'full'
 route_source: 'auto'
@@ -152,3 +152,10 @@ Review (4 lenses) after the first build; all items fixed in the working tree, 1.
 - Build after ticket 1.11 lands; rebase `src/core/execute.ts`.
 - Version control: the tree held 1.11's uncommitted work at step 1 and was clean after its checkpoint commit (`74c58f088d67bba30c053f560d905d3fcad46e12`); planning proceeded because only this plan file is written.
 - Open question for the user: login-only Cursor accounts get no usage. Reading Cursor's stored login token for the ledger (exact, untested) would close that; it touches the CLI login, which earlier tickets kept out.
+
+### Follow-up review of the patch
+
+- Fixed: the loop no longer sleeps a poll interval past the deadline (it stops when less time is left than the next wait, and never polls after the deadline); test uses a 1000 ms interval with a 300 ms deadline.
+- Fixed: the lower bound is max(consumed stamp, previous read end minus the 5 s skew slack): the stamp is Cursor's clock and stays exact, the host-clock part gets the slack. Chosen behavior: an earlier turn's unconsumed event inside the slack is counted by the next turn (overcount) instead of dropping the next turn's usage when the host clock runs ahead; an already consumed event is never counted twice. Tests for both and for a 2 s host-ahead clock.
+- Fixed: paging continues (cap 3) until a page's oldest stamp is at or before the lower bound, then one match over all pages, so events that straddle pages are summed.
+- Tests: the paging-cap and older-than-window tests now send requests and assert exact counts (3 and 1); the restart test is kept and renamed as the turn-window rule (it passed before the patch too). Each fix was reverted once and its test failed.

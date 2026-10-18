@@ -165,7 +165,7 @@ After a turn ends with a result, the plugin exchanges `CURSOR_API_KEY` for a sho
 - **Behind an HTTP proxy.** Node's `fetch` ignores `HTTPS_PROXY` unless the Gateway starts with `NODE_USE_ENV_PROXY=1`. Without it the calls fail as network errors and usage stays 0.
 - **Several events in one turn.** The turn's events already visible at the poll are summed; an event that appears after that poll is not added (no extra poll, to keep the latency). Cursor wrote one event per turn in every probe.
 - **Host clock skew.** An event is matched by Cursor's timestamp against this host's clock with 5 s of slack. A host clock more than 5 s off makes usage silently 0 until the miss streak starts its 10 minute cooldown.
-- **Rare overlap.** Within one Gateway run a turn never counts an event stamped before the previous turn of its chat ended. The record of that is in memory (bounded to 1000 chats) and is lost on a Gateway restart, so the first turn after a restart can still count an older event of the same chat that lies inside the 5 s window.
+- **Rare overlap.** A turn never counts an event Cursor stamped at or before the last event an earlier turn of its chat consumed. Beyond that, the lower bound is the earlier turn's end minus the 5 s skew slack, so if that earlier turn's lookup found nothing and the next turn starts within the slack, the next turn can also count the earlier event (an overcount is chosen over dropping the next turn's usage when the clocks differ). The record is in memory (bounded to 1000 chats) and lost on a Gateway restart, so the first turn after a restart can count an older event of the same chat inside the 5 s window.
 
 Live test: `test/live/usage.live.test.ts`.
 

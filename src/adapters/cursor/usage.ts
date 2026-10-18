@@ -254,16 +254,19 @@ export function createCursorUsageReader(options: CursorUsageOptions = {}) {
     }
   }
 
-  /** The newest events; more pages only while the oldest event seen is still inside the turn's window. */
+  /**
+   * The newest events. More pages are read (up to MAX_PAGES) until the oldest event seen is at or
+   * before the window's lower bound, so a turn's events that straddle pages are all counted and
+   * other traffic on the key cannot push them out of sight. One match over everything read.
+   */
   async function fetchEvents(key: string, state: KeyState, url: string, window: { sessionId: string; notBefore: number; after?: number }, deadline: number, signal?: AbortSignal) {
+    const lowerBound = Math.max(window.notBefore, window.after ?? 0);
     const events: LedgerEvent[] = [];
     for (let page = 1; page <= MAX_PAGES; page += 1) {
       const batch = await fetchPage(key, state, url, page, deadline, signal);
       events.push(...batch);
-      const match = matchTurnEvents(events, window);
-      if (match.latest !== undefined) return match;
       const stamps = batch.map((event) => asMillis(event?.timestamp)).filter((stamp): stamp is number => stamp !== undefined);
-      if (batch.length < pageSize || stamps.length === 0 || Math.min(...stamps) <= window.notBefore) break;
+      if (batch.length < pageSize || stamps.length === 0 || Math.min(...stamps) <= lowerBound) break;
     }
     return matchTurnEvents(events, window);
   }
@@ -284,7 +287,8 @@ export function createCursorUsageReader(options: CursorUsageOptions = {}) {
     const url = (query.env[USAGE_URL_ENV]?.trim() || DEFAULT_BASE_URL).replace(/\/+$/, "");
     const { signal } = query;
     const seen = sessions.get(query.sessionId);
-    const after = Math.max(seen?.stamp ?? 0, seen?.endedAt ?? 0);
+    // The consumed stamp is in Cursor's clock (exact); the read end is this host's clock, so it gets the skew slack.
+    const after = Math.max(seen?.stamp ?? 0, seen ? seen.endedAt - skewMs : 0);
     const window = { sessionId: query.sessionId, notBefore: query.startedAt - skewMs, ...(after > 0 ? { after } : {}) };
     const deadline = query.endedAt + deadlineMs;
 
@@ -298,7 +302,9 @@ export function createCursorUsageReader(options: CursorUsageOptions = {}) {
     let last = "no event for the session";
     let wait = firstPollMs;
     try {
-      while (Date.now() < deadline) {
+      for (;;) {
+        // Never sleep past the deadline, and never poll after it.
+        if (deadline - Date.now() < wait) break;
         await sleep(wait, signal);
         if (signal?.aborted) return {};
         if (Date.now() >= deadline) break;
