@@ -44,3 +44,35 @@ Date: 2026-10-17. Host: `cursor-agent` 2026.10.16, API-key auth, `ask` mode, Lin
 ## Decision for the user
 
 Whether to ship an estimated usage (option 1, possibly upgraded by hooks later) or none. Parity row P16 stays `gap` with this reason until entry 10.
+
+## Addendum: second search
+
+Date: 2026-10-18. Result: **an exact source exists, outside ACP: Cursor's usage ledger, keyed by the ACP session id.**
+
+### Workaround (verified live, `cursor-agent` 2026.10.16, API-key auth)
+
+The ACP `sessionId` is Cursor's `conversationId`. Each model request is billed as a ledger event with the exact token counts, readable with the same API key:
+
+```sh
+TOK=$(curl -sS -X POST https://api2.cursor.sh/auth/exchange_user_api_key \
+  -H 'Content-Type: application/json' -H "Authorization: Bearer $CURSOR_API_KEY" -d '{}' | jq -r .accessToken)
+curl -sS -X POST https://api2.cursor.sh/aiserver.v1.DashboardService/GetFilteredUsageEvents \
+  -H 'Content-Type: application/json' -H 'Connect-Protocol-Version: 1' -H "Authorization: Bearer $TOK" \
+  -d '{"page":1,"pageSize":20}'
+```
+
+The response (`usageEventsDisplay`, newest first) has `conversationId`, `timestamp` (ms), `model`, and `tokenUsage{inputTokens,outputTokens,cacheReadTokens,cacheWriteTokens,totalCents}` (absent counts mean 0). Filter by `conversationId` and a timestamp inside the turn. `inputTokens` excludes cache, the same as `-p`.
+
+Checks:
+- Same prompt via `-p --output-format json` (`usage` 6452 / 160 / 30080 / 0) and its ledger event: identical, to the token.
+- ACP: one event per turn (a 2-step tool turn too). Two turns on one session gave two events, each stamped about 0.5 s after the turn started, and visible about 1 s after `prompt` returned (no lag seen in 15 s of polling).
+- Costs no model turn and does not touch the chat.
+
+Caveats: undocumented Dashboard RPC (a Connect JSON call, not the model stream), so degrade to "no usage" on any non-200 or missing event. Team accounts may need `teamId`; not tested. The API-key exchange needs network access to `api2.cursor.sh`.
+
+### Ruled out
+
+- Hooks: the ACP loop never emits the lifecycle hooks. `stop`, `afterAgentResponse`, `beforeSubmitPrompt` and `sessionStart` are called only from the TUI and `-p` loop (`7000.index.js`). ACP builds a hook executor that serves tool hooks only. The user hooks path is `homedir()/.cursor/hooks.json` (not `CURSOR_CONFIG_DIR`); with `HOME` and the workspace `.cursor/hooks.json` set, nothing fired.
+- The server does send the counts (`turnEnded` interaction update: input, output, cacheRead, cacheWrite), but the ACP server (`6136.index.js`) drops it and has no extension method for it.
+- `store.db` holds no billing numbers. It does hold the per-message `requestId`.
+- No `usage` subcommand or ACP usage extension method found; OTEL strings in the bundle belong to Sentry.

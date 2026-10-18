@@ -110,7 +110,7 @@ references = ["architecture-openclaw-all-cli/architecture-openclaw-all-cli.md#ad
 id = 10
 type = "story"
 title = "Per-turn usage on the transcript"
-description = "Emits the usage event from the source chosen in entry 9 so OpenClaw records input, output, and cache tokens per turn; parity row P16."
+description = "Emits the usage event so OpenClaw records input, output, and cache tokens per turn; parity row P16. Source found after entry 9 (see its Addendum): Cursor's server-side usage ledger (api2.cursor.sh GetFilteredUsageEvents, keyed by the ACP sessionId = conversationId), exact and matching -p to the token; falls back to no usage (or the store estimate) on any failure. Undocumented RPC, so it must degrade quietly; team accounts may need teamId."
 verify = "The assistant transcript entry of a live turn carries input, output, and cache token counts matching Cursor's numbers for that turn."
 covers = ["CAP-3"]
 after = [2, 9]
