@@ -3,7 +3,7 @@ title: 'Capability manifest runtime check'
 type: 'feature'
 ticket: '12'
 created: '2026-10-18'
-status: 'in-progress'
+status: done
 baseline_revision: 'bd4a0ce10420d9647345dd189d36856dd5eb1818'
 route: 'full'
 route_source: 'auto'

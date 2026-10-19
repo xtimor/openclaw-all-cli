@@ -2404,7 +2404,10 @@ describe("createExecute capability check (AD-10)", () => {
 
     const resumed = checked([]);
     resumed.adapter.discardSession = async (params) => void discarded.push(params);
-    await run(createExecute(resumed.adapter, { home: HOME }), makeCtx({ useResume: true, sessionId: "user-chat" }));
+    const records = await run(createExecute(resumed.adapter, { home: HOME }), makeCtx({ useResume: true, sessionId: "user-chat" }));
+    // The resumed run really reached the mismatch with the user's chat id, and still discarded nothing.
+    expect(resumed.opens[0]?.resumeSessionId).toBe("user-chat");
+    expect(errorOf(records)).toMatch(/^Capability mismatch/);
     expect(discarded).toHaveLength(1);
   });
 
