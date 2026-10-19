@@ -194,14 +194,16 @@ describeLive("chat continuity across a model switch (P15)", () => {
       const fact = word("FIG");
       const sessions = join(ISOLATED_STATE_DIR, "agents", "main", "agent", "openclaw-all-cli", "cursor-cli", "acp-sessions");
       const before = new Set(existsSync(sessions) ? readdirSync(sessions) : []);
-      expect(ask("cursor-cli/auto", id, `Remember this: the code word is ${fact}. Say ok.`, "--session-key").status).toBe(0);
+      const first = ask("cursor-cli/auto", id, `Remember this: the code word is ${fact}. Say ok.`, "--session-key");
+      expect(first.status, first.raw).toBe(0);
       // The new native chat is the new directory that holds the fact (a model listing may add another).
       const holdsFact = (dir: string) =>
         readdirSync(join(sessions, dir), { recursive: true, withFileTypes: true }).some(
           (entry) => entry.isFile() && readFileSync(join(entry.parentPath, entry.name)).includes(fact),
         );
       const created = readdirSync(sessions).filter((name) => !before.has(name) && holdsFact(name));
-      expect(created).toHaveLength(1);
+      const added = readdirSync(sessions).filter((name) => !before.has(name));
+      expect(created, `new chat dirs: ${JSON.stringify(added)}; holding the fact: ${JSON.stringify(created)}; first reply: ${first.raw}`).toHaveLength(1);
       rmSync(join(sessions, created[0]!), { recursive: true, force: true });
       const next = ask("cursor-cli/auto", id, question, "--session-key");
       // reseedFromRawTranscriptWhenUncompacted: the host builds its history prompt for the resumed turn

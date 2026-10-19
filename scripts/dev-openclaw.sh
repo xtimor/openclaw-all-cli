@@ -65,6 +65,8 @@ install_openclaw() {
   fi
   echo "Installing OpenClaw $OPENCLAW_VERSION into $OPENCLAW_DIR"
   mkdir -p "$OPENCLAW_DIR"
+  # Without its own package.json, npm would walk up and install into the project root.
+  [ -f "$OPENCLAW_DIR/package.json" ] || echo '{"private":true}' > "$OPENCLAW_DIR/package.json"
   (cd "$OPENCLAW_DIR" && PATH="$NODE_DIR/bin:$PATH" npm install --no-audit --no-fund "openclaw@$OPENCLAW_VERSION")
 }
 
@@ -75,6 +77,8 @@ case "$cmd" in
     install_node
     install_openclaw
     use_isolated_env
+    # The isolated Gateway runs with --auth none; its CLI client refuses to connect unless the config says so too.
+    "$OPENCLAW_BIN" config set gateway.auth.mode none >/dev/null
     node --version
     "$OPENCLAW_BIN" --version
     ;;
