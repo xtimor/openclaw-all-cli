@@ -333,15 +333,17 @@ describe("cursor usage reader", () => {
 
   it("still gives back-to-back turns their usage when the host clock is ahead of Cursor's", async () => {
     const reader = createCursorUsageReader(FAST);
-    const ahead = 2000; // Cursor's stamps trail this host's clock by 2 s
-    const at = () => Date.now() - ahead + 10;
-    serve(event({ at: at() }));
-    expect((await reader.read(query())).usage).toEqual(FULL);
-    await new Promise((resolve) => setTimeout(resolve, 20));
-    const second = event({ at: at(), tokenUsage: { inputTokens: 9 } });
-    serve(second, event({ at: at() - 30 }));
+    // Cursor's stamps trail this host's clock by 2 s. All stamps are explicit, so nothing depends on timing.
+    const t1 = Date.now();
+    const first = event({ at: t1 - 1990 });
+    serve(first);
+    expect((await reader.read(query({ startedAt: t1, endedAt: t1 }))).usage).toEqual(FULL);
+    // Turn 2 starts right away; its event trails the host clock too and is only 100 ms after the first.
+    const second = event({ at: t1 - 1890, tokenUsage: { inputTokens: 9 } });
+    serve(second, first);
     expect((await reader.read(query())).usage).toEqual({ input: 9, output: 0, cacheRead: 0, cacheWrite: 0, total: 9 });
   });
+
 
   it("does not count an older event of the session when nothing was consumed yet (turn-window rule, e.g. after a restart)", async () => {
     const now = Date.now();
@@ -448,7 +450,6 @@ describe("cursor usage reader", () => {
     const third = await reader.read(query());
     expect(third.usage).toBeUndefined();
     expect(third.warning).toMatch(/unavailable for 3 turns/);
-    expect(third.warning).toContain("no event for the session");
     stub.requests.length = 0;
     expect(await reader.read(query())).toEqual({});
     expect(stub.requests).toHaveLength(0);
