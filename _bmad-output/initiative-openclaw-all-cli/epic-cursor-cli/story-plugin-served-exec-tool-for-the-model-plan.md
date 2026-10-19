@@ -117,6 +117,8 @@ Probe results (cursor-agent 2026.10.16, OpenClaw 2026.10.3):
 - `CURSOR_API_KEY` is visible to exec commands. `setup.providers[].envVars` did not remove it and changed auth display, so it is not adopted; documented, with the login-only alternative.
 - Approvals need an approval-capable client: a headless `openclaw agent` run is denied at once under `ask: always`; with a WS client (`caps ["approvals"]`, admin scope) the approval is pending and allow-once runs the command, deny does not.
 
+- Cost of agent mode: the model acts more eagerly (a trivial "remember this" turn: 6 tool calls, about 105k tokens), and OpenClaw's `cli_budget` compaction can then fail the turn without an API model. It failed `history-continuity.live.test.ts` (c) once in the full suite; a re-run of that file passed 5 of 5. Documented in Known limits.
+
 Unverified: the sandbox row (no docker daemon here); exec host `node` and capped runs (documented from the host source, not run); behavior on OpenClaw versions other than 2026.10.3.
 
 ## Plan Change Log

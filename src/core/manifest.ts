@@ -18,7 +18,7 @@ export type DerivedFlags = {
   resume: boolean;
   /** P7: OpenClaw's tools reach the CLI through the MCP proxy. */
   mcp: boolean;
-  /** P8: the host's own exec tools are served instead of the CLI's (`hostOwnedTools`). */
+  /** P8: the host's own exec tools are served instead of the CLI's (`hostOwnedTools`); the backend sets it only together with P7 (the MCP path) and P10 (`execution-args`). */
   hostTools: boolean;
   /** P9: the CLI's permission requests go to the host for a decision; undecided, they are rejected. */
   approvals: boolean;
