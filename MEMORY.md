@@ -7,6 +7,8 @@
 
 ## Decisions (user)
 
+- Dev environment setup (user, 2026-10-19): a cloud/background session installs Node 24 + OpenClaw (`.spike`), npm deps, and `cursor-agent` through one agent-neutral script, `scripts/dev-setup.sh` (`npm run dev:env`). Claude Code (`.claude/hooks/session-start.sh`) and Cursor (`.cursor/environment.json`) only call it. Put no logic in agent-specific files; the work must run in Cursor as well, not just Claude Code. Proposed for `AGENTS.md` (needs the user's permission).
+
 - Goal: `claude-cli` experience and features for every CLI; Cursor first, Antigravity next.
 - The agent decides design; the user decides strategy only.
 - Work only against the isolated OpenClaw; the user's own Node and OpenClaw (`~/.openclaw`, 2026.2.22) are upgraded at the end (epic entry 18).

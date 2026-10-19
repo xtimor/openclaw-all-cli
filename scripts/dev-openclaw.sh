@@ -65,6 +65,8 @@ install_openclaw() {
   fi
   echo "Installing OpenClaw $OPENCLAW_VERSION into $OPENCLAW_DIR"
   mkdir -p "$OPENCLAW_DIR"
+  # Without its own package.json, npm would walk up and install into the project root.
+  [ -f "$OPENCLAW_DIR/package.json" ] || echo '{"private":true}' > "$OPENCLAW_DIR/package.json"
   (cd "$OPENCLAW_DIR" && PATH="$NODE_DIR/bin:$PATH" npm install --no-audit --no-fund "openclaw@$OPENCLAW_VERSION")
 }
 
