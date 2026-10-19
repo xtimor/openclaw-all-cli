@@ -437,6 +437,35 @@ describe("AcpSession", () => {
     });
   });
 
+  it("reports the capabilities the agent lists in initialize, in the core's names", async () => {
+    expect([...(await start()).capabilities].sort()).toEqual(["httpMcp", "imagePrompts", "resumeSession"]);
+    const bare = await start({ env: { FAKE_CURSOR_CAPS: JSON.stringify({ loadSession: false, mcpCapabilities: { http: false, sse: true }, promptCapabilities: {} }) } });
+    expect([...bare.capabilities]).toEqual([]);
+    const none = await start({ env: { FAKE_CURSOR_CAPS: JSON.stringify({ mcpCapabilities: null }) } });
+    expect(none.capabilities.has("httpMcp")).toBe(false);
+  });
+
+  it("logs in when the agent lists the method, or lists none, and skips the login for an empty list", async () => {
+    const methods = async (authMethods: string | undefined) => {
+      const file = logFile();
+      await start({ env: { FAKE_CURSOR_LOG: file, ...(authMethods ? { FAKE_CURSOR_AUTH_METHODS: authMethods } : {}) } });
+      return requests(file).map((request) => request.method);
+    };
+    expect(await methods(undefined)).toContain("authenticate");
+    expect(await methods('[{"id":"cursor_login"}]')).toContain("authenticate");
+    expect(await methods("[]")).not.toContain("authenticate");
+    expect(await methods("[]")).toContain("session/new");
+  });
+
+  it("fails with capability_mismatch, without logging in, when the login method is gone", async () => {
+    const file = logFile();
+    const failure = await AcpSession.open(options({ env: { FAKE_CURSOR_LOG: file, FAKE_CURSOR_AUTH_METHODS: '[{"id":"other"}]' } })).catch((error) => error);
+    expect(failure).toMatchObject({ code: "capability_mismatch" });
+    expect(failure.message).toContain('no "cursor_login" login method');
+    expect(failure.message).toContain('"other"');
+    expect(requests(file).map((request) => request.method)).not.toContain("authenticate");
+  });
+
   it("rejects an unsupported protocol version", async () => {
     await expect(AcpSession.open(options({ env: { FAKE_CURSOR_PROTOCOL: "2" } }))).rejects.toMatchObject({
       code: "unsupported_version",

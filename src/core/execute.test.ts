@@ -16,6 +16,7 @@ import {
   CliError,
   type CheckVersionParams,
   type CliAdapter,
+  type CliCapability,
   type CliSession,
   type NormalizedEvent,
   type OpenParams,
@@ -53,6 +54,8 @@ const fake = { exitDelayMs: 0 };
 
 class FakeSession implements CliSession {
   alive = true;
+  /** What the CLI reported at open; absent means it reports nothing. */
+  capabilities?: ReadonlySet<CliCapability>;
   cancelled = 0;
   closed = 0;
   prompts: string[] = [];
@@ -2342,5 +2345,126 @@ describe("createExecute usage port", () => {
     };
     await run(createExecute(adapter, { home: HOME }), makeCtx());
     expect(queries[0]!.endedAt - queries[0]!.startedAt).toBeGreaterThanOrEqual(70);
+  });
+});
+
+describe("createExecute capability check (AD-10)", () => {
+  const needsHttp = createManifest("1", { P7: { status: "match", note: "", requires: ["httpMcp"] } });
+  /** An adapter whose sessions report `reported` (undefined: nothing). */
+  function checked(reported: CliCapability[] | undefined, manifest = needsHttp) {
+    const harness = makeAdapter();
+    Object.assign(harness.adapter, { manifest });
+    const open = harness.adapter.open;
+    harness.adapter.open = async (params) => {
+      const session = (await open(params)) as FakeSession;
+      if (reported) session.capabilities = new Set(reported);
+      return session;
+    };
+    return harness;
+  }
+  const errorOf = (records: Record<string, unknown>[]) => (parsed(records).at(-1) as { errorText?: string }).errorText;
+
+  it("fails the turn, closes the session, and never sends the prompt when a decided row's capability is missing", async () => {
+    const { adapter, sessions } = checked([]);
+    const { live, calls } = makeLive();
+    const records = await run(createExecute(adapter, { home: HOME }), makeCtx({ liveSession: live, env: usableEnv }));
+    expect(records).toHaveLength(1);
+    expect(records[0]).toMatchObject({
+      type: "result",
+      is_error: true,
+      event: { kind: "error", error: { code: "capability_mismatch", retryable: false } },
+    });
+    expect(errorOf(records)).toBe(
+      "Capability mismatch: Acme does not report HTTP MCP servers (parity row P7), which the plugin's manifest needs. Update the CLI.",
+    );
+    expect(sessions).toHaveLength(1);
+    expect(sessions[0]!.prompts).toEqual([]);
+    expect(sessions[0]!.closed).toBeGreaterThanOrEqual(1);
+    expect(sessions[0]!.alive).toBe(false);
+    expect(calls.remove).toBe(1);
+    // The proxy ended with the handle.
+    expect(await proxyRefuses(proxies.started.at(-1)!.url)).toBe(true);
+  });
+
+  it("releases the turn slot and the chat, so the next turn runs", async () => {
+    const harness = checked([]);
+    const pool = new ProcessPool({ maxTurns: 1, maxProcesses: 1 });
+    const execute = createExecute(harness.adapter, { home: HOME, pool });
+    const first = await run(execute, makeCtx({ useResume: true, sessionId: "native-1" }));
+    expect(errorOf(first)).toMatch(/^Capability mismatch/);
+    // Now the CLI reports it: the same chat opens at once, with no slot or chat still held.
+    Object.assign(harness.adapter, { manifest: createManifest("1", {}) });
+    const second = await run(execute, makeCtx({ useResume: true, sessionId: "native-1" }));
+    expect(parsed(second).at(-1)).toMatchObject({ kind: "result", text: "echo:hi" });
+  });
+
+  it("checks a side question too", async () => {
+    const { adapter, sessions } = checked([]);
+    const records = await run(createExecute(adapter, { home: HOME }), makeCtx({ executionMode: "side-question" }));
+    expect(errorOf(records)).toMatch(/^Capability mismatch/);
+    expect(sessions[0]!.prompts).toEqual([]);
+  });
+
+  it("runs the turn when the CLI reports the capability, or more", async () => {
+    for (const reported of [["httpMcp"], ["httpMcp", "resumeSession", "imagePrompts"]] as CliCapability[][]) {
+      const { adapter } = checked(reported);
+      const records = await run(createExecute(adapter, { home: HOME }), makeCtx());
+      expect(parsed(records).at(-1)).toMatchObject({ kind: "result", text: "echo:hi" });
+    }
+  });
+
+  it("does not check a session that reports nothing", async () => {
+    const { adapter } = checked(undefined);
+    const records = await run(createExecute(adapter, { home: HOME }), makeCtx());
+    expect(parsed(records).at(-1)).toMatchObject({ kind: "result", text: "echo:hi" });
+  });
+
+  it("does not check an undecided row", async () => {
+    const { adapter } = checked([], createManifest("1", { P7: { status: "spike", note: "", requires: ["httpMcp"] } }));
+    const records = await run(createExecute(adapter, { home: HOME }), makeCtx());
+    expect(parsed(records).at(-1)).toMatchObject({ kind: "result", text: "echo:hi" });
+  });
+
+  it("checks a process once: a warm process is reused without a new check", async () => {
+    const { adapter, sessions } = checked(["httpMcp"]);
+    const { live } = makeLive();
+    const execute = createExecute(adapter, { home: HOME });
+    await run(execute, makeCtx({ liveSession: live, env: usableEnv }));
+    sessions[0]!.capabilities = new Set();
+    const records = await run(execute, makeCtx({ liveSession: live, env: usableEnv, useResume: true, sessionId: "native-1" }));
+    expect(parsed(records).at(-1)).toMatchObject({ kind: "result" });
+    expect(sessions).toHaveLength(1);
+  });
+});
+
+describe("createExecute approvals and usage gates (P9, P16)", () => {
+  const shell: PermissionRequest = { title: "`ls`", kind: "execute", toolCallId: "c1", toolName: "exec", toolInput: { command: "ls" } };
+
+  it("rejects a permission request without asking the host when approvals are off (P9)", async () => {
+    const decisions: PermissionDecision[] = [];
+    const script: Script = async function* () {
+      decisions.push(await harness.opens[0]!.onPermissionRequest(shell));
+      yield { kind: "result", text: "done", stopReason: "end_turn" };
+    };
+    const harness = makeAdapter(script);
+    const requestToolPermission = vi.fn(async () => ({ behavior: "allow" as const, updatedInput: {} }));
+    await run(createExecute(harness.adapter, { home: HOME, approvals: false }), makeCtx({ requestToolPermission }));
+    expect(decisions).toEqual(["reject_once"]);
+    expect(requestToolPermission).not.toHaveBeenCalled();
+    await expect(harness.opens[0]!.onPermissionRequest(shell)).resolves.toBe("cancelled");
+  });
+
+  it("never calls the adapter's usage reader when usage is off (P16)", async () => {
+    const noUsage: Script = async function* () {
+      yield { kind: "result", text: "done", stopReason: "end_turn" };
+    };
+    const { adapter } = makeAdapter(noUsage);
+    const readUsage = vi.fn(async () => ({ usage: { input: 1 } }));
+    adapter.readUsage = readUsage;
+    const records = await run(createExecute(adapter, { home: HOME, usage: false }), makeCtx());
+    expect(readUsage).not.toHaveBeenCalled();
+    expect(records.at(-1)).not.toHaveProperty("usage");
+    await run(createExecute(adapter, { home: HOME }), makeCtx());
+    expect(readUsage).toHaveBeenCalledTimes(1);
   });
 });

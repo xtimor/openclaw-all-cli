@@ -739,6 +739,40 @@ describe("synthetic auth provider entry", () => {
   });
 });
 
+describe("provider entry by parity row (P1, P2, P17)", () => {
+  const config = { plugins: { entries: { "openclaw-all-cli": { config: { "cursor-cli": { command: FAKE_CURSOR_AGENT } } } } } };
+  const without = (row: string) => ({
+    ...cursorAdapter,
+    manifest: createManifest(cursorAdapter.manifest.minVersion, {
+      ...cursorAdapter.manifest.rows,
+      [row]: { status: "spike", note: "" },
+    }),
+  });
+  type Entry = { catalog?: unknown; prepareSyntheticAuth: (c: unknown) => Promise<unknown> };
+
+  it("publishes no catalog when P1 is undecided", () => {
+    const entry = createSyntheticAuthProvider(without("P1"), createModelCatalog(without("P1"))) as unknown as Entry;
+    expect(entry.catalog).toBeUndefined();
+    expect(createSyntheticAuthProvider(cursorAdapter, createModelCatalog(cursorAdapter))).toHaveProperty("catalog");
+  });
+
+  it("returns no auth and probes nothing when P2 is undecided", async () => {
+    const probeAuth = vi.fn(async () => "available" as const);
+    const adapter = { ...without("P2"), probeAuth };
+    const entry = createSyntheticAuthProvider(adapter) as unknown as Entry;
+    await expect(entry.prepareSyntheticAuth({ provider: "cursor-cli", config, env: fakeEnv() })).resolves.toBeUndefined();
+    expect(probeAuth).not.toHaveBeenCalled();
+  });
+
+  it("probes with the full env when P17 is undecided", async () => {
+    const seen: Array<Record<string, string | undefined>> = [];
+    const adapter = { ...without("P17"), probeAuth: async (p: { env: Record<string, string | undefined> }) => (seen.push(p.env), "available" as const) };
+    const entry = createSyntheticAuthProvider(adapter) as unknown as Entry;
+    await entry.prepareSyntheticAuth({ provider: "cursor-cli", config, env: { PATH: "/bin", CURSOR_API_BASE_URL: "http://elsewhere" } });
+    expect(seen).toEqual([{ PATH: "/bin", CURSOR_API_BASE_URL: "http://elsewhere" }]);
+  });
+});
+
 describe("provider catalog entry", () => {
   type Row = { id: string; name: string; cost: unknown; input: unknown; reasoning: boolean };
   type Result = { provider: { baseUrl: string; api: string; models: Row[] } } | null;

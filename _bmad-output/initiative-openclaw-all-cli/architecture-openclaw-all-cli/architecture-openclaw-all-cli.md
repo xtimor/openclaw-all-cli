@@ -121,7 +121,7 @@ flowchart LR
 
 - **Binds:** CAP-10, CAP-11, CAP-12
 - **Prevents:** backend flags set ad hoc per adapter; the parity matrix and the code drifting apart.
-- **Rule:** Each adapter exports a static manifest keyed by the parity rows P1–P19 of `claude-cli-parity.md`, each marked `match`, `approx`, or `gap`. The core derives backend flags only from it. At `open`, the adapter checks the manifest against what the CLI reports (ACP `agentCapabilities`, version), and a mismatch fails the turn with `CliError` code `capability_mismatch`. A manifest change updates the matrix, `docs/providers/<cli>.md`, and that row's live test in the same change.
+- **Rule:** Each adapter exports a static manifest keyed by the parity rows P1–P19 of `claude-cli-parity.md`, each marked `match`, `approx`, or `gap`. The core derives backend flags only from it. Each backend mechanism has one parity row (`FLAG_ROWS`); rows that set no flag are listed with a reason (`NO_FLAG_ROWS`). Manifest rows may declare the runtime capabilities they `requires`; the transport maps what the CLI reports (ACP `agentCapabilities`) onto neutral names, and the core checks, right after the adapter's open, the capabilities the session reports, for decided rows only. A mismatch fails the turn with `CliError` code `capability_mismatch` before any prompt. The version stays a separate check (AD-14). A manifest change updates the matrix, `docs/providers/<cli>.md`, and that row's live test in the same change.
 
 ### AD-11 — The host owns timers, the core owns process shutdown
 

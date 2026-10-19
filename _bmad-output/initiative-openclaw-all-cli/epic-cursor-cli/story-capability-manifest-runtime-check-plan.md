@@ -3,7 +3,7 @@ title: 'Capability manifest runtime check'
 type: 'feature'
 ticket: '12'
 created: '2026-10-18'
-status: 'ready-for-dev'
+status: 'in-progress'
 baseline_revision: 'bd4a0ce10420d9647345dd189d36856dd5eb1818'
 route: 'full'
 route_source: 'auto'
@@ -74,13 +74,13 @@ deferred: []
 ## Tasks & Acceptance
 
 **Execution:**
-- [ ] `test/fixtures/fake-cursor-agent.mjs` -- real-shaped init, `FAKE_CURSOR_CAPS`, `FAKE_CURSOR_AUTH_METHODS` -- every later test needs them; without `httpMcp` in the default every fake turn would fail.
-- [ ] `src/core/ports.ts`, `src/transports/acp/session.ts` -- capability type, `requires`, session report, auth-method mismatch.
-- [ ] `src/core/manifest.ts`, `src/adapters/cursor/manifest.ts` -- full flag set, row tables, `missingCapabilities`, `capabilityMismatch`, Cursor `requires` and P6 reason.
-- [ ] `src/core/backend.ts`, `src/core/execute.ts`, `src/core/synthetic-auth.ts` -- gate each mechanism on its flag; the check after open.
-- [ ] Unit tests -- `manifest.test.ts`: each flag from its row alone. `FLAG_ROWS` ∪ `NO_FLAG_ROWS` covers P1–P19 exactly once. `missingCapabilities` matrix rows. For every adapter in `ADAPTERS`: each `gap` row has a non-empty note, the matrix cell for it reads `gap: <reason>`, and P6/P11/P12/P14 are not decided. `test/backend.test.ts`: an all-`tbd` manifest gives only structural fields. Toggling each row alone adds exactly its fields (table-driven). Rows whose mechanism lives elsewhere add no backend field: P2, P13 and P1's catalog live in the provider entry, P9 and P16 in execute, and the `liveTest` probes need P19 as well. Those are asserted where they live. The Cursor backend is unchanged except `defaultMcpProbe`. With the fake agent through `prepareExecution`/`execute`: `FAKE_CURSOR_CAPS={"mcpCapabilities":{"http":false}}` ends in an error event `code: "capability_mismatch"` naming P7, `FAKE_CURSOR_LOG` has no `session/prompt`, and the process exits. The same caps with P7 `spike` give a normal reply. `session.test.ts`: the capability mapping and the three auth rows. `execute.test.ts`: stub session missing a capability (slot, lock, chat released; handle closed), no report means no check, `approvals: false`, `usage: false`. `synthetic-auth`/catalog tests: P1, P2, P17 undecided.
-- [ ] `test/live/capability-check.live.test.ts` (gated; AD-10, P5, P7) -- (a) fake shim exporting `FAKE_CURSOR_CAPS={"mcpCapabilities":{"http":false}}` and `FAKE_CURSOR_LOG`, set as `cursor-cli.command`; `openclaw agent --local` output contains `Capability mismatch` and `P7`, and the log has no `session/prompt`. (b) The same with `{"loadSession":false}` naming P5. (c) Real Cursor with the command unset: a turn replies, so real Cursor passes the check. Unset the command in `afterAll`.
-- [ ] Docs -- `docs/providers/cursor.md`: a "Capability check" subsection under Operations covers what is checked at each open (P5 session resume, P7 HTTP MCP, P13 once decided), the checks that already exist (ask mode, model list for a named model, ACP protocol, version) and the rows with no runtime signal. Add the new P6 reason to the parity table. `docs/setup.md` troubleshooting: `Capability mismatch: ... (parity row Pn)` → run `cursor-agent update`, or report it with the version; a `no "<id>" login method` row. Parity matrix P6 cell. Architecture AD-10 rule: "the core checks, right after the adapter's open, the capabilities the session reports". MEMORY: the real `initialize` report (2026.10.16, below), no fork/resume capability, and the new fake knobs.
+- [x] `test/fixtures/fake-cursor-agent.mjs` -- real-shaped init, `FAKE_CURSOR_CAPS`, `FAKE_CURSOR_AUTH_METHODS` -- every later test needs them; without `httpMcp` in the default every fake turn would fail.
+- [x] `src/core/ports.ts`, `src/transports/acp/session.ts` -- capability type, `requires`, session report, auth-method mismatch.
+- [x] `src/core/manifest.ts`, `src/adapters/cursor/manifest.ts` -- full flag set, row tables, `missingCapabilities`, `capabilityMismatch`, Cursor `requires` and P6 reason.
+- [x] `src/core/backend.ts`, `src/core/execute.ts`, `src/core/synthetic-auth.ts` -- gate each mechanism on its flag; the check after open.
+- [x] Unit tests -- `manifest.test.ts`: each flag from its row alone. `FLAG_ROWS` ∪ `NO_FLAG_ROWS` covers P1–P19 exactly once. `missingCapabilities` matrix rows. For every adapter in `ADAPTERS`: each `gap` row has a non-empty note, the matrix cell for it reads `gap: <reason>`, and P6/P11/P12/P14 are not decided. `test/backend.test.ts`: an all-`tbd` manifest gives only structural fields. Toggling each row alone adds exactly its fields (table-driven). Rows whose mechanism lives elsewhere add no backend field: P2, P13 and P1's catalog live in the provider entry, P9 and P16 in execute, and the `liveTest` probes need P19 as well. Those are asserted where they live. The Cursor backend is unchanged except `defaultMcpProbe`. With the fake agent through `prepareExecution`/`execute`: `FAKE_CURSOR_CAPS={"mcpCapabilities":{"http":false}}` ends in an error event `code: "capability_mismatch"` naming P7, `FAKE_CURSOR_LOG` has no `session/prompt`, and the process exits. The same caps with P7 `spike` give a normal reply. `session.test.ts`: the capability mapping and the three auth rows. `execute.test.ts`: stub session missing a capability (slot, lock, chat released; handle closed), no report means no check, `approvals: false`, `usage: false`. `synthetic-auth`/catalog tests: P1, P2, P17 undecided.
+- [x] `test/live/capability-check.live.test.ts` (gated; AD-10, P5, P7) -- (a) fake shim exporting `FAKE_CURSOR_CAPS={"mcpCapabilities":{"http":false}}` and `FAKE_CURSOR_LOG`, set as `cursor-cli.command`; `openclaw agent --local` output contains `Capability mismatch` and `P7`, and the log has no `session/prompt`. (b) The same with `{"loadSession":false}` naming P5. (c) Real Cursor with the command unset: a turn replies, so real Cursor passes the check. Unset the command in `afterAll`.
+- [x] Docs -- `docs/providers/cursor.md`: a "Capability check" subsection under Operations covers what is checked at each open (P5 session resume, P7 HTTP MCP, P13 once decided), the checks that already exist (ask mode, model list for a named model, ACP protocol, version) and the rows with no runtime signal. Add the new P6 reason to the parity table. `docs/setup.md` troubleshooting: `Capability mismatch: ... (parity row Pn)` → run `cursor-agent update`, or report it with the version; a `no "<id>" login method` row. Parity matrix P6 cell. Architecture AD-10 rule: "the core checks, right after the adapter's open, the capabilities the session reports". MEMORY: the real `initialize` report (2026.10.16, below), no fork/resume capability, and the new fake knobs.
 
 **Acceptance Criteria:**
 - Given an all-`tbd` manifest and each parity row decided alone, when the backend is built, then it carries exactly the fields of that row's flag and no others.
@@ -89,6 +89,13 @@ deferred: []
 - Given the Cursor manifest, when its gap rows are read, then each states a reason, and the matrix row says the same gap with a reason.
 
 ## Implementation Notes
+
+- Built as planned. `FLAG_ROWS`/`NO_FLAG_ROWS` live in `src/core/manifest.ts`; `deriveFlags` is generated from `FLAG_ROWS`. `liveTest` is emitted only with P19 (`defaultImageProbe: flags.images`, `defaultMcpProbe: flags.mcp`), so the Cursor backend differs only by `defaultMcpProbe: true`. `hostOwnedTools` moved to P8 (`hostTools`), independent of P7. Ticket 1.19 had not landed; if it adds a P8 mechanism, gate it on `hostTools`.
+- Auth-method check is in the ACP `setup`: absent list logs in, empty list skips, a list without the id throws `capability_mismatch` before `authenticate`.
+- The check sits in `attachSession` after the `entry.closed` check and before `entry.session` is set, so a mismatch leaves no registered session; the caller's catch closes the handle (slot, chat, proxy, lock released as for a failed open).
+- Gap-reason test skips P3 in the "undecided" assertion (P3 is `approx`: streaming is the seam every adapter has); P6/P11/P12/P14 are asserted undecided. The P6 matrix cell and the manifest note carry the same reason.
+- Fake agent default `initialize` now matches the real report and drops `agentInfo`.
+- Docs: `docs/providers/cursor.md` (Capability check, P6 row), `docs/setup.md` (two troubleshooting rows), parity matrix (P5, P6, P7 cells), AD-10 rule, MEMORY entry 12.
 
 ## Plan Change Log
 
