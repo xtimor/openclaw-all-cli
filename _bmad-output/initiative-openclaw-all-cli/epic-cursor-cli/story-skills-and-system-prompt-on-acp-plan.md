@@ -18,7 +18,8 @@ context:
   - '{project-root}/_bmad-output/initiative-openclaw-all-cli/spec-cursor-cli-provider/claude-cli-parity.md'
   - '{project-root}/MEMORY.md'
 warnings: [oversized]
-deferred: []
+deferred:
+  - 'Cursor may shorten the block after summarizing a long chat: no detection exists; documented as a Known limit, no code.'
 ---
 
 <intent-contract>
@@ -114,13 +115,23 @@ deferred: []
 
 - Code Map adapted to the code after 1.12 and 1.19: flags come from `FLAG_ROWS` (new `systemPrompt: "P12"`); `NO_FLAG_ROWS` lost P12 only, P11 stays there with the new reason. In `backend.ts` the two config fields sit next to the other flag-gated `config` fields, and `createExecute` gets `systemPrompt: flags.systemPrompt`. In `execute.ts` the edit is five spots: the option, `composePrompt` (block first, before the continuity note), the `system`/`chat`/`sendSystem` lines before the prompt loop, and `delivered.record` on `result`. 1.19's marker arg (`HOST_SHELL_ARG`), reuse key, and agent-mode choice are untouched; the system-prompt marker is separate and never reaches argv.
 - The ledger key reuses `chatKey(home, session.sessionId)` of the id the CLI ended up with, so a `session/load` that renames the chat is tracked under the new id.
-- Interactions checked: fresh chat with the 1.11 note (block, note, context, prompt; test); a resumed chat with the same or changed prompt (tests, live drift row e); warm reuse needs no case, since the ledger is keyed by chat, not process (a reused or restarted process of one chat gets the block only on change); side question (block every time, ledger untouched, test); resumed chat after a Gateway restart (empty ledger, one duplicate block, harmless). Host prompt limits: no cap on the plugin's prompt was found in `execute.runtime`; the host's `cli_budget` compaction measures the transcript, not the block, so the block's tokens (~8k) live only in Cursor's chat.
+- Interactions checked: fresh chat with the 1.11 note (block, note, context, prompt; test); a resumed chat with the same or changed prompt (tests, live drift row e); warm reuse needs no case, since the ledger is keyed by chat, not process (a reused or restarted process of one chat gets the block only on change); side question (block every time, ledger untouched, test); resumed chat after a Gateway restart (empty ledger, one duplicate block, harmless). Host prompt limits: no cap on the plugin's prompt was found in `execute.runtime`; the host's `cli_budget` compaction takes max(transcript estimate, session total tokens from reported usage), so with usage (P16) every block copy in Cursor's chat counts toward it (corrected in the review fixes).
 - Tests: `src/core/system-prompt.test.ts` (7), `test/system-prompt.test.ts` (9: one per matrix row the fake can show), manifest and backend tests extended; the fake agent logs `argv` on `initialize`. Live: `test/live/skills-system-prompt.live.test.ts` (a-e) passed against real Cursor and OpenClaw 2026.10.3.
 - `docs/setup.md` needs no change: no new setup or config. Docs: `docs/providers/cursor.md` section "System prompt and skills", parity P11/P12 rows, two Known limits; matrix cells P11/P12; architecture AD-15 and CAP-6/CAP-11 rows; MEMORY entry 13.
 
 ## Plan Change Log
 
 ## Review Triage Log
+
+Review batch 1 and 2 (coordinator, 2026-10-19), all applied unless noted:
+- Ledger persisted: hash file `system-prompt-delivered.json` in the agent home (atomic, tolerant, merged, LRU 1000, hits refresh); a `--local` run or restart no longer resends. Tests: two prepared turns sharing a home, corrupt file, no text in the file, merge, eviction.
+- Volatile fields masked in the change hash (`Current date:`; `Runtime:` `model`, `channel`, `capabilities`, `active_node`, `active_node_identity`); the resent block is the real text. Trade-off documented.
+- Moved chat: the check also accepts the id the turn resumed (`ctx.sessionId`), and the record goes under the new id. Not the literal `ctx.sessionId ?? session.sessionId` of the batch: that would record under the old id and resend on the next turn.
+- Marker stripped in `splitHostShell`'s args; tested through the real argv path (the old "never launches" test could not fail).
+- Forgery: header opener and tag name neutralized (zero-width space) in the system text, user text, `prependContext`, `appendContext`. Nonce (c) skipped: a model that only reads text cannot check which id is "the first one", and a resend after a restart or drift would carry a new id, so the rule would be incoherent.
+- Test gaps: helper reads the id from the `sessionId` event; crash and abort tests assert the `session/load` of the crashed id and the resent block; the side-question test uses a colliding native id; mutations confirmed (record on error, record early, no file, no neutralizing, no masking, no strip, side question recording, no resumed-id check, unneutralized system text): each fails a test.
+- Live test: skill outside the cwd, differing blocks in drift, unchanged prompt across two `--local` runs sends one block, retries, control run.
+- Docs and architecture: AD-15 reconciled with AD-5/AD-10, open question row, bootstrap routing side effect, ambient skill sources, compaction note, cost of a stopped turn.
 
 ## Design Notes
 

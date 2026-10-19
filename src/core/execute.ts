@@ -6,7 +6,13 @@ import { OPENCLAW_MCP_SERVER, readTurnTarget, type TurnTarget } from "./mcp-targ
 import { recordProcess, type ProcessLock } from "./pid-locks.ts";
 import { capabilityMismatch, missingCapabilities, requiredCapabilities } from "./manifest.ts";
 import { readTurnUsage } from "./usage.ts";
-import { delivered, systemPromptBlock } from "./system-prompt.ts";
+import {
+  DeliveredPrompts,
+  SYSTEM_PROMPT_TRANSPORT_MARKER,
+  deliveredFileFor,
+  neutralizeBlockMarkers,
+  systemPromptBlock,
+} from "./system-prompt.ts";
 import { ProcessPool, type PoolMember, type TurnSlot } from "./pool.ts";
 import { routePermission, type PermissionTurn } from "./permissions.ts";
 import {
@@ -139,7 +145,11 @@ const HOST_SHELL_TOOL = "exec";
 
 /** Whether the host serves a shell tool for this turn, and the launch args without the marker. */
 function splitHostShell(ctx: ExecuteContext): { hostShell: boolean; args: string[] } {
-  return { hostShell: ctx.args.includes(HOST_SHELL_ARG), args: ctx.args.filter((arg) => arg !== HOST_SHELL_ARG) };
+  // The system-prompt marker is the host's to read, never the CLI's: strip it if a host passes it on.
+  return {
+    hostShell: ctx.args.includes(HOST_SHELL_ARG),
+    args: ctx.args.filter((arg) => arg !== HOST_SHELL_ARG && arg !== SYSTEM_PROMPT_TRANSPORT_MARKER),
+  };
 }
 
 /** A side question runs beside the chat, never in it (AD-13: mode is part of the reuse key). */
@@ -152,9 +162,15 @@ function reuseKey(ctx: ExecuteContext, home: AgentHome, authProfileId: string | 
   return JSON.stringify([ctx.modelId, modeOf(ctx), splitHostShell(ctx).hostShell, ctx.cwd, home.dir, authProfileId ?? null]);
 }
 
-function composePrompt(ctx: ExecuteContext, note?: string, system?: string): string {
+/**
+ * `system` is the block, when this turn sends one. With a system prompt on, the rest of the turn's
+ * text (user text and both contexts, which may carry channel messages or tool output) is stripped of
+ * the block's header and tags, so it can never pass for a system block.
+ */
+function composePrompt(ctx: ExecuteContext, note?: string, system?: string, guard = false): string {
   const { prependContext, appendContext } = ctx.promptContext ?? {};
-  return [system, note, prependContext, ctx.prompt, appendContext].filter((part): part is string => Boolean(part)).join("\n\n");
+  const plain = (text: string | undefined) => (guard && text ? neutralizeBlockMarkers(text) : text);
+  return [system, note, plain(prependContext), plain(ctx.prompt), plain(appendContext)].filter((part): part is string => Boolean(part)).join("\n\n");
 }
 
 /**
@@ -218,6 +234,8 @@ export function createExecute(adapter: CliAdapter, options: ExecuteOptions): Cli
   const callDeadlineMs = options.callDeadlineMs ?? (adapter.mcpCallTimeoutMs ? Math.max(1_000, adapter.mcpCallTimeoutMs - MCP_DEADLINE_MARGIN_MS) : undefined);
   const continuity = options.continuity ?? false;
   const deliversSystemPrompt = options.systemPrompt ?? false;
+  // AD-15: what each chat of this home last received (hashes only), kept in the home so a restart or a `--local` run does not resend.
+  const delivered = deliversSystemPrompt ? new DeliveredPrompts(deliveredFileFor(home.dir)) : undefined;
   const approvals = options.approvals ?? true;
   const readsUsage = options.usage ?? true;
   const required = requiredCapabilities(adapter.manifest);
@@ -641,11 +659,15 @@ export function createExecute(adapter: CliAdapter, options: ExecuteOptions): Cli
       // AD-15: the host's system prompt, once per chat and again when it changes. A side question's
       // chat is thrown away, so it always gets the block and leaves the ledger alone.
       const system = deliversSystemPrompt ? (ctx.systemPrompt ?? "").trim() : "";
-      const chat = sideQuestion ? undefined : chatKey(home, active.session.sessionId);
-      const sendSystem = Boolean(system) && (!chat || delivered.needs(chat, system));
+      // The chat is the id the CLI ended up with, which the host stores for the next turn. A load that
+      // moved the chat answers with a new id, so the id the turn resumed counts as the same chat.
+      const chat = sideQuestion ? undefined : active.session.sessionId;
+      const resumed = sideQuestion || !ctx.useResume ? undefined : ctx.sessionId;
+      const sendSystem =
+        Boolean(system) && (!chat || [chat, resumed].every((id) => !id || Boolean(delivered?.needs(id, system))));
       const startedAt = Date.now();
       for await (const event of active.session.prompt(
-        composePrompt(ctx, note, sendSystem ? systemPromptBlock(system) : undefined),
+        composePrompt(ctx, note, sendSystem ? systemPromptBlock(system) : undefined, deliversSystemPrompt),
       )) {
         if (event.kind === "usage") {
           summary.usage = event.usage;
@@ -653,7 +675,8 @@ export function createExecute(adapter: CliAdapter, options: ExecuteOptions): Cli
         }
         if (!tools.admit(event)) continue;
         if (event.kind === "error") turnFailed = true;
-        if (event.kind === "result" && chat && sendSystem) delivered.record(chat, system);
+        // Recorded only for a finished turn: a failed or aborted one resends next time. A moved chat is recorded under its new id.
+        if (event.kind === "result" && chat && system && (sendSystem || (resumed && resumed !== chat))) delivered?.record(chat, system);
         if (event.kind === "result" || event.kind === "error") {
           closed = true;
           for (const record of tools.closeOpen()) yield record;

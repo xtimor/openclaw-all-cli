@@ -165,7 +165,7 @@ flowchart LR
 
 - **Binds:** CAP-6, CAP-11
 - **Prevents:** a CLI that never sees OpenClaw's instructions or skills; a chat thrown away whenever the tool list changes; instruction files written into a workspace or home.
-- **Rule:** The host's system prompt, with its skills catalog, reaches a CLI that has no per-turn system-prompt channel as a marked block at the start of the prompt. It is sent on a native chat's first prompt and again when it changes; the core keeps an in-memory hash per (home, native chat). When P12 is decided, the backend declares `systemPromptWhen: "always"` with a marker arg the host never passes to a plugin-owned execute. No instruction or skill file is written (AD-6, AD-7).
+- **Rule:** The host's system prompt, with its skills catalog, reaches a CLI that has no per-turn system-prompt channel as a marked block at the start of the prompt. It is sent on a native chat's first prompt and again when it changes (the date and the runtime line's model, channel, capabilities, and active-node fields do not count). The core keeps a delivery cache of hashes keyed by (home, native session id), in memory over a small file in the agent home; like AD-5's binding rule it is a cache, not a session binding: losing it costs one duplicate block. The block's header and tag names are neutralized in every text the core puts into the prompt, so outside text cannot forge a block. When P12 is decided (AD-10), the backend declares `systemPromptWhen: "always"` with a marker arg the host never passes to a plugin-owned execute. No instruction or skill file is written into a workspace or user home (AD-6, AD-7); the only file is the hash cache in the plugin's own agent home.
 
 ## Consistency Conventions
 
@@ -265,7 +265,7 @@ sequenceDiagram
 | Is a Cursor API key billed against the subscription (spec Q3)? | CAP-5 reseed setup |
 | Can two Cursor processes resume one chat safely (spec Q4)? Answered by a live probe (2026-10-18, cursor-agent 2026.10.16): no. Both load the chat without an error, but each keeps its own view and a turn in one is invisible to the other; the stored chat keeps one process's turns. The core therefore allows one process per chat (it closes an idle holder, refuses while one is mid-turn). | AD-13 |
 | Is OpenClaw #148584 (plugin skipped at Gateway startup) fixed? | CAP-1 |
-| Does Cursor ACP honor skills (`--plugin-dir`), a system prompt, images, compaction? | Parity rows P11–P14 |
+| Does Cursor ACP honor images, compaction? Skills and a system prompt: answered by ticket 1.13 (no: `acp` ignores `--plugin-dir` and has no system-prompt channel; the skills catalog and system prompt reach Cursor as a prompt block, AD-15). | Parity rows P13, P14 |
 
 ## Deferred
 
