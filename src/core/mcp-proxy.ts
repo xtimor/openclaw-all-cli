@@ -130,6 +130,14 @@ function deadlineMessage(ms: number): string {
   );
 }
 
+/**
+ * The text for a call inside a batch. One timer covers the whole batch, so a call in it may have
+ * finished already: the proxy cannot say it was stopped, only that its status is unknown.
+ */
+function batchDeadlineMessage(ms: number): string {
+  return `The batch this call was in ran longer than ${Math.round(ms / 1000)} seconds, so it was cut off and the status of this call is unknown: it may have finished or been cancelled. Check what it did before running it again.`;
+}
+
 /** The JSON-RPC id of a single request body, so an error answers the right call. */
 function requestId(body: Buffer): string | number | null {
   try {
@@ -218,24 +226,28 @@ export async function startMcpProxy(options: StartMcpProxyOptions = {}): Promise
       : undefined;
     function answerExpired() {
       if (res.writableEnded || res.destroyed) return;
-      const toolError = (requestId: string | number | null) => ({
+      const toolError = (requestId: string | number | null, text: string) => ({
         jsonrpc: "2.0",
         id: requestId,
-        result: { isError: true, content: [{ type: "text", text: deadlineMessage(callDeadlineMs ?? 0) }] },
+        result: { isError: true, content: [{ type: "text", text }] },
       });
       // A batch is answered as a batch. Stopping the upstream request ends all of it, so every
-      // request with an id gets an answer: a stopped `tools/call` the tool error, any other request
-      // a JSON-RPC error that says the batch was stopped.
+      // request with an id gets an answer: a `tools/call` a tool error that only says its status is
+      // unknown (one timer covers the batch, so it may have finished), any other request a JSON-RPC
+      // error. A batch of notifications only gets no body, as JSON-RPC says.
+      const answered = parsedBody.requests.filter((request) => request.id !== null);
+      if (parsedBody.batch && answered.length === 0) {
+        if (!res.headersSent) res.writeHead(202);
+        return void res.end();
+      }
       const payload = JSON.stringify(
         parsedBody.batch
-          ? parsedBody.requests
-              .filter((request) => request.id !== null)
-              .map((request) =>
-                request.call
-                  ? toolError(request.id)
-                  : { jsonrpc: "2.0", id: request.id, error: { code: -32000, message: "The batch was stopped because one of its tool calls ran too long." } },
-              )
-          : toolError(id),
+          ? answered.map((request) =>
+              request.call
+                ? toolError(request.id, batchDeadlineMessage(callDeadlineMs ?? 0))
+                : { jsonrpc: "2.0", id: request.id, error: { code: -32000, message: "The batch was cut off because one of its tool calls ran too long." } },
+            )
+          : toolError(id, deadlineMessage(callDeadlineMs ?? 0)),
       );
       // Keepalive frames may already have started the response: only the body is left to write.
       if (!res.headersSent) res.writeHead(200, { "Content-Type": eventStream ? "text/event-stream" : "application/json" });
