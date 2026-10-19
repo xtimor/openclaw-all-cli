@@ -22,6 +22,9 @@ export const DEFAULT_IDLE_MS = 15 * 60_000;
 /** AD-11: after an abort, the process gets this long to stop before it is closed. */
 export const DEFAULT_ABORT_GRACE_MS = 5_000;
 
+/** How long before the CLI's MCP timeout the proxy stops a call. */
+const MCP_DEADLINE_MARGIN_MS = 5_000;
+
 export type ExecuteOptions = {
   /** The agent's CLI home (AD-6). Every process the execute opens runs in it. */
   home: AgentHome;
@@ -49,6 +52,8 @@ export type ExecuteOptions = {
    * not). It is part of the reuse key: a process never serves another profile (AD-13).
    */
   authProfileId?: string;
+  /** Deadline for one MCP tool call through the proxy, in ms. Default: the adapter's `mcpCallTimeoutMs` minus 5 s, or none. Tests inject a small one. */
+  callDeadlineMs?: number;
   /**
    * The backend's limits (AD-14): the turn cap, the process cap, the version check memo, and
    * close-all on unload. Absent: a private pool without limits.
@@ -116,6 +121,18 @@ function chatKey(home: AgentHome, sessionId: string): string {
   return JSON.stringify([home.dir, sessionId]);
 }
 
+/**
+ * An argument the backend's `resolveExecutionArgs` appends when the host serves its own `exec` for
+ * the run (`hostOwnedTools`), which `execute` does not receive otherwise. `execute` removes it
+ * before the CLI is launched and tells the adapter through `OpenParams.hostShell`.
+ */
+export const HOST_SHELL_ARG = "--openclaw-all-cli:host-shell";
+
+/** Whether the host serves a shell tool for this turn, and the launch args without the marker. */
+function splitHostShell(ctx: ExecuteContext): { hostShell: boolean; args: string[] } {
+  return { hostShell: ctx.args.includes(HOST_SHELL_ARG), args: ctx.args.filter((arg) => arg !== HOST_SHELL_ARG) };
+}
+
 /** A side question runs beside the chat, never in it (AD-13: mode is part of the reuse key). */
 function modeOf(ctx: ExecuteContext): ExecutionMode {
   return ctx.executionMode === "side-question" ? "side-question" : "agent";
@@ -123,7 +140,7 @@ function modeOf(ctx: ExecuteContext): ExecutionMode {
 
 /** AD-13: model, mode, working directory, home, and auth profile. The native session ID is checked on the session. */
 function reuseKey(ctx: ExecuteContext, home: AgentHome, authProfileId: string | undefined): string {
-  return JSON.stringify([ctx.modelId, modeOf(ctx), ctx.cwd, home.dir, authProfileId ?? null]);
+  return JSON.stringify([ctx.modelId, modeOf(ctx), splitHostShell(ctx).hostShell, ctx.cwd, home.dir, authProfileId ?? null]);
 }
 
 function composePrompt(ctx: ExecuteContext, note?: string): string {
@@ -188,6 +205,8 @@ export function createExecute(adapter: CliAdapter, options: ExecuteOptions): Cli
   const { home } = options;
   const warn = options.warn ?? (() => {});
   const mcp = options.mcp ?? true;
+  // The proxy stops a tool call a little before the CLI's own MCP client gives up on it.
+  const callDeadlineMs = options.callDeadlineMs ?? (adapter.mcpCallTimeoutMs ? Math.max(1_000, adapter.mcpCallTimeoutMs - MCP_DEADLINE_MARGIN_MS) : undefined);
   const continuity = options.continuity ?? false;
   const approvals = options.approvals ?? true;
   const readsUsage = options.usage ?? true;
@@ -265,7 +284,7 @@ export function createExecute(adapter: CliAdapter, options: ExecuteOptions): Cli
     if (withMcp) {
       let proxy: McpProxy;
       try {
-        proxy = await startMcpProxy();
+        proxy = await startMcpProxy(callDeadlineMs === undefined ? {} : { callDeadlineMs });
       } catch (error) {
         pool.remove(entry.member);
         throw new CliError(
@@ -397,11 +416,12 @@ export function createExecute(adapter: CliAdapter, options: ExecuteOptions): Cli
     try {
       session = await adapter.open({
         command: ctx.command,
-        args: ctx.args,
+        args: splitHostShell(ctx).args,
         cwd: ctx.cwd,
         env: { ...ctx.env, ...home.env },
         modelId: ctx.modelId,
         executionMode: mode,
+        hostShell: splitHostShell(ctx).hostShell,
         // The transport can fail right after the handshake, before it creates or loads a chat.
         ...(required.length > 0 ? { requiredCapabilities: required } : {}),
         ...(resumeSessionId ? { resumeSessionId } : {}),

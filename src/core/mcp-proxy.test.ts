@@ -34,8 +34,8 @@ afterEach(async () => {
   await Promise.all([...proxies.splice(0).map((p) => p.close()), ...stubs.splice(0).map((s) => s.close())]);
 });
 
-async function proxy() {
-  const p = await startMcpProxy();
+async function proxy(options: Parameters<typeof startMcpProxy>[0] = {}) {
+  const p = await startMcpProxy(options);
   proxies.push(p);
   return p;
 }
@@ -283,6 +283,91 @@ describe("startMcpProxy", () => {
     const [slow, fast] = await Promise.all([call(p, { body: body(1, 150) }), call(p, { body: body(2, 0) })]);
     expect(await slow.json()).toMatchObject({ id: 1, result: { id: 1 } });
     expect(await fast.json()).toMatchObject({ id: 2, result: { id: 2 } });
+  });
+
+  describe("the deadline on a tool call", () => {
+    const toolCall = (id = 9) => JSON.stringify({ jsonrpc: "2.0", id, method: "tools/call", params: { name: "anything", arguments: {} } });
+    const textOf = async (res: Response) => {
+      const raw = (await res.text()).trim();
+      const json = raw.includes("data:") ? raw.split("\n").find((line) => line.startsWith("data:"))!.slice(5) : raw;
+      return JSON.parse(json) as { id: number; result: { isError: boolean; content: Array<{ text: string }> } };
+    };
+
+    /** A host that never answers and notes when its client hangs up. */
+    async function silentHost(frames?: { contentType?: string; first?: string }) {
+      const state = { closed: false, arrived: 0 };
+      const target = await stub((_req, res) => {
+        state.arrived += 1;
+        if (frames) {
+          res.writeHead(200, { "Content-Type": frames.contentType ?? "application/json" });
+          res.write(frames.first ?? "\n");
+        }
+        res.on("close", () => (state.closed = true));
+      });
+      return { target, state };
+    }
+    const closedSoon = async (state: { closed: boolean }) => {
+      const until = Date.now() + 3_000;
+      while (!state.closed && Date.now() < until) await new Promise((resolve) => setTimeout(resolve, 10));
+      return state.closed;
+    };
+
+    it("stops a call that outlives it, aborts the upstream request, and tells the model why", async () => {
+      const { target, state } = await silentHost();
+      const p = await proxy({ callDeadlineMs: 150 });
+      p.setTarget({ url: target.url, headers: {} });
+      const startedAt = Date.now();
+      const res = await call(p, { body: toolCall() });
+      const body = await textOf(res);
+      expect(Date.now() - startedAt).toBeLessThan(2_000);
+      expect(res.status).toBe(200);
+      expect(body.id).toBe(9);
+      expect(body.result.isError).toBe(true);
+      expect(body.result.content[0]!.text).toMatch(/longer than \d+ seconds/);
+      expect(body.result.content[0]!.text).toMatch(/stopped/);
+      expect(body.result.content[0]!.text).toMatch(/background/);
+      expect(await closedSoon(state)).toBe(true);
+    });
+
+    it("also answers when the host already started the response with keepalive frames", async () => {
+      const { target, state } = await silentHost({ first: "\n" });
+      const p = await proxy({ callDeadlineMs: 150 });
+      p.setTarget({ url: target.url, headers: {} });
+      const body = await textOf(await call(p, { body: toolCall() }));
+      expect(body.result.isError).toBe(true);
+      expect(await closedSoon(state)).toBe(true);
+    });
+
+    it("frames the error as an event when the host answers with an event stream", async () => {
+      const { target } = await silentHost({ contentType: "text/event-stream", first: ":\n\n" });
+      const p = await proxy({ callDeadlineMs: 150 });
+      p.setTarget({ url: target.url, headers: {} });
+      const res = await call(p, { body: toolCall() });
+      expect(res.headers.get("content-type")).toBe("text/event-stream");
+      expect((await textOf(res)).result.isError).toBe(true);
+    });
+
+    it("leaves a call that finishes in time, and any other request, alone", async () => {
+      const target = await stub((_req, res, seen) => {
+        const { id } = JSON.parse(seen.body) as { id: number };
+        setTimeout(() => {
+          res.writeHead(200, { "Content-Type": "application/json" });
+          res.end(JSON.stringify({ jsonrpc: "2.0", id, result: { ok: true } }));
+        }, 60);
+      });
+      const p = await proxy({ callDeadlineMs: 200 });
+      p.setTarget({ url: target.url, headers: {} });
+      const fast = await call(p, { body: toolCall(1) });
+      expect(await fast.json()).toEqual({ jsonrpc: "2.0", id: 1, result: { ok: true } });
+      // No deadline for other methods: even a slower list is relayed.
+      const slow = await stub((_req, res, seen) => {
+        const { id } = JSON.parse(seen.body) as { id: number };
+        setTimeout(() => res.writeHead(200, { "Content-Type": "application/json" }).end(JSON.stringify({ jsonrpc: "2.0", id, result: { tools: [] } })), 400);
+      });
+      p.setTarget({ url: slow.url, headers: {} });
+      const list = await call(p, { body: JSON.stringify({ jsonrpc: "2.0", id: 2, method: "tools/list" }) });
+      expect(await list.json()).toEqual({ jsonrpc: "2.0", id: 2, result: { tools: [] } });
+    });
   });
 
   it("closes and frees the port", async () => {

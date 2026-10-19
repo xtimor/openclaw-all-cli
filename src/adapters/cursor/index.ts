@@ -197,15 +197,20 @@ function toAcpMcpServer(server: McpServerSpec) {
 }
 
 /**
- * The Cursor mode per kind of run. A normal run uses `agent`: in `ask` mode the model refuses any
- * command that changes files, even through OpenClaw's `exec` (live probe, 2 of 3 refused), and
- * OpenClaw's `exec` is the model's only shell. `agent` is safe here because the static home denies
- * `Shell(*)`, `Write(**)` and `WebFetch(*)` (checked live in `agent` mode: native shell, write,
- * edit and delete are blocked without asking, a web fetch still asks the host). A side question
- * stays in `ask` mode, which has no edit tool, and differs in what it is handed: no MCP server, no
- * resume, and the core rejects every permission request.
+ * The Cursor mode for a turn. `agent` only when the host serves its own `exec` for the run
+ * (`hostShell`): in `ask` mode the model refuses any command that changes files, even through
+ * OpenClaw's `exec` (live: 2 of 3 refused), so `exec` needs `agent`. Everything else stays in
+ * `ask`, which has no edit tool: a side question, and a normal run without host `exec` (exec host
+ * `node`, `tools.deny` on `exec`, a rooted run). `agent` mode makes the model far more eager (a
+ * trivial turn used about 105k tokens in one probe), so it is not the default.
+ *
+ * `agent` is safe because the static home blocks the native shell, write, edit and delete without
+ * asking (checked live in `agent` mode). `WebFetch(*)` has no effect: a native web fetch asks the
+ * host in either mode, and OpenClaw's tool policy decides.
  */
-const MODE_BY_EXECUTION: Record<ExecutionMode, string> = { agent: "agent", "side-question": "ask" };
+function modeFor(executionMode: ExecutionMode, hostShell: boolean): string {
+  return executionMode === "agent" && hostShell ? "agent" : "ask";
+}
 
 const DISPLAY_NAME = "Cursor CLI";
 
@@ -221,9 +226,9 @@ function open(params: OpenParams): Promise<CliSession> {
     // With an API key Cursor needs no login step; `authenticate{cursor_login}` would try a browser login and fail.
     ...authMethodFor(params.env),
     // Cursor applies native edits without asking in agent mode, so only the per-agent `Write(**)`
-    // deny stops them (checked against cursor-agent 2026.10.16). A side question keeps `ask` mode,
-    // which has no edit tool, as a second lock.
-    requiredModeId: MODE_BY_EXECUTION[executionMode],
+    // deny stops them (checked against cursor-agent 2026.10.16). `ask` mode has no edit tool and is
+    // the second lock whenever the host serves no `exec`.
+    requiredModeId: modeFor(executionMode, params.hostShell === true),
     displayName: DISPLAY_NAME,
     ...(params.requiredCapabilities?.length ? { requiredCapabilities: params.requiredCapabilities } : {}),
     // The turn's model name maps onto the exact ID Cursor reports (brackets and commas included).
@@ -321,6 +326,8 @@ export const cursorAdapter: CliAdapter = {
   modelAliases: { "default[]": "auto", default: "auto" },
   manifest: cursorManifest,
   alwaysOnNativeTools: CURSOR_ALWAYS_ON_NATIVE_TOOLS,
+  // Cursor's MCP client gives up on a tool call after 60 s and never hangs up (live probe).
+  mcpCallTimeoutMs: 60_000,
   clearEnv: CURSOR_CLEAR_ENV,
   checkVersion,
   probeAuth,

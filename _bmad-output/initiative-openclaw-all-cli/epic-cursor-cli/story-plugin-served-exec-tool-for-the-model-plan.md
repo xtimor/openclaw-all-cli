@@ -105,13 +105,13 @@ Adapted to ticket 1.12: flags come from `FLAG_ROWS`; the core gives `hostTools` 
 
 Changes:
 - `src/core/backend.ts`: `toolAvailabilityEnforcement: "execution-args"` and `resolveExecutionArgs` (returns `ctx.baseArgs`, or `undefined` for a selection `unenforceableNativeTools` flags); `toolAvailabilityEnforced` dropped; `prepareExecution` keeps its early refusal and message.
-- `src/adapters/cursor/index.ts`: `MODE_BY_EXECUTION.agent` is now `agent` (side questions stay `ask`), after the probes below. Tests: `index.test.ts` (mode, side question still needs `ask`).
+- `src/adapters/cursor/index.ts`: the Cursor mode is `agent` only when the host serves exec for the run (`OpenParams.hostShell`), else `ask`; side questions stay `ask` (first built as always `agent`, narrowed after review). Tests: `index.test.ts` (mode, side question still needs `ask`).
 - Tests: `test/backend.test.ts` (flags, `resolveExecutionArgs` plain/resume/side question/enforceable/unenforceable, `hostOwnedTools` gating), new `test/exec-tool.test.ts` (real backend + proxy + fake agent `[[mcp-call]]` + stub host: headers, concurrent calls, keepalive, abort closes upstream and ends the turn, native shell request still rejected), `src/core/mcp-proxy.test.ts` (keepalive relay, hang-up closes upstream, parallel calls). `src/core/mcp-proxy.ts` needed no change.
 - Live: `test/live/exec-tool.live.test.ts` (own Gateway on port 18931, `connectApprovalClient` in `test/live/harness.ts`): plain, native shell and write blocked, approval allow-once and deny, `security: deny`, `tools.deny`, timeout, long call, 3 MB output, non-zero exit, abort mid-run; sandbox row skipped (no docker daemon on this host, logged). Every config key is restored in `afterAll`.
 - Docs: manifest notes P8, P9, P10; parity matrix; `docs/providers/cursor.md` (Shell commands section, parity rows, limits); `docs/setup.md`; `MEMORY.md` entry 19; AD-9 now names `execution-args` + `resolveExecutionArgs`.
 
 Probe results (cursor-agent 2026.10.16, OpenClaw 2026.10.3):
-- Ask mode refuses file-changing commands through exec: 1 of 3 ran, 2 refused ("Ask mode is on"). So agent runs use `agent` mode.
+- Ask mode refuses file-changing commands through exec: 1 of 3 ran, 2 refused ("Ask mode is on"). 
 - Agent mode with the production home: native Shell, Write, Edit, Delete blocked without a request (marker files stayed absent; a Task subagent could not write either). A native web fetch asks the host in both modes; `WebFetch(*)` does not stop it. This corrects older wording that the file stops web fetch.
 - Cursor MCP call timeout: 60 s (call arrived at 26.6 s, error at 86.4 s; with 10 s keepalive frames: 11.5 s and 71.5 s). Cursor does not hang up the request then. A 90 s exec made the model re-run it in the background and read it with `process` (final output correct).
 - `CURSOR_API_KEY` is visible to exec commands. `setup.providers[].envVars` did not remove it and changed auth display, so it is not adopted; documented, with the login-only alternative.
@@ -123,7 +123,24 @@ Unverified: the sandbox row (no docker daemon here); exec host `node` and capped
 
 ## Plan Change Log
 
+- **ask -> agent (build).** The plan's gate for `MODE_BY_EXECUTION.agent = agent` read "native shell, write and web fetch still blocked in agent mode". It was met for shell, write, edit and delete (blocked without asking). It was NOT met for web fetch: `WebFetch(*)` has no effect, a native web fetch asks the host in `ask` and `agent` mode alike, and OpenClaw's tool policy decides. Accepted because the host, not the static file, is the control there in both modes. Review then narrowed the switch: `agent` only when the host serves `exec` for the run, else `ask` (see Triage Log).
+- **No `DerivedFlags` field.** The plan's Code Map asked for a new host-tools flag (P7 && P8 && P10). After ticket 1.12 each flag has exactly one row (`FLAG_ROWS`), so `hostTools` stays P8 and `backend.ts` combines `hostTools && toolPolicy && mcp`.
+- **Matrix corrections.** "Timeout" and "Abort mid-run" in the intent contract said OpenClaw kills the child when the request closes and implied that covers a long call. Real behavior: Cursor gives up on a call at 60 s and never hangs up, so a foreground command past that kept running while the model retried. The proxy now stops a `tools/call` at 55 s (upstream abort, host kills the command). A turn abort closes the call and OpenClaw kills the processes within 10 s (live). The contract text is read-only; docs and the parity matrix carry the corrected statement.
+- **Added scope (review).** Plugin config `env` (key reaches the CLI process only), the host-shell marker, the call deadline.
+
 ## Review Triage Log
+
+Thorough review, 4 lenses. Fixed:
+1. (major) Foreground exec past Cursor's 60 s limit: proxy deadline 55 s with upstream abort and a model-readable tool error (`src/core/mcp-proxy.ts`); unit tests with an injected small deadline (never-answering host, keepalive-started response, event stream, fast call and non-call traffic untouched), an end-to-end test through the backend, and a live row that the command is dead after the turn. Documented, including `tools.deny: ["process"]` alone.
+2. (major) `agent` mode only when the host serves exec: `resolveExecutionArgs` appends a marker (the plugin's execute context has no `hostOwnedTools`), `createExecute` strips it, keys the reuse on it and sets `OpenParams.hostShell`; the Cursor adapter chooses `agent` or `ask`. Tests assert the exact mode (the fake starts in `plan`, reports its mode with `[[mode]]`). Comments corrected (WebFetch).
+3. (major) Key visible to exec: yes, a supported mechanism exists. Plugin config `cursor-cli.env` becomes the backend `config.env`, given to the CLI process only; probes get it too. Live row with a Gateway started without the key. Documented as the way after login; warnings added to `docs/setup.md`. The plugin strips nothing from the Gateway env.
+4. Documented: sandbox with two workspaces and native reads leaving it, exec writing the agent home (only `permissions` restored), native exec request protected by `Shell(*)` alone where the host serves no exec (P8 wording and the unit-test comment fixed), the 60/55 s limit, rooted vs refused `native: []`, setup troubleshooting row for a missing `agent` mode.
+5. Logged above; AD-9 amended (WebFetch deny has no effect; mode rule); AD-12 notes the call deadline.
+6. A selection that lists native `exec` stays accepted: it is over-restrictive, not a bypass (Cursor can never run native exec). Refusing it would break runs that select all native tools. Said in the code comment and docs.
+7. Live rows rewritten: native shell/write/edit/delete must be attempted (a non-`mcp__` tool in the tool summary, up to 3 tries) and stay blocked; `tools.deny` asserts the turn completed and no hidden tool was called (retried); huge output with head and tail secrets; the timeout is reported to the model; random exit code; sandbox row asserts a host-only file is not readable (skipped without a Docker daemon, logged); every LLM-dependent row retries up to 3 times and fails loudly.
+8. The concurrency test no longer pins a stub detail; the two-slow-calls test proves overlap.
+9. The flaky cap test now starts the second turn only after the first prompt is running and sleeps 1500 ms.
+10. Deferred: an offline test that pins the host contract (that this backend shape makes the host serve exec/process). It needs the host's `resolveCliMcpToolOwnership`, which is not exported; the live rows cover it.
 
 ## Design Notes
 

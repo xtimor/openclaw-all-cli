@@ -12,6 +12,13 @@ describe("config", () => {
     expect(schema.safeParse({ other: {} }).success).toBe(false);
   });
 
+  it("accepts an env of strings for the CLI process and rejects other values", () => {
+    expect(readBackendConfig({ "acme-cli": { env: { ACME_KEY: "k" } } }, "acme-cli", () => {})).toEqual({ env: { ACME_KEY: "k" } });
+    const warnings: string[] = [];
+    expect(readBackendConfig({ "acme-cli": { env: { ACME_KEY: 5 } } }, "acme-cli", (m) => warnings.push(m))).toEqual({});
+    expect(warnings).toHaveLength(1);
+  });
+
   it("falls back to defaults and warns on invalid settings", () => {
     const warnings: string[] = [];
     expect(readBackendConfig({ "acme-cli": { command: 5 } }, "acme-cli", (m) => warnings.push(m))).toEqual({});

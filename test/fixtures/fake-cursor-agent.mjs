@@ -5,6 +5,7 @@
 //
 //   FAKE_CURSOR_LOGGED_IN=0     `status` reports "Not logged in"
 //   FAKE_CURSOR_NO_ASK_MODE=1   the agent lists no "ask" mode
+//   FAKE_CURSOR_START_MODE=<id> the mode a session starts in (default "agent"); prompt "[[mode]]" replies "mode:<current mode>"
 //   FAKE_CURSOR_LOG=<file>      append one JSON line per request the agent receives (with `t`, the epoch ms); the `initialize` line also carries
 //                               CURSOR_CONFIG_DIR/CURSOR_DATA_DIR
 //   FAKE_CURSOR_LOG_END=1       also log a `prompt/end` line when a prompt ends
@@ -122,7 +123,7 @@ const fail = (id, code, message, data) => send({ id, error: { code, message, ...
 const update = (sessionId, body) => send({ method: "session/update", params: { sessionId, update: body } });
 
 const modes = () => ({
-  currentModeId: "agent",
+  currentModeId: process.env.FAKE_CURSOR_START_MODE ?? "agent",
   availableModes: [
     { id: "agent", name: "Agent" },
     { id: "plan", name: "Plan" },
@@ -278,7 +279,11 @@ async function runPrompt(id, params) {
     });
     return reply(id, { stopReason: "end_turn" });
   }
-  const say = text.includes("[[recall]]") ? `recall:${before.join("|")}` : /say:(.*)/.exec(text)?.[1];
+  const say = text.includes("[[mode]]")
+    ? `mode:${session.mode}`
+    : text.includes("[[recall]]")
+      ? `recall:${before.join("|")}`
+      : /say:(.*)/.exec(text)?.[1];
   const answer = say ?? `Hi from fake cursor (model ${session.model}, prompt ${session.prompts})`;
   for (const piece of answer.match(/.{1,12}/g) ?? [answer]) {
     update(params.sessionId, { sessionUpdate: "agent_message_chunk", content: { type: "text", text: piece } });
@@ -325,7 +330,7 @@ rl.on("line", (line) => {
       return reply(id, {});
     case "session/new": {
       const sessionId = storeDir ? `fake-session-${randomUUID().slice(0, 8)}` : `fake-session-${nextSession++}`;
-      const session = { model: process.env.FAKE_CURSOR_DEFAULT_MODEL ?? "default[]", mode: "agent", prompts: 0, history: [] };
+      const session = { model: process.env.FAKE_CURSOR_DEFAULT_MODEL ?? "default[]", mode: process.env.FAKE_CURSOR_START_MODE ?? "agent", prompts: 0, history: [] };
       sessions.set(sessionId, session);
       mcpServers.set(sessionId, params.mcpServers ?? []);
       saveSession(sessionId, session);
@@ -344,7 +349,7 @@ rl.on("line", (line) => {
         return fail(id, -32602, "Invalid params", { message: `Session "${params.sessionId}" not found` });
       }
       const history = storeDir ? JSON.parse(readFileSync(storeFile(params.sessionId), "utf8")).history : [];
-      const session = { model: process.env.FAKE_CURSOR_DEFAULT_MODEL ?? "default[]", mode: "agent", prompts: 0, history, loaded: true };
+      const session = { model: process.env.FAKE_CURSOR_DEFAULT_MODEL ?? "default[]", mode: process.env.FAKE_CURSOR_START_MODE ?? "agent", prompts: 0, history, loaded: true };
       const moved = process.env.FAKE_CURSOR_LOAD_RENAMES === "1" ? `${params.sessionId}-moved` : undefined;
       sessions.set(moved ?? params.sessionId, session);
       mcpServers.set(moved ?? params.sessionId, params.mcpServers ?? []);

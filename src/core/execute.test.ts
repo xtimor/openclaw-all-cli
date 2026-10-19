@@ -6,7 +6,7 @@ import { join } from "node:path";
 import { afterAll, describe, expect, it, vi } from "vitest";
 import { spawn, type ChildProcess } from "node:child_process";
 import { existsSync, readdirSync } from "node:fs";
-import { CONTINUITY_NOTE, createExecute } from "./execute.ts";
+import { CONTINUITY_NOTE, HOST_SHELL_ARG, createExecute } from "./execute.ts";
 import { inspectProcess } from "./pid-locks.ts";
 import { ProcessPool } from "./pool.ts";
 import type { McpProxy } from "./mcp-proxy.ts";
@@ -228,6 +228,7 @@ describe("createExecute", () => {
     ["another directory", { cwd: "/elsewhere" }],
     ["a fresh conversation", { useResume: false }],
     ["another native session", { sessionId: "native-other" }],
+    ["a host shell that appeared", { args: ["serve", HOST_SHELL_ARG] }],
   ])("opens a new process for %s", async (_name, change) => {
     const { adapter, sessions, opens } = makeAdapter();
     const { live, calls } = makeLive();
@@ -238,6 +239,14 @@ describe("createExecute", () => {
     expect(opens).toHaveLength(2);
     expect(sessions[0]?.closed).toBe(1);
     expect(calls.restart).toBe(2);
+  });
+
+  it("strips the host-shell marker from the launch args and tells the adapter", async () => {
+    const { adapter, opens } = makeAdapter();
+    await run(createExecute(adapter, { home: HOME }), makeCtx({ args: ["serve", HOST_SHELL_ARG] }));
+    await run(createExecute(adapter, { home: HOME }), makeCtx({ args: ["serve"] }));
+    expect(opens[0]).toMatchObject({ args: ["serve"], hostShell: true });
+    expect(opens[1]).toMatchObject({ args: ["serve"], hostShell: false });
   });
 
   it("opens a new process when the agent's home differs", async () => {

@@ -1,6 +1,6 @@
 import { capsOf, type BackendConfig } from "./config.ts";
 import { parseJsonlEvent } from "./events.ts";
-import { createExecute, errorRecord, type ExecuteOptions } from "./execute.ts";
+import { HOST_SHELL_ARG, createExecute, errorRecord, type ExecuteOptions } from "./execute.ts";
 import { prepareAgentHome } from "./home.ts";
 import { deriveFlags } from "./manifest.ts";
 import { unenforceableNativeTools } from "./permissions.ts";
@@ -20,7 +20,7 @@ export function nativeAuthMarkerFor(adapter: CliAdapter): string {
 
 export type BuildBackendOptions = {
   settings: BackendConfig;
-  execute?: Pick<ExecuteOptions, "idleMs" | "abortGraceMs">;
+  execute?: Pick<ExecuteOptions, "idleMs" | "abortGraceMs" | "callDeadlineMs">;
   /** Receives warnings, for example a turn that runs without OpenClaw tools. */
   warn?: (message: string) => void;
   /** The backend's limits (AD-14). Absent: a pool sized from `settings`. The registrar passes its own to close it on unload. */
@@ -36,6 +36,8 @@ export function buildCliBackend(adapter: CliAdapter, options: BuildBackendOption
   const command = options.settings.command ?? adapter.command;
   const args = [...adapter.launchArgs];
   const pool = options.pool ?? new ProcessPool(capsOf(options.settings));
+  // A selection that lists native `exec` is accepted although the CLI can never run it (`Shell(*)` is
+  // denied): over-restrictive, not a bypass. Refusing it would break runs that select every native tool.
   const enforceableSelection = (availability: PrepareExecutionContext["toolAvailability"]): boolean =>
     !availability || unenforceableNativeTools(availability, adapter.alwaysOnNativeTools).length === 0;
 
@@ -58,8 +60,14 @@ export function buildCliBackend(adapter: CliAdapter, options: BuildBackendOption
       ? {
           nativeToolMode: "selectable" as const,
           toolAvailabilityEnforcement: "execution-args" as const,
+          // The launch args stay the host's `baseArgs`; when the host serves its `exec` for this run, a
+          // marker rides along for `execute` to read and strip (see `HOST_SHELL_ARG`).
           resolveExecutionArgs: (ctx: Parameters<NonNullable<CliBackendPlugin["resolveExecutionArgs"]>>[0]) =>
-            enforceableSelection(ctx.toolAvailability) ? ctx.baseArgs : undefined,
+            !enforceableSelection(ctx.toolAvailability)
+              ? undefined
+              : ctx.hostOwnedTools?.includes("exec")
+                ? [...ctx.baseArgs, HOST_SHELL_ARG]
+                : ctx.baseArgs,
         }
       : { nativeToolMode: "always-on" as const }),
     ...(flags.mcp
@@ -91,6 +99,8 @@ export function buildCliBackend(adapter: CliAdapter, options: BuildBackendOption
         : {}),
       // A safety list, applied whenever the adapter declares one (not gated by a row): the host deletes these keys from the Gateway's env before a turn; the core applies the same list to its own probes.
       clearEnv: [...adapter.clearEnv],
+      // The plugin config's `env`: the host gives it to the CLI process only, not to host tools like `exec`.
+      ...(options.settings.env && Object.keys(options.settings.env).length > 0 ? { env: { ...options.settings.env } } : {}),
       output: "jsonl",
       input: "stdin",
       ...(flags.liveSession ? { liveSession: "claude-stdio" as const } : {}),

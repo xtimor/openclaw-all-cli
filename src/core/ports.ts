@@ -230,6 +230,11 @@ export type OpenParams = {
   modelId: string;
   /** Defaults to `agent`. A side question has no `resumeSessionId` and no `mcpServers`. */
   executionMode?: ExecutionMode;
+  /**
+   * Whether the host serves its own shell tool (`exec`) to the model for this turn. When it does
+   * not, the CLI has no shell at all, and an adapter should keep its most restrictive mode.
+   */
+  hostShell?: boolean;
   /** The native session ID to resume. Set only when OpenClaw says to resume. */
   resumeSessionId?: string;
   /** MCP servers for the native session, given at both new and resumed sessions. */
@@ -344,6 +349,11 @@ export interface CliAdapter {
    * selection contains all of them.
    */
   readonly alwaysOnNativeTools: readonly string[];
+  /**
+   * How long the CLI's MCP client waits for one tool call before it gives up without hanging up, in
+   * ms. When set, the core's proxy stops a call 5 s before that (see `StartMcpProxyOptions`).
+   */
+  readonly mcpCallTimeoutMs?: number;
   /**
    * Env keys the host removes from the Gateway's env before a turn, and the core removes before
    * it lists models or probes the login: endpoint overrides, harness and debug switches. Never a

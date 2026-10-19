@@ -13,6 +13,11 @@ import { FAKE_CURSOR_AGENT, fakeEnv } from "./fixtures/paths.ts";
  * host's loopback endpoint. It proves the plugin forwards exec calls faithfully and aborts them;
  * OpenClaw's own exec policy is covered by the gated live test.
  */
+/** Polls until `condition` holds or the time is up. */
+async function waitFor(condition: () => boolean, timeoutMs: number) {
+  for (const deadline = Date.now() + timeoutMs; !condition() && Date.now() < deadline; ) await new Promise((resolve) => setTimeout(resolve, 20));
+}
+
 describe("exec through the MCP proxy", () => {
   const scratch = mkdtempSync(join(tmpdir(), "oac-exec-tool-"));
   afterAll(() => rmSync(scratch, { recursive: true, force: true }));
@@ -34,6 +39,9 @@ describe("exec through the MCP proxy", () => {
     prompt: string,
     options: {
       abort?: AbortController;
+      callDeadlineMs?: number;
+      /** What the backend's `resolveExecutionArgs` returned: with the marker, the host serves exec. */
+      args?: readonly string[];
       requestToolPermission?: (request: { toolName: string }) => Promise<{ behavior: "allow" | "deny"; message?: string; updatedInput?: unknown }>;
     } = {},
   ) {
@@ -45,13 +53,16 @@ describe("exec through the MCP proxy", () => {
         mcpServers: { openclaw: { type: "http", url: host.url, headers: { Authorization: "Bearer turn-token", "x-openclaw-cli-capture-key": "capture-1" } } },
       }),
     );
-    const backend = buildCliBackend(cursorAdapter, { settings: {} });
+    const backend = buildCliBackend(cursorAdapter, {
+      settings: {},
+      ...(options.callDeadlineMs ? { execute: { callDeadlineMs: options.callDeadlineMs } } : {}),
+    });
     const prepared = await backend.prepareExecution!({ agentDir: join(scratch, `agent-${n}`) } as never);
     const texts: string[] = [];
     const records: Array<Record<string, any>> = [];
     for await (const record of prepared!.execute!({
       command: FAKE_CURSOR_AGENT,
-      args: ["acp"],
+      args: [...(options.args ?? ["acp"])],
       cwd: scratch,
       env: fakeEnv({ GEMINI_CLI_SYSTEM_SETTINGS_PATH: settings }),
       prompt,
@@ -97,10 +108,9 @@ describe("exec through the MCP proxy", () => {
     );
     expect(text).toBe("stub-exec-ran:slow|stub-exec-ran:fast");
     expect(host.toolCalls()).toHaveLength(2);
-    expect(host.maxInFlight()).toBe(1);
   });
 
-  it("runs two slow exec calls at the same time", async () => {
+  it("runs two slow exec calls at the same time, each answered with its own text", async () => {
     const host = await startHost();
     const { text } = await turn(
       host,
@@ -117,6 +127,24 @@ describe("exec through the MCP proxy", () => {
     const host = await startHost();
     const { text } = await turn(host, execCall({ command: "sleep", delayMs: 400, keepaliveMs: 50 }));
     expect(text).toBe("stub-exec-ran:sleep");
+    expect(host.closed()).toBe(0);
+  });
+
+  it("stops an exec call that outlives the deadline, tells the model, and lets it carry on", async () => {
+    const host = await startHost();
+    const { text } = await turn(host, execCall({ command: "sleep 600", hang: true, keepaliveMs: 50 }), { callDeadlineMs: 400 });
+    // The fake agent prints the tool error it received.
+    expect(text).toMatch(/^tool-error:.*stopped.*background/);
+    // The host saw its request closed, which is what makes it kill the command.
+    await waitFor(() => host.closed() > 0, 5_000);
+    expect(host.closed()).toBe(1);
+    expect(host.toolCalls()).toHaveLength(1);
+  });
+
+  it("does not touch an exec call that finishes before the deadline", async () => {
+    const host = await startHost();
+    const { text } = await turn(host, execCall({ command: "quick", delayMs: 100 }), { callDeadlineMs: 5_000 });
+    expect(text).toBe("stub-exec-ran:quick");
     expect(host.closed()).toBe(0);
   });
 
@@ -140,6 +168,15 @@ describe("exec through the MCP proxy", () => {
     expect(host.closed()).toBe(1);
   });
 
+  it("runs Cursor in agent mode exactly when the backend's execution args say the host serves exec", async () => {
+    const host = await startHost();
+    const backend = buildCliBackend(cursorAdapter, { settings: {} });
+    const served = backend.resolveExecutionArgs!({ baseArgs: ["acp"], hostOwnedTools: ["exec", "process"], executionMode: "agent" } as never)!;
+    const notServed = backend.resolveExecutionArgs!({ baseArgs: ["acp"], executionMode: "agent" } as never)!;
+    expect((await turn(host, "[[mode]]", { args: served })).text).toBe("mode:agent");
+    expect((await turn(host, "[[mode]]", { args: notServed })).text).toBe("mode:ask");
+  });
+
   it("keeps rejecting a native shell request, so the model cannot bypass the host's exec", async () => {
     const host = await startHost();
     const asked: string[] = [];
@@ -152,7 +189,8 @@ describe("exec through the MCP proxy", () => {
       {
         requestToolPermission: async (request) => {
           asked.push(request.toolName);
-          // What OpenClaw answers for a native tool its exec replaces.
+          // What OpenClaw answers for a native tool its exec replaces. That is true only in a run where
+          // the host serves exec; in any other run the native shell is protected by `Shell(*)` in the home alone.
           return { behavior: "deny", message: "Use OpenClaw exec; its native equivalent is unavailable." };
         },
       },

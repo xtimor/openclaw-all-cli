@@ -31,6 +31,16 @@
             "type": "string",
             "minLength": 1
           },
+          "env": {
+            "type": "object",
+            "propertyNames": {
+              "type": "string",
+              "minLength": 1
+            },
+            "additionalProperties": {
+              "type": "string"
+            }
+          },
           "maxConcurrentTurns": {
             "type": "integer",
             "minimum": 1,

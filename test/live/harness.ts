@@ -152,11 +152,14 @@ export type TestGateway = {
  */
 export async function startGateway(
   port: number,
-  options: { timeoutMs?: number; env?: Record<string, string> } = {},
+  options: { timeoutMs?: number; env?: Record<string, string>; omitEnv?: string[] } = {},
 ): Promise<TestGateway> {
   const env = {
     ...Object.fromEntries(
-      Object.entries(process.env).filter((entry): entry is [string, string] => entry[1] !== undefined && !entry[0].startsWith("VITEST") && entry[0] !== "NODE_ENV"),
+      Object.entries(process.env).filter(
+        (entry): entry is [string, string] =>
+          entry[1] !== undefined && !entry[0].startsWith("VITEST") && entry[0] !== "NODE_ENV" && !(options.omitEnv ?? []).includes(entry[0]),
+      ),
     ),
     ...options.env,
   };

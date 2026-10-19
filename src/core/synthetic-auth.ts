@@ -53,7 +53,11 @@ export function createSyntheticAuthProvider(adapter: CliAdapter, catalog?: Model
   const backendId = backendIdFor(adapter);
   const flags = deriveFlags(adapter.manifest);
   // The probes and the listing run with the same clean env as a turn.
-  const probeEnv = (env: Record<string, string | undefined> | undefined) => withoutKeys(env ?? process.env, adapter.clearEnv);
+  const probeEnv = (env: Record<string, string | undefined> | undefined, extra?: Record<string, string>) => ({
+    ...withoutKeys(env ?? process.env, adapter.clearEnv),
+    // The plugin config's `env` reaches the CLI process, so it reaches the probes too.
+    ...extra,
+  });
   return {
     id: backendId,
     label: adapter.displayName,
@@ -71,9 +75,10 @@ export function createSyntheticAuthProvider(adapter: CliAdapter, catalog?: Model
               context.signal?.throwIfAborted();
               if (context.providerIds && !context.providerIds.some((id) => id.toLowerCase() === backendId)) return null;
               const pluginConfig = context.config?.plugins?.entries?.[PLUGIN_ID]?.config;
-              const command = readBackendConfig(pluginConfig, backendId, () => {}).command ?? adapter.command;
+              const settings = readBackendConfig(pluginConfig, backendId, () => {});
+              const command = settings.command ?? adapter.command;
               // The listing and the probe run with the same clean env as a turn.
-              const env = probeEnv(context.env);
+              const env = probeEnv(context.env, settings.env);
               const status = await adapter.probeAuth({
                 command,
                 env,
@@ -102,7 +107,7 @@ export function createSyntheticAuthProvider(adapter: CliAdapter, catalog?: Model
       const settings = readBackendConfig(pluginConfig, backendId, () => {});
       const status = await adapter.probeAuth({
         command: settings.command ?? adapter.command,
-        env: probeEnv(context.env),
+        env: probeEnv(context.env, settings.env),
         ...(context.signal ? { signal: context.signal } : {}),
       });
       context.signal?.throwIfAborted();

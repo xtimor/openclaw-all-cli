@@ -6,6 +6,12 @@ export const backendConfigSchema = z
   .object({
     /** Path or name of the CLI binary. Defaults to the adapter's command. */
     command: z.string().min(1).optional(),
+    /**
+     * Variables given only to the CLI process (and the plugin's own probes), never to the Gateway's
+     * environment. Put an API key here instead of exporting it: a command the model runs through
+     * OpenClaw `exec` inherits the Gateway's environment, and so could read the key.
+     */
+    env: z.record(z.string().min(1), z.string()).optional(),
     /** Turns that run at once (AD-14). Later turns wait their turn. */
     maxConcurrentTurns: z.number().int().min(1).max(64).optional(),
     /** CLI processes alive at once, idle ones included. At least `maxConcurrentTurns`. */

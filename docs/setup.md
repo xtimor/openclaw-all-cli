@@ -22,9 +22,23 @@ cursor-agent login
 cursor-agent status
 ```
 
-`status` must say you are logged in. On macOS the login is stored in the Keychain and is shared by every agent. A `CURSOR_API_KEY` in the Gateway's environment also counts as a login, and it is what lets the plugin record each turn's token usage (see [Usage](providers/cursor.md#usage)); with a login only, usage shows 0. Behind an HTTP proxy, start the Gateway with `NODE_USE_ENV_PROXY=1` so the usage calls to `api2.cursor.sh` use it.
+`status` must say you are logged in. On macOS the login is stored in the Keychain and is shared by every agent. A `CURSOR_API_KEY` also counts as a login (see [The API key](#the-api-key) for where to put it), and it is what lets the plugin record each turn's token usage (see [Usage](providers/cursor.md#usage)); with a login only, usage shows 0. Behind an HTTP proxy, start the Gateway with `NODE_USE_ENV_PROXY=1` so the usage calls to `api2.cursor.sh` use it.
 
-Each agent runs Cursor with its own config and chat store under `<agentDir>/openclaw-all-cli/cursor-cli/`, which the plugin creates. The plugin does not copy or change the login. Where Cursor keeps the login in its config directory instead of the Keychain, the per-agent home may not see it (not yet checked on a host without a Keychain); set `CURSOR_API_KEY` for the Gateway there.
+Each agent runs Cursor with its own config and chat store under `<agentDir>/openclaw-all-cli/cursor-cli/`, which the plugin creates. The plugin does not copy or change the login. Where Cursor keeps the login in its config directory instead of the Keychain, the per-agent home may not see it (not yet checked on a host without a Keychain); give the plugin a key as described under [The API key](#the-api-key).
+
+### The API key
+
+With OpenClaw's `exec` enabled, any command the model runs inherits the Gateway's environment and can read every variable in it, a `CURSOR_API_KEY` exported to the Gateway included. The plugin does not strip it. In order of preference:
+
+1. **Use the login** (`cursor-agent login`). Its credentials live in the Cursor home (the Keychain on macOS), not in the environment. Usage then shows 0 (see [Usage](providers/cursor.md#usage)).
+2. **Give the key to the Cursor process only**, through the plugin config. `cursor-cli.env` is passed to `cursor-agent` and to the plugin's own probes, and not to the Gateway or to host tools such as `exec`:
+
+   ```sh
+   openclaw config set plugins.entries.openclaw-all-cli.config.cursor-cli.env '{"CURSOR_API_KEY":"<key>"}' --strict-json
+   ```
+
+   Do not also export the key to the Gateway; the config file then holds the key, so protect it like any secret.
+3. If you export the key to the Gateway anyway, keep exec approvals on (`tools.exec.ask`) and approve commands only from prompts you trust.
 
 **Optional: Cursor API key profile.** Create a user API key in the Cursor Dashboard and save it as an OpenClaw `api_key` profile for `cursor-cli`:
 
@@ -32,7 +46,7 @@ Each agent runs Cursor with its own config and chat store under `<agentDir>/open
 printf '%s\n' "$KEY" | openclaw models auth paste-api-key --provider cursor-cli
 ```
 
-It prints `Auth profile: cursor-cli:manual (cursor-cli/api_key)`; remove it with `openclaw models auth logout cursor-cli:manual --yes`. The profile only lets OpenClaw build a history prompt from a `cursor-cli` chat's own turns, for a fresh Cursor chat after the chat was lost (OpenClaw 2026.10.3 did not complete that retry in the live probe). The key is not handed to `cursor-agent`: use the same key as `CURSOR_API_KEY` in the Gateway's environment, or an account that is logged in. It does not carry history across a switch from an API model; the plugin's note and `sessions_history` do (see [Cursor provider](providers/cursor.md#chat-continuity-across-a-model-switch)). Whether a key is billed differently from the login is not settled yet.
+It prints `Auth profile: cursor-cli:manual (cursor-cli/api_key)`; remove it with `openclaw models auth logout cursor-cli:manual --yes`. The profile only lets OpenClaw build a history prompt from a `cursor-cli` chat's own turns, for a fresh Cursor chat after the chat was lost (OpenClaw 2026.10.3 did not complete that retry in the live probe). The key is not handed to `cursor-agent`: use the same key as `CURSOR_API_KEY` for the Cursor process (see [The API key](#the-api-key)), or an account that is logged in. It does not carry history across a switch from an API model; the plugin's note and `sessions_history` do (see [Cursor provider](providers/cursor.md#chat-continuity-across-a-model-switch)). Whether a key is billed differently from the login is not settled yet.
 
 ## 2. Install the plugin
 
@@ -60,6 +74,7 @@ All settings are optional. They live under `plugins.entries.openclaw-all-cli.con
 | Key | Default | Meaning |
 | --- | --- | --- |
 | `cursor-cli.command` | `cursor-agent` | Path or name of the Cursor CLI. Set it when the Gateway's `PATH` does not include `cursor-agent`. |
+| `cursor-cli.env` | none | Variables for the `cursor-agent` process only, such as `CURSOR_API_KEY`. Not visible to `exec`. See [The API key](#the-api-key). |
 | `cursor-cli.maxConcurrentTurns` | `4` | Turns that run at once (1 to 64). More wait in order for a free slot. |
 | `cursor-cli.maxProcesses` | `8` | `cursor-agent` processes alive at once, idle ones included (1 to 64, at least `maxConcurrentTurns`). At the cap the least recently used idle process is closed. |
 
@@ -67,7 +82,7 @@ A value outside 1 to 64 (or not an integer) is rejected by OpenClaw's config val
 
 Isolation needs no setting: every agent gets its own Cursor home with the same fixed permissions (see [Cursor provider](providers/cursor.md)). Transport and API-key settings are documented here once they exist.
 
-Shell commands: the model's shell is OpenClaw's own `exec` tool (and `process`), so what it may run follows OpenClaw's `tools.exec.*` settings (`security`, `ask`, `timeoutSec`), its exec approvals, its sandbox, and `tools.deny`. Cursor's native shell stays denied. A command that needs approval waits for an approval client (the Control UI, an app, or a chat channel); a headless `openclaw agent` run is denied at once. A tool call lasts at most 60 seconds on Cursor's side. See [Shell commands](providers/cursor.md#shell-commands-openclaw-exec).
+Shell commands: the model's shell is OpenClaw's own `exec` tool (and `process`), so what it may run follows OpenClaw's `tools.exec.*` settings (`security`, `ask`, `timeoutSec`), its exec approvals, its sandbox, and `tools.deny`. Cursor's native shell stays denied. A command that needs approval waits for an approval client (the Control UI, an app, or a chat channel); a headless `openclaw agent` run is denied at once. A foreground command is stopped after 55 seconds (Cursor gives up at 60); long commands must run in the background and be polled with `process`, so keep `process` available. See [Shell commands](providers/cursor.md#shell-commands-openclaw-exec).
 
 ## 4. Verify
 
@@ -90,7 +105,8 @@ The first command must report `"status": "loaded"` and `cursor-cli` under `cliBa
 | `The CLI offers no "ask" mode` | A side question needs the `cursor-agent` read-only mode and this build has none | Run `cursor-agent update` |
 | `cursor-cli keeps native read, grep, glob on in every turn...` | A run asked for a tool selection without Cursor's always-on native tools (a tool cap, tools disabled, a system agent) | Run that turn on another model; see [Cursor provider](providers/cursor.md) |
 | The model says it has no shell, or `exec` is missing | `tools.deny` hides `exec`, the run is capped or rooted, or the agent's exec host is `node` | Remove `exec` from `tools.deny`; run the turn without a cap; use exec host `gateway` or `sandbox` |
-| `MCP error -32001: Request timed out` after a command | Cursor gives up on a tool call after 60 seconds | Ask for the command to run in the background and read it with `process` |
+| The model reports that a tool call ran longer than 55 seconds and was stopped (or `MCP error -32001: Request timed out`) | Cursor gives up on a tool call after 60 seconds; the plugin stops a call at 55 | Ask for the command to run in the background and read it with `process`; do not hide `process` with `tools.deny` |
+| `The CLI offers no "agent" mode, so it cannot run safely.` | A turn with host `exec` needs the `cursor-agent` agent mode and this build has none | Run `cursor-agent update` |
 | `Cursor has no model "<name>" for this account` | The account does not have that model | Pick one from `openclaw models list --provider cursor-cli`, or check the plan |
 | Only `cursor-cli/auto` is listed | **No login:** the plugin lists nothing and logs nothing; after `cursor-agent login` (or setting `CURSOR_API_KEY`) the next read lists at once. **Failed listing:** the Gateway log says `Could not list the Cursor CLI models` and why; the failure is remembered for 30 seconds, and `openclaw models list --provider cursor-cli --refresh` waits it out | Fix the login or `cursor-agent`, then run the refresh (after 30 seconds when a listing failed) |
 | No `cursor-cli` models in the Gateway's list | The plugin is not loaded yet | Name a `cursor-cli/...` model as the default model so it loads at Gateway start |
@@ -101,7 +117,7 @@ The first command must report `"status": "loaded"` and `cursor-cli` under `cliBa
 | `` `ps` is not available `` | The host has no `ps`, so processes are not recorded and a killed Gateway's leftovers are not cleaned | Install `ps` (procps); check for stray `cursor-agent` processes by hand |
 | `The CLI speaks ACP protocol N` | `cursor-agent` speaks a protocol this plugin does not | Run `cursor-agent update`, or update the plugin |
 | `The CLI rejected its login` | `cursor-agent` refused the ACP login | Run `cursor-agent login` and check `cursor-agent status` |
-| Usage shows 0 for `cursor-cli` turns | No `CURSOR_API_KEY` in the Gateway's environment (login only), or the usage ledger failed. The Gateway log then holds `Cursor usage: the API key was rejected (...)`, `Cursor usage: unexpected ledger answer (...)`, or `Cursor usage unavailable for 3 turns in a row (last: ...)`, each followed by "usage is off for 10 min"; a network error behind a proxy has no warning until the third turn | Set a valid `CURSOR_API_KEY`; behind an HTTP proxy start the Gateway with `NODE_USE_ENV_PROXY=1`; see [Usage](providers/cursor.md#usage) |
+| Usage shows 0 for `cursor-cli` turns | No `CURSOR_API_KEY` for the Cursor process (login only; see [The API key](#the-api-key)), or the usage ledger failed. The Gateway log then holds `Cursor usage: the API key was rejected (...)`, `Cursor usage: unexpected ledger answer (...)`, or `Cursor usage unavailable for 3 turns in a row (last: ...)`, each followed by "usage is off for 10 min"; a network error behind a proxy has no warning until the third turn | Set a valid `CURSOR_API_KEY`; behind an HTTP proxy start the Gateway with `NODE_USE_ENV_PROXY=1`; see [Usage](providers/cursor.md#usage) |
 | After a switch the model does not know the earlier turns | OpenClaw does not copy history from another model into `cursor-cli`; the model reads it with `sessions_history`. That tool is denied (`tools.deny`), or the chat runs with `--local`, which has no Gateway for it | Remove `sessions_history` from `tools.deny`; run the chat through a Gateway |
 | `CLI session not found` (`session_expired`) | Cursor does not know the chat: it belongs to another agent's home or was deleted. OpenClaw may retry with a fresh chat and its own history only when it has history to reseed (2026.10.3 did not in the live probe) | Start a new chat with `/reset` |
 | `Capability mismatch: Cursor CLI does not report <what> (parity row Pn), which the plugin's manifest needs` (`capability_mismatch`) | This `cursor-agent` build lacks a capability the plugin needs: session resume (P5) or HTTP MCP servers (P7). The turn failed right after the handshake: no chat was created or loaded and no prompt was sent. Resumed chats get the same text | Run `cursor-agent update`; if it repeats, report it with `cursor-agent --version` |

@@ -7,6 +7,7 @@ import { CURSOR_PERMISSIONS, cursorAdapter } from "../src/adapters/cursor/index.
 import { createManifest, type CliAdapter } from "../src/core/ports.ts";
 import { FLAG_ROWS } from "../src/core/manifest.ts";
 import { backendIdFor, buildCliBackend, nativeAuthMarkerFor } from "../src/core/backend.ts";
+import { HOST_SHELL_ARG } from "../src/core/execute.ts";
 import { createConfigValidator, registerAdapters } from "../src/core/register.ts";
 import provider from "../src/provider-discovery.ts";
 import { createModelCatalog } from "../src/core/catalog.ts";
@@ -68,6 +69,13 @@ describe("cursor-cli backend", () => {
       { settings: {} },
     );
     expect(undecided.config).not.toHaveProperty("reseedFromRawTranscriptWhenUncompacted");
+  });
+
+  it("hands the plugin config's env to the host as the backend's env, so only the CLI process gets it", () => {
+    const keyed = buildCliBackend(cursorAdapter, { settings: { env: { CURSOR_API_KEY: "k-1" } } });
+    expect(keyed.config.env).toEqual({ CURSOR_API_KEY: "k-1" });
+    expect(backend.config).not.toHaveProperty("env");
+    expect(buildCliBackend(cursorAdapter, { settings: { env: {} } }).config).not.toHaveProperty("env");
   });
 
   it("takes the binary from the plugin config", () => {
@@ -195,7 +203,14 @@ describe("tool availability (AD-9)", () => {
       expect(resolve()).toBe(base);
       expect(resolve({ useResume: true })).toBe(base);
       expect(resolve({ executionMode: "side-question" })).toBe(base);
-      expect(resolve({ hostOwnedTools: ["exec", "process"] })).toBe(base);
+    });
+
+    it("adds the host-shell marker only when the host serves exec for the run", () => {
+      expect(resolve({ hostOwnedTools: ["exec", "process"] })).toEqual([...base, HOST_SHELL_ARG]);
+      expect(resolve({ hostOwnedTools: ["process"] })).toBe(base);
+      expect(resolve({ hostOwnedTools: [] })).toBe(base);
+      // An unenforceable selection still makes the host fail the run.
+      expect(resolve({ hostOwnedTools: ["exec"], toolAvailability: { native: [], openClaw: [] } })).toBeUndefined();
     });
 
     it("returns them for a selection that keeps the native tools Cursor cannot switch off", () => {
@@ -270,8 +285,12 @@ describe("operations wiring (P17, P19)", () => {
     const log = join(scratch, "cap.jsonl");
     const env = { FAKE_CURSOR_LOG: log, FAKE_CURSOR_LOG_END: "1" };
     const backend = buildCliBackend(cursorAdapter, { settings: { maxConcurrentTurns: 1, maxProcesses: 2 } });
-    const first = turn(backend, "cap-a", "[[sleep:400]]", env);
-    await sleep(100);
+    const first = turn(backend, "cap-a", "[[sleep:1500]]", env);
+    // Start the second turn only once the first one holds the slot and its prompt is running; a fixed
+    // short sleep races with a slow start under load.
+    for (let waited = 0; waited < 20_000 && !(existsSync(log) && entries(log).some((line) => line.method === "session/prompt")); waited += 20) {
+      await sleep(20);
+    }
     const second = turn(backend, "cap-b", "say:later", env);
     const [a, b] = await Promise.all([first, second]);
     expect(a.at(-1)).toMatchObject({ is_error: false });
@@ -891,6 +910,18 @@ describe("synthetic auth provider entry", () => {
       env: { PATH: "/bin", CURSOR_API_BASE_URL: "http://elsewhere", NODE_OPTIONS: "--require x", CURSOR_API_KEY: "key" },
     });
     expect(seen).toEqual([{ PATH: "/bin", CURSOR_API_KEY: "key" }]);
+  });
+
+  it("probes with the plugin config's env too, so a key kept there counts as a login", async () => {
+    const seen: Array<Record<string, string | undefined>> = [];
+    const spy = { ...cursorAdapter, probeAuth: async (p: { env: Record<string, string | undefined> }) => (seen.push(p.env), "available" as const) };
+    const spied = createSyntheticAuthProvider(spy as never) as unknown as typeof entry;
+    await spied.prepareSyntheticAuth({
+      provider: "cursor-cli",
+      config: { plugins: { entries: { "openclaw-all-cli": { config: { "cursor-cli": { command: FAKE_CURSOR_AGENT, env: { CURSOR_API_KEY: "from-config" } } } } } } },
+      env: { PATH: "/bin" },
+    });
+    expect(seen).toEqual([{ PATH: "/bin", CURSOR_API_KEY: "from-config" }]);
   });
 
   it("returns nothing when the login is missing, the provider differs, or there is no config", async () => {

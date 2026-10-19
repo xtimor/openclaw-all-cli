@@ -369,30 +369,39 @@ describe("cursor adapter", () => {
     ).rejects.toMatchObject({ code: "capability_mismatch" });
   });
 
-  it("runs a normal turn in Cursor's agent mode, so the model can run commands that change files through OpenClaw exec", async () => {
-    const dir = mkdtempSync(join(tmpdir(), "oac-mode-"));
-    const file = join(dir, "log.jsonl");
-    let session: CliSession | undefined;
-    try {
-      session = await cursorAdapter.open({
+  describe("the mode follows whether the host serves exec", () => {
+    const modeOf = async (params: { hostShell?: boolean; executionMode?: "agent" | "side-question"; start?: string; env?: Record<string, string> }) => {
+      const session = await cursorAdapter.open({
         command: FAKE_CURSOR_AGENT,
         args: cursorAdapter.launchArgs,
         cwd: process.cwd(),
-        // No `ask` mode at all: a normal run does not need it.
-        env: fakeEnv({ FAKE_CURSOR_LOG: file, FAKE_CURSOR_NO_ASK_MODE: "1" }),
+        // The fake also offers a `plan` mode: "not ask" is not enough, the mode must be exactly the expected one.
+        env: fakeEnv({ FAKE_CURSOR_START_MODE: params.start ?? "plan", ...params.env }),
         modelId: "auto",
+        ...(params.hostShell === undefined ? {} : { hostShell: params.hostShell }),
+        ...(params.executionMode ? { executionMode: params.executionMode } : {}),
         onPermissionRequest: async () => "reject_once",
       });
-      const requests = readFileSync(file, "utf8")
-        .trim()
-        .split("\n")
-        .map((line) => JSON.parse(line));
-      const modes = requests.filter((entry) => entry.method === "session/set_mode").map((entry) => entry.params.modeId);
-      expect(modes).not.toContain("ask");
-    } finally {
-      await session?.close();
-      rmSync(dir, { recursive: true, force: true });
-    }
+      open.push(session);
+      const events: NormalizedEvent[] = [];
+      for await (const event of session.prompt("[[mode]]")) events.push(event);
+      return (events.at(-1) as { text: string }).text;
+    };
+
+    it("is exactly agent when the host serves exec, even from another starting mode and without an ask mode", async () => {
+      expect(await modeOf({ hostShell: true })).toBe("mode:agent");
+      expect(await modeOf({ hostShell: true, start: "agent", env: { FAKE_CURSOR_NO_ASK_MODE: "1" } })).toBe("mode:agent");
+    });
+
+    it("is exactly ask when the host serves no exec (the second lock), by default and when told so", async () => {
+      expect(await modeOf({})).toBe("mode:ask");
+      expect(await modeOf({ hostShell: false })).toBe("mode:ask");
+      expect(await modeOf({ hostShell: false, start: "agent" })).toBe("mode:ask");
+    });
+
+    it("is exactly ask for a side question, whatever the host serves", async () => {
+      expect(await modeOf({ hostShell: true, executionMode: "side-question" })).toBe("mode:ask");
+    });
   });
 
   describe("permission requests", () => {

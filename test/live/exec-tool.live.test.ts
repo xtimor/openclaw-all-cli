@@ -20,15 +20,19 @@ import {
 } from "./harness.ts";
 
 const PORT = 18_931;
+const PORT_KEYLESS = 18_932;
 const WORKSPACE = join(ISOLATED_STATE_DIR, "workspace");
 const HOME_CONFIG = join(ISOLATED_STATE_DIR, "agents", "main", "agent", "openclaw-all-cli", "cursor-cli", "cli-config.json");
-const CONFIG_KEYS = ["agents.defaults.model.primary", "tools.exec", "tools.deny"] as const;
+const CONFIG_KEYS = ["agents.defaults.model.primary", "tools.exec", "tools.deny", "plugins.entries.openclaw-all-cli.config.cursor-cli"] as const;
+const TRIES = 3;
 
 // Parity rows P8 and P10 (OpenClaw's own `exec` and `process` served to the model; AD-9). Real
 // cursor-agent behind one isolated Gateway; needs `npm run dev:install` and CURSOR_API_KEY. The
 // plugin writes no exec code: these tests show that OpenClaw's exec policy (approvals, security,
 // timeout, abort) governs what the model runs. Every command is a script in a temp dir that
 // leaves a marker file, so "ran" and "did not run" are checked on disk, not in the model's words.
+// The model is a language model: a row retries a turn (up to three times) in which it did not do
+// what the row needs, such as never calling the tool, and fails loudly if it never does.
 describeLive("OpenClaw exec is the model's shell (P8, P10)", () => {
   // Created in beforeAll: a skipped describe still runs its body, and nothing would remove the dir.
   let root = "";
@@ -37,10 +41,10 @@ describeLive("OpenClaw exec is the model's shell (P8, P10)", () => {
   let counter = 0;
 
   const token = () => randomBytes(8).toString("hex");
-  const sessionId = (label: string) => `live-exec-${label}-${Date.now()}`;
+  const sessionId = (label: string) => `live-exec-${label}-${Date.now()}-${counter++}`;
   const path = (name: string) => join(root, name);
 
-  /** A script the model runs through `exec`: its output is unguessable, and the marker proves the run. */
+  /** A script the model runs through `exec`. */
   function script(name: string, body: string): string {
     const file = path(`${name}-${counter++}.sh`);
     writeFileSync(file, `#!/bin/sh\n${body}\n`, { mode: 0o755 });
@@ -71,6 +75,23 @@ describeLive("OpenClaw exec is the model's shell (P8, P10)", () => {
       reply = result.stdout;
     }
     return { reply, tools, status: result.status, raw: result.stdout + result.stderr };
+  }
+
+  /** Whether the turn called OpenClaw's exec (tools through the MCP proxy show as `mcp__openclaw__<tool>`). */
+  const calledExec = (turn: Turn) => turn.tools.includes("mcp__openclaw__exec");
+
+  /**
+   * Runs `attempt` up to `TRIES` times, until it returns no complaint. Each try starts from a clean
+   * slate (the attempt makes its own script and markers). A complaint after the last try fails the test.
+   */
+  async function retrying(label: string, attempt: (n: number) => Promise<string | undefined>) {
+    const complaints: string[] = [];
+    for (let n = 0; n < TRIES; n += 1) {
+      const complaint = await attempt(n);
+      if (complaint === undefined) return;
+      complaints.push(complaint);
+    }
+    expect.fail(`${label}: no usable try in ${TRIES}: ${complaints.join(" | ")}`);
   }
 
   const runIt = (file: string, note = "") =>
@@ -117,48 +138,97 @@ describeLive("OpenClaw exec is the model's shell (P8, P10)", () => {
   // Leave nothing behind: every config key, the Gateway, the temp dir.
   afterAll(async () => {
     await gateway?.stop();
-    restoreConfig();
+    if (prior.size > 0) restoreConfig();
     if (root) rmSync(root, { recursive: true, force: true });
   }, 180_000);
 
   it(
     "runs a command through OpenClaw exec in the workspace, while Cursor's home still denies Shell",
     async () => {
-      const secret = token();
-      const file = script("plain", `printf '%s' ${secret} > ${path("plain.marker")}\necho "out:${secret}:$(pwd)"`);
-      const turn = await ask(sessionId("plain"), runIt(file));
-      expect(turn.status, turn.raw).toBe(0);
-      expect(readFileSync(path("plain.marker"), "utf8")).toBe(secret);
-      expect(turn.reply).toContain(secret);
-      expect(turn.reply).toContain(WORKSPACE);
-      expect(turn.tools).toContain("mcp__openclaw__exec");
-      // The static home is untouched: the host's exec is the only shell.
-      const home = JSON.parse(readFileSync(HOME_CONFIG, "utf8")) as { permissions: unknown };
-      expect(home.permissions).toEqual(CURSOR_PERMISSIONS);
-      expect(CURSOR_PERMISSIONS.deny).toContain("Shell(*)");
+      await retrying("plain", async () => {
+        const secret = token();
+        const file = script("plain", `printf '%s' ${secret} > ${path(`plain-${secret}.marker`)}\necho "out:${secret}:$(pwd)"`);
+        const turn = await ask(sessionId("plain"), runIt(file));
+        if (!existsSync(path(`plain-${secret}.marker`))) return `the command never ran (tools ${turn.tools.join(",")})`;
+        expect(turn.status, turn.raw).toBe(0);
+        expect(readFileSync(path(`plain-${secret}.marker`), "utf8")).toBe(secret);
+        expect(turn.reply).toContain(secret);
+        expect(turn.reply).toContain(WORKSPACE);
+        expect(calledExec(turn)).toBe(true);
+        // The static home is untouched: the host's exec is the only shell.
+        const home = JSON.parse(readFileSync(HOME_CONFIG, "utf8")) as { permissions: unknown };
+        expect(home.permissions).toEqual(CURSOR_PERMISSIONS);
+        expect(CURSOR_PERMISSIONS.deny).toContain("Shell(*)");
+        return undefined;
+      });
     },
-    LIVE_TIMEOUT_MS * 2,
+    LIVE_TIMEOUT_MS * 3,
   );
 
   it(
-    "keeps Cursor's native shell and write blocked in agent mode",
+    "keeps Cursor's native shell, write, edit and delete blocked in agent mode, after Cursor really tried them",
     async () => {
-      const shellMarker = path("native-shell.marker");
-      const writeMarker = path("native-write.marker");
-      const shell = await ask(
-        sessionId("native-shell"),
-        `Do not use MCP or OpenClaw tools. Use only your built-in Shell tool to run exactly: touch ${shellMarker} . Then say what happened.`,
-      );
-      expect(shell.status, shell.raw).toBe(0);
-      const write = await ask(
-        sessionId("native-write"),
-        `Do not use MCP or OpenClaw tools. Use only your built-in file write tool to create the file ${writeMarker} containing "hi". Then say what happened.`,
-      );
-      expect(write.status, write.raw).toBe(0);
-      expect(existsSync(shellMarker)).toBe(false);
-      expect(existsSync(writeMarker)).toBe(false);
+      const native = (turn: Turn, name: RegExp) => turn.tools.some((tool) => !tool.startsWith("mcp__") && name.test(tool));
+      const cases: Array<{ label: string; tool: RegExp; prepare: () => { prompt: string; blocked: () => boolean } }> = [
+        {
+          label: "shell",
+          tool: /^(exec|shell|bash)$/i,
+          prepare: () => {
+            const marker = path(`native-shell-${token()}.marker`);
+            return {
+              prompt: `Do not use MCP or OpenClaw tools. Use only your built-in Shell tool to run exactly: touch ${marker} . Then say what happened.`,
+              blocked: () => !existsSync(marker),
+            };
+          },
+        },
+        {
+          label: "write",
+          tool: /^(write|edit)$/i,
+          prepare: () => {
+            const marker = path(`native-write-${token()}.marker`);
+            return {
+              prompt: `Do not use MCP or OpenClaw tools. Use only your built-in file write tool to create the file ${marker} containing "hi". Then say what happened.`,
+              blocked: () => !existsSync(marker),
+            };
+          },
+        },
+        {
+          label: "edit",
+          tool: /^(edit|write)$/i,
+          prepare: () => {
+            const file = path(`native-edit-${token()}.txt`);
+            writeFileSync(file, "orig");
+            return {
+              prompt: `Do not use MCP or OpenClaw tools. Use only your built-in file edit tool to replace the text 'orig' with 'changed' in ${file} . Then say what happened.`,
+              blocked: () => readFileSync(file, "utf8") === "orig",
+            };
+          },
+        },
+        {
+          label: "delete",
+          tool: /^delete$/i,
+          prepare: () => {
+            const file = path(`native-delete-${token()}.txt`);
+            writeFileSync(file, "keep");
+            return {
+              prompt: `Do not use MCP or OpenClaw tools. Use only your built-in Delete tool to delete ${file} . Then say what happened.`,
+              blocked: () => existsSync(file),
+            };
+          },
+        },
+      ];
+      for (const entry of cases) {
+        await retrying(`native ${entry.label}`, async () => {
+          const { prompt, blocked } = entry.prepare();
+          const turn = await ask(sessionId(`native-${entry.label}`), prompt);
+          // Whatever happened, the effect must not have: checked on every try.
+          expect(blocked(), `native ${entry.label} took effect`).toBe(true);
+          if (!native(turn, entry.tool)) return `Cursor never attempted a native ${entry.label} (tools ${turn.tools.join(",")})`;
+          return undefined;
+        });
+      }
     },
-    LIVE_TIMEOUT_MS * 2,
+    LIVE_TIMEOUT_MS * 6,
   );
 
   it(
@@ -168,35 +238,42 @@ describeLive("OpenClaw exec is the model's shell (P8, P10)", () => {
       const client: ApprovalClient = await connectApprovalClient(PORT);
       try {
         for (const decision of ["allow-once", "deny"] as const) {
-          const secret = token();
-          const marker = path(`approval-${decision}.marker`);
-          const file = script(`approval-${decision}`, `printf '%s' ${secret} > ${marker}\necho "out:${secret}"`);
-          const turn = ask(sessionId(`approval-${decision}`), runIt(file));
-          let id: string | undefined;
-          const appeared = await waitFor(async () => {
-            id = (await client.list()).find((entry) => entry.request.command?.includes(file))?.id;
-            return id !== undefined;
-          }, 200_000, 1_000);
-          expect(appeared, "no pending approval for the command").toBe(true);
-          // Pending means not run yet.
-          expect(existsSync(marker)).toBe(false);
-          await client.resolve(id!, decision);
-          const done = await turn;
-          expect(done.status, done.raw).toBe(0);
-          if (decision === "allow-once") {
-            expect(readFileSync(marker, "utf8")).toBe(secret);
-            expect(done.reply).toContain(secret);
-          } else {
+          await retrying(`approval ${decision}`, async () => {
+            const secret = token();
+            const marker = path(`approval-${decision}-${secret}.marker`);
+            const file = script(`approval-${decision}`, `printf '%s' ${secret} > ${marker}\necho "out:${secret}"`);
+            const turn = ask(sessionId(`approval-${decision}`), runIt(file));
+            let id: string | undefined;
+            // A pending approval proves the model called exec; none within the wait means it never did.
+            await waitFor(async () => {
+              id = (await client.list()).find((entry) => entry.request.command?.includes(file))?.id;
+              return id !== undefined;
+            }, 120_000, 1_000);
+            if (id === undefined) {
+              await turn;
+              return "no pending approval appeared";
+            }
+            // Pending means not run yet.
             expect(existsSync(marker)).toBe(false);
-            expect(done.reply).not.toContain(secret);
-          }
+            await client.resolve(id, decision);
+            const done = await turn;
+            expect(done.status, done.raw).toBe(0);
+            if (decision === "allow-once") {
+              expect(readFileSync(marker, "utf8")).toBe(secret);
+              expect(done.reply).toContain(secret);
+            } else {
+              expect(existsSync(marker)).toBe(false);
+              expect(done.reply).not.toContain(secret);
+            }
+            return undefined;
+          });
         }
       } finally {
         client.close();
         openclaw(["config", "unset", "tools.exec"]);
       }
     },
-    LIVE_TIMEOUT_MS * 3,
+    LIVE_TIMEOUT_MS * 6,
   );
 
   it(
@@ -204,21 +281,24 @@ describeLive("OpenClaw exec is the model's shell (P8, P10)", () => {
     async () => {
       setConfig("tools.exec.security", "deny");
       try {
-        const secret = token();
-        const marker = path("security-deny.marker");
-        const file = script("security-deny", `printf '%s' ${secret} > ${marker}\necho "out:${secret}"`);
-        const turn = await ask(sessionId("security-deny"), runIt(file));
-        expect(turn.status, turn.raw).toBe(0);
-        // The model did call exec; it is OpenClaw that said no.
-        expect(turn.tools).toContain("mcp__openclaw__exec");
-        expect(existsSync(marker)).toBe(false);
-        expect(turn.reply).not.toContain(secret);
-        expect(turn.reply.length).toBeGreaterThan(0);
+        await retrying("security deny", async () => {
+          const secret = token();
+          const marker = path(`security-deny-${secret}.marker`);
+          const file = script("security-deny", `printf '%s' ${secret} > ${marker}\necho "out:${secret}"`);
+          const turn = await ask(sessionId("security-deny"), runIt(file));
+          expect(existsSync(marker)).toBe(false);
+          expect(turn.reply).not.toContain(secret);
+          if (!calledExec(turn)) return "the model never called exec";
+          expect(turn.status, turn.raw).toBe(0);
+          // OpenClaw's own denial text reached the model ("exec denied: host=gateway security=deny").
+          expect(turn.reply.toLowerCase()).toMatch(/den(y|ied)|not (run|allowed)|refus|blocked|policy/);
+          return undefined;
+        });
       } finally {
         openclaw(["config", "unset", "tools.exec"]);
       }
     },
-    LIVE_TIMEOUT_MS * 2,
+    LIVE_TIMEOUT_MS * 3,
   );
 
   it(
@@ -226,119 +306,214 @@ describeLive("OpenClaw exec is the model's shell (P8, P10)", () => {
     async () => {
       setConfig("tools.deny", '["exec","process"]', true);
       try {
-        const marker = path("tools-deny.marker");
-        const file = script("tools-deny", `touch ${marker}`);
-        const turn = await ask(sessionId("tools-deny"), runIt(file));
-        // The turn itself may end either way: a model that cannot find its shell goes looking with
-        // read and grep, and OpenClaw can then stop the run for a context it cannot compact without
-        // an API key. What matters is that no command ran.
-        expect(existsSync(marker), turn.raw).toBe(false);
+        await retrying("tools.deny", async () => {
+          const marker = path(`tools-deny-${token()}.marker`);
+          const file = script("tools-deny", `touch ${marker}`);
+          const turn = await ask(sessionId("tools-deny"), runIt(file));
+          // Whatever the model tried, nothing ran.
+          expect(existsSync(marker)).toBe(false);
+          if (turn.status !== 0) return `the turn did not complete (status ${turn.status})`;
+          // The tools are not offered, so the model cannot have called them. A try in which it guessed
+          // the tool name anyway tells us about the model, not the policy: retry.
+          if (turn.tools.some((name) => /(^|__)(exec|process)$/.test(name) && name.startsWith("mcp__"))) return "the model called a hidden tool by name";
+          return undefined;
+        });
       } finally {
         openclaw(["config", "unset", "tools.deny"]);
       }
     },
-    LIVE_TIMEOUT_MS * 2,
+    LIVE_TIMEOUT_MS * 3,
   );
 
   it(
-    "kills a command that exceeds the exec timeout",
+    "kills a command that exceeds the exec timeout and reports the timeout to the model",
     async () => {
-      const started = path("timeout.started");
-      const finished = path("timeout.finished");
-      const file = script("timeout", `touch ${started}\nsleep 20\ntouch ${finished}`);
-      const turn = await ask(sessionId("timeout"), runIt(file, "Set the exec tool's timeout parameter to 3 seconds.\n"));
-      expect(turn.status, turn.raw).toBe(0);
-      expect(existsSync(started)).toBe(true);
-      // The script would finish 20 s after it started: wait past that and see it never did.
-      await new Promise((resolve) => setTimeout(resolve, 22_000));
-      expect(existsSync(finished)).toBe(false);
+      await retrying("timeout", async () => {
+        const secret = token();
+        const started = path(`timeout-${secret}.started`);
+        const finished = path(`timeout-${secret}.finished`);
+        const file = script("timeout", `touch ${started}\nsleep 20\ntouch ${finished}`);
+        const turn = await ask(sessionId("timeout"), runIt(file, "Set the exec tool's timeout parameter to 3 seconds.\n"));
+        expect(turn.status, turn.raw).toBe(0);
+        if (!existsSync(started)) return "the command never started";
+        // The script would finish 20 s after it started: wait past that and see it never did.
+        await new Promise((resolve) => setTimeout(resolve, 22_000));
+        expect(existsSync(finished)).toBe(false);
+        expect(turn.reply.toLowerCase()).toMatch(/time(d)?[ -]?out|timeout|3 seconds|terminated/);
+        return undefined;
+      });
     },
-    LIVE_TIMEOUT_MS * 2,
+    LIVE_TIMEOUT_MS * 3,
+  );
+
+  it(
+    "stops a foreground command that runs past Cursor's 60 s call limit, instead of leaving it running",
+    async () => {
+      // With `process` hidden OpenClaw runs exec synchronously (it ignores yieldMs and background), so
+      // the command stays in the foreground, which is the case the proxy's deadline exists for.
+      setConfig("tools.deny", '["process"]', true);
+      try {
+        await retrying("call limit", async () => {
+          const secret = token();
+          const shPid = path(`limit-${secret}.pid`);
+          const done = path(`limit-${secret}.done`);
+          const file = script("limit", `echo $$ > ${shPid}\nsleep 100\ntouch ${done}`);
+          const turn = await ask(
+            sessionId("limit"),
+            runIt(file, "Set the exec tool's timeout parameter to 150 seconds. If a tool error comes back, just report it.\n"),
+          );
+          if (!existsSync(shPid)) return "the command never started";
+          const pid = Number(readFileSync(shPid, "utf8").trim());
+          // The proxy stopped the call at its deadline, and the host killed the command with it.
+          expect(await waitFor(() => !isAlive(pid), 15_000, 250), `the foreground command ${pid} is still running`).toBe(true);
+          expect(existsSync(done)).toBe(false);
+          expect(turn.reply.toLowerCase()).toMatch(/longer than|stopped|limit|background|cancel|timed out/);
+          return undefined;
+        });
+      } finally {
+        openclaw(["config", "unset", "tools.deny"]);
+      }
+    },
+    LIVE_TIMEOUT_MS * 4,
   );
 
   it(
     "relays a long-running call (20 s) and its output",
     async () => {
-      const secret = token();
-      const file = script("long", `sleep 20\nprintf '%s' ${secret} > ${path("long.marker")}\necho "out:${secret}"`);
-      const turn = await ask(sessionId("long"), runIt(file));
-      expect(turn.status, turn.raw).toBe(0);
-      expect(readFileSync(path("long.marker"), "utf8")).toBe(secret);
-      expect(turn.reply).toContain(secret);
+      await retrying("long", async () => {
+        const secret = token();
+        const file = script("long", `sleep 20\nprintf '%s' ${secret} > ${path(`long-${secret}.marker`)}\necho "out:${secret}"`);
+        const turn = await ask(sessionId("long"), runIt(file));
+        if (!existsSync(path(`long-${secret}.marker`))) return "the command never finished";
+        expect(turn.status, turn.raw).toBe(0);
+        expect(turn.reply).toContain(secret);
+        return undefined;
+      });
     },
-    LIVE_TIMEOUT_MS * 2,
+    LIVE_TIMEOUT_MS * 3,
   );
 
   it(
-    "completes the turn when a command prints about 3 MB",
+    "completes the turn when a command prints about 3 MB, and the reply carries a secret or the cap notice",
     async () => {
-      const marker = path("huge.marker");
-      const file = script("huge", `head -c 3000000 /dev/zero | tr '\\000' x\necho\ntouch ${marker}\necho done-huge`);
-      const turn = await ask(sessionId("huge"), runIt(file));
-      expect(turn.status, turn.raw).toBe(0);
-      expect(existsSync(marker)).toBe(true);
-      expect(turn.reply.length).toBeGreaterThan(0);
-      // OpenClaw's output cap applies: the reply is a model answer, not 3 MB.
-      expect(turn.reply.length).toBeLessThan(100_000);
+      await retrying("huge", async () => {
+        const head = token();
+        const tail = token();
+        const marker = path(`huge-${head}.marker`);
+        const file = script("huge", `echo "HEAD:${head}"\nhead -c 3000000 /dev/zero | tr '\\000' x\necho\necho "TAIL:${tail}"\ntouch ${marker}`);
+        const turn = await ask(sessionId("huge"), runIt(file, "Quote the HEAD and TAIL values it printed, if you can see them.\n"));
+        if (!existsSync(marker)) return "the command never ran";
+        expect(turn.status, turn.raw).toBe(0);
+        // OpenClaw's output cap keeps one end or both and says so: either secret or the notice must come back.
+        expect(turn.reply).toMatch(new RegExp(`${head}|${tail}|truncat|cap|omitted`, "i"));
+        // The reply is a model answer, not 3 MB.
+        expect(turn.reply.length).toBeLessThan(100_000);
+        return undefined;
+      });
     },
-    LIVE_TIMEOUT_MS * 2,
+    LIVE_TIMEOUT_MS * 3,
   );
 
   it(
-    "reports a non-zero exit code and the output to the model",
+    "reports a non-zero exit code the model was not told",
     async () => {
-      const secret = token();
-      const file = script("exit3", `echo "out:${secret}"\nexit 3`);
-      const turn = await ask(sessionId("exit3"), runIt(file, "It exits with a non-zero code: report the code too.\n"));
-      expect(turn.status, turn.raw).toBe(0);
-      expect(turn.reply).toContain(secret);
-      expect(turn.reply).toMatch(/\b3\b/);
+      await retrying("exit code", async () => {
+        const secret = token();
+        const code = 37 + (randomBytes(1)[0]! % 63);
+        const file = script("exit", `echo "out:${secret}"\nexit ${code}`);
+        const turn = await ask(sessionId("exit"), runIt(file, "Report the command's exit code too.\n"));
+        if (!calledExec(turn)) return "the model never called exec";
+        expect(turn.status, turn.raw).toBe(0);
+        expect(turn.reply).toContain(secret);
+        expect(turn.reply).toMatch(new RegExp(`\\b${code}\\b`));
+        return undefined;
+      });
     },
-    LIVE_TIMEOUT_MS * 2,
+    LIVE_TIMEOUT_MS * 3,
   );
 
   it(
     "kills the command when the turn is aborted mid-run",
     async () => {
-      const id = sessionId("abort");
-      const shPid = path("abort.shpid");
-      const sleepPid = path("abort.sleeppid");
-      const started = path("abort.started");
-      const done = path("abort.done");
-      const file = script("abort", `echo $$ > ${shPid}\nsleep 40 &\necho $! > ${sleepPid}\ntouch ${started}\nwait\ntouch ${done}`);
-      const turn = ask(id, runIt(file));
-      expect(await waitFor(() => existsSync(started), 200_000, 500), "the command never started").toBe(true);
-      const startedAt = Date.now();
-      const abort = openclaw(["gateway", "call", "sessions.abort", "--params", JSON.stringify({ key: `agent:main:explicit:${id}` }), "--port", String(PORT), "--json"]);
-      expect(abort.status, abort.stderr).toBe(0);
-      const pids = [Number(readFileSync(shPid, "utf8").trim()), Number(readFileSync(sleepPid, "utf8").trim())];
-      const gone = await waitFor(() => pids.every((pid) => !isAlive(pid)), 10_000, 250);
-      expect(gone, `the command's processes ${pids.join(", ")} are still alive 10 s after the abort`).toBe(true);
-      await turn;
-      // The script's follow-up would run when its sleep ended: wait past that.
-      await new Promise((resolve) => setTimeout(resolve, Math.max(0, 42_000 - (Date.now() - startedAt))));
-      expect(existsSync(done)).toBe(false);
+      await retrying("abort", async () => {
+        const id = sessionId("abort");
+        const secret = token();
+        const shPid = path(`abort-${secret}.shpid`);
+        const sleepPid = path(`abort-${secret}.sleeppid`);
+        const started = path(`abort-${secret}.started`);
+        const done = path(`abort-${secret}.done`);
+        const file = script("abort", `echo $$ > ${shPid}\nsleep 40 &\necho $! > ${sleepPid}\ntouch ${started}\nwait\ntouch ${done}`);
+        const turn = ask(id, runIt(file));
+        if (!(await waitFor(() => existsSync(started), 150_000, 500))) {
+          await turn;
+          return "the command never started";
+        }
+        const startedAt = Date.now();
+        const abort = openclaw(["gateway", "call", "sessions.abort", "--params", JSON.stringify({ key: `agent:main:explicit:${id}` }), "--port", String(PORT), "--json"]);
+        expect(abort.status, abort.stderr).toBe(0);
+        const pids = [Number(readFileSync(shPid, "utf8").trim()), Number(readFileSync(sleepPid, "utf8").trim())];
+        const gone = await waitFor(() => pids.every((pid) => !isAlive(pid)), 10_000, 250);
+        expect(gone, `the command's processes ${pids.join(", ")} are still alive 10 s after the abort`).toBe(true);
+        await turn;
+        // The script's follow-up would run when its sleep ended: wait past that.
+        await new Promise((resolve) => setTimeout(resolve, Math.max(0, 42_000 - (Date.now() - startedAt))));
+        expect(existsSync(done)).toBe(false);
+        return undefined;
+      });
     },
-    LIVE_TIMEOUT_MS * 2,
+    LIVE_TIMEOUT_MS * 3,
   );
 
+  it(
+    "keeps CURSOR_API_KEY away from exec when the key comes from the plugin config, not the Gateway's environment",
+    async () => {
+      const key = process.env.CURSOR_API_KEY!;
+      await gateway.stop();
+      setConfig("plugins.entries.openclaw-all-cli.config.cursor-cli", JSON.stringify({ env: { CURSOR_API_KEY: key } }), true);
+      // A Gateway whose own environment has no key at all.
+      gateway = await startGateway(PORT_KEYLESS, { omitEnv: ["CURSOR_API_KEY"] });
+      await retrying("key isolation", async () => {
+        const secret = token();
+        const out = path(`keyless-${secret}.txt`);
+        const file = script("keyless", `if env | grep -q '^CURSOR_API_KEY='; then echo present > ${out}; else echo absent > ${out}; fi\necho "out:${secret}"`);
+        const turn = await ask(sessionId("keyless"), runIt(file));
+        // The turn itself (Cursor with the key from the plugin config) must have worked.
+        if (!existsSync(out)) return `the command never ran (status ${turn.status}, tools ${turn.tools.join(",")})`;
+        expect(turn.status, turn.raw).toBe(0);
+        expect(turn.reply).toContain(secret);
+        expect(readFileSync(out, "utf8").trim()).toBe("absent");
+        return undefined;
+      });
+    },
+    LIVE_TIMEOUT_MS * 4,
+  );
+
+  // Needs a Docker daemon. Without one the row is not run (and says so), rather than passing vacuously.
   const docker = LIVE && spawnSync("docker", ["info"], { stdio: "ignore", timeout: 15_000 }).status === 0;
   it.skipIf(!docker)(
     "runs the command inside the sandbox, or refuses the run, never on the Gateway host",
     async () => {
       setConfig("agents.defaults.sandbox.mode", "all");
       try {
-        const marker = path("sandbox.marker");
-        const file = script("sandbox", `touch ${marker}\necho sandbox-ran`);
-        const turn = await ask(sessionId("sandbox"), runIt(file));
-        expect(turn.raw.length).toBeGreaterThan(0);
-        // The temp dir is not mounted into a sandbox: a marker here means the command ran on the host.
-        expect(existsSync(marker)).toBe(false);
+        await retrying("sandbox", async () => {
+          // A file only the host can see: a command that prints it ran on the host.
+          const secret = token();
+          const hostOnly = path(`hostonly-${secret}.txt`);
+          writeFileSync(hostOnly, secret);
+          const marker = path(`sandbox-${secret}.marker`);
+          const file = script("sandbox", `touch ${marker}\ncat ${hostOnly} 2>/dev/null || echo NOFILE`);
+          const turn = await ask(sessionId("sandbox"), runIt(file));
+          expect(existsSync(marker), "the command ran on the Gateway host").toBe(false);
+          expect(turn.reply).not.toContain(secret);
+          expect(turn.raw.length).toBeGreaterThan(0);
+          if (!calledExec(turn)) return "the model never called exec (a refused run is also fine, but is not evidence)";
+          return undefined;
+        });
       } finally {
         openclaw(["config", "unset", "agents.defaults.sandbox"]);
       }
     },
-    LIVE_TIMEOUT_MS * 2,
+    LIVE_TIMEOUT_MS * 3,
   );
   if (LIVE && !docker) {
     console.info("exec-tool live test: the sandbox row is not run, because `docker info` fails on this host.");
