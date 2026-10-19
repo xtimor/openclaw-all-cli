@@ -214,6 +214,20 @@ describe("cursor adapter", () => {
       }
     });
 
+    it("discards only the named session's directory, and refuses a path-like id", async () => {
+      const dir = mkdtempSync(join(tmpdir(), "oac-cursor-"));
+      try {
+        const sessions = join(dir, "acp-sessions");
+        for (const name of ["refused", "user-chat"]) mkdirSync(join(sessions, name), { recursive: true });
+        await cursorAdapter.discardSession!({ env: { CURSOR_CONFIG_DIR: dir }, sessionId: "../acp-sessions" });
+        expect(readdirSync(sessions).sort()).toEqual(["refused", "user-chat"]);
+        await cursorAdapter.discardSession!({ env: { CURSOR_CONFIG_DIR: dir }, sessionId: "refused" });
+        expect(readdirSync(sessions)).toEqual(["user-chat"]);
+      } finally {
+        rmSync(dir, { recursive: true, force: true });
+      }
+    });
+
     it("looks for the session directory under the HOME the child was given when no config dir is set", async () => {
       const home = mkdtempSync(join(tmpdir(), "oac-cursor-"));
       try {

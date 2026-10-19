@@ -95,11 +95,19 @@ deferred: []
 - The check sits in `attachSession` after the `entry.closed` check and before `entry.session` is set, so a mismatch leaves no registered session; the caller's catch closes the handle (slot, chat, proxy, lock released as for a failed open).
 - Gap-reason test skips P3 in the "undecided" assertion (P3 is `approx`: streaming is the seam every adapter has); P6/P11/P12/P14 are asserted undecided. The P6 matrix cell and the manifest note carry the same reason.
 - Fake agent default `initialize` now matches the real report and drops `agentInfo`.
+- Review round 1 changes (below): the check now runs in the transport right after `initialize` (new `OpenParams.requiredCapabilities`, `AcpSessionOptions.requiredCapabilities`/`displayName`; `capabilityMismatch` lives in `ports.ts` because transports may import only core ports); the core check stays as a fallback and calls the optional `CliAdapter.discardSession` for a new chat only. `clearEnv` is no longer gated: the `cleanEnv` flag is gone, P17 sits in `NO_FLAG_ROWS` (with P3 it is documented by adapters but not switchable), and the all-undecided backend now also carries `config.clearEnv`.
 - Docs: `docs/providers/cursor.md` (Capability check, P6 row), `docs/setup.md` (two troubleshooting rows), parity matrix (P5, P6, P7 cells), AD-10 rule, MEMORY entry 12.
 
 ## Plan Change Log
 
 ## Review Triage Log
+
+Round 1 (thorough, 4 lenses), all patched; each fix was reverted once and its test failed:
+1. Mismatch known after `initialize` but only seen after the full open (chat created or the user's chat loaded, orphan dir, later errors hid it): fixed as above. Tests: fake log is exactly `["initialize"]` for P7, P5 new, P5 resumed, login method, stale model name; no `acp-sessions` dir left (the fake now creates one per `session/new`); core fallback tests for `requiredCapabilities` and `discardSession` (new chat only); Cursor `discardSession` unit test. Resumed chats show the same P5 text with "Update the CLI."; `docs/setup.md` dropped the old `The CLI cannot load a session` row.
+2. `clearEnv` is a safety list: applied whenever declared (backend config and synthetic auth probes). Test renamed and inverted.
+3. `liveTest.defaultMcpProbe` false -> true: in OpenClaw 2026.10.3 only `resolveCliBackendLiveTest` (`dist/cli-backends-*.mjs`) reads it, and nothing else in the shipped package calls that function; it feeds OpenClaw's own source-tree live tests, which are not in the package. No runtime effect. The probe it would enable is an MCP round trip through the loopback; Cursor's equivalent is `test/live/mcp-proxy.live.test.ts` (passes in the full live suite). The host's own probe itself was not run (not shipped, no supported entry point).
+4. Added end-to-end tests through `buildCliBackend` -> `prepareExecution` -> `execute` for P9 and P16 (undecided and decided), and a hard-coded `FLAG_ROWS` assertion.
+5. Resume test now passes a `sessionId`. 6. Fake supports `FAKE_CURSOR_AUTH_METHODS=null`; the absent-list test requires `authenticate`. 7. The matrix P6 cell must contain the manifest note; the cell is read from the adapter's own column. 8. The P7 test checks the fake agent's pid is gone. 9. Docs and comment fixes (login-method check is new; "no signal" list; `NO_FLAG_ROWS` comment; periods in P5/P7 cells).
 
 ## Design Notes
 

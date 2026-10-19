@@ -4,12 +4,14 @@ import { Readable, Writable } from "node:stream";
 import * as acp from "@agentclientprotocol/sdk";
 import {
   CliError,
+  capabilityMismatch,
   type CliCapability,
   type CliErrorCode,
   type CliSession,
   type NormalizedEvent,
   type NormalizedUsage,
   type PermissionDecision,
+  type RequiredCapability,
 } from "../../core/ports.ts";
 import { ToolCallTable, type DescribeToolCall } from "./tool-calls.ts";
 
@@ -50,6 +52,13 @@ export type AcpSessionOptions = {
   mcpServers?: acp.McpServer[];
   /** ACP `authenticate` method ID, called when the agent lists it. */
   authMethodId?: string;
+  /** Name used in a capability mismatch message. Default "The CLI". */
+  displayName?: string;
+  /**
+   * Capabilities the adapter needs. A missing one fails the open right after `initialize`, before
+   * the login, `session/new`, or `session/load`, with the core's `capability_mismatch` message.
+   */
+  requiredCapabilities?: readonly RequiredCapability[];
   /** Session mode the adapter requires. The session fails closed when the agent lacks it. */
   requiredModeId?: string;
   /** Exact model ID to select. Left unset (and without `selectModel`), the agent keeps its current model. */
@@ -575,17 +584,19 @@ async function setup(
       message: `The CLI speaks ACP protocol ${init.protocolVersion}; this plugin supports ${acp.PROTOCOL_VERSION}.`,
     });
   }
-  if (options.resumeSessionId && init.agentCapabilities?.loadSession !== true) {
-    throw new CliError({
-      code: "capability_mismatch",
-      message: "The CLI cannot load a session, so the conversation cannot resume.",
-    });
-  }
   const caps = init.agentCapabilities;
   const capabilities = new Set<CliCapability>();
   if (caps?.loadSession === true) capabilities.add("resumeSession");
   if (caps?.mcpCapabilities?.http === true) capabilities.add("httpMcp");
   if (caps?.promptCapabilities?.image === true) capabilities.add("imagePrompts");
+  // Before any login or session: a mismatch costs no chat. A resume needs `loadSession` even when
+  // the adapter did not list it.
+  const needed = [...(options.requiredCapabilities ?? [])];
+  if (options.resumeSessionId && !needed.some((item) => item.capability === "resumeSession")) {
+    needed.push({ row: "P5", capability: "resumeSession" });
+  }
+  const missing = needed.filter((item) => !capabilities.has(item.capability));
+  if (missing.length > 0) throw capabilityMismatch(options.displayName ?? "The CLI", missing);
   if (options.authMethodId) {
     const methods = init.authMethods;
     // An absent list is today's behavior: log in. An empty list needs no login. A list without

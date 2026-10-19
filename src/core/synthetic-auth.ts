@@ -52,9 +52,8 @@ type DiscoveryContext = {
 export function createSyntheticAuthProvider(adapter: CliAdapter, catalog?: ModelCatalog) {
   const backendId = backendIdFor(adapter);
   const flags = deriveFlags(adapter.manifest);
-  // P17: the probes and the listing run with the same clean env as a turn.
-  const probeEnv = (env: Record<string, string | undefined> | undefined) =>
-    flags.cleanEnv ? withoutKeys(env ?? process.env, adapter.clearEnv) : { ...(env ?? process.env) };
+  // The probes and the listing run with the same clean env as a turn.
+  const probeEnv = (env: Record<string, string | undefined> | undefined) => withoutKeys(env ?? process.env, adapter.clearEnv);
   return {
     id: backendId,
     label: adapter.displayName,

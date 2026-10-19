@@ -1,4 +1,7 @@
-import { CliError, type CapabilityManifest, type CliCapability, type ParityRowId } from "./ports.ts";
+import { capabilityMismatch, type CapabilityManifest, type CliCapability, type ParityRowId, type RequiredCapability } from "./ports.ts";
+
+export { capabilityMismatch };
+export type MissingCapability = RequiredCapability;
 
 /**
  * Backend flags the core derives from a manifest, and nothing else (AD-10). Each flag comes from
@@ -27,8 +30,6 @@ export type DerivedFlags = {
   history: boolean;
   /** P16: the adapter reads a turn's usage when the CLI reports none. */
   usage: boolean;
-  /** P17: the backend drops the adapter's `clearEnv` keys from the turn's env and the probes' env. */
-  cleanEnv: boolean;
   /** P18: a side question runs without OpenClaw's tools and is rejected every permission request. */
   sideQuestion: boolean;
   /** P19: the backend declares the host's live-test defaults. */
@@ -48,14 +49,15 @@ export const FLAG_ROWS: Record<keyof DerivedFlags, ParityRowId> = {
   images: "P13",
   history: "P15",
   usage: "P16",
-  cleanEnv: "P17",
   sideQuestion: "P18",
   liveTest: "P19",
 };
 
 /**
- * Rows that set no flag, each with the reason. These have no core mechanism to switch, so an
- * adapter must not decide them (a `match` or `approx` there would promise nothing).
+ * Rows that set no flag, each with the reason. P6, P11, P12 and P14 have no core mechanism, so an
+ * adapter must not decide them (a `match` or `approx` would promise nothing). P3 and P17 describe
+ * what the core does for every adapter (streaming; the `clearEnv` safety list, the host's timers,
+ * the caps and the pid locks): an adapter documents them but cannot switch them.
  */
 export const NO_FLAG_ROWS: Partial<Record<ParityRowId, string>> = {
   P3: "streaming is the AD-3 seam itself: every adapter streams, so there is nothing to switch",
@@ -63,6 +65,7 @@ export const NO_FLAG_ROWS: Partial<Record<ParityRowId, string>> = {
   P11: "the core has no skills or plugin-directory mechanism",
   P12: "the core has no system-prompt mechanism",
   P14: "the core has no mechanism for it",
+  P17: "clearEnv is a safety list the core applies whenever the adapter declares one; timers belong to the host; caps and pid locks apply to every adapter",
 };
 
 function decided(manifest: CapabilityManifest, id: ParityRowId): boolean {
@@ -76,28 +79,17 @@ export function deriveFlags(manifest: CapabilityManifest): DerivedFlags {
   ) as DerivedFlags;
 }
 
-const CAPABILITY_LABELS: Record<CliCapability, string> = {
-  resumeSession: "session resume",
-  httpMcp: "HTTP MCP servers",
-  imagePrompts: "image prompts",
-};
-
-export type MissingCapability = { row: ParityRowId; capability: CliCapability };
-
-/** The capabilities a decided row needs and the CLI did not report. Undecided rows are never checked. */
-export function missingCapabilities(manifest: CapabilityManifest, reported: ReadonlySet<CliCapability>): MissingCapability[] {
-  const missing: MissingCapability[] = [];
+/** What the decided rows need from the CLI, in row order. Undecided rows need nothing. */
+export function requiredCapabilities(manifest: CapabilityManifest): RequiredCapability[] {
+  const required: RequiredCapability[] = [];
   for (const [id, row] of Object.entries(manifest.rows) as Array<[ParityRowId, CapabilityManifest["rows"][ParityRowId]]>) {
     if (!decided(manifest, id)) continue;
-    for (const capability of row.requires ?? []) if (!reported.has(capability)) missing.push({ row: id, capability });
+    for (const capability of row.requires ?? []) required.push({ row: id, capability });
   }
-  return missing;
+  return required;
 }
 
-export function capabilityMismatch(displayName: string, missing: readonly MissingCapability[]): CliError {
-  const what = missing.map((item) => `${CAPABILITY_LABELS[item.capability]} (parity row ${item.row})`).join(" and ");
-  return new CliError({
-    code: "capability_mismatch",
-    message: `Capability mismatch: ${displayName} does not report ${what}, which the plugin's manifest needs. Update the CLI.`,
-  });
+/** The capabilities a decided row needs and the CLI did not report. */
+export function missingCapabilities(manifest: CapabilityManifest, reported: ReadonlySet<CliCapability>): MissingCapability[] {
+  return requiredCapabilities(manifest).filter((item) => !reported.has(item.capability));
 }

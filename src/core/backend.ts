@@ -80,8 +80,8 @@ export function buildCliBackend(adapter: CliAdapter, options: BuildBackendOption
             freshSessionRecovery: "invalidated-only" as const,
           }
         : {}),
-      // P17: the host deletes these keys from the Gateway's env before a turn; the core applies the same list to its own probes.
-      ...(flags.cleanEnv ? { clearEnv: [...adapter.clearEnv] } : {}),
+      // A safety list, applied whenever the adapter declares one (not gated by a row): the host deletes these keys from the Gateway's env before a turn; the core applies the same list to its own probes.
+      clearEnv: [...adapter.clearEnv],
       output: "jsonl",
       input: "stdin",
       ...(flags.liveSession ? { liveSession: "claude-stdio" as const } : {}),

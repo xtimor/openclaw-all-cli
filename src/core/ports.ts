@@ -150,6 +150,24 @@ export type CapabilityManifest = {
   rows: Record<ParityRowId, ParityRow>;
 };
 
+const CAPABILITY_LABELS: Record<CliCapability, string> = {
+  resumeSession: "session resume",
+  httpMcp: "HTTP MCP servers",
+  imagePrompts: "image prompts",
+};
+
+/** A capability a decided parity row needs from the CLI. */
+export type RequiredCapability = { row: ParityRowId; capability: CliCapability };
+
+/** The one `capability_mismatch` error, built by the core and by a transport that checks early (AD-10). */
+export function capabilityMismatch(displayName: string, missing: readonly RequiredCapability[]): CliError {
+  const what = missing.map((item) => `${CAPABILITY_LABELS[item.capability]} (parity row ${item.row})`).join(" and ");
+  return new CliError({
+    code: "capability_mismatch",
+    message: `Capability mismatch: ${displayName} does not report ${what}, which the plugin's manifest needs. Update the CLI.`,
+  });
+}
+
 /** Builds a manifest where every row is undecided; an adapter overrides the rows it knows. */
 export function createManifest(
   minVersion: string,
@@ -216,6 +234,12 @@ export type OpenParams = {
   resumeSessionId?: string;
   /** MCP servers for the native session, given at both new and resumed sessions. */
   mcpServers?: readonly McpServerSpec[];
+  /**
+   * What the manifest's decided rows need from the CLI (AD-10). A transport that learns the CLI's
+   * capabilities before it creates a session should fail with `capabilityMismatch` right then.
+   * The core checks the session's report again after the open, for transports that do not.
+   */
+  requiredCapabilities?: readonly RequiredCapability[];
   /** Answers a CLI permission request. */
   onPermissionRequest: (request: PermissionRequest) => Promise<PermissionDecision>;
   /**
@@ -354,4 +378,10 @@ export interface CliAdapter {
    * usage; by contract it does not throw, and the core treats a throw as no usage.
    */
   readUsage?(query: UsageQuery): Promise<UsageReport>;
+  /**
+   * Optional. Removes what the CLI stored for a throwaway native session that was created and then
+   * refused (a capability mismatch the transport could not see earlier). The core calls it only
+   * for a session it opened as a new chat, never for a resumed one. Failures are ignored.
+   */
+  discardSession?(params: { env: Record<string, string>; sessionId: string }): Promise<void>;
 }

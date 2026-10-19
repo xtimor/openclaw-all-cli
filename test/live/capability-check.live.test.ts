@@ -5,7 +5,7 @@ import { afterAll, expect, it } from "vitest";
 import { FAKE_CURSOR_AGENT } from "../fixtures/paths.ts";
 import { LIVE_TIMEOUT_MS, describeLive, openclaw, replyLines } from "./harness.ts";
 
-// AD-10 with parity rows P5 (session resume) and P7 (HTTP MCP): the core fails a turn, before any
+// AD-10 with parity rows P5 (session resume) and P7 (HTTP MCP): the core fails a turn, before any chat or
 // prompt, when the CLI does not report what the manifest needs. A fake `cursor-agent` that reports
 // less drives the failure through the real OpenClaw; real Cursor must pass the same check.
 // Run `npm run dev:install` first. The real turn needs a Cursor login or CURSOR_API_KEY.
@@ -53,7 +53,8 @@ describeLive("capability check at open (AD-10, P5, P7)", () => {
     const { output, log } = turnWith("no-http", { mcpCapabilities: { http: false } });
     expect(output).toContain("Capability mismatch");
     expect(output).toContain("P7");
-    expect(methods(log)).toContain("session/new");
+    // The transport fails right after the handshake: no chat is created.
+    expect(methods(log)).not.toContain("session/new");
     expect(methods(log)).not.toContain("session/prompt");
   }, LIVE_TIMEOUT_MS);
 
@@ -61,6 +62,7 @@ describeLive("capability check at open (AD-10, P5, P7)", () => {
     const { output, log } = turnWith("no-load", { loadSession: false });
     expect(output).toContain("Capability mismatch");
     expect(output).toContain("P5");
+    expect(methods(log)).not.toContain("session/new");
     expect(methods(log)).not.toContain("session/prompt");
   }, LIVE_TIMEOUT_MS);
 

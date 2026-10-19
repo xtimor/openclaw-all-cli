@@ -4,7 +4,7 @@ import { join } from "node:path";
 import { afterAll, describe, expect, it, vi } from "vitest";
 import { ADAPTERS } from "../src/registry.ts";
 import { CURSOR_PERMISSIONS, cursorAdapter } from "../src/adapters/cursor/index.ts";
-import { createManifest } from "../src/core/ports.ts";
+import { createManifest, type CliAdapter } from "../src/core/ports.ts";
 import { FLAG_ROWS } from "../src/core/manifest.ts";
 import { backendIdFor, buildCliBackend, nativeAuthMarkerFor } from "../src/core/backend.ts";
 import { createConfigValidator, registerAdapters } from "../src/core/register.ts";
@@ -406,6 +406,7 @@ describe("backend fields by parity row (AD-10)", () => {
     "parseJsonlEvent",
     "prepareExecution",
     "config.args",
+    "config.clearEnv",
     "config.command",
     "config.input",
     "config.output",
@@ -418,7 +419,8 @@ describe("backend fields by parity row (AD-10)", () => {
     expect(backend.nativeToolMode).toBe("always-on");
   });
 
-  // The fields each decided row adds. P2, P9, P13 and P16 add none: their mechanisms live in the
+  // The fields each decided row adds. `config.clearEnv` is structural: a safety list, not a row's.
+  // P2, P9, P13 and P16 add none: their mechanisms live in the
   // provider entry (P2, P13, P1's catalog) and in execute (P9, P16), and the live-test probes need P19 too.
   const ADDS: Record<string, string[]> = {
     P1: ["config.modelAliases"],
@@ -432,7 +434,6 @@ describe("backend fields by parity row (AD-10)", () => {
     P13: [],
     P15: ["config.reseedFromRawTranscriptWhenUncompacted"],
     P16: [],
-    P17: ["config.clearEnv"],
     P18: ["sideQuestionToolMode"],
     P19: ["liveTest"],
   };
@@ -466,7 +467,6 @@ describe("backend fields by parity row (AD-10)", () => {
         "sideQuestionToolMode",
         "liveTest",
         "config.modelAliases",
-        "config.clearEnv",
         "config.liveSession",
         "config.resumeArgs",
         "config.freshSessionRecovery",
@@ -480,7 +480,12 @@ describe("capability check (AD-10)", () => {
   const scratch = mkdtempSync(join(tmpdir(), "oac-backend-caps-"));
   afterAll(() => rmSync(scratch, { recursive: true, force: true }));
 
-  async function turn(adapter: typeof cursorAdapter, name: string, caps: Record<string, unknown>, useResume = false) {
+  async function turn(
+    adapter: typeof cursorAdapter,
+    name: string,
+    caps: Record<string, unknown>,
+    extra: { useResume?: boolean; sessionId?: string; modelId?: string } = {},
+  ) {
     const backend = buildCliBackend(adapter, { settings: {} });
     const log = join(scratch, `${name}.jsonl`);
     const prepared = await backend.prepareExecution!({ agentDir: join(scratch, name) } as never);
@@ -491,19 +496,23 @@ describe("capability check (AD-10)", () => {
       cwd: process.cwd(),
       env: fakeEnv({ FAKE_CURSOR_LOG: log, FAKE_CURSOR_CAPS: JSON.stringify(caps) }),
       prompt: "say:pong",
-      modelId: "auto",
+      modelId: extra.modelId ?? "auto",
       systemPrompt: "",
-      useResume,
+      useResume: extra.useResume ?? false,
+      ...(extra.sessionId ? { sessionId: extra.sessionId } : {}),
       timeoutMs: 10_000,
       requestToolPermission: async () => ({ behavior: "deny", message: "no" }),
       requestUserInput: async () => ({ status: "cancelled", message: "no" }),
     })) {
       records.push(record);
     }
-    const methods = existsSync(log)
-      ? readFileSync(log, "utf8").trim().split("\n").map((line) => JSON.parse(line).method as string)
-      : [];
-    return { records, methods };
+    const entries = existsSync(log) ? readFileSync(log, "utf8").trim().split("\n").map((line) => JSON.parse(line)) : [];
+    const methods = entries.map((entry) => entry.method as string);
+    // The agent's home sets CURSOR_CONFIG_DIR; real Cursor leaves a directory per ACP session there.
+    const sessionsDir = join(scratch, name, "openclaw-all-cli", "cursor-cli", "acp-sessions");
+    const chatDirs = existsSync(sessionsDir) ? readdirSync(sessionsDir) : [];
+    const pid = entries.find((entry) => entry.method === "initialize")?.pid as number | undefined;
+    return { records, methods, chatDirs, pid };
   }
   const withRow = (row: string, status: "spike" | "match") => ({
     ...cursorAdapter,
@@ -514,29 +523,42 @@ describe("capability check (AD-10)", () => {
   });
 
   it("fails the turn without sending the prompt when the CLI reports no HTTP MCP (P7)", async () => {
-    const { records, methods } = await turn(cursorAdapter, "no-http", { mcpCapabilities: { http: false } });
+    const { records, methods, chatDirs, pid } = await turn(cursorAdapter, "no-http", { mcpCapabilities: { http: false } });
     expect(records.at(-1)).toMatchObject({
       type: "result",
       is_error: true,
       event: { kind: "error", error: { code: "capability_mismatch", retryable: false } },
     });
     expect(records.at(-1)!.event.error.message).toMatch(/does not report HTTP MCP servers \(parity row P7\)/);
-    expect(methods).toContain("session/new");
-    expect(methods).not.toContain("session/prompt");
+    // The transport fails right after initialize: no chat is created, loaded, or prompted.
+    expect(methods).toEqual(["initialize"]);
+    expect(chatDirs).toEqual([]);
+    // The fake agent process is gone.
+    expect(pid).toBeTypeOf("number");
+    expect(() => process.kill(pid!, 0)).toThrow(/ESRCH/);
   });
 
-  it("fails on the first turn of a new chat when the CLI cannot load sessions (P5)", async () => {
-    const { records, methods } = await turn(cursorAdapter, "no-load", { loadSession: false });
+  it("fails a new chat's first turn at once when the CLI cannot load sessions (P5)", async () => {
+    const { records, methods, chatDirs } = await turn(cursorAdapter, "no-load", { loadSession: false });
     expect(records.at(-1)!.event.error).toMatchObject({ code: "capability_mismatch" });
-    expect(records.at(-1)!.event.error.message).toMatch(/session resume \(parity row P5\)/);
-    expect(methods).not.toContain("session/prompt");
+    expect(records.at(-1)!.event.error.message).toMatch(/session resume \(parity row P5\).*Update the CLI\./);
+    expect(methods).toEqual(["initialize"]);
+    expect(chatDirs).toEqual([]);
   });
 
-  it("keeps the transport's own message for a resume without loadSession", async () => {
-    const { records, methods } = await turn(cursorAdapter, "no-load-resume", { loadSession: false }, true);
+  it("shows a resumed chat the same message, and never touches the chat (P5)", async () => {
+    const { records, methods } = await turn(cursorAdapter, "no-load-resume", { loadSession: false }, { useResume: true, sessionId: "fake-session-1" });
+    expect(records.at(-1)!.event.error).toMatchObject({ code: "capability_mismatch", retryable: false });
+    expect(records.at(-1)!.event.error.message).toBe(
+      "Capability mismatch: Cursor CLI does not report session resume (parity row P5), which the plugin's manifest needs. Update the CLI.",
+    );
+    expect(methods).toEqual(["initialize"]);
+  });
+
+  it("reports the mismatch, not a stale model name or a missing mode", async () => {
+    const { records, methods } = await turn(cursorAdapter, "stale-model", { mcpCapabilities: { http: false } }, { modelId: "no-such-model" });
     expect(records.at(-1)!.event.error).toMatchObject({ code: "capability_mismatch" });
-    expect(methods).not.toContain("session/load");
-    expect(methods).not.toContain("session/prompt");
+    expect(methods).toEqual(["initialize"]);
   });
 
   it("lists every missing row in one error", async () => {
@@ -550,6 +572,31 @@ describe("capability check (AD-10)", () => {
     expect(methods).toContain("session/prompt");
   });
 
+  it("puts the login-method mismatch before any chat too", async () => {
+    const backend = buildCliBackend(cursorAdapter, { settings: {} });
+    const log = join(scratch, "no-login.jsonl");
+    const prepared = await backend.prepareExecution!({ agentDir: join(scratch, "no-login") } as never);
+    const records: Array<Record<string, any>> = [];
+    for await (const record of prepared!.execute!({
+      command: FAKE_CURSOR_AGENT,
+      args: ["acp"],
+      cwd: process.cwd(),
+      env: fakeEnv({ FAKE_CURSOR_LOG: log, FAKE_CURSOR_AUTH_METHODS: '[{"id":"other"}]' }),
+      prompt: "say:pong",
+      modelId: "auto",
+      systemPrompt: "",
+      useResume: false,
+      timeoutMs: 10_000,
+      requestToolPermission: async () => ({ behavior: "deny", message: "no" }),
+      requestUserInput: async () => ({ status: "cancelled", message: "no" }),
+    })) {
+      records.push(record);
+    }
+    expect(records.at(-1)!.event.error).toMatchObject({ code: "capability_mismatch" });
+    const methods = readFileSync(log, "utf8").trim().split("\n").map((line) => JSON.parse(line).method);
+    expect(methods).toEqual(["initialize"]);
+  });
+
   it("passes a CLI that reports more than the manifest claims", async () => {
     const { records } = await turn(cursorAdapter, "more", { mcpCapabilities: { http: true, sse: true }, promptCapabilities: { image: false } });
     expect(records.at(-1)).toMatchObject({ type: "result", is_error: false });
@@ -560,6 +607,92 @@ describe("capability check (AD-10)", () => {
     expect((await turn(cursorAdapter, "img-spike", caps)).records.at(-1)).toMatchObject({ is_error: false });
     const decided = await turn(withRow("P13", "match"), "img-match", caps);
     expect(decided.records.at(-1)!.event.error.message).toMatch(/image prompts \(parity row P13\)/);
+  });
+});
+
+describe("row gates reach execute through the backend (P9, P16)", () => {
+  const scratch = mkdtempSync(join(tmpdir(), "oac-backend-gates-"));
+  afterAll(() => rmSync(scratch, { recursive: true, force: true }));
+
+  const shell = { title: "`ls`", kind: "execute", toolCallId: "c1", toolName: "exec", toolInput: { command: "ls" } };
+
+  /** A stub CLI: its turn asks one permission and ends with a result that carries no usage. */
+  function stub(rows: Parameters<typeof createManifest>[1]) {
+    const seen = { decision: undefined as string | undefined, readUsage: 0 };
+    const adapter: CliAdapter = {
+      id: "acme",
+      displayName: "Acme",
+      command: "acme",
+      launchArgs: [],
+      defaultModel: "acme-cli/auto",
+      manifest: createManifest("1", rows),
+      alwaysOnNativeTools: [],
+      clearEnv: [],
+      checkVersion: async () => "ok",
+      probeAuth: async () => "available",
+      listModels: async () => [],
+      prepareHome: async (home) => ({ ACME_HOME: home }),
+      readUsage: async () => {
+        seen.readUsage += 1;
+        return { usage: { input: 1, output: 1 } };
+      },
+      open: async (params) => {
+        let alive = true;
+        return {
+          sessionId: "native-1",
+          get alive() {
+            return alive;
+          },
+          async *prompt() {
+            seen.decision = await params.onPermissionRequest(shell);
+            yield { kind: "result" as const, text: "ok", stopReason: "end_turn" };
+          },
+          cancel: async () => {},
+          close: async () => {
+            alive = false;
+          },
+          waitForExit: async () => {},
+        };
+      },
+    };
+    return { adapter, seen };
+  }
+
+  async function turn(rows: Parameters<typeof createManifest>[1], name: string) {
+    const { adapter, seen } = stub(rows);
+    const backend = buildCliBackend(adapter, { settings: {} });
+    const prepared = await backend.prepareExecution!({ agentDir: join(scratch, name) } as never);
+    const asked: unknown[] = [];
+    for await (const _record of prepared!.execute!({
+      command: "acme",
+      args: [],
+      cwd: process.cwd(),
+      env: {},
+      prompt: "hi",
+      modelId: "auto",
+      systemPrompt: "",
+      useResume: false,
+      timeoutMs: 10_000,
+      requestToolPermission: async (request: { toolInput: Record<string, unknown> }) => (asked.push(request), { behavior: "allow", updatedInput: request.toolInput }),
+      requestUserInput: async () => ({ status: "cancelled", message: "no" }),
+    } as never)) {
+      // drain
+    }
+    return { ...seen, asked };
+  }
+
+  it("rejects permission requests without asking the host while P9 is undecided, and asks once it is decided", async () => {
+    const off = await turn({}, "p9-off");
+    expect(off.decision).toBe("reject_once");
+    expect(off.asked).toEqual([]);
+    const on = await turn({ P9: { status: "approx", note: "" } }, "p9-on");
+    expect(on.decision).toBe("allow_once");
+    expect(on.asked).toHaveLength(1);
+  });
+
+  it("never reads usage while P16 is undecided, and reads it once it is decided", async () => {
+    expect((await turn({}, "p16-off")).readUsage).toBe(0);
+    expect((await turn({ P16: { status: "approx", note: "" } }, "p16-on")).readUsage).toBe(1);
   });
 });
 
@@ -764,12 +897,13 @@ describe("provider entry by parity row (P1, P2, P17)", () => {
     expect(probeAuth).not.toHaveBeenCalled();
   });
 
-  it("probes with the full env when P17 is undecided", async () => {
+  it("still probes without the adapter's cleared env keys when P17 is undecided (a safety list)", async () => {
     const seen: Array<Record<string, string | undefined>> = [];
     const adapter = { ...without("P17"), probeAuth: async (p: { env: Record<string, string | undefined> }) => (seen.push(p.env), "available" as const) };
     const entry = createSyntheticAuthProvider(adapter) as unknown as Entry;
     await entry.prepareSyntheticAuth({ provider: "cursor-cli", config, env: { PATH: "/bin", CURSOR_API_BASE_URL: "http://elsewhere" } });
-    expect(seen).toEqual([{ PATH: "/bin", CURSOR_API_BASE_URL: "http://elsewhere" }]);
+    expect(seen).toEqual([{ PATH: "/bin" }]);
+    expect((buildCliBackend(adapter, { settings: {} }).config.clearEnv ?? []).includes("CURSOR_API_BASE_URL")).toBe(true);
   });
 });
 

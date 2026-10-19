@@ -203,6 +203,8 @@ function toAcpMcpServer(server: McpServerSpec) {
  */
 const MODE_BY_EXECUTION: Record<ExecutionMode, string> = { agent: "ask", "side-question": "ask" };
 
+const DISPLAY_NAME = "Cursor CLI";
+
 function open(params: OpenParams): Promise<CliSession> {
   const executionMode = params.executionMode ?? "agent";
   // The core already hands a side question neither; the adapter does not rely on it.
@@ -218,6 +220,8 @@ function open(params: OpenParams): Promise<CliSession> {
     // deny stops them. `ask` mode has no edit tool at all and still asks for (and runs) what the
     // host approves, so it stays as the second lock (checked against cursor-agent 2026.10.16).
     requiredModeId: MODE_BY_EXECUTION[executionMode],
+    displayName: DISPLAY_NAME,
+    ...(params.requiredCapabilities?.length ? { requiredCapabilities: params.requiredCapabilities } : {}),
     // The turn's model name maps onto the exact ID Cursor reports (brackets and commas included).
     selectModel: (offered) => {
       const id = selectCursorModel(params.modelId, offered);
@@ -289,8 +293,9 @@ async function listModels(params: ListModelsParams): Promise<readonly CliModel[]
 }
 
 /**
- * Cursor stores every ACP session under `<config dir>/acp-sessions/<id>`. A listing's throwaway
- * session would pile up there on every refresh, so its directory, and only that one, is removed.
+ * Cursor stores every ACP session under `<config dir>/acp-sessions/<id>`. A throwaway session (a
+ * listing's, or a new chat the core refused) would pile up there, so its directory, and only that
+ * one, is removed.
  * Failures are ignored: a leftover directory is harmless.
  */
 async function removeListingSession(env: Record<string, string | undefined>, sessionId: string): Promise<void> {
@@ -304,7 +309,7 @@ const usageReader = createCursorUsageReader();
 
 export const cursorAdapter: CliAdapter = {
   id: "cursor",
-  displayName: "Cursor CLI",
+  displayName: DISPLAY_NAME,
   command: "cursor-agent",
   launchArgs: ["acp"],
   defaultModel: "cursor-cli/auto",
@@ -318,5 +323,6 @@ export const cursorAdapter: CliAdapter = {
   prepareHome,
   open,
   listModels,
+  discardSession: ({ env, sessionId }) => removeListingSession(env, sessionId),
   readUsage: usageReader.read,
 };

@@ -143,15 +143,15 @@ Limits, version floor, and cleanup for the `cursor-agent` processes the plugin s
 
 ### Capability check
 
-Right after a process opens, before any prompt, the plugin compares what `cursor-agent` reports in ACP `initialize` with what the plugin's manifest needs. A miss fails the turn with `Capability mismatch: Cursor CLI does not report <what> (parity row Pn), which the plugin's manifest needs. Update the CLI.` (`capability_mismatch`, not retryable), closes the process, and sends no prompt. It runs for every process the plugin starts for a turn (agent turns and side questions, new and resumed chats), not for a reused warm process, and not for the throwaway session of the model listing. A CLI that reports more than the plugin needs passes.
+Right after `initialize`, before the login, `session/new` or `session/load`, the plugin compares what `cursor-agent` reports with what the plugin's manifest needs. A miss fails the turn with `Capability mismatch: Cursor CLI does not report <what> (parity row Pn), which the plugin's manifest needs. Update the CLI.` (`capability_mismatch`, not retryable), closes the process, and sends no prompt. No chat is created or loaded, so a refused turn leaves no Cursor chat behind and never touches the chat you resume. If a transport only reports after it created a chat, the core closes the process and removes that new chat's directory (never a resumed chat's). The check runs for every process the plugin starts for a turn (agent turns and side questions, new and resumed chats), not for a reused warm process, and not for the throwaway session of the model listing. A CLI that reports more than the plugin needs passes. The mismatch is reported before later errors such as a stale model name.
 
 | What | Row | Needs from `cursor-agent` |
 | --- | --- | --- |
-| Session resume | P5 | `agentCapabilities.loadSession` |
+| Session resume | P5 | `agentCapabilities.loadSession` (a resume needs it even without the row) |
 | HTTP MCP servers | P7 | `agentCapabilities.mcpCapabilities.http` (the MCP proxy is HTTP) |
 | Image prompts | P13 | `agentCapabilities.promptCapabilities.image`, checked once the row is decided (it is `spike` now) |
 
-Checks that already existed: a resume without `loadSession` fails before `session/load`; the `ask` mode must exist (P9, P18); a named model needs the CLI's model list (P1); a login method list that lacks `cursor_login` fails with `The CLI offered no "cursor_login" login method` (an empty list skips the login, an absent list logs in as before); an ACP protocol other than 1 and a build below the minimum version fail as `unsupported_version`. Rows with no signal at open (P3, P4, P8, P10, P15, P16 to P19) are not checked; P6, P11, P12 and P14 have no mechanism in the core.
+Also checked at open: the login method. If `authMethods` lists methods and `cursor_login` is not one of them, the turn fails with `capability_mismatch` and the text `The CLI offered no "cursor_login" login method` (an empty list skips the login; an absent list logs in as before). Checks that already existed: the `ask` mode must exist (P9, P18); a named model needs the CLI's model list (P1); an ACP protocol other than 1 and a build below the minimum version fail as `unsupported_version` (P19). Rows with no signal at open (P3, P4, P8, P10, P15, P16) are not checked; P6, P11, P12 and P14 have no mechanism in the core.
 
 Real `cursor-agent` 2026.10.16 reports `loadSession`, `mcpCapabilities` with `http` and `sse`, and `promptCapabilities.image`, so it passes. Live test: `test/live/capability-check.live.test.ts`.
 

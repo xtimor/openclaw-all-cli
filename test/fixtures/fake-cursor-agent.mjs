@@ -24,7 +24,8 @@
 //                               no file fails with "Invalid params". Point two agents at two dirs to model two homes.
 //   FAKE_CURSOR_CAPS=<json>     shallow-merged into `initialize`'s agentCapabilities (default: the real report, `loadSession`,
 //                               `mcpCapabilities{http,sse}`, `promptCapabilities{image}`); e.g. {"mcpCapabilities":{"http":false}}
-//   FAKE_CURSOR_AUTH_METHODS=<json> replaces `initialize`'s authMethods (default `[{id:"cursor_login"}]`)
+//   FAKE_CURSOR_AUTH_METHODS=<json> replaces `initialize`'s authMethods (default `[{id:"cursor_login"}]`); `null` reports none at all
+//   (session/new also creates `<CURSOR_CONFIG_DIR>/acp-sessions/<id>`, like Cursor)
 //   FAKE_CURSOR_LOAD_ERROR=<json> `session/load` fails with the JSON-RPC error {code, message, data?}
 //   FAKE_CURSOR_LOAD_CRASH=1    the process exits while `session/load` runs
 //   FAKE_CURSOR_LOAD_RENAMES=1  `session/load` answers with `sessionId: "<id>-moved"`, the way an agent that moved the chat would
@@ -40,7 +41,7 @@
 // turn. An item `{"$":"say","text":"..."}` sends a message chunk, `{"$":"crash"}` exits, `{"$":"ask","toolCall":{...}}` sends a permission request and waits for the answer, `{"$":"hang"}` waits for a
 // cancel and answers `cancelled`, `{"$":"wait","ms":n}` pauses. Use it to script tool calls the way Cursor sends them.
 import { randomUUID } from "node:crypto";
-import { appendFileSync, existsSync, readFileSync, writeFileSync } from "node:fs";
+import { appendFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { createInterface } from "node:readline";
 
@@ -253,7 +254,7 @@ rl.on("line", (line) => {
     method: message.method,
     params: message.params,
     ...(message.method === "initialize"
-      ? { env: { CURSOR_CONFIG_DIR: process.env.CURSOR_CONFIG_DIR, CURSOR_DATA_DIR: process.env.CURSOR_DATA_DIR } }
+      ? { pid: process.pid, env: { CURSOR_CONFIG_DIR: process.env.CURSOR_CONFIG_DIR, CURSOR_DATA_DIR: process.env.CURSOR_DATA_DIR } }
       : {}),
   });
   const { id, method, params } = message;
@@ -281,6 +282,8 @@ rl.on("line", (line) => {
       const session = { model: process.env.FAKE_CURSOR_DEFAULT_MODEL ?? "default[]", mode: "agent", prompts: 0, history: [] };
       sessions.set(sessionId, session);
       saveSession(sessionId, session);
+      // Like real Cursor: every ACP session leaves a directory in the config dir.
+      if (process.env.CURSOR_CONFIG_DIR) mkdirSync(join(process.env.CURSOR_CONFIG_DIR, "acp-sessions", sessionId), { recursive: true });
       return reply(id, { sessionId, modes: modes(), configOptions: configOptions(session), ...modelFields(session) });
     }
     case "session/load": {

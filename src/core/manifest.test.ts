@@ -26,6 +26,25 @@ describe("manifest", () => {
     }
   });
 
+  it("maps each flag to its row (hard-coded: a swapped pair must fail)", () => {
+    expect(FLAG_ROWS).toEqual({
+      models: "P1",
+      auth: "P2",
+      liveSession: "P4",
+      resume: "P5",
+      mcp: "P7",
+      hostTools: "P8",
+      approvals: "P9",
+      toolPolicy: "P10",
+      images: "P13",
+      history: "P15",
+      usage: "P16",
+      sideQuestion: "P18",
+      liveTest: "P19",
+    });
+    expect(Object.keys(NO_FLAG_ROWS).sort()).toEqual(["P11", "P12", "P14", "P17", "P3", "P6"]);
+  });
+
   it("gives every parity row exactly one place: one flag, or a reason it has none", () => {
     const flagged = Object.values(FLAG_ROWS);
     const unflagged = Object.keys(NO_FLAG_ROWS);
@@ -39,19 +58,26 @@ describe("manifest", () => {
       new URL("../../_bmad-output/initiative-openclaw-all-cli/spec-cursor-cli-provider/claude-cli-parity.md", import.meta.url),
       "utf8",
     );
-    // The matrix columns: row, feature, mechanism, then one column per provider.
-    const cell = (row: string) => matrix.split("\n").find((line) => line.startsWith(`| ${row} |`))!.split(" | ")[3]!;
+    // The matrix columns: row, feature, mechanism, then one column per provider, headed by its backend ID.
+    const lines = matrix.split("\n");
+    const column = lines.find((line) => line.startsWith("| # |"))!.split(" | ").findIndex((name) => name.replace(/[ |]/g, "") === `${adapter.id}-cli`);
+    const cell = (row: string) => lines.find((line) => line.startsWith(`| ${row} |`))!.split(" | ")[column]!;
+    const plain = (text: string) => text.replaceAll("`", "").replace(/\s+\|?$/, "").trim();
 
     it("states a reason for every gap row, and the matrix says the same", () => {
       for (const [id, row] of Object.entries(adapter.manifest.rows)) {
         if (row.status !== "gap") continue;
         expect(row.note.trim().length, id).toBeGreaterThan(20);
+        expect(column, "the matrix has a column for the adapter").toBeGreaterThan(2);
         expect(cell(id), id).toMatch(/^gap: \S/);
+        // The matrix says the same gap, with the same reason.
+        expect(plain(cell(id)), id).toContain(plain(row.note));
       }
     });
 
-    it("leaves the rows the core has no mechanism for undecided (P3 is the streaming seam, which every adapter has)", () => {
-      for (const id of Object.keys(NO_FLAG_ROWS).filter((row) => row !== "P3") as ParityRowId[]) {
+    // P3 (streaming) and P17 (clearEnv, timers, caps) are done for every adapter: the adapter still documents them.
+    it("leaves the rows the core has no mechanism for undecided", () => {
+      for (const id of ["P6", "P11", "P12", "P14"] as ParityRowId[]) {
         expect(["match", "approx"], id).not.toContain(adapter.manifest.rows[id].status);
       }
     });

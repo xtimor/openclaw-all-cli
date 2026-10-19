@@ -2386,6 +2386,37 @@ describe("createExecute capability check (AD-10)", () => {
     expect(await proxyRefuses(proxies.started.at(-1)!.url)).toBe(true);
   });
 
+  it("hands the decided rows' requirements to the open, and none for an undecided manifest", async () => {
+    const needs = checked(["httpMcp"]);
+    await run(createExecute(needs.adapter, { home: HOME }), makeCtx());
+    expect(needs.opens[0]!.requiredCapabilities).toEqual([{ row: "P7", capability: "httpMcp" }]);
+    const none = checked(["httpMcp"], createManifest("1", { P7: { status: "spike", note: "", requires: ["httpMcp"] } }));
+    await run(createExecute(none.adapter, { home: HOME }), makeCtx());
+    expect(none.opens[0]).not.toHaveProperty("requiredCapabilities");
+  });
+
+  it("discards the throwaway chat the CLI stored for a new chat, but never a resumed one", async () => {
+    const fresh = checked([]);
+    const discarded: Array<{ sessionId: string; env: Record<string, string> }> = [];
+    fresh.adapter.discardSession = async (params) => void discarded.push(params);
+    await run(createExecute(fresh.adapter, { home: HOME }), makeCtx({ env: { PATH: "/bin" } }));
+    expect(discarded).toEqual([{ sessionId: "native-1", env: { PATH: "/bin", ...HOME.env } }]);
+
+    const resumed = checked([]);
+    resumed.adapter.discardSession = async (params) => void discarded.push(params);
+    await run(createExecute(resumed.adapter, { home: HOME }), makeCtx({ useResume: true, sessionId: "user-chat" }));
+    expect(discarded).toHaveLength(1);
+  });
+
+  it("still reports the mismatch when discarding the chat fails", async () => {
+    const harness = checked([]);
+    harness.adapter.discardSession = async () => {
+      throw new Error("disk");
+    };
+    const records = await run(createExecute(harness.adapter, { home: HOME }), makeCtx());
+    expect(errorOf(records)).toMatch(/^Capability mismatch/);
+  });
+
   it("releases the turn slot and the chat, so the next turn runs", async () => {
     const harness = checked([]);
     const pool = new ProcessPool({ maxTurns: 1, maxProcesses: 1 });

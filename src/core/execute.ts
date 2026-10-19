@@ -4,7 +4,7 @@ import { toRecord, type CoreRecord, type TurnSummary } from "./events.ts";
 import { startMcpProxy, type McpProxy } from "./mcp-proxy.ts";
 import { OPENCLAW_MCP_SERVER, readTurnTarget, type TurnTarget } from "./mcp-target.ts";
 import { recordProcess, type ProcessLock } from "./pid-locks.ts";
-import { capabilityMismatch, missingCapabilities } from "./manifest.ts";
+import { capabilityMismatch, missingCapabilities, requiredCapabilities } from "./manifest.ts";
 import { readTurnUsage } from "./usage.ts";
 import { ProcessPool, type PoolMember, type TurnSlot } from "./pool.ts";
 import { routePermission, type PermissionTurn } from "./permissions.ts";
@@ -191,6 +191,7 @@ export function createExecute(adapter: CliAdapter, options: ExecuteOptions): Cli
   const continuity = options.continuity ?? false;
   const approvals = options.approvals ?? true;
   const readsUsage = options.usage ?? true;
+  const required = requiredCapabilities(adapter.manifest);
   const { authProfileId } = options;
   const pool = options.pool ?? new ProcessPool({ maxTurns: Infinity, maxProcesses: Infinity });
 
@@ -401,6 +402,8 @@ export function createExecute(adapter: CliAdapter, options: ExecuteOptions): Cli
         env: { ...ctx.env, ...home.env },
         modelId: ctx.modelId,
         executionMode: mode,
+        // The transport can fail right after the handshake, before it creates or loads a chat.
+        ...(required.length > 0 ? { requiredCapabilities: required } : {}),
         ...(resumeSessionId ? { resumeSessionId } : {}),
         // The CLI gets only the proxy: the host's per-run URL and token never leave the core.
         ...(proxy
@@ -441,6 +444,10 @@ export function createExecute(adapter: CliAdapter, options: ExecuteOptions): Cli
       if (missing.length > 0) {
         // A failing close must not hide the reason the turn cannot run.
         await session.close().catch(() => {});
+        // A new chat the CLI stored is an orphan; a resumed one is the user's and stays.
+        if (!resumeSessionId) {
+          await adapter.discardSession?.({ env: { ...ctx.env, ...home.env }, sessionId: session.sessionId }).catch(() => {});
+        }
         throw capabilityMismatch(adapter.displayName, missing);
       }
     }

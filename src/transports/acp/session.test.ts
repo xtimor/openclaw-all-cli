@@ -453,6 +453,8 @@ describe("AcpSession", () => {
     };
     expect(await methods(undefined)).toContain("authenticate");
     expect(await methods('[{"id":"cursor_login"}]')).toContain("authenticate");
+    // No list at all: log in, as before.
+    expect(await methods("null")).toContain("authenticate");
     expect(await methods("[]")).not.toContain("authenticate");
     expect(await methods("[]")).toContain("session/new");
   });
@@ -464,6 +466,37 @@ describe("AcpSession", () => {
     expect(failure.message).toContain('no "cursor_login" login method');
     expect(failure.message).toContain('"other"');
     expect(requests(file).map((request) => request.method)).not.toContain("authenticate");
+  });
+
+  it("fails right after initialize when a required capability is missing, before login or any session", async () => {
+    const file = logFile();
+    const failure = await AcpSession.open(
+      options({
+        displayName: "Acme",
+        requiredCapabilities: [{ row: "P7", capability: "httpMcp" }],
+        env: { FAKE_CURSOR_LOG: file, FAKE_CURSOR_CAPS: JSON.stringify({ mcpCapabilities: { http: false } }) },
+      }),
+    ).catch((error) => error);
+    expect(failure).toMatchObject({ code: "capability_mismatch", retryable: false });
+    expect(failure.message).toBe(
+      "Capability mismatch: Acme does not report HTTP MCP servers (parity row P7), which the plugin's manifest needs. Update the CLI.",
+    );
+    expect(requests(file).map((request) => request.method)).toEqual(["initialize"]);
+  });
+
+  it("opens when the required capabilities are reported", async () => {
+    const session = await start({ requiredCapabilities: [{ row: "P7", capability: "httpMcp" }, { row: "P5", capability: "resumeSession" }] });
+    expect(session.sessionId).toBeTruthy();
+  });
+
+  it("gives a resume without loadSession the same message, naming P5, before session/load", async () => {
+    const file = logFile();
+    const failure = await AcpSession.open(
+      options({ resumeSessionId: "fake-session-1", env: { FAKE_CURSOR_LOG: file, FAKE_CURSOR_CAPS: JSON.stringify({ loadSession: false }) } }),
+    ).catch((error) => error);
+    expect(failure).toMatchObject({ code: "capability_mismatch" });
+    expect(failure.message).toMatch(/^Capability mismatch: The CLI does not report session resume \(parity row P5\).*Update the CLI\.$/);
+    expect(requests(file).map((request) => request.method)).toEqual(["initialize"]);
   });
 
   it("rejects an unsupported protocol version", async () => {
