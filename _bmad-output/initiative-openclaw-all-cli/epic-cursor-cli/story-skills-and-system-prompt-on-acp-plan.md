@@ -3,7 +3,7 @@ title: 'Skills and system prompt on ACP'
 type: 'feature'
 ticket: '13'
 created: '2026-10-19'
-status: 'ready-for-dev'
+status: 'in-progress'
 baseline_revision: 'a30b3ae878d1d312db81ad6357bcee18d6299161'
 route: 'full'
 route_source: 'auto'
@@ -73,11 +73,11 @@ deferred: []
 ## Tasks & Acceptance
 
 **Execution:**
-- [ ] `src/core/system-prompt.ts`, `src/core/system-prompt.test.ts` -- header, block, ledger -- unit: the block wraps text verbatim, the header matches no `/cursor/i`, `needs` is true until `record` and true again after a change, LRU evicts the oldest at the cap, and keys differ per home.
-- [ ] `src/core/manifest.ts`, `src/adapters/cursor/manifest.ts`, `src/core/manifest.test.ts` -- P12 flag, P11 reason, notes. Tests: `FLAG_ROWS` gains `systemPrompt: "P12"`. `NO_FLAG_ROWS` keys are P3, P6, P11, P14, P17. The "undecided" test keeps P6 and P14 only. New test: an adapter that decides P11 also decides P12.
-- [ ] `src/core/execute.ts`, `src/core/backend.ts` -- wiring as in the Code Map.
-- [ ] `test/fixtures/fake-cursor-agent.mjs` -- `argv` on the initialize log line.
-- [ ] `test/backend.test.ts` (or new `test/system-prompt.test.ts`), through `buildCliBackend` → `prepareExecution` → `execute` with the fake and `FAKE_CURSOR_LOG` -- one test per matrix row that the fake can show:
+- [x] `src/core/system-prompt.ts`, `src/core/system-prompt.test.ts` -- header, block, ledger -- unit: the block wraps text verbatim, the header matches no `/cursor/i`, `needs` is true until `record` and true again after a change, LRU evicts the oldest at the cap, and keys differ per home.
+- [x] `src/core/manifest.ts`, `src/adapters/cursor/manifest.ts`, `src/core/manifest.test.ts` -- P12 flag, P11 reason, notes. Tests: `FLAG_ROWS` gains `systemPrompt: "P12"`. `NO_FLAG_ROWS` keys are P3, P6, P11, P14, P17. The "undecided" test keeps P6 and P14 only. New test: an adapter that decides P11 also decides P12.
+- [x] `src/core/execute.ts`, `src/core/backend.ts` -- wiring as in the Code Map.
+- [x] `test/fixtures/fake-cursor-agent.mjs` -- `argv` on the initialize log line.
+- [x] `test/backend.test.ts` (or new `test/system-prompt.test.ts`), through `buildCliBackend` → `prepareExecution` → `execute` with the fake and `FAKE_CURSOR_LOG` -- one test per matrix row that the fake can show:
   - fresh chat: block first, then the continuity note
   - resumed same S: no block
   - changed S: block again
@@ -88,14 +88,14 @@ deferred: []
   - P12 undecided: no block, no config fields
   - Cursor backend config has both fields, and no logged `argv` contains the marker
   - toggling P12 alone adds exactly `systemPromptArg` and `systemPromptWhen` (extend the table)
-- [ ] `test/live/skills-system-prompt.live.test.ts` (gated; P11, P12) -- agent `oac-skills` with a temp workspace. Delete a seeded `BOOTSTRAP.md`. Write a minimal `AGENTS.md`, a `SOUL.md` with "End every reply with the token SP-<stamp> on its own line", and `skills/oac-greeting-<stamp>/SKILL.md` with "include the code word SK-<stamp>". Turns use `--local --json`, one session:
+- [x] `test/live/skills-system-prompt.live.test.ts` (gated; P11, P12) -- agent `oac-skills` with a temp workspace. Delete a seeded `BOOTSTRAP.md`. Write a minimal `AGENTS.md`, a `SOUL.md` with "End every reply with the token SP-<stamp> on its own line", and `skills/oac-greeting-<stamp>/SKILL.md` with "include the code word SK-<stamp>". Turns use `--local --json`, one session:
   - (a) "Name one color. Do not use any tools.": the reply has SP-<stamp>, and `meta.toolSummary` shows no `read`, `grep`, or `glob` call. The token exists only in SOUL.md, which OpenClaw injects and Cursor does not load natively.
   - (b) "Give me the oac-greeting-<stamp> greeting.": the reply has SK-<stamp>, and `toolSummary` has `read`.
   - (c) "Name one fruit.": the reply still has SP-<stamp>, unchanged S, no resend.
   - (d) no `.cursor` directory in the workspace.
   - (e) Drift, with a fake shim set as `cursor-cli.command` and `FAKE_CURSOR_LOG`, as in `capability-check.live.test.ts`. Turn 1, then `config set tools.deny '["agents_list"]' --strict-json`, then turn 2 in the same session. The log shows turn 2 sending `session/load` with turn 1's session id, and turn 2's prompt starts with the block.
   - Delete the agent, unset `tools.deny`, and unset the command in `afterAll`.
-- [ ] Docs -- `docs/providers/cursor.md`: new "System prompt and skills" section after "OpenClaw tools" covering:
+- [x] Docs -- `docs/providers/cursor.md`: new "System prompt and skills" section after "OpenClaw tools" covering:
   - delivery and when the block is resent
   - drift keeps the chat
   - skills as the host catalog read natively
@@ -111,6 +111,12 @@ deferred: []
 - Given an all-`tbd` manifest, when the backend is built, then it has only structural fields, and the Cursor backend differs from today only by `systemPromptArg` and `systemPromptWhen`.
 
 ## Implementation Notes
+
+- Code Map adapted to the code after 1.12 and 1.19: flags come from `FLAG_ROWS` (new `systemPrompt: "P12"`); `NO_FLAG_ROWS` lost P12 only, P11 stays there with the new reason. In `backend.ts` the two config fields sit next to the other flag-gated `config` fields, and `createExecute` gets `systemPrompt: flags.systemPrompt`. In `execute.ts` the edit is five spots: the option, `composePrompt` (block first, before the continuity note), the `system`/`chat`/`sendSystem` lines before the prompt loop, and `delivered.record` on `result`. 1.19's marker arg (`HOST_SHELL_ARG`), reuse key, and agent-mode choice are untouched; the system-prompt marker is separate and never reaches argv.
+- The ledger key reuses `chatKey(home, session.sessionId)` of the id the CLI ended up with, so a `session/load` that renames the chat is tracked under the new id.
+- Interactions checked: fresh chat with the 1.11 note (block, note, context, prompt; test); a resumed chat with the same or changed prompt (tests, live drift row e); warm reuse needs no case, since the ledger is keyed by chat, not process (a reused or restarted process of one chat gets the block only on change); side question (block every time, ledger untouched, test); resumed chat after a Gateway restart (empty ledger, one duplicate block, harmless). Host prompt limits: no cap on the plugin's prompt was found in `execute.runtime`; the host's `cli_budget` compaction measures the transcript, not the block, so the block's tokens (~8k) live only in Cursor's chat.
+- Tests: `src/core/system-prompt.test.ts` (7), `test/system-prompt.test.ts` (9: one per matrix row the fake can show), manifest and backend tests extended; the fake agent logs `argv` on `initialize`. Live: `test/live/skills-system-prompt.live.test.ts` (a-e) passed against real Cursor and OpenClaw 2026.10.3.
+- `docs/setup.md` needs no change: no new setup or config. Docs: `docs/providers/cursor.md` section "System prompt and skills", parity P11/P12 rows, two Known limits; matrix cells P11/P12; architecture AD-15 and CAP-6/CAP-11 rows; MEMORY entry 13.
 
 ## Plan Change Log
 

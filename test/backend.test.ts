@@ -42,6 +42,8 @@ describe("cursor-cli backend", () => {
       nativeToolMode: "selectable",
       toolAvailabilityEnforcement: "execution-args",
     });
+    // P12: the plugin delivers the system prompt, so the host keeps the chat when it drifts.
+    expect(backend.config).toMatchObject({ systemPromptArg: "--openclaw-plugin-delivers-system-prompt", systemPromptWhen: "always" });
     expect(backend.resolveExecutionArgs).toBeTypeOf("function");
     expect(backend.parseJsonlEvent).toBeTypeOf("function");
     // P19 with P7 and P13: the host's live-test defaults.
@@ -475,6 +477,8 @@ describe("backend fields by parity row (AD-10)", () => {
     P8: [],
     P9: [],
     P10: ["toolAvailabilityEnforcement", "resolveExecutionArgs"],
+    // P12: the marker and the "always" setting go together, or the host resets a chat on drift.
+    P12: ["config.systemPromptArg", "config.systemPromptWhen"],
     P13: [],
     P15: ["config.reseedFromRawTranscriptWhenUncompacted"],
     P16: [],
@@ -526,6 +530,8 @@ describe("backend fields by parity row (AD-10)", () => {
         "config.resumeArgs",
         "config.freshSessionRecovery",
         "config.reseedFromRawTranscriptWhenUncompacted",
+        "config.systemPromptArg",
+        "config.systemPromptWhen",
       ].sort(),
     );
   });

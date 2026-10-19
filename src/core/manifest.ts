@@ -24,6 +24,8 @@ export type DerivedFlags = {
   approvals: boolean;
   /** P10: the host may select the run's native tools; the backend enforces what it can (AD-9). */
   toolPolicy: boolean;
+  /** P12: the core sends the host's system prompt to the CLI as a marked block at the start of the prompt (AD-15). */
+  systemPrompt: boolean;
   /** P13: the adapter sends images to the CLI. */
   images: boolean;
   /** P15: the host may reseed a fresh chat from its own transcript, and the first prompt points to `sessions_history`. */
@@ -46,6 +48,7 @@ export const FLAG_ROWS: Record<keyof DerivedFlags, ParityRowId> = {
   hostTools: "P8",
   approvals: "P9",
   toolPolicy: "P10",
+  systemPrompt: "P12",
   images: "P13",
   history: "P15",
   usage: "P16",
@@ -54,16 +57,16 @@ export const FLAG_ROWS: Record<keyof DerivedFlags, ParityRowId> = {
 };
 
 /**
- * Rows that set no flag, each with the reason. P6, P11, P12 and P14 have no core mechanism, so an
- * adapter must not decide them (a `match` or `approx` would promise nothing). P3 and P17 describe
+ * Rows that set no flag, each with the reason. P6 and P14 have no core mechanism, so an
+ * adapter must not decide them (a `match` or `approx` would promise nothing). P11 rides on P12:
+ * the host's skills catalog is part of the system prompt, so an adapter that decides P11 decides P12. P3 and P17 describe
  * what the core does for every adapter (streaming; the `clearEnv` safety list, the host's timers,
  * the caps and the pid locks): an adapter documents them but cannot switch them.
  */
 export const NO_FLAG_ROWS: Partial<Record<ParityRowId, string>> = {
   P3: "streaming is the AD-3 seam itself: every adapter streams, so there is nothing to switch",
   P6: "the core has no fork or checkpoint mechanism",
-  P11: "the core has no skills or plugin-directory mechanism",
-  P12: "the core has no system-prompt mechanism",
+  P11: "the host puts its skills catalog into the system prompt for every backend but claude-cli; P12 delivers it, so P11 sets no flag",
   P14: "the core has no mechanism for it",
   P17: "clearEnv is a safety list the core applies whenever the adapter declares one; timers belong to the host; caps and pid locks apply to every adapter",
 };

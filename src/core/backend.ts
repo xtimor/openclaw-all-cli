@@ -6,6 +6,7 @@ import { deriveFlags } from "./manifest.ts";
 import { unenforceableNativeTools } from "./permissions.ts";
 import type { CliAdapter } from "./ports.ts";
 import { ProcessPool } from "./pool.ts";
+import { SYSTEM_PROMPT_TRANSPORT_MARKER } from "./system-prompt.ts";
 import type { CliBackendPlugin, PrepareExecutionContext } from "./sdk-types.ts";
 
 /** The backend ID and model-ref prefix for an adapter (AD-1). */
@@ -101,6 +102,11 @@ export function buildCliBackend(adapter: CliAdapter, options: BuildBackendOption
       clearEnv: [...adapter.clearEnv],
       // The plugin config's `env`: the host gives it to the CLI process only, not to host tools like `exec`.
       ...(options.settings.env && Object.keys(options.settings.env).length > 0 ? { env: { ...options.settings.env } } : {}),
+      // P12: the plugin delivers the system prompt itself (AD-15). The marker makes the host keep a
+      // chat whose system prompt drifts; it never reaches a plugin-owned execute's launch.
+      ...(flags.systemPrompt
+        ? { systemPromptArg: SYSTEM_PROMPT_TRANSPORT_MARKER, systemPromptWhen: "always" as const }
+        : {}),
       output: "jsonl",
       input: "stdin",
       ...(flags.liveSession ? { liveSession: "claude-stdio" as const } : {}),
@@ -134,6 +140,7 @@ export function buildCliBackend(adapter: CliAdapter, options: BuildBackendOption
             approvals: flags.approvals,
             usage: flags.usage,
             continuity: flags.history && flags.mcp,
+            systemPrompt: flags.systemPrompt,
             ...(ctx.authProfileId ? { authProfileId: ctx.authProfileId } : {}),
             ...(options.warn ? { warn: options.warn } : {}),
           }),

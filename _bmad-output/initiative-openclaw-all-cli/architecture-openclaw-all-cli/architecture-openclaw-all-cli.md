@@ -161,6 +161,12 @@ flowchart LR
   - **Exception.** The throwaway process of a model listing has no pid lock and is not closed on unload; it lives for a few seconds.
   - **Platforms.** macOS and Linux are supported.
 
+### AD-15 — The host's system prompt reaches the CLI as a prompt block
+
+- **Binds:** CAP-6, CAP-11
+- **Prevents:** a CLI that never sees OpenClaw's instructions or skills; a chat thrown away whenever the tool list changes; instruction files written into a workspace or home.
+- **Rule:** The host's system prompt, with its skills catalog, reaches a CLI that has no per-turn system-prompt channel as a marked block at the start of the prompt. It is sent on a native chat's first prompt and again when it changes; the core keeps an in-memory hash per (home, native chat). When P12 is decided, the backend declares `systemPromptWhen: "always"` with a marker arg the host never passes to a plugin-owned execute. No instruction or skill file is written (AD-6, AD-7).
+
 ## Consistency Conventions
 
 | Concern | Convention |
@@ -240,12 +246,12 @@ sequenceDiagram
 | CAP-3 usage | adapter `usage` event, or the optional `readUsage` port (core `readTurnUsage`) that fills the result record after a turn; Cursor reads its usage ledger | AD-3, AD-4. The Cursor adapter keeps an in-memory per-session map (bounded to 1000 sessions) of consumed ledger stamps and read end times for usage matching; it is lost on a Gateway restart, which can reopen the overlap case for the first turn after a restart. |
 | CAP-4 resume | host binding, adapter `open` | AD-5, AD-13 |
 | CAP-5 portability | OpenClaw reseed and `sessions_history` tool | AD-5 |
-| CAP-6 OpenClaw tools | `src/core/` MCP proxy | AD-9, AD-12 |
+| CAP-6 OpenClaw tools | `src/core/` MCP proxy, `src/core/system-prompt.ts` | AD-9, AD-12, AD-15 |
 | CAP-7 native tools locked down | `src/core/` permissions, adapter | AD-7, AD-9 |
 | CAP-8 isolation | `src/core/` homes | AD-6, AD-7, AD-13 |
 | CAP-9 concurrency | host lanes, `src/core/` caps and operations | AD-8, AD-11, AD-14 |
 | CAP-10 setup docs | `docs/` | AD-10, conventions |
-| CAP-11 claude-cli parity | adapter manifests, `test/live/` | AD-3, AD-9, AD-10 |
+| CAP-11 claude-cli parity | adapter manifests, `test/live/` | AD-3, AD-9, AD-10, AD-15 |
 | CAP-12 new CLI as adapter | `src/adapters/<cli>/`, `src/transports/` | AD-1, AD-2, AD-4, AD-10 |
 
 ## Open Questions

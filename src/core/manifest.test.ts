@@ -36,13 +36,14 @@ describe("manifest", () => {
       hostTools: "P8",
       approvals: "P9",
       toolPolicy: "P10",
+      systemPrompt: "P12",
       images: "P13",
       history: "P15",
       usage: "P16",
       sideQuestion: "P18",
       liveTest: "P19",
     });
-    expect(Object.keys(NO_FLAG_ROWS).sort()).toEqual(["P11", "P12", "P14", "P17", "P3", "P6"]);
+    expect(Object.keys(NO_FLAG_ROWS).sort()).toEqual(["P11", "P14", "P17", "P3", "P6"]);
   });
 
   it("gives every parity row exactly one place: one flag, or a reason it has none", () => {
@@ -77,9 +78,15 @@ describe("manifest", () => {
 
     // P3 (streaming) and P17 (clearEnv, timers, caps) are done for every adapter: the adapter still documents them.
     it("leaves the rows the core has no mechanism for undecided", () => {
-      for (const id of ["P6", "P11", "P12", "P14"] as ParityRowId[]) {
+      for (const id of ["P6", "P14"] as ParityRowId[]) {
         expect(["match", "approx"], id).not.toContain(adapter.manifest.rows[id].status);
       }
+    });
+
+    // The host's skills catalog is part of its system prompt: P11 has no flag of its own and rides on P12.
+    it("decides P12 whenever it decides P11", () => {
+      const isDecided = (id: ParityRowId) => ["match", "approx"].includes(adapter.manifest.rows[id].status);
+      if (isDecided("P11")) expect(isDecided("P12")).toBe(true);
     });
   });
 

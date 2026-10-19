@@ -6,6 +6,7 @@ import { OPENCLAW_MCP_SERVER, readTurnTarget, type TurnTarget } from "./mcp-targ
 import { recordProcess, type ProcessLock } from "./pid-locks.ts";
 import { capabilityMismatch, missingCapabilities, requiredCapabilities } from "./manifest.ts";
 import { readTurnUsage } from "./usage.ts";
+import { delivered, systemPromptBlock } from "./system-prompt.ts";
 import { ProcessPool, type PoolMember, type TurnSlot } from "./pool.ts";
 import { routePermission, type PermissionTurn } from "./permissions.ts";
 import {
@@ -64,6 +65,11 @@ export type ExecuteOptions = {
    * note that points the model to OpenClaw's `sessions_history`. Default false.
    */
   continuity?: boolean;
+  /**
+   * Parity row P12: the host's system prompt (`ctx.systemPrompt`) goes in a marked block at the
+   * start of a chat's first prompt, and again whenever it changes (AD-15). Default false.
+   */
+  systemPrompt?: boolean;
 };
 
 /**
@@ -146,9 +152,9 @@ function reuseKey(ctx: ExecuteContext, home: AgentHome, authProfileId: string | 
   return JSON.stringify([ctx.modelId, modeOf(ctx), splitHostShell(ctx).hostShell, ctx.cwd, home.dir, authProfileId ?? null]);
 }
 
-function composePrompt(ctx: ExecuteContext, note?: string): string {
+function composePrompt(ctx: ExecuteContext, note?: string, system?: string): string {
   const { prependContext, appendContext } = ctx.promptContext ?? {};
-  return [note, prependContext, ctx.prompt, appendContext].filter((part): part is string => Boolean(part)).join("\n\n");
+  return [system, note, prependContext, ctx.prompt, appendContext].filter((part): part is string => Boolean(part)).join("\n\n");
 }
 
 /**
@@ -211,6 +217,7 @@ export function createExecute(adapter: CliAdapter, options: ExecuteOptions): Cli
   // The proxy stops a tool call a little before the CLI's own MCP client gives up on it.
   const callDeadlineMs = options.callDeadlineMs ?? (adapter.mcpCallTimeoutMs ? Math.max(1_000, adapter.mcpCallTimeoutMs - MCP_DEADLINE_MARGIN_MS) : undefined);
   const continuity = options.continuity ?? false;
+  const deliversSystemPrompt = options.systemPrompt ?? false;
   const approvals = options.approvals ?? true;
   const readsUsage = options.usage ?? true;
   const required = requiredCapabilities(adapter.manifest);
@@ -631,14 +638,22 @@ export function createExecute(adapter: CliAdapter, options: ExecuteOptions): Cli
       // The note goes once, on the first prompt of a fresh chat; it is not part of the host's transcript.
       const note = active.freshChat ? CONTINUITY_NOTE : undefined;
       active.freshChat = false;
+      // AD-15: the host's system prompt, once per chat and again when it changes. A side question's
+      // chat is thrown away, so it always gets the block and leaves the ledger alone.
+      const system = deliversSystemPrompt ? (ctx.systemPrompt ?? "").trim() : "";
+      const chat = sideQuestion ? undefined : chatKey(home, active.session.sessionId);
+      const sendSystem = Boolean(system) && (!chat || delivered.needs(chat, system));
       const startedAt = Date.now();
-      for await (const event of active.session.prompt(composePrompt(ctx, note))) {
+      for await (const event of active.session.prompt(
+        composePrompt(ctx, note, sendSystem ? systemPromptBlock(system) : undefined),
+      )) {
         if (event.kind === "usage") {
           summary.usage = event.usage;
           continue;
         }
         if (!tools.admit(event)) continue;
         if (event.kind === "error") turnFailed = true;
+        if (event.kind === "result" && chat && sendSystem) delivered.record(chat, system);
         if (event.kind === "result" || event.kind === "error") {
           closed = true;
           for (const record of tools.closeOpen()) yield record;

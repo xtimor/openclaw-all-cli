@@ -7,7 +7,7 @@
 //   FAKE_CURSOR_NO_ASK_MODE=1   the agent lists no "ask" mode
 //   FAKE_CURSOR_START_MODE=<id> the mode a session starts in (default "agent"); prompt "[[mode]]" replies "mode:<current mode>"
 //   FAKE_CURSOR_LOG=<file>      append one JSON line per request the agent receives (with `t`, the epoch ms); the `initialize` line also carries
-//                               CURSOR_CONFIG_DIR/CURSOR_DATA_DIR
+//                               the process `argv` and CURSOR_CONFIG_DIR/CURSOR_DATA_DIR
 //   FAKE_CURSOR_LOG_END=1       also log a `prompt/end` line when a prompt ends
 //   FAKE_CURSOR_VERSION=<text>  what `--version` prints (default "2026.10.14-fake")
 //   FAKE_CURSOR_VERSION_EXIT=<n> `--version` exits with this code after printing
@@ -305,7 +305,7 @@ rl.on("line", (line) => {
     method: message.method,
     params: message.params,
     ...(message.method === "initialize"
-      ? { pid: process.pid, env: { CURSOR_CONFIG_DIR: process.env.CURSOR_CONFIG_DIR, CURSOR_DATA_DIR: process.env.CURSOR_DATA_DIR } }
+      ? { pid: process.pid, argv: args, env: { CURSOR_CONFIG_DIR: process.env.CURSOR_CONFIG_DIR, CURSOR_DATA_DIR: process.env.CURSOR_DATA_DIR } }
       : {}),
   });
   const { id, method, params } = message;
