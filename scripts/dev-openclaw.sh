@@ -77,6 +77,8 @@ case "$cmd" in
     install_node
     install_openclaw
     use_isolated_env
+    # The isolated Gateway runs with --auth none; its CLI client refuses to connect unless the config says so too.
+    "$OPENCLAW_BIN" config set gateway.auth.mode none >/dev/null
     node --version
     "$OPENCLAW_BIN" --version
     ;;
