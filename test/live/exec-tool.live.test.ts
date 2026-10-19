@@ -206,6 +206,8 @@ describeLive("OpenClaw exec is the model's shell (P8, P10)", () => {
         const file = script("security-deny", `printf '%s' ${secret} > ${marker}\necho "out:${secret}"`);
         const turn = await ask(sessionId("security-deny"), runIt(file));
         expect(turn.status, turn.raw).toBe(0);
+        // The model did call exec; it is OpenClaw that said no.
+        expect(turn.tools).toContain("mcp__openclaw__exec");
         expect(existsSync(marker)).toBe(false);
         expect(turn.reply).not.toContain(secret);
         expect(turn.reply.length).toBeGreaterThan(0);
