@@ -576,10 +576,12 @@ export function createExecute(adapter: CliAdapter, options: ExecuteOptions): Cli
         }
         // The marker only says the host MAY serve exec: its tool policy can still drop the tool. The
         // tool list the CLI is about to read is the truth; if it cannot be read, assume no exec.
-        const hostShell =
-          splitHostShell(ctx).hostShell && turnTarget.ok
-            ? (await listToolNames(turnTarget.target, ctx.abortSignal))?.includes(HOST_SHELL_TOOL) === true
-            : false;
+        const marked = splitHostShell(ctx).hostShell && turnTarget.ok;
+        const listed = marked && turnTarget.ok ? await listToolNames(turnTarget.target, ctx.abortSignal) : undefined;
+        const hostShell = listed?.includes(HOST_SHELL_TOOL) === true;
+        // The host may serve exec but the list could not be read (an error, a cold cache): this
+        // process opened in the restrictive mode. Never reuse it, so the next turn reads the list again.
+        if (marked && listed === undefined) fresh.degraded = true;
         ctx.abortSignal?.throwIfAborted();
         const opening = attachSession(fresh, ctx, hostShell);
         fresh.opening = opening;

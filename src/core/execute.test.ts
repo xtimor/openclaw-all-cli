@@ -682,6 +682,37 @@ describe("createExecute MCP proxy (AD-12)", () => {
       expect(await openedWith(names, ["serve", HOST_SHELL_ARG])).toMatchObject({ args: ["serve"], hostShell: false });
     });
 
+    it("does not keep a warm process that opened without exec because the list could not be read once", async () => {
+      let answers = 0;
+      const server = createServer((req, res) => {
+        req.resume();
+        req.on("end", () => {
+          answers += 1;
+          if (answers === 1) {
+            res.writeHead(503);
+            return void res.end();
+          }
+          res.writeHead(200, { "Content-Type": "application/json" });
+          res.end(JSON.stringify({ jsonrpc: "2.0", id: 1, result: { tools: [{ name: "exec" }] } }));
+        });
+      });
+      await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+      const url = `http://127.0.0.1:${(server.address() as AddressInfo).port}/mcp`;
+      try {
+        const { adapter, opens } = makeAdapter();
+        const { live } = makeLive();
+        const execute = createExecute(adapter, { home: HOME });
+        const args = ["serve", HOST_SHELL_ARG];
+        await run(execute, makeCtx({ args, liveSession: live, env: settingsFor(url, "t", "c") }));
+        await run(execute, makeCtx({ args, liveSession: live, useResume: true, sessionId: "native-1", env: settingsFor(url, "t", "c") }));
+        expect(opens).toHaveLength(2);
+        expect(opens[0]).toMatchObject({ hostShell: false });
+        expect(opens[1]).toMatchObject({ hostShell: true });
+      } finally {
+        await new Promise<void>((resolve) => { server.close(() => resolve()); server.closeAllConnections(); });
+      }
+    });
+
     it("tells the adapter there is no host shell without the marker, even if exec is listed", async () => {
       expect(await openedWith(["exec"], ["serve"])).toMatchObject({ args: ["serve"], hostShell: false });
     });

@@ -378,8 +378,23 @@ describe("startMcpProxy", () => {
       const res = await call(p, { body });
       const answers = JSON.parse((await res.text()).trim()) as Array<{ id: number; result?: { isError: boolean }; error?: { message: string } }>;
       expect(answers).toHaveLength(2);
-      expect(answers.find((answer) => answer.id === 2)?.result?.isError).toBe(true);
-      expect(answers.find((answer) => answer.id === 1)?.error?.message).toMatch(/batch was stopped/);
+      const callAnswer = answers.find((answer) => answer.id === 2) as unknown as { result: { isError: boolean; content: Array<{ text: string }> } };
+      expect(callAnswer.result.isError).toBe(true);
+      // The call may have finished before the batch's timer fired: no claim that it was stopped.
+      expect(callAnswer.result.content[0]!.text).toMatch(/status of this call is unknown/);
+      expect(callAnswer.result.content[0]!.text).not.toMatch(/was stopped|do not run it again/i);
+      expect(answers.find((answer) => answer.id === 1)?.error?.message).toMatch(/batch was cut off/);
+      expect(await closedSoon(state)).toBe(true);
+    });
+
+    it("answers a batch of notifications with no body, as JSON-RPC says", async () => {
+      const { target, state } = await silentHost();
+      const p = await proxy({ callDeadlineMs: 150 });
+      p.setTarget({ url: target.url, headers: {} });
+      const body = JSON.stringify([{ jsonrpc: "2.0", method: "tools/call", params: { name: "x" } }]);
+      const res = await call(p, { body });
+      expect(res.status).toBe(202);
+      expect(await res.text()).toBe("");
       expect(await closedSoon(state)).toBe(true);
     });
 
