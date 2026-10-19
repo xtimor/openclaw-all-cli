@@ -3,7 +3,7 @@ title: 'Skills and system prompt on ACP'
 type: 'feature'
 ticket: '13'
 created: '2026-10-19'
-status: 'in-progress'
+status: done
 baseline_revision: 'a30b3ae878d1d312db81ad6357bcee18d6299161'
 route: 'full'
 route_source: 'auto'
@@ -130,6 +130,7 @@ Review batch 1 and 2 (coordinator, 2026-10-19), all applied unless noted:
 - Marker stripped in `splitHostShell`'s args; tested through the real argv path (the old "never launches" test could not fail).
 - Forgery: header opener and tag name neutralized (zero-width space) in the system text, user text, `prependContext`, `appendContext`. Nonce (c) skipped: a model that only reads text cannot check which id is "the first one", and a resend after a restart or drift would carry a new id, so the rule would be incoherent.
 - Test gaps: helper reads the id from the `sessionId` event; crash and abort tests assert the `session/load` of the crashed id and the resent block; the side-question test uses a colliding native id; mutations confirmed (record on error, record early, no file, no neutralizing, no masking, no strip, side question recording, no resumed-id check, unneutralized system text): each fails a test.
+- Follow-up review (abc4d76), all five applied: (1) masked fields no longer freeze: a second hash over their values sends a one-line runtime update note, the full block only on a real change; (2) a failed write is kept in memory; (3) neutralization matches spelling variants and the docs no longer claim nothing can forge a block (other routes are not covered); (4) neutralization keeps characters and case, adding only a zero-width space; (5) merge per chat right before the write, stale temp files removed, residual window documented. The abort test now waits for the prompt in the fake's log instead of a timer.
 - Live test: skill outside the cwd, differing blocks in drift, unchanged prompt across two `--local` runs sends one block, retries, control run.
 - Docs and architecture: AD-15 reconciled with AD-5/AD-10, open question row, bootstrap routing side effect, ambient skill sources, compaction note, cost of a stopped turn.
 

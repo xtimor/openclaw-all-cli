@@ -7,7 +7,7 @@ import { buildCliBackend } from "../src/core/backend.ts";
 import { CONTINUITY_NOTE } from "../src/core/execute.ts";
 import { homeDirFor } from "../src/core/home.ts";
 import { createManifest } from "../src/core/ports.ts";
-import { SYSTEM_PROMPT_HEADER, SYSTEM_PROMPT_TRANSPORT_MARKER, deliveredFileFor, systemPromptBlock } from "../src/core/system-prompt.ts";
+import { SYSTEM_PROMPT_HEADER, SYSTEM_PROMPT_TRANSPORT_MARKER, deliveredFileFor, runtimeUpdateNote, systemPromptBlock } from "../src/core/system-prompt.ts";
 import { FAKE_CURSOR_AGENT, fakeEnv } from "./fixtures/paths.ts";
 
 // AD-15 / P12 through buildCliBackend -> prepareExecution -> execute, against the fake agent.
@@ -163,8 +163,12 @@ describe("system prompt delivery (P12)", () => {
     const store = mkdtempSync(join(scratch, "store-"));
     const env = { FAKE_CURSOR_STORE: store };
     const controller = new AbortController();
-    setTimeout(() => controller.abort(), 600);
+    // Abort once the fake has received the prompt (no timer guess).
+    const watcher = setInterval(() => {
+      if (existsSync(log) && logLines(log).some((line) => line.method === "session/prompt")) controller.abort();
+    }, 10);
     const aborted = await turn(agentDir, log, "[[hang]]", { systemPrompt: S, env, signal: controller.signal }).catch(() => undefined);
+    clearInterval(watcher);
     expect(aborted?.records.some((record) => record.is_error === false)).not.toBe(true);
     expect(existsSync(deliveredFileFor(homeDirFor(agentDir, "cursor-cli")))).toBe(false);
     const id = readdirSync(store)[0]!.replace(/\.json$/, "");
@@ -201,20 +205,29 @@ describe("system prompt delivery (P12)", () => {
     expect(prompts(log).map((text) => text.startsWith(SYSTEM_PROMPT_HEADER))).toEqual([true, false, true, false]);
   });
 
-  it("resends nothing when only the date or the channel changed, and resends on a real change", async () => {
+  it("sends a one-line runtime update when only the date or the channel changed, then nothing, and the block on a real change", async () => {
     const { agentDir, log } = fresh("volatile");
     const store = mkdtempSync(join(scratch, "store-"));
     const env = { FAKE_CURSOR_STORE: store };
-    const prompt = (date: string, channel: string, rule = "Be brief.") =>
-      `${rule}\nCurrent date: ${date}\nTime zone: UTC\nRuntime: agent=main | model=m | channel=${channel} | capabilities=x`;
+    const prompt = (date: string, channel: string, rule = "Be brief.", capabilities = "x") =>
+      `${rule}\n${"filler line\n".repeat(400)}Current date: ${date}\nTime zone: UTC\nRuntime: agent=main | model=m | channel=${channel} | capabilities=${capabilities}`;
     const first = await turn(agentDir, log, "say:one", { systemPrompt: prompt("2026-10-19", "slack"), env });
     const chat = { sessionId: first.sessionId!, useResume: true, env };
     await turn(agentDir, log, "say:two", { ...chat, systemPrompt: prompt("2026-10-20", "web") });
-    await turn(agentDir, log, "say:three", { ...chat, systemPrompt: prompt("2026-10-20", "web", "Be long.") });
+    await turn(agentDir, log, "say:three", { ...chat, systemPrompt: prompt("2026-10-20", "web") });
+    await turn(agentDir, log, "say:four", { ...chat, systemPrompt: prompt("2026-10-20", "web", "Be brief.", "y,z") });
+    await turn(agentDir, log, "say:five", { ...chat, systemPrompt: prompt("2026-10-21", "web", "Be long.", "y,z") });
     const sent = prompts(log);
-    expect(sent[1]).toBe("say:two");
-    // The block, when resent, is the real current text, date included.
-    expect(sent[2]).toBe(`${systemPromptBlock(prompt("2026-10-20", "web", "Be long."))}\n\nsay:three`);
+    const note = (text: string) => text.startsWith("[OpenClaw runtime update]");
+    expect(note(sent[1]!)).toBe(true);
+    expect(sent[1]).toBe(`${runtimeUpdateNote(prompt("2026-10-20", "web"))}\n\nsay:two`);
+    expect(sent[1]).toContain("Current date: 2026-10-20 | model=m | channel=web | capabilities=x");
+    expect(sent[1]!.length).toBeLessThan(400);
+    expect(sent[2]).toBe("say:three");
+    expect(note(sent[3]!)).toBe(true);
+    expect(sent[3]).toContain("capabilities=y,z");
+    // A real change sends the full block, with the current date in it.
+    expect(sent[4]).toBe(`${systemPromptBlock(prompt("2026-10-21", "web", "Be long.", "y,z"))}\n\nsay:five`);
   });
 
   it("neutralizes the block's markers in the prompt text and in every other part of the turn", async () => {

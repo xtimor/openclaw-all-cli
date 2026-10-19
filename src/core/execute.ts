@@ -11,6 +11,7 @@ import {
   SYSTEM_PROMPT_TRANSPORT_MARKER,
   deliveredFileFor,
   neutralizeBlockMarkers,
+  runtimeUpdateNote,
   systemPromptBlock,
 } from "./system-prompt.ts";
 import { ProcessPool, type PoolMember, type TurnSlot } from "./pool.ts";
@@ -663,11 +664,14 @@ export function createExecute(adapter: CliAdapter, options: ExecuteOptions): Cli
       // moved the chat answers with a new id, so the id the turn resumed counts as the same chat.
       const chat = sideQuestion ? undefined : active.session.sessionId;
       const resumed = sideQuestion || !ctx.useResume ? undefined : ctx.sessionId;
-      const sendSystem =
-        Boolean(system) && (!chat || [chat, resumed].every((id) => !id || Boolean(delivered?.needs(id, system))));
+      // A side question always gets the block; a chat gets the block, a short runtime update (only the date,
+      // model, channel, capabilities, or active computer changed), or nothing.
+      const delivering = !system ? "none" : !chat ? "block" : delivered!.decide([chat, ...(resumed ? [resumed] : [])], system);
+      const lead =
+        delivering === "block" ? systemPromptBlock(system) : delivering === "note" ? runtimeUpdateNote(system) : undefined;
       const startedAt = Date.now();
       for await (const event of active.session.prompt(
-        composePrompt(ctx, note, sendSystem ? systemPromptBlock(system) : undefined, deliversSystemPrompt),
+        composePrompt(ctx, note, lead, deliversSystemPrompt),
       )) {
         if (event.kind === "usage") {
           summary.usage = event.usage;
@@ -676,7 +680,7 @@ export function createExecute(adapter: CliAdapter, options: ExecuteOptions): Cli
         if (!tools.admit(event)) continue;
         if (event.kind === "error") turnFailed = true;
         // Recorded only for a finished turn: a failed or aborted one resends next time. A moved chat is recorded under its new id.
-        if (event.kind === "result" && chat && system && (sendSystem || (resumed && resumed !== chat))) delivered?.record(chat, system);
+        if (event.kind === "result" && chat && system && (delivering !== "none" || (resumed && resumed !== chat))) delivered?.record(chat, system);
         if (event.kind === "result" || event.kind === "error") {
           closed = true;
           for (const record of tools.closeOpen()) yield record;
