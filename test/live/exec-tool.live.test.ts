@@ -312,6 +312,9 @@ describeLive("OpenClaw exec is the model's shell (P8, P10)", () => {
           const turn = await ask(sessionId("tools-deny"), runIt(file));
           // Whatever the model tried, nothing ran.
           expect(existsSync(marker)).toBe(false);
+          // With no exec the turn runs in Cursor's ask mode, which has no edit tool: the model cannot
+          // have used a native edit, write or delete (the unit tests pin the exact mode).
+          expect(turn.tools.filter((name) => /^(edit|write|delete)$/i.test(name))).toEqual([]);
           if (turn.status !== 0) return `the turn did not complete (status ${turn.status})`;
           // The tools are not offered, so the model cannot have called them. A try in which it guessed
           // the tool name anyway tells us about the model, not the policy: retry.

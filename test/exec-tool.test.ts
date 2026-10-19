@@ -177,6 +177,19 @@ describe("exec through the MCP proxy", () => {
     expect((await turn(host, "[[mode]]", { args: notServed })).text).toBe("mode:ask");
   });
 
+  it("stays in ask mode when the host's tool policy dropped exec (tools.deny, or tools.allow without exec), though the marker is there", async () => {
+    // The host still passes hostOwnedTools in these runs; only its tool list shows that exec is gone.
+    const withoutExec = await startStubMcpHost();
+    hosts.push(withoutExec);
+    const backend = buildCliBackend(cursorAdapter, { settings: {} });
+    const marked = backend.resolveExecutionArgs!({ baseArgs: ["acp"], hostOwnedTools: ["exec", "process"], executionMode: "agent" } as never)!;
+    expect(marked).toContain("--openclaw-all-cli:host-shell");
+    expect((await turn(withoutExec, "[[mode]]", { args: marked })).text).toBe("mode:ask");
+    // The same marker with exec in the list: agent.
+    const withExec = await startHost();
+    expect((await turn(withExec, "[[mode]]", { args: marked })).text).toBe("mode:agent");
+  });
+
   it("keeps rejecting a native shell request, so the model cannot bypass the host's exec", async () => {
     const host = await startHost();
     const asked: string[] = [];

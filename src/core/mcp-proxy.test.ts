@@ -347,6 +347,52 @@ describe("startMcpProxy", () => {
       expect((await textOf(res)).result.isError).toBe(true);
     });
 
+    it("leaves a response alone once the host has sent its result, even if the stream is still open at the deadline", async () => {
+      const final = JSON.stringify({ jsonrpc: "2.0", id: 9, result: { content: [{ type: "text", text: "done" }] } });
+      for (const sse of [false, true]) {
+        const target = await stub((_req, res) => {
+          res.writeHead(200, { "Content-Type": sse ? "text/event-stream" : "application/json" });
+          res.write(sse ? `:\n\nevent: message\ndata: ${final}\n\n` : `\n${final}`);
+          // The stream stays open past the deadline.
+          setTimeout(() => res.end(), 500);
+        });
+        const p = await proxy({ callDeadlineMs: 150 });
+        p.setTarget({ url: target.url, headers: {} });
+        const res = await call(p, { body: toolCall() });
+        const raw = (await res.text()).trim();
+        // Exactly the host's answer: no second error body, no cut frame.
+        expect(raw).toBe(sse ? `:\n\nevent: message\ndata: ${final}` : final);
+        expect(JSON.parse(sse ? raw.split("\n").find((line) => line.startsWith("data:"))!.slice(5) : raw).result.content[0].text).toBe("done");
+      }
+    });
+
+    it("applies the deadline to a batch with a tools/call in it, and answers every request of the batch", async () => {
+      const { target, state } = await silentHost();
+      const p = await proxy({ callDeadlineMs: 150 });
+      p.setTarget({ url: target.url, headers: {} });
+      const body = JSON.stringify([
+        { jsonrpc: "2.0", id: 1, method: "tools/list" },
+        { jsonrpc: "2.0", id: 2, method: "tools/call", params: { name: "x" } },
+        { jsonrpc: "2.0", method: "notifications/initialized" },
+      ]);
+      const res = await call(p, { body });
+      const answers = JSON.parse((await res.text()).trim()) as Array<{ id: number; result?: { isError: boolean }; error?: { message: string } }>;
+      expect(answers).toHaveLength(2);
+      expect(answers.find((answer) => answer.id === 2)?.result?.isError).toBe(true);
+      expect(answers.find((answer) => answer.id === 1)?.error?.message).toMatch(/batch was stopped/);
+      expect(await closedSoon(state)).toBe(true);
+    });
+
+    it("gives a batch without a tools/call no deadline", async () => {
+      const target = await stub((_req, res) => {
+        setTimeout(() => res.writeHead(200, { "Content-Type": "application/json" }).end(JSON.stringify([{ jsonrpc: "2.0", id: 1, result: { tools: [] } }])), 400);
+      });
+      const p = await proxy({ callDeadlineMs: 150 });
+      p.setTarget({ url: target.url, headers: {} });
+      const res = await call(p, { body: JSON.stringify([{ jsonrpc: "2.0", id: 1, method: "tools/list" }]) });
+      expect(await res.json()).toEqual([{ jsonrpc: "2.0", id: 1, result: { tools: [] } }]);
+    });
+
     it("leaves a call that finishes in time, and any other request, alone", async () => {
       const target = await stub((_req, res, seen) => {
         const { id } = JSON.parse(seen.body) as { id: number };

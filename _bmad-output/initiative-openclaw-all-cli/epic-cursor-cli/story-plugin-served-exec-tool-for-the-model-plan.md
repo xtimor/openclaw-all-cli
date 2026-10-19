@@ -140,6 +140,10 @@ Thorough review, 4 lenses. Fixed:
 7. Live rows rewritten: native shell/write/edit/delete must be attempted (a non-`mcp__` tool in the tool summary, up to 3 tries) and stay blocked; `tools.deny` asserts the turn completed and no hidden tool was called (retried); huge output with head and tail secrets; the timeout is reported to the model; random exit code; sandbox row asserts a host-only file is not readable (skipped without a Docker daemon, logged); every LLM-dependent row retries up to 3 times and fails loudly.
 8. The concurrency test no longer pins a stub detail; the two-slow-calls test proves overlap.
 9. The flaky cap test now starts the second turn only after the first prompt is running and sleeps 1500 ms.
+Follow-up review, fixed:
+- (major) `hostOwnedTools` does not reflect tool policy, so the marker alone put Cursor in `agent` mode with no exec when `tools.deny`/`tools.allow` dropped it. The core now reads the host's `tools/list` (`listToolNames`) before the open and sets `hostShell` only if `exec` is in it; an unreadable list, a missing target or no marker means `ask` (fail safe). Tests: list with exec, without exec, empty, failing, no marker, no target; the backend + fake agent asserts the exact mode (`agent` with exec, `ask` without). Known gap: a reused warm process keeps the mode of its open (the reuse key has the marker, not the list); OpenClaw 2026.10.3 restarts the process every turn, so it does not occur there.
+- (major, docs) `cursor-cli.env` keeps the key out of exec's environment, not out of its reach (same user: `/proc/<pid>/environ`, the config file); docs recommend login, approvals, sandbox.
+- The deadline leaves a response alone once it carries data (JSON and SSE tests); a batch containing a `tools/call` gets the deadline and is answered as a batch (tool error per stopped call, a JSON-RPC error for each other request); a batch without a call has none.
 10. Deferred: an offline test that pins the host contract (that this backend shape makes the host serve exec/process). It needs the host's `resolveCliMcpToolOwnership`, which is not exported; the live rows cover it.
 
 ## Design Notes

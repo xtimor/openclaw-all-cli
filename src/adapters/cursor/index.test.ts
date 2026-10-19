@@ -388,7 +388,7 @@ describe("cursor adapter", () => {
       return (events.at(-1) as { text: string }).text;
     };
 
-    it("is exactly agent when the host serves exec, even from another starting mode and without an ask mode", async () => {
+    it("is exactly agent when exec is offered, even from another starting mode and without an ask mode", async () => {
       expect(await modeOf({ hostShell: true })).toBe("mode:agent");
       expect(await modeOf({ hostShell: true, start: "agent", env: { FAKE_CURSOR_NO_ASK_MODE: "1" } })).toBe("mode:agent");
     });

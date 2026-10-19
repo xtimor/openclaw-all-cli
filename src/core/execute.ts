@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import type { AgentHome } from "./home.ts";
 import { toRecord, type CoreRecord, type TurnSummary } from "./events.ts";
-import { startMcpProxy, type McpProxy } from "./mcp-proxy.ts";
+import { listToolNames, startMcpProxy, type McpProxy } from "./mcp-proxy.ts";
 import { OPENCLAW_MCP_SERVER, readTurnTarget, type TurnTarget } from "./mcp-target.ts";
 import { recordProcess, type ProcessLock } from "./pid-locks.ts";
 import { capabilityMismatch, missingCapabilities, requiredCapabilities } from "./manifest.ts";
@@ -127,6 +127,9 @@ function chatKey(home: AgentHome, sessionId: string): string {
  * before the CLI is launched and tells the adapter through `OpenParams.hostShell`.
  */
 export const HOST_SHELL_ARG = "--openclaw-all-cli:host-shell";
+
+/** The tool whose presence in the host's tool list makes a turn a host-shell turn. */
+const HOST_SHELL_TOOL = "exec";
 
 /** Whether the host serves a shell tool for this turn, and the launch args without the marker. */
 function splitHostShell(ctx: ExecuteContext): { hostShell: boolean; args: string[] } {
@@ -394,7 +397,7 @@ export function createExecute(adapter: CliAdapter, options: ExecuteOptions): Cli
   }
 
   /** Opens the process behind a registered entry. The proxy already points at the turn's target. */
-  async function attachSession(entry: LiveEntry, ctx: ExecuteContext): Promise<OpenEntry> {
+  async function attachSession(entry: LiveEntry, ctx: ExecuteContext, hostShell: boolean): Promise<OpenEntry> {
     const { proxy } = entry;
     const closedError = () =>
       new CliError({
@@ -421,7 +424,7 @@ export function createExecute(adapter: CliAdapter, options: ExecuteOptions): Cli
         env: { ...ctx.env, ...home.env },
         modelId: ctx.modelId,
         executionMode: mode,
-        hostShell: splitHostShell(ctx).hostShell,
+        hostShell,
         // The transport can fail right after the handshake, before it creates or loads a chat.
         ...(required.length > 0 ? { requiredCapabilities: required } : {}),
         ...(resumeSessionId ? { resumeSessionId } : {}),
@@ -571,7 +574,14 @@ export function createExecute(adapter: CliAdapter, options: ExecuteOptions): Cli
           pointProxy(fresh.proxy, turnTarget);
           fresh.degraded = !turnTarget.ok;
         }
-        const opening = attachSession(fresh, ctx);
+        // The marker only says the host MAY serve exec: its tool policy can still drop the tool. The
+        // tool list the CLI is about to read is the truth; if it cannot be read, assume no exec.
+        const hostShell =
+          splitHostShell(ctx).hostShell && turnTarget.ok
+            ? (await listToolNames(turnTarget.target, ctx.abortSignal))?.includes(HOST_SHELL_TOOL) === true
+            : false;
+        ctx.abortSignal?.throwIfAborted();
+        const opening = attachSession(fresh, ctx, hostShell);
         fresh.opening = opening;
         entry = await opening;
       } catch (error) {

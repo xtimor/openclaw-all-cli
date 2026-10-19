@@ -197,12 +197,13 @@ function toAcpMcpServer(server: McpServerSpec) {
 }
 
 /**
- * The Cursor mode for a turn. `agent` only when the host serves its own `exec` for the run
- * (`hostShell`): in `ask` mode the model refuses any command that changes files, even through
- * OpenClaw's `exec` (live: 2 of 3 refused), so `exec` needs `agent`. Everything else stays in
- * `ask`, which has no edit tool: a side question, and a normal run without host `exec` (exec host
- * `node`, `tools.deny` on `exec`, a rooted run). `agent` mode makes the model far more eager (a
- * trivial turn used about 105k tokens in one probe), so it is not the default.
+ * The Cursor mode for a turn. `agent` only when OpenClaw's `exec` is actually offered to the model
+ * in this turn (`hostShell`: the core read it from the host's tool list, after all tool policy): in
+ * `ask` mode the model refuses any command that changes files, even through OpenClaw's `exec` (live:
+ * 2 of 3 refused), so `exec` needs `agent`. Everything else stays in `ask`, which has no edit tool: a
+ * side question, and a normal run without `exec` (exec host `node`, `tools.deny` or `tools.allow`
+ * leaving it out, a rooted run, or a tool list the core could not read). `agent` mode makes the model
+ * far more eager (a trivial turn used about 105k tokens in one probe), so it is not the default.
  *
  * `agent` is safe because the static home blocks the native shell, write, edit and delete without
  * asking (checked live in `agent` mode). `WebFetch(*)` has no effect: a native web fetch asks the

@@ -31,13 +31,13 @@ Each agent runs Cursor with its own config and chat store under `<agentDir>/open
 With OpenClaw's `exec` enabled, any command the model runs inherits the Gateway's environment and can read every variable in it, a `CURSOR_API_KEY` exported to the Gateway included. The plugin does not strip it. In order of preference:
 
 1. **Use the login** (`cursor-agent login`). Its credentials live in the Cursor home (the Keychain on macOS), not in the environment. Usage then shows 0 (see [Usage](providers/cursor.md#usage)).
-2. **Give the key to the Cursor process only**, through the plugin config. `cursor-cli.env` is passed to `cursor-agent` and to the plugin's own probes, and not to the Gateway or to host tools such as `exec`:
+2. **Give the key to the Cursor process only**, through the plugin config. `cursor-cli.env` is passed to `cursor-agent` and to the plugin's own probes, and not put into the Gateway's environment or the environment `exec` starts commands with. That keeps the key out of `env` output, not out of reach: `exec` runs as the same user (unsandboxed by default), so a command can still read the key from `/proc/<pid>/environ` of the `cursor-agent` process or from the OpenClaw config file that holds it:
 
    ```sh
    openclaw config set plugins.entries.openclaw-all-cli.config.cursor-cli.env '{"CURSOR_API_KEY":"<key>"}' --strict-json
    ```
 
-   Do not also export the key to the Gateway; the config file then holds the key, so protect it like any secret.
+   Do not also export the key to the Gateway. The config file holds the key, so protect it like any secret. For anything you do not trust, prefer the login, keep exec approvals on (`tools.exec.ask`), and run the agent in a sandbox.
 3. If you export the key to the Gateway anyway, keep exec approvals on (`tools.exec.ask`) and approve commands only from prompts you trust.
 
 **Optional: Cursor API key profile.** Create a user API key in the Cursor Dashboard and save it as an OpenClaw `api_key` profile for `cursor-cli`:
@@ -74,7 +74,7 @@ All settings are optional. They live under `plugins.entries.openclaw-all-cli.con
 | Key | Default | Meaning |
 | --- | --- | --- |
 | `cursor-cli.command` | `cursor-agent` | Path or name of the Cursor CLI. Set it when the Gateway's `PATH` does not include `cursor-agent`. |
-| `cursor-cli.env` | none | Variables for the `cursor-agent` process only, such as `CURSOR_API_KEY`. Not visible to `exec`. See [The API key](#the-api-key). |
+| `cursor-cli.env` | none | Variables for the `cursor-agent` process only, such as `CURSOR_API_KEY`. Kept out of the environment `exec` starts commands with, but not out of its reach (same user, see [The API key](#the-api-key)). |
 | `cursor-cli.maxConcurrentTurns` | `4` | Turns that run at once (1 to 64). More wait in order for a free slot. |
 | `cursor-cli.maxProcesses` | `8` | `cursor-agent` processes alive at once, idle ones included (1 to 64, at least `maxConcurrentTurns`). At the cap the least recently used idle process is closed. |
 

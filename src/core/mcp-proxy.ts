@@ -90,14 +90,35 @@ async function readBody(req: IncomingMessage): Promise<Buffer> {
   return Buffer.concat(chunks);
 }
 
-/** Whether a request body is a single JSON-RPC `tools/call`. The tool and its arguments are never read. */
-function isToolCall(body: Buffer): boolean {
+/** One JSON-RPC request of a body: its id (null for a notification) and whether it is a `tools/call`. */
+type RequestInfo = { id: string | number | null; call: boolean };
+
+/**
+ * The requests in a body: one for a single request, one per element for a batch (the host accepts
+ * batches). The tool and its arguments are never read, only the method name.
+ */
+function requestsOf(body: Buffer): { batch: boolean; requests: RequestInfo[] } {
   try {
     const parsed: unknown = JSON.parse(body.toString("utf8"));
-    return Boolean(parsed) && typeof parsed === "object" && !Array.isArray(parsed) && (parsed as { method?: unknown }).method === "tools/call";
+    const one = (value: unknown): RequestInfo => {
+      const record = value && typeof value === "object" ? (value as { id?: unknown; method?: unknown }) : {};
+      return { id: typeof record.id === "string" || typeof record.id === "number" ? record.id : null, call: record.method === "tools/call" };
+    };
+    return Array.isArray(parsed) ? { batch: true, requests: parsed.map(one) } : { batch: false, requests: [one(parsed)] };
   } catch {
-    return false;
+    return { batch: false, requests: [] };
   }
+}
+
+/**
+ * Whether a body is a response that already carries real data: anything but whitespace and SSE
+ * comment lines (the host's keepalive frames).
+ */
+function carriesData(chunk: Buffer): boolean {
+  return chunk
+    .toString("utf8")
+    .split("\n")
+    .some((line) => line.trim() !== "" && !line.startsWith(":"));
 }
 
 /** The text the model reads when a call hit the deadline. */
@@ -183,8 +204,12 @@ export async function startMcpProxy(options: StartMcpProxyOptions = {}): Promise
     let expired = false;
     let eventStream = false;
     let relayed: Readable | undefined;
-    const deadline = callDeadlineMs !== undefined && isToolCall(body)
+    // A response that already carries data is final or on its way: the deadline then leaves it alone.
+    let relayedData = false;
+    const parsedBody = requestsOf(body);
+    const deadline = callDeadlineMs !== undefined && parsedBody.requests.some((request) => request.call)
       ? setTimeout(() => {
+          if (relayedData) return;
           expired = true;
           relayed?.unpipe(res);
           controller.abort();
@@ -193,11 +218,25 @@ export async function startMcpProxy(options: StartMcpProxyOptions = {}): Promise
       : undefined;
     function answerExpired() {
       if (res.writableEnded || res.destroyed) return;
-      const payload = JSON.stringify({
+      const toolError = (requestId: string | number | null) => ({
         jsonrpc: "2.0",
-        id,
+        id: requestId,
         result: { isError: true, content: [{ type: "text", text: deadlineMessage(callDeadlineMs ?? 0) }] },
       });
+      // A batch is answered as a batch. Stopping the upstream request ends all of it, so every
+      // request with an id gets an answer: a stopped `tools/call` the tool error, any other request
+      // a JSON-RPC error that says the batch was stopped.
+      const payload = JSON.stringify(
+        parsedBody.batch
+          ? parsedBody.requests
+              .filter((request) => request.id !== null)
+              .map((request) =>
+                request.call
+                  ? toolError(request.id)
+                  : { jsonrpc: "2.0", id: request.id, error: { code: -32000, message: "The batch was stopped because one of its tool calls ran too long." } },
+              )
+          : toolError(id),
+      );
       // Keepalive frames may already have started the response: only the body is left to write.
       if (!res.headersSent) res.writeHead(200, { "Content-Type": eventStream ? "text/event-stream" : "application/json" });
       res.end(eventStream ? `event: message\ndata: ${payload}\n\n` : payload);
@@ -230,6 +269,9 @@ export async function startMcpProxy(options: StartMcpProxyOptions = {}): Promise
       if (!upstream.body) return void res.end();
       const stream = Readable.fromWeb(upstream.body as never);
       relayed = stream;
+      stream.on("data", (chunk: Uint8Array) => {
+        if (!relayedData && carriesData(Buffer.from(chunk))) relayedData = true;
+      });
       stream.on("error", () => (expired ? answerExpired() : res.destroy()));
       stream.pipe(res, { end: false });
       stream.on("end", () => {
@@ -283,4 +325,31 @@ export async function startMcpProxy(options: StartMcpProxyOptions = {}): Promise
       return closing;
     },
   };
+}
+
+/** How long `listToolNames` waits for the host. */
+const LIST_TIMEOUT_MS = 5_000;
+
+/**
+ * The names of the tools the host offers for the current turn, from a `tools/list` against its
+ * loopback. Undefined when it cannot be read: callers then assume nothing is offered. This is what
+ * the CLI itself will see, after all of OpenClaw's tool policy.
+ */
+export async function listToolNames(target: McpTarget, signal?: AbortSignal): Promise<string[] | undefined> {
+  try {
+    const timeout = AbortSignal.timeout(LIST_TIMEOUT_MS);
+    const res = await fetch(target.url, {
+      method: "POST",
+      headers: { "content-type": "application/json", accept: "application/json, text/event-stream", ...target.headers },
+      body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/list" }),
+      signal: signal ? AbortSignal.any([signal, timeout]) : timeout,
+    });
+    if (!res.ok) return undefined;
+    const text = (await res.text()).trim();
+    const json = text.includes("data:") ? text.split("\n").find((line) => line.startsWith("data:"))?.slice(5) : text;
+    const tools = (JSON.parse(json ?? "") as { result?: { tools?: Array<{ name?: unknown }> } }).result?.tools;
+    return Array.isArray(tools) ? tools.flatMap((tool) => (typeof tool.name === "string" ? [tool.name] : [])) : undefined;
+  } catch {
+    return undefined;
+  }
 }

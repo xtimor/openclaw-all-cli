@@ -241,14 +241,6 @@ describe("createExecute", () => {
     expect(calls.restart).toBe(2);
   });
 
-  it("strips the host-shell marker from the launch args and tells the adapter", async () => {
-    const { adapter, opens } = makeAdapter();
-    await run(createExecute(adapter, { home: HOME }), makeCtx({ args: ["serve", HOST_SHELL_ARG] }));
-    await run(createExecute(adapter, { home: HOME }), makeCtx({ args: ["serve"] }));
-    expect(opens[0]).toMatchObject({ args: ["serve"], hostShell: true });
-    expect(opens[1]).toMatchObject({ args: ["serve"], hostShell: false });
-  });
-
   it("opens a new process when the agent's home differs", async () => {
     const { adapter, opens } = makeAdapter();
     const { live } = makeLive();
@@ -647,6 +639,59 @@ describe("createExecute MCP proxy (AD-12)", () => {
     });
     return made;
   }
+
+  describe("the host-shell marker (exec offered to the model)", () => {
+    /** A host whose tool list holds `names`; `null` makes the list fail. */
+    async function listHost(names: string[] | null) {
+      const server = createServer((req, res) => {
+        req.resume();
+        req.on("end", () => {
+          if (names === null) {
+            res.writeHead(500);
+            return void res.end();
+          }
+          res.writeHead(200, { "Content-Type": "application/json" });
+          res.end(JSON.stringify({ jsonrpc: "2.0", id: 1, result: { tools: names.map((name) => ({ name })) } }));
+        });
+      });
+      await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+      const url = `http://127.0.0.1:${(server.address() as AddressInfo).port}/mcp`;
+      return { url, close: () => new Promise<void>((resolve) => { server.close(() => resolve()); server.closeAllConnections(); }) };
+    }
+
+    async function openedWith(names: string[] | null, args: string[]) {
+      const host = await listHost(names);
+      try {
+        const { adapter, opens } = makeAdapter();
+        await run(createExecute(adapter, { home: HOME }), makeCtx({ args, env: settingsFor(host.url, "t", "c") }));
+        return opens[0]!;
+      } finally {
+        await host.close();
+      }
+    }
+
+    it("strips the marker from the launch args and tells the adapter when the host lists exec", async () => {
+      expect(await openedWith(["exec", "process", "read"], ["serve", HOST_SHELL_ARG])).toMatchObject({ args: ["serve"], hostShell: true });
+    });
+
+    it.each([
+      ["a tool policy dropped exec from the list", ["process", "read"]],
+      ["the list is empty", []],
+      ["the list cannot be read", null],
+    ])("tells the adapter there is no host shell when %s, although the marker is there", async (_name, names) => {
+      expect(await openedWith(names, ["serve", HOST_SHELL_ARG])).toMatchObject({ args: ["serve"], hostShell: false });
+    });
+
+    it("tells the adapter there is no host shell without the marker, even if exec is listed", async () => {
+      expect(await openedWith(["exec"], ["serve"])).toMatchObject({ args: ["serve"], hostShell: false });
+    });
+
+    it("tells the adapter there is no host shell when the turn has no usable target", async () => {
+      const { adapter, opens } = makeAdapter();
+      await run(createExecute(adapter, { home: HOME }), makeCtx({ args: ["serve", HOST_SHELL_ARG] }));
+      expect(opens[0]).toMatchObject({ args: ["serve"], hostShell: false });
+    });
+  });
 
   it("gives the CLI only its own proxy, never the host's URL or token", async () => {
     const host = await startHost();

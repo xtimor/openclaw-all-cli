@@ -231,7 +231,7 @@ export type OpenParams = {
   /** Defaults to `agent`. A side question has no `resumeSessionId` and no `mcpServers`. */
   executionMode?: ExecutionMode;
   /**
-   * Whether the host serves its own shell tool (`exec`) to the model for this turn. When it does
+   * Whether the host really offers its own shell tool (`exec`) to the model in this turn (read from its tool list). When it does
    * not, the CLI has no shell at all, and an adapter should keep its most restrictive mode.
    */
   hostShell?: boolean;
