@@ -39,8 +39,9 @@ describe("cursor-cli backend", () => {
       bundleMcpMode: "gemini-system-settings",
       hostOwnedTools: ["exec", "process"],
       nativeToolMode: "selectable",
-      toolAvailabilityEnforcement: "prepare-execution",
+      toolAvailabilityEnforcement: "execution-args",
     });
+    expect(backend.resolveExecutionArgs).toBeTypeOf("function");
     expect(backend.parseJsonlEvent).toBeTypeOf("function");
     // P19 with P7 and P13: the host's live-test defaults.
     expect(backend.liveTest).toEqual({ defaultModelRef: "cursor-cli/auto", defaultImageProbe: false, defaultMcpProbe: true });
@@ -174,15 +175,37 @@ describe("tool availability (AD-9)", () => {
   it("asks for no confirmation when the host selects no tools", async () => {
     const prepared = await prepare();
     expect(prepared?.execute).toBeTypeOf("function");
+  });
+
+  it("accepts a selection that keeps the native tools Cursor cannot switch off", async () => {
+    const prepared = await prepare({ native: ["read", "grep", "glob"], openClaw: ["memory_search"] });
+    expect(prepared?.execute).toBeTypeOf("function");
+    const withMore = await prepare({ native: ["read", "grep", "glob", "exec"], openClaw: [] });
+    expect(withMore?.execute).toBeTypeOf("function");
+    // `execution-args` backends are not asked to confirm in prepareExecution (the host reads it only for `prepare-execution`).
     expect(prepared).not.toHaveProperty("toolAvailabilityEnforced");
   });
 
-  it("confirms a selection that keeps the native tools Cursor cannot switch off", async () => {
-    const prepared = await prepare({ native: ["read", "grep", "glob"], openClaw: ["memory_search"] });
-    expect(prepared?.toolAvailabilityEnforced).toBe(true);
-    expect(prepared?.execute).toBeTypeOf("function");
-    const withMore = await prepare({ native: ["read", "grep", "glob", "exec"], openClaw: [] });
-    expect(withMore?.toolAvailabilityEnforced).toBe(true);
+  describe("resolveExecutionArgs (execution-args, like claude-cli)", () => {
+    const base = ["acp"];
+    const resolve = (extra: Record<string, unknown> = {}) =>
+      backend.resolveExecutionArgs!({ baseArgs: base, executionMode: "agent", useResume: false, ...extra } as never);
+
+    it("returns the host's base args unchanged for a plain run, a resume and a side question", () => {
+      expect(resolve()).toBe(base);
+      expect(resolve({ useResume: true })).toBe(base);
+      expect(resolve({ executionMode: "side-question" })).toBe(base);
+      expect(resolve({ hostOwnedTools: ["exec", "process"] })).toBe(base);
+    });
+
+    it("returns them for a selection that keeps the native tools Cursor cannot switch off", () => {
+      expect(resolve({ toolAvailability: { native: ["read", "grep", "glob"], openClaw: ["memory_search"] } })).toBe(base);
+      expect(resolve({ toolAvailability: { native: ["read", "grep", "glob", "exec"], openClaw: [] } })).toBe(base);
+    });
+
+    it.each([[[]], [["read"]], [["grep", "glob", "exec"]]])("returns nothing for a selection of native tools %j, so the host fails the run", (native) => {
+      expect(resolve({ toolAvailability: { native, openClaw: [] } })).toBeUndefined();
+    });
   });
 
   it.each([
@@ -206,6 +229,7 @@ describe("tool availability (AD-9)", () => {
     const undecided = buildCliBackend(adapter, { settings: {} });
     expect(undecided.nativeToolMode).toBe("always-on");
     expect(undecided.toolAvailabilityEnforcement).toBeUndefined();
+    expect(undecided.resolveExecutionArgs).toBeUndefined();
   });
 });
 
@@ -428,9 +452,10 @@ describe("backend fields by parity row (AD-10)", () => {
     P4: ["config.liveSession"],
     P5: ["config.resumeArgs", "config.freshSessionRecovery"],
     P7: ["bundleMcp", "bundleMcpMode"],
-    P8: ["hostOwnedTools"],
+    // P8 alone adds nothing: the host serves exec only for `execution-args` (P10) over MCP (P7).
+    P8: [],
     P9: [],
-    P10: ["toolAvailabilityEnforcement"],
+    P10: ["toolAvailabilityEnforcement", "resolveExecutionArgs"],
     P13: [],
     P15: ["config.reseedFromRawTranscriptWhenUncompacted"],
     P16: [],
@@ -444,6 +469,16 @@ describe("backend fields by parity row (AD-10)", () => {
 
   it.each(Object.entries(ADDS))("adds exactly row %s's fields when only it is decided", (row, added) => {
     expect(fieldsOf(withRows({ [row]: { status: "approx", note: "" } }))).toEqual([...STRUCTURAL, ...added].sort());
+  });
+
+  it("sets hostOwnedTools only when P7, P8 and P10 are all decided", () => {
+    const decided = { status: "approx" as const, note: "" };
+    const all = { P7: decided, P8: decided, P10: decided };
+    expect(withRows(all).hostOwnedTools).toEqual(["exec", "process"]);
+    for (const left of ["P7", "P8", "P10"] as const) {
+      const { [left]: _omitted, ...rest } = all;
+      expect(withRows(rest)).not.toHaveProperty("hostOwnedTools");
+    }
   });
 
   it("sets the live-test probes from P19 together with P13 and P7", () => {
@@ -464,6 +499,7 @@ describe("backend fields by parity row (AD-10)", () => {
         "bundleMcpMode",
         "hostOwnedTools",
         "toolAvailabilityEnforcement",
+        "resolveExecutionArgs",
         "sideQuestionToolMode",
         "liveTest",
         "config.modelAliases",

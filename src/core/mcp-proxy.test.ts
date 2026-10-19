@@ -227,6 +227,64 @@ describe("startMcpProxy", () => {
     release();
   });
 
+  it("relays keepalive frames before the body, then the body", async () => {
+    const target = await stub((_req, res) => {
+      res.writeHead(200, { "Content-Type": "application/json" });
+      res.write("\n");
+      setTimeout(() => res.write("\n"), 30);
+      setTimeout(() => res.end('{"jsonrpc":"2.0","id":7,"result":{}}'), 80);
+    });
+    const p = await proxy();
+    p.setTarget({ url: target.url, headers: {} });
+    const res = await call(p);
+    const reader = res.body!.getReader();
+    // The first frame arrives long before the body: the call is not buffered.
+    const startedAt = Date.now();
+    expect(new TextDecoder().decode((await reader.read()).value)).toBe("\n");
+    expect(Date.now() - startedAt).toBeLessThan(60);
+    let rest = "";
+    for (let part = await reader.read(); !part.done; part = await reader.read()) rest += new TextDecoder().decode(part.value);
+    expect(rest.trim()).toBe('{"jsonrpc":"2.0","id":7,"result":{}}');
+  });
+
+  it("closes the upstream call when the CLI hangs up mid-call", async () => {
+    let upstreamClosed = false;
+    let reached: () => void = () => {};
+    const arrived = new Promise<void>((resolve) => (reached = resolve));
+    const target = await stub((_req, res) => {
+      res.writeHead(200, { "Content-Type": "application/json" });
+      res.write("\n");
+      res.on("close", () => (upstreamClosed = true));
+      reached();
+    });
+    const p = await proxy();
+    p.setTarget({ url: target.url, headers: {} });
+    const controller = new AbortController();
+    const res = await call(p, { signal: controller.signal });
+    await res.body!.getReader().read();
+    await arrived;
+    controller.abort();
+    const deadline = Date.now() + 3_000;
+    while (!upstreamClosed && Date.now() < deadline) await new Promise((resolve) => setTimeout(resolve, 10));
+    expect(upstreamClosed).toBe(true);
+  });
+
+  it("answers parallel calls separately", async () => {
+    const target = await stub((_req, res, seen) => {
+      const { id, params } = JSON.parse(seen.body) as { id: number; params: { delayMs: number } };
+      setTimeout(() => {
+        res.writeHead(200, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ jsonrpc: "2.0", id, result: { id } }));
+      }, params.delayMs);
+    });
+    const p = await proxy();
+    p.setTarget({ url: target.url, headers: {} });
+    const body = (id: number, delayMs: number) => JSON.stringify({ jsonrpc: "2.0", id, method: "tools/call", params: { delayMs } });
+    const [slow, fast] = await Promise.all([call(p, { body: body(1, 150) }), call(p, { body: body(2, 0) })]);
+    expect(await slow.json()).toMatchObject({ id: 1, result: { id: 1 } });
+    expect(await fast.json()).toMatchObject({ id: 2, result: { id: 2 } });
+  });
+
   it("closes and frees the port", async () => {
     const p = await proxy();
     const url = p.url;

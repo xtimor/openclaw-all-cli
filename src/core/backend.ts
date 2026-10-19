@@ -6,7 +6,7 @@ import { deriveFlags } from "./manifest.ts";
 import { unenforceableNativeTools } from "./permissions.ts";
 import type { CliAdapter } from "./ports.ts";
 import { ProcessPool } from "./pool.ts";
-import type { CliBackendPlugin } from "./sdk-types.ts";
+import type { CliBackendPlugin, PrepareExecutionContext } from "./sdk-types.ts";
 
 /** The backend ID and model-ref prefix for an adapter (AD-1). */
 export function backendIdFor(adapter: CliAdapter): string {
@@ -36,6 +36,8 @@ export function buildCliBackend(adapter: CliAdapter, options: BuildBackendOption
   const command = options.settings.command ?? adapter.command;
   const args = [...adapter.launchArgs];
   const pool = options.pool ?? new ProcessPool(capsOf(options.settings));
+  const enforceableSelection = (availability: PrepareExecutionContext["toolAvailability"]): boolean =>
+    !availability || unenforceableNativeTools(availability, adapter.alwaysOnNativeTools).length === 0;
 
   return {
     id: backendIdFor(adapter),
@@ -49,10 +51,16 @@ export function buildCliBackend(adapter: CliAdapter, options: BuildBackendOption
           },
         }
       : {}),
-    // P10: the host selects native tools per run through `ctx.toolAvailability`; `prepareExecution`
-    // confirms only a selection it enforces. Without that, the host fails closed for restricted runs.
+    // P10: the host selects native tools per run through `ctx.toolAvailability`. Like claude-cli, the
+    // backend declares `execution-args`: `resolveExecutionArgs` confirms only a selection the adapter
+    // enforces (nullish makes the host fail the run), and the host then serves its own tools (P8).
     ...(flags.toolPolicy
-      ? { nativeToolMode: "selectable" as const, toolAvailabilityEnforcement: "prepare-execution" as const }
+      ? {
+          nativeToolMode: "selectable" as const,
+          toolAvailabilityEnforcement: "execution-args" as const,
+          resolveExecutionArgs: (ctx: Parameters<NonNullable<CliBackendPlugin["resolveExecutionArgs"]>>[0]) =>
+            enforceableSelection(ctx.toolAvailability) ? ctx.baseArgs : undefined,
+        }
       : { nativeToolMode: "always-on" as const }),
     ...(flags.mcp
       ? {
@@ -62,8 +70,9 @@ export function buildCliBackend(adapter: CliAdapter, options: BuildBackendOption
           bundleMcpMode: "gemini-system-settings" as const,
         }
       : {}),
-    // P8: the host serves its own exec tools in place of the CLI's native shell.
-    ...(flags.hostTools ? { hostOwnedTools: ["exec", "process"] } : {}),
+    // P8: the host serves its own exec tools in place of the CLI's native shell. It does so only for
+    // `execution-args` (P10) and over its MCP loopback (P7), so all three rows must be decided.
+    ...(flags.hostTools && flags.toolPolicy && flags.mcp ? { hostOwnedTools: ["exec", "process"] } : {}),
     // P18: the host runs a side question (`executionMode: "side-question"`) without OpenClaw's
     // tools; the adapter opens it in its read-only mode with no MCP server and rejects every
     // permission request. Native readers the CLI keeps open stay (see the P18 row).
@@ -104,12 +113,9 @@ export function buildCliBackend(adapter: CliAdapter, options: BuildBackendOption
             "Select those native tools or run this turn on another model. OpenClaw did not start the run.",
         );
       }
-      // Only a selection the adapter enforces is confirmed; a run without one needs no confirmation.
-      const enforced = ctx.toolAvailability ? { toolAvailabilityEnforced: true as const } : {};
       try {
         const home = await prepareAgentHome(adapter, backendIdFor(adapter), ctx.agentDir, options.warn);
         return {
-          ...enforced,
           execute: createExecute(adapter, {
             ...options.execute,
             home,
@@ -126,7 +132,6 @@ export function buildCliBackend(adapter: CliAdapter, options: BuildBackendOption
         // Fail the turn the way an open failure does: an error record, never a shared home.
         const record = errorRecord(error);
         return {
-          ...enforced,
           execute: async function* () {
             yield record;
           },

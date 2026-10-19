@@ -17,9 +17,17 @@ export const STUB_EXEC_TOOL = "exec";
  * A stand-in for OpenClaw's per-run loopback MCP endpoint: MCP over HTTP with JSON replies and
  * one tool, `oac_echo`, that answers `echo:<text>`. With `execTool` it also offers `exec`, which
  * answers `stub-exec-ran:<command>` without running anything. It records every request with its headers.
+ *
+ * The stub `exec` takes optional test knobs beside `command`: `delayMs` waits before the answer,
+ * `keepaliveMs` writes a `\n` frame at that interval while it waits (like the host's keepalive),
+ * and `hang` never answers. `closed()` counts calls whose client hung up before the answer, and
+ * `maxInFlight()` is the most exec calls running at once.
  */
 export async function startStubMcpHost(options: { execTool?: boolean } = {}) {
   const requests: StubRequest[] = [];
+  let closed = 0;
+  let inFlight = 0;
+  let maxInFlight = 0;
   const server = createServer((req, res) => {
     const chunks: Buffer[] = [];
     req.on("data", (chunk: Buffer) => chunks.push(chunk));
@@ -71,9 +79,33 @@ export async function startStubMcpHost(options: { execTool?: boolean } = {}) {
             ],
           });
         case "tools/call": {
-          const args = (rpc.params?.arguments ?? {}) as { text?: unknown; command?: unknown };
+          const args = (rpc.params?.arguments ?? {}) as {
+            text?: unknown;
+            command?: unknown;
+            delayMs?: number;
+            keepaliveMs?: number;
+            hang?: boolean;
+          };
           if (rpc.params?.name === STUB_EXEC_TOOL) {
-            return reply({ content: [{ type: "text", text: `stub-exec-ran:${String(args.command)}` }] });
+            const answer = { content: [{ type: "text", text: `stub-exec-ran:${String(args.command)}` }] };
+            if (!args.delayMs && !args.hang) return reply(answer);
+            inFlight += 1;
+            maxInFlight = Math.max(maxInFlight, inFlight);
+            res.writeHead(200, { "Content-Type": "application/json" });
+            const timers: NodeJS.Timeout[] = [];
+            if (args.keepaliveMs) timers.push(setInterval(() => res.write("\n"), args.keepaliveMs));
+            if (!args.hang) {
+              timers.push(setTimeout(() => res.end(JSON.stringify({ jsonrpc: "2.0", id: rpc.id, result: answer })), args.delayMs));
+            }
+            res.on("close", () => {
+              for (const timer of timers) {
+                clearTimeout(timer);
+                clearInterval(timer);
+              }
+              inFlight -= 1;
+              if (!res.writableEnded) closed += 1;
+            });
+            return;
           }
           return reply({ content: [{ type: "text", text: `echo:${String(args.text)}` }] });
         }
@@ -89,6 +121,10 @@ export async function startStubMcpHost(options: { execTool?: boolean } = {}) {
     requests,
     /** The tool calls received, in order. */
     toolCalls: () => requests.filter((request) => request.rpc?.method === "tools/call"),
+    /** Exec calls whose client hung up before they were answered. */
+    closed: () => closed,
+    /** The most exec calls that were waiting at the same moment. */
+    maxInFlight: () => maxInFlight,
     close: () =>
       new Promise<void>((resolve) => {
         server.close(() => resolve());

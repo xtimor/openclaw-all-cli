@@ -197,11 +197,15 @@ function toAcpMcpServer(server: McpServerSpec) {
 }
 
 /**
- * The Cursor mode per kind of run. Both use `ask`: it has no edit tool and still asks for what
- * the host approves. A side question differs in what it is handed, not in the mode: no MCP
- * server, no resume, and the core rejects every permission request.
+ * The Cursor mode per kind of run. A normal run uses `agent`: in `ask` mode the model refuses any
+ * command that changes files, even through OpenClaw's `exec` (live probe, 2 of 3 refused), and
+ * OpenClaw's `exec` is the model's only shell. `agent` is safe here because the static home denies
+ * `Shell(*)`, `Write(**)` and `WebFetch(*)` (checked live in `agent` mode: native shell, write,
+ * edit and delete are blocked without asking, a web fetch still asks the host). A side question
+ * stays in `ask` mode, which has no edit tool, and differs in what it is handed: no MCP server, no
+ * resume, and the core rejects every permission request.
  */
-const MODE_BY_EXECUTION: Record<ExecutionMode, string> = { agent: "ask", "side-question": "ask" };
+const MODE_BY_EXECUTION: Record<ExecutionMode, string> = { agent: "agent", "side-question": "ask" };
 
 const DISPLAY_NAME = "Cursor CLI";
 
@@ -217,8 +221,8 @@ function open(params: OpenParams): Promise<CliSession> {
     // With an API key Cursor needs no login step; `authenticate{cursor_login}` would try a browser login and fail.
     ...authMethodFor(params.env),
     // Cursor applies native edits without asking in agent mode, so only the per-agent `Write(**)`
-    // deny stops them. `ask` mode has no edit tool at all and still asks for (and runs) what the
-    // host approves, so it stays as the second lock (checked against cursor-agent 2026.10.16).
+    // deny stops them (checked against cursor-agent 2026.10.16). A side question keeps `ask` mode,
+    // which has no edit tool, as a second lock.
     requiredModeId: MODE_BY_EXECUTION[executionMode],
     displayName: DISPLAY_NAME,
     ...(params.requiredCapabilities?.length ? { requiredCapabilities: params.requiredCapabilities } : {}),

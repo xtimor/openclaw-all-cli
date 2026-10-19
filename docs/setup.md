@@ -67,6 +67,8 @@ A value outside 1 to 64 (or not an integer) is rejected by OpenClaw's config val
 
 Isolation needs no setting: every agent gets its own Cursor home with the same fixed permissions (see [Cursor provider](providers/cursor.md)). Transport and API-key settings are documented here once they exist.
 
+Shell commands: the model's shell is OpenClaw's own `exec` tool (and `process`), so what it may run follows OpenClaw's `tools.exec.*` settings (`security`, `ask`, `timeoutSec`), its exec approvals, its sandbox, and `tools.deny`. Cursor's native shell stays denied. A command that needs approval waits for an approval client (the Control UI, an app, or a chat channel); a headless `openclaw agent` run is denied at once. A tool call lasts at most 60 seconds on Cursor's side. See [Shell commands](providers/cursor.md#shell-commands-openclaw-exec).
+
 ## 4. Verify
 
 ```sh
@@ -85,8 +87,10 @@ The first command must report `"status": "loaded"` and `cursor-cli` under `cliBa
 | `cursor-cli/<model>` is `[indeterminate]` in `openclaw models status`, or `Auth: no` in `openclaw models list` | OpenClaw sees no Cursor login | Run `cursor-agent login`, then check `cursor-agent status` |
 | `OpenClaw gave no agent directory` | The host passed no `agentDir` for the turn | Report it with your OpenClaw version; the plugin will not share a home between agents |
 | `Could not prepare the CLI home` | The plugin cannot write `cli-config.json` under the agent directory | Fix the directory's permissions or free disk space |
-| `The CLI offers no "ask" mode` | The `cursor-agent` build has no read-only mode | Run `cursor-agent update` |
+| `The CLI offers no "ask" mode` | A side question needs the `cursor-agent` read-only mode and this build has none | Run `cursor-agent update` |
 | `cursor-cli keeps native read, grep, glob on in every turn...` | A run asked for a tool selection without Cursor's always-on native tools (a tool cap, tools disabled, a system agent) | Run that turn on another model; see [Cursor provider](providers/cursor.md) |
+| The model says it has no shell, or `exec` is missing | `tools.deny` hides `exec`, the run is capped or rooted, or the agent's exec host is `node` | Remove `exec` from `tools.deny`; run the turn without a cap; use exec host `gateway` or `sandbox` |
+| `MCP error -32001: Request timed out` after a command | Cursor gives up on a tool call after 60 seconds | Ask for the command to run in the background and read it with `process` |
 | `Cursor has no model "<name>" for this account` | The account does not have that model | Pick one from `openclaw models list --provider cursor-cli`, or check the plan |
 | Only `cursor-cli/auto` is listed | **No login:** the plugin lists nothing and logs nothing; after `cursor-agent login` (or setting `CURSOR_API_KEY`) the next read lists at once. **Failed listing:** the Gateway log says `Could not list the Cursor CLI models` and why; the failure is remembered for 30 seconds, and `openclaw models list --provider cursor-cli --refresh` waits it out | Fix the login or `cursor-agent`, then run the refresh (after 30 seconds when a listing failed) |
 | No `cursor-cli` models in the Gateway's list | The plugin is not loaded yet | Name a `cursor-cli/...` model as the default model so it loads at Gateway start |

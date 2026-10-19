@@ -355,7 +355,7 @@ describe("cursor adapter", () => {
     }
   });
 
-  it("refuses to run without Cursor's read-only mode", async () => {
+  it("refuses a side question without Cursor's read-only mode", async () => {
     await expect(
       cursorAdapter.open({
         command: FAKE_CURSOR_AGENT,
@@ -363,9 +363,36 @@ describe("cursor adapter", () => {
         cwd: process.cwd(),
         env: fakeEnv({ FAKE_CURSOR_NO_ASK_MODE: "1" }),
         modelId: "auto",
+        executionMode: "side-question",
         onPermissionRequest: async () => "reject_once",
       }),
     ).rejects.toMatchObject({ code: "capability_mismatch" });
+  });
+
+  it("runs a normal turn in Cursor's agent mode, so the model can run commands that change files through OpenClaw exec", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "oac-mode-"));
+    const file = join(dir, "log.jsonl");
+    let session: CliSession | undefined;
+    try {
+      session = await cursorAdapter.open({
+        command: FAKE_CURSOR_AGENT,
+        args: cursorAdapter.launchArgs,
+        cwd: process.cwd(),
+        // No `ask` mode at all: a normal run does not need it.
+        env: fakeEnv({ FAKE_CURSOR_LOG: file, FAKE_CURSOR_NO_ASK_MODE: "1" }),
+        modelId: "auto",
+        onPermissionRequest: async () => "reject_once",
+      });
+      const requests = readFileSync(file, "utf8")
+        .trim()
+        .split("\n")
+        .map((line) => JSON.parse(line));
+      const modes = requests.filter((entry) => entry.method === "session/set_mode").map((entry) => entry.params.modeId);
+      expect(modes).not.toContain("ask");
+    } finally {
+      await session?.close();
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 
   describe("permission requests", () => {

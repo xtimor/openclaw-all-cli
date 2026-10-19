@@ -198,3 +198,64 @@ export async function startGateway(
   await stop();
   throw new Error(`The isolated Gateway did not answer on port ${port}.`);
 }
+
+export type ApprovalClient = {
+  /** The pending exec approvals the Gateway holds. */
+  list(): Promise<Array<{ id: string; request: { command?: string; [key: string]: unknown } }>>;
+  resolve(id: string, decision: "allow-once" | "allow-always" | "deny"): Promise<void>;
+  close(): void;
+};
+
+/**
+ * An operator client that counts as an exec approval surface (`approvals` capability, admin scope).
+ * With one connected, OpenClaw holds a command that needs approval as pending instead of denying it
+ * as a headless run. Needs a Gateway started with `--auth none`, as `startGateway` does.
+ */
+export async function connectApprovalClient(port: number, timeoutMs = 15_000): Promise<ApprovalClient> {
+  const ws = new WebSocket(`ws://127.0.0.1:${port}`);
+  let seq = 0;
+  const pending = new Map<string, { resolve: (value: any) => void; reject: (error: Error) => void }>();
+  const send = (method: string, params: unknown) =>
+    new Promise<any>((resolve, reject) => {
+      const id = String(++seq);
+      pending.set(id, { resolve, reject });
+      ws.send(JSON.stringify({ type: "req", id, method, params }));
+    });
+  const connected = new Promise<void>((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error("The Gateway did not accept the approval client.")), timeoutMs);
+    ws.onerror = () => reject(new Error("The approval client could not reach the Gateway."));
+    ws.onmessage = (event) => {
+      const message = JSON.parse(String(event.data)) as { type: string; event?: string; id?: string; ok?: boolean; payload?: unknown; error?: unknown };
+      if (message.type === "event" && message.event === "connect.challenge") {
+        send("connect", {
+          minProtocol: 4,
+          maxProtocol: 4,
+          client: { id: "gateway-client", version: "0", platform: "linux", mode: "backend" },
+          role: "operator",
+          scopes: ["operator.read", "operator.write", "operator.approvals", "operator.admin"],
+          caps: ["approvals"],
+          auth: {},
+        }).then(
+          () => {
+            clearTimeout(timer);
+            resolve();
+          },
+          reject,
+        );
+      } else if (message.type === "res" && message.id !== undefined) {
+        const waiting = pending.get(message.id);
+        pending.delete(message.id);
+        if (message.ok) waiting?.resolve(message.payload);
+        else waiting?.reject(new Error(JSON.stringify(message.error)));
+      }
+    };
+  });
+  await connected;
+  return {
+    list: () => send("exec.approval.list", {}),
+    resolve: async (id, decision) => {
+      await send("exec.approval.resolve", { id, decision });
+    },
+    close: () => ws.close(),
+  };
+}

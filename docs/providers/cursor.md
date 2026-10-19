@@ -19,6 +19,8 @@ The home holds one file the plugin writes, `cli-config.json`, with the same stat
 
 The home directory is created with mode 0700 and the file with mode 0600 (an existing stricter file mode is kept). If `cli-config.json` exists but cannot be read, the turn fails and names the file instead of replacing it. The plugin writes the file once through an atomic rename and leaves it alone while it already holds these rules. Other keys Cursor stores there are kept, and edits to the `permissions` key are overwritten on the next turn. No per-turn policy goes into a file. Native read, grep, and glob stay available.
 
+A normal turn runs in Cursor's `agent` mode. There the denied tools are blocked without Cursor asking: the native shell, write, edit, and delete (checked live, cursor-agent 2026.10.16, with this exact file). A native web fetch still asks OpenClaw (`web_fetch`) in either mode, and OpenClaw's policy decides; `WebFetch(*)` does not stop the request. The model's shell is OpenClaw's own `exec`, see [Shell commands](#shell-commands-openclaw-exec).
+
 ## Sessions, resume, and side questions
 
 OpenClaw owns which Cursor chat belongs to which OpenClaw chat. The plugin keeps no session map: it only receives `sessionId` and `useResume` for a turn and reports the Cursor session ID it ends up with, on every turn.
@@ -83,12 +85,12 @@ Cursor's tool activity (`tool_call` and `tool_call_update`) shows as tool progre
 
 ## Permissions and tool availability
 
-OpenClaw owns approval authority; the plugin only asks. The static `cli-config.json` is the first line of defence: it denies shell, writes, and web fetch, so Cursor does not ask about them. A permission request still arises for what the file leaves open (for example a web search or another MCP server). The plugin names the request in OpenClaw's terms (`exec`, `write`, `edit`, `delete`, `web_fetch`, `web_search`, `read`, `grep`, `glob`, or `mcp__<server>__<tool>`), asks the host (`requestToolPermission`), and answers Cursor from the result:
+OpenClaw owns approval authority; the plugin only asks. The static `cli-config.json` is the first line of defence: it denies shell, writes, edits, and deletes, so Cursor blocks them without asking. A permission request still arises for what the file leaves open (for example a web fetch or search, or another MCP server). The plugin names the request in OpenClaw's terms (`exec`, `write`, `edit`, `delete`, `web_fetch`, `web_search`, `read`, `grep`, `glob`, or `mcp__<server>__<tool>`), asks the host (`requestToolPermission`), and answers Cursor from the result:
 
 | Situation | Answer to Cursor |
 | --- | --- |
 | The host allows | `allow_once` |
-| The host denies | reject. A denied shell request makes the model use another tool, such as OpenClaw `exec` when the run serves it |
+| The host denies | reject. A denied shell request makes the model use OpenClaw `exec` instead |
 | Asking the host fails, or the answer is malformed | reject (fail closed); the failure is logged and the turn continues |
 | The host allows but changes the input | reject: Cursor can run only what the host saw |
 | Cursor offers no option of the decided kind | `cancelled` |
@@ -97,9 +99,31 @@ OpenClaw owns approval authority; the plugin only asks. The static `cli-config.j
 | A request the plugin cannot name (an unknown operation, a question prompt) during a turn | reject; the host is not asked (after the turn it is `cancelled`, like any late request) |
 | The run's tool selection leaves the tool out | reject; the host is not asked |
 
-The plugin starts no timer for approvals; OpenClaw's own timers apply. A run's tool selection (`toolAvailability`) comes from OpenClaw. The backend declares `nativeToolMode: "selectable"` with `prepare-execution` enforcement and confirms a selection only if it keeps native `read`, `grep`, and `glob` on, because Cursor cannot switch them off per turn and the plugin writes no per-turn policy file. OpenClaw 2026.10.3 asks for `native: []` for runs with a tool cap, tools disabled, or a system agent; such a run is refused before Cursor starts, with `cursor-cli keeps native read, grep, glob on in every turn...`. A run without a selection starts as usual. `tools.allow` and `tools.deny` filter the OpenClaw tool list on OpenClaw's side; the plugin translates nothing.
+The plugin starts no timer for approvals; OpenClaw's own timers apply. A run's tool selection (`toolAvailability`) comes from OpenClaw. The backend declares `nativeToolMode: "selectable"` with `execution-args` enforcement, as `claude-cli` does. Its `resolveExecutionArgs` returns OpenClaw's launch arguments unchanged for a selection that keeps native `read`, `grep`, and `glob` on, and nothing otherwise, which makes OpenClaw fail the run (Cursor cannot switch them off per turn and the plugin writes no per-turn policy file). OpenClaw 2026.10.3 asks for `native: []` for runs with a tool cap, tools disabled, or a system agent; such a run is refused before Cursor starts, with `cursor-cli keeps native read, grep, glob on in every turn...`. A run without a selection starts as usual. `tools.allow` and `tools.deny` filter the OpenClaw tool list on OpenClaw's side; the plugin translates nothing.
 
-Native edits cannot ask in ACP: in agent mode Cursor applies them without a request whatever the permissions say, and its `ask` and `plan` modes have no edit tool. So edits stay denied by `Write(**)` in the static file, and every session also runs in Cursor's `ask` mode as a second lock. A side effect: in `ask` mode the model refuses commands that change files even when the host approves them. The plugin refuses to run when `cursor-agent` offers no `ask` mode.
+Native edits cannot ask in ACP: in agent mode Cursor never requests approval for them, and its `ask` and `plan` modes have no edit tool. So edits stay denied by `Write(**)` in the static file. A normal turn uses `agent` mode, because in `ask` mode the model refuses any command that changes files even through OpenClaw `exec` (live: 2 of 3 tries refused). A side question keeps `ask` mode as a second lock, and the plugin refuses to run it when `cursor-agent` offers no `ask` mode.
+
+## Shell commands (OpenClaw exec)
+
+The model's shell is OpenClaw's own `exec` tool, with `process` for background commands. The backend declares `toolAvailabilityEnforcement: "execution-args"` and `hostOwnedTools: ["exec", "process"]`, the same mechanism `claude-cli` uses, so OpenClaw puts both tools on the MCP endpoint the plugin's proxy forwards to Cursor. The plugin runs, parses, and filters no command. What OpenClaw's exec does applies unchanged:
+
+| Situation | What happens |
+| --- | --- |
+| Default policy | The command runs in the turn's workspace and its output goes to the model |
+| `tools.exec.ask: always` | OpenClaw holds the command as a pending approval (`exec.approval.list`). It needs a client that can answer approvals (the Control UI, an app, or a chat channel with approvals); a headless `openclaw agent` run has none, and OpenClaw denies the command at once. Allow once runs it, deny does not |
+| `tools.exec.security: deny`, or a denial | The command does not run and the model gets OpenClaw's reason. It cannot fall back to Cursor's shell: that stays denied |
+| `timeout` parameter or `tools.exec.timeoutSec` exceeded | OpenClaw kills the command and reports the timeout; the turn goes on |
+| Very large output | OpenClaw's output cap truncates it; the turn completes |
+| Non-zero exit | The exit code and output go to the model |
+| Turn aborted while a command runs | The plugin closes the call, OpenClaw kills the command, and the turn ends with the abort error |
+| `tools.deny: [exec, process]` | Neither tool is offered, so the model has no shell |
+| Sandboxed agent | OpenClaw runs the command in the sandbox, or refuses; the plugin does not choose |
+
+Limits that come from Cursor or the host:
+
+- **A call lasts at most 60 seconds.** Cursor's MCP client gives up on a tool call after 60 s (`MCP error -32001: Request timed out`), whatever the keepalive frames the host sends. The command may go on running on the host until OpenClaw's own timeout. In a live probe the model then re-ran a 90 s command in the background and read it with `process`. Ask for long commands to run in the background.
+- **No `exec` for some runs.** OpenClaw serves `exec` as a host tool only to a normal run whose exec host is not `node`. A capped, rooted, or tools-disabled run (OpenClaw sends `native: []`) is refused before Cursor starts, and with exec host `node` the run has no `exec`. `claude-cli` falls back to its native Bash there; `cursor-cli` has no native shell to fall back to.
+- **`CURSOR_API_KEY` is visible to commands.** A command run through `exec` inherits the Gateway's environment, so `env` shows the key. Declaring the key as the provider's auth variable in the plugin manifest (`setup.providers[].envVars`) did not remove it from `exec` (OpenClaw strips provider auth variables only for its own one-shot agent runs) and it changed the auth display, so the plugin does not declare it. If that matters, log in with `cursor-agent login` and do not export the key to the Gateway; usage then reads 0 tokens (see Usage).
 
 ## Models
 
@@ -151,7 +175,7 @@ Right after `initialize`, before the login, `session/new` or `session/load`, the
 | HTTP MCP servers | P7 | `agentCapabilities.mcpCapabilities.http` (the MCP proxy is HTTP) |
 | Image prompts | P13 | `agentCapabilities.promptCapabilities.image`, checked once the row is decided (it is `spike` now) |
 
-Also checked at open: the login method. If `authMethods` lists methods and `cursor_login` is not one of them, the turn fails with `capability_mismatch` and the text `The CLI offered no "cursor_login" login method` (an empty list skips the login; an absent list logs in as before). Checks that already existed: the `ask` mode must exist (P9, P18); a named model needs the CLI's model list (P1); an ACP protocol other than 1 and a build below the minimum version fail as `unsupported_version` (P19). Rows with no signal at open (P3, P4, P8, P10, P15, P16) are not checked; P6, P11, P12 and P14 have no mechanism in the core.
+Also checked at open: the login method. If `authMethods` lists methods and `cursor_login` is not one of them, the turn fails with `capability_mismatch` and the text `The CLI offered no "cursor_login" login method` (an empty list skips the login; an absent list logs in as before). Checks that already existed: the `ask` mode must exist for a side question (P18), and the `agent` mode for a normal turn; a named model needs the CLI's model list (P1); an ACP protocol other than 1 and a build below the minimum version fail as `unsupported_version` (P19). Rows with no signal at open (P3, P4, P8, P10, P15, P16) are not checked; P6, P11, P12 and P14 have no mechanism in the core.
 
 Real `cursor-agent` 2026.10.16 reports `loadSession`, `mcpCapabilities` with `http` and `sse`, and `promptCapabilities.image`, so it passes. Live test: `test/live/capability-check.live.test.ts`.
 
@@ -194,9 +218,9 @@ Live test: `test/live/usage.live.test.ts`.
 | P5 | Resume a session | match | ACP `session/load` from the ID OpenClaw passes; the ID the CLI ends up with is reported every turn; a chat Cursor does not know fails as `session_expired` and OpenClaw decides about a fresh chat (`freshSessionRecovery: "invalidated-only"`). Live test: `test/live/session-resume.live.test.ts` |
 | P6 | Fork, resume at a checkpoint | gap | `cursor-agent` has no fork or checkpoint: no CLI flag, and ACP `initialize` reports `sessionCapabilities` with `list` only (no fork, no resume). OpenClaw 2026.10.3 copies a CLI binding into a forked session only for a backend with `forkArg` and `resumeAtArg` (`forkCliSessionBindings`), so a forked OpenClaw session starts a new Cursor chat |
 | P7 | OpenClaw tools as MCP | match | The plugin hands Cursor one MCP proxy per live session, and nothing else, in ACP `mcpServers`. It forwards each call to the turn's OpenClaw endpoint and rejects calls between turns. Live test: `test/live/mcp-proxy.live.test.ts` |
-| P8 | Native shell replaced by OpenClaw `exec` | approx | The per-agent `cli-config.json` denies `Shell(*)`, `Write(**)`, and `WebFetch(*)`, so the native shell does not run; a shell request that still arises goes to the host, and after a denial the model falls back to OpenClaw `exec` when the run serves it. OpenClaw 2026.10.3 serves no `exec` to a `prepare-execution` backend (`hostOwnedTools` has no effect), so a real run has no `exec` tool. Live tests: `test/live/per-agent-home.live.test.ts`, `test/live/permission-routing.live.test.ts` |
-| P9 | Tool approvals through OpenClaw | approx | Permission requests go to the host and fail closed; abort answers them `cancelled`. Native edits cannot ask, so the static file and `ask` mode keep them denied. Live test: `test/live/permission-routing.live.test.ts` |
-| P10 | `tools.allow` and `tools.deny` | approx | The host filters the OpenClaw tool list; the adapter translates nothing. A run's native tool selection is confirmed only if it keeps `read`, `grep`, and `glob`. Live test: `test/live/permission-routing.live.test.ts` (a `tools.deny` tool is absent from the model's list) |
+| P8 | Native shell replaced by OpenClaw `exec` | approx | The per-agent `cli-config.json` denies `Shell(*)`, `Write(**)`, and `WebFetch(*)`, and a normal turn runs in `agent` mode, where the native shell, write, edit, and delete are blocked without asking. The backend declares `execution-args` and `hostOwnedTools: ["exec", "process"]`, so OpenClaw serves its own `exec` and `process` over the MCP endpoint and the proxy forwards them; approvals, sandbox, timeout, and output limits are OpenClaw's. Gaps: no `exec` with exec host `node` or for a capped or rooted run; a call lasts at most 60 s (Cursor's MCP timeout); `CURSOR_API_KEY` is visible to commands. See Shell commands. Live tests: `test/live/exec-tool.live.test.ts`, `test/live/per-agent-home.live.test.ts`, `test/live/permission-routing.live.test.ts` |
+| P9 | Tool approvals through OpenClaw | approx | Permission requests go to the host and fail closed; abort answers them `cancelled`. Native edits cannot ask, so the static file keeps them denied. The model's commands run through OpenClaw `exec` and its approvals. Live tests: `test/live/permission-routing.live.test.ts`, `test/live/exec-tool.live.test.ts` |
+| P10 | `tools.allow` and `tools.deny` | approx | The backend declares `execution-args` like `claude-cli`; the host filters the OpenClaw tool list and the adapter translates nothing. A run's native tool selection is accepted only if it keeps `read`, `grep`, and `glob`. Live tests: `test/live/permission-routing.live.test.ts`, `test/live/exec-tool.live.test.ts` (`tools.deny: [exec, process]` removes the shell) |
 | P11 | Skills as a native plugin | spike | |
 | P12 | System prompt every turn | spike | The OpenClaw system prompt is not sent yet |
 | P13 | Images | spike | |
@@ -218,7 +242,7 @@ Live test: `test/live/usage.live.test.ts`.
 - **No OpenClaw system prompt or skills yet.** The model sees only the prompt text and OpenClaw's tools.
 - **No warm process across turns with OpenClaw 2026.10.3.** Each turn restarts the process and resumes it with `session/load`, because OpenClaw's live-session check sees a different MCP settings path every turn.
 - **Native read, grep, and glob stay reachable, also in a side question.** `Read(**)` is allowed, and Cursor's `grep` and `glob` are not blocked by a `Read` rule. So a run that selects no native tools is refused (see Permissions and tool availability). A second, static home that also denies `Grep(**)` and `Glob(**)` would lift this (checked: those rules make grep and glob return nothing); it is not built.
-- **No OpenClaw `exec` in real runs yet.** OpenClaw 2026.10.3 serves `exec` only to backends that enforce tool availability through execution arguments, so the model has no shell at all: the native one is denied and OpenClaw's is not offered.
+- **Shell limits.** `exec` calls last at most 60 s, a capped, rooted, or exec-host-`node` run has no `exec`, and `CURSOR_API_KEY` is visible to commands. See Shell commands (OpenClaw exec).
 - **Native edits are never approved by the host.** Cursor cannot ask before editing.
 - **Permissions are not configurable.** Every agent gets the same rules; changing them in `cli-config.json` has no lasting effect.
 

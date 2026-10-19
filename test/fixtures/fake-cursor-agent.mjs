@@ -37,6 +37,11 @@
 // "[[sleep:<ms>]]" waits <ms> before the reply (a turn that takes a while), then answers like any other prompt.
 // "[[recall]]" replies with the prompts the session has seen before this one ("recall:a|b"), including those from before a
 // `session/load` when FAKE_CURSOR_STORE is set.
+// "[[mcp-call]]<json>" calls tools on the session's own MCP server (the first `mcpServers` entry), as a model would:
+// `{"tool":"exec","arguments":{...}}` or an array of such calls, run at the same time. It sends `initialize`,
+// `notifications/initialized` and `tools/call`, with the headers the server was given, then replies with each
+// tool's text joined by "|" (`mcp-error:<status>` for an HTTP error, `mcp-aborted` when `session/cancel`
+// arrived first; an `isError` result is prefixed `tool-error:`).
 // "[[updates]]<json array>" sends each item as a `session/update` body, in order, a few ms apart, then ends the
 // turn. An item `{"$":"say","text":"..."}` sends a message chunk, `{"$":"crash"}` exits, `{"$":"ask","toolCall":{...}}` sends a permission request and waits for the answer, `{"$":"hang"}` waits for a
 // cancel and answers `cancelled`, `{"$":"wait","ms":n}` pauses. Use it to script tool calls the way Cursor sends them.
@@ -79,6 +84,37 @@ let nextSession = 1;
 let nextRequestId = 1000;
 const waitingForClient = new Map();
 const cancelled = new Set();
+const mcpServers = new Map();
+const mcpAborts = new Map();
+
+/** One JSON-RPC call to the session's MCP server; the body may start with keepalive newlines or be an SSE `data:` frame. */
+async function mcpRpc(server, body, signal) {
+  const headers = { "Content-Type": "application/json", Accept: "application/json, text/event-stream" };
+  for (const header of server.headers ?? []) headers[header.name] = header.value;
+  const res = await fetch(server.url, { method: "POST", headers, body: JSON.stringify({ jsonrpc: "2.0", ...body }), signal });
+  const text = (await res.text()).trim();
+  if (!res.ok) return { status: res.status };
+  if (!text) return { status: res.status };
+  const data = text.startsWith("data:") ? text.split("\n").find((line) => line.startsWith("data:")).slice(5) : text;
+  return { status: res.status, message: JSON.parse(data) };
+}
+
+async function mcpCall(sessionId, call, signal) {
+  const server = mcpServers.get(sessionId)?.[0];
+  if (!server) return "mcp-error:no-server";
+  try {
+    const init = await mcpRpc(server, { id: 1, method: "initialize", params: { protocolVersion: "2025-03-26", capabilities: {}, clientInfo: { name: "fake-cursor", version: "0" } } }, signal);
+    if (init.status >= 400) return `mcp-error:${init.status}`;
+    await mcpRpc(server, { method: "notifications/initialized" }, signal);
+    const result = await mcpRpc(server, { id: 2, method: "tools/call", params: { name: call.tool, arguments: call.arguments ?? {} } }, signal);
+    if (result.status >= 400) return `mcp-error:${result.status}`;
+    const out = result.message?.result;
+    const text = (out?.content ?? []).map((block) => block.text ?? "").join("");
+    return out?.isError ? `tool-error:${text}` : text;
+  } catch (error) {
+    return signal.aborted ? "mcp-aborted" : `mcp-error:${error.message}`;
+  }
+}
 
 const send = (message) => process.stdout.write(`${JSON.stringify({ jsonrpc: "2.0", ...message })}\n`);
 const reply = (id, result) => send({ id, result });
@@ -143,6 +179,16 @@ async function runPrompt(id, params) {
       }, 20);
     });
     return reply(id, { stopReason: "cancelled" });
+  }
+  if (text.includes("[[mcp-call]]")) {
+    const spec = JSON.parse(text.slice(text.indexOf("[[mcp-call]]") + "[[mcp-call]]".length));
+    const controller = new AbortController();
+    mcpAborts.set(params.sessionId, controller);
+    const results = await Promise.all((Array.isArray(spec) ? spec : [spec]).map((call) => mcpCall(params.sessionId, call, controller.signal)));
+    mcpAborts.delete(params.sessionId);
+    if (controller.signal.aborted) return reply(id, { stopReason: "cancelled" });
+    update(params.sessionId, { sessionUpdate: "agent_message_chunk", content: { type: "text", text: results.join("|") } });
+    return reply(id, { stopReason: "end_turn" });
   }
   if (text.includes("[[updates]]")) {
     const items = JSON.parse(text.slice(text.indexOf("[[updates]]") + "[[updates]]".length));
@@ -281,6 +327,7 @@ rl.on("line", (line) => {
       const sessionId = storeDir ? `fake-session-${randomUUID().slice(0, 8)}` : `fake-session-${nextSession++}`;
       const session = { model: process.env.FAKE_CURSOR_DEFAULT_MODEL ?? "default[]", mode: "agent", prompts: 0, history: [] };
       sessions.set(sessionId, session);
+      mcpServers.set(sessionId, params.mcpServers ?? []);
       saveSession(sessionId, session);
       // Like real Cursor: every ACP session leaves a directory in the config dir.
       if (process.env.CURSOR_CONFIG_DIR) mkdirSync(join(process.env.CURSOR_CONFIG_DIR, "acp-sessions", sessionId), { recursive: true });
@@ -300,6 +347,7 @@ rl.on("line", (line) => {
       const session = { model: process.env.FAKE_CURSOR_DEFAULT_MODEL ?? "default[]", mode: "agent", prompts: 0, history, loaded: true };
       const moved = process.env.FAKE_CURSOR_LOAD_RENAMES === "1" ? `${params.sessionId}-moved` : undefined;
       sessions.set(moved ?? params.sessionId, session);
+      mcpServers.set(moved ?? params.sessionId, params.mcpServers ?? []);
       if (moved) saveSession(moved, session);
       // Like a real agent, replay history as updates before answering.
       update(params.sessionId, { sessionUpdate: "agent_message_chunk", content: { type: "text", text: "HISTORY" } });
@@ -330,7 +378,10 @@ rl.on("line", (line) => {
         if (process.env.FAKE_CURSOR_LOG_END === "1") log({ method: "prompt/end", params: { sessionId: params.sessionId } });
       });
     case "session/cancel":
-      if (process.env.FAKE_CURSOR_IGNORE_CANCEL !== "1") cancelled.add(params.sessionId);
+      if (process.env.FAKE_CURSOR_IGNORE_CANCEL !== "1") {
+        cancelled.add(params.sessionId);
+        mcpAborts.get(params.sessionId)?.abort();
+      }
       return;
     default:
       if (id !== undefined) fail(id, -32601, `method not found: ${method}`);
