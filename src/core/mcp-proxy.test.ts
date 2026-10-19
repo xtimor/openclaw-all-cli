@@ -1,7 +1,7 @@
 import { createServer, type IncomingMessage, type Server } from "node:http";
 import type { AddressInfo } from "node:net";
 import { afterEach, describe, expect, it } from "vitest";
-import { startMcpProxy, type McpProxy } from "./mcp-proxy.ts";
+import { listToolNames, startMcpProxy, type McpProxy } from "./mcp-proxy.ts";
 
 type Seen = { method: string; url: string; headers: IncomingMessage["headers"]; body: string };
 
@@ -512,5 +512,39 @@ describe("startMcpProxy", () => {
       expect(seen[name]).toBeUndefined();
     }
     expect(seen["mcp-protocol-version"]).toBe("2025-03-26");
+  });
+});
+
+describe("listToolNames", () => {
+  const list = (body: string, contentType: string, status = 200) =>
+    stubFor((_req, res) => void res.writeHead(status, { "Content-Type": contentType }).end(body));
+  const stubs2: Array<{ close(): Promise<void> }> = [];
+  afterEach(async () => {
+    await Promise.all(stubs2.splice(0).map((s) => s.close()));
+  });
+  async function stubFor(handler: Parameters<typeof startStub>[0]) {
+    const s = await startStub(handler);
+    stubs2.push(s);
+    return s;
+  }
+  const answer = JSON.stringify({ jsonrpc: "2.0", id: 1, result: { tools: [{ name: "exec", description: "has data: in it" }, { name: "read" }] } });
+
+  it("reads the tool names from a JSON answer, even when descriptions contain 'data:'", async () => {
+    const target = await list(answer, "application/json");
+    expect(await listToolNames({ url: target.url, headers: { Authorization: "Bearer t" } })).toEqual(["exec", "read"]);
+    expect(target.requests[0]!.headers.authorization).toBe("Bearer t");
+  });
+
+  it("reads them from an event stream", async () => {
+    const target = await list(`:\n\nevent: message\ndata: ${answer}\n\n`, "text/event-stream");
+    expect(await listToolNames({ url: target.url, headers: {} })).toEqual(["exec", "read"]);
+  });
+
+  it("returns undefined when the host fails, answers garbage, or is down", async () => {
+    expect(await listToolNames({ url: (await list("{}", "application/json", 500)).url, headers: {} })).toBeUndefined();
+    expect(await listToolNames({ url: (await list("not json", "text/plain")).url, headers: {} })).toBeUndefined();
+    const dead = await startStub();
+    await dead.close();
+    expect(await listToolNames({ url: dead.url, headers: {} })).toBeUndefined();
   });
 });

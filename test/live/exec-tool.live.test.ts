@@ -24,14 +24,15 @@ const PORT_KEYLESS = 18_932;
 const WORKSPACE = join(ISOLATED_STATE_DIR, "workspace");
 const HOME_CONFIG = join(ISOLATED_STATE_DIR, "agents", "main", "agent", "openclaw-all-cli", "cursor-cli", "cli-config.json");
 const CONFIG_KEYS = ["agents.defaults.model.primary", "tools.exec", "tools.deny", "plugins.entries.openclaw-all-cli.config.cursor-cli"] as const;
-const TRIES = 3;
+// Five: a turn can also fail for reasons outside the row (OpenClaw's budget compaction needs an API model).
+const TRIES = 5;
 
 // Parity rows P8 and P10 (OpenClaw's own `exec` and `process` served to the model; AD-9). Real
 // cursor-agent behind one isolated Gateway; needs `npm run dev:install` and CURSOR_API_KEY. The
 // plugin writes no exec code: these tests show that OpenClaw's exec policy (approvals, security,
 // timeout, abort) governs what the model runs. Every command is a script in a temp dir that
 // leaves a marker file, so "ran" and "did not run" are checked on disk, not in the model's words.
-// The model is a language model: a row retries a turn (up to three times) in which it did not do
+// The model is a language model: a row retries a turn (up to five times) in which it did not do
 // what the row needs, such as never calling the tool, and fails loudly if it never does.
 describeLive("OpenClaw exec is the model's shell (P8, P10)", () => {
   // Created in beforeAll: a skipped describe still runs its body, and nothing would remove the dir.
@@ -43,6 +44,12 @@ describeLive("OpenClaw exec is the model's shell (P8, P10)", () => {
   const token = () => randomBytes(8).toString("hex");
   const sessionId = (label: string) => `live-exec-${label}-${Date.now()}-${counter++}`;
   const path = (name: string) => join(root, name);
+
+  /**
+   * Shell lines that make an unguessable value when the script runs (the script text never holds
+   * it, so a model that merely reads the script cannot quote it).
+   */
+  const RUNTIME_SECRET = "S=$(od -An -N8 -tx1 /dev/urandom | tr -d ' \\n')";
 
   /** A script the model runs through `exec`. */
   function script(name: string, body: string): string {
@@ -146,13 +153,13 @@ describeLive("OpenClaw exec is the model's shell (P8, P10)", () => {
     "runs a command through OpenClaw exec in the workspace, while Cursor's home still denies Shell",
     async () => {
       await retrying("plain", async () => {
-        const secret = token();
-        const file = script("plain", `printf '%s' ${secret} > ${path(`plain-${secret}.marker`)}\necho "out:${secret}:$(pwd)"`);
+        const id = token();
+        const marker = path(`plain-${id}.marker`);
+        const file = script("plain", `${RUNTIME_SECRET}\nprintf '%s' $S > ${marker}\necho "out:$S:$(pwd)"`);
         const turn = await ask(sessionId("plain"), runIt(file));
-        if (!existsSync(path(`plain-${secret}.marker`))) return `the command never ran (tools ${turn.tools.join(",")})`;
+        if (!existsSync(marker)) return `the command never ran (tools ${turn.tools.join(",")})`;
         expect(turn.status, turn.raw).toBe(0);
-        expect(readFileSync(path(`plain-${secret}.marker`), "utf8")).toBe(secret);
-        expect(turn.reply).toContain(secret);
+        expect(turn.reply).toContain(readFileSync(marker, "utf8"));
         expect(turn.reply).toContain(WORKSPACE);
         expect(calledExec(turn)).toBe(true);
         // The static home is untouched: the host's exec is the only shell.
@@ -239,9 +246,8 @@ describeLive("OpenClaw exec is the model's shell (P8, P10)", () => {
       try {
         for (const decision of ["allow-once", "deny"] as const) {
           await retrying(`approval ${decision}`, async () => {
-            const secret = token();
-            const marker = path(`approval-${decision}-${secret}.marker`);
-            const file = script(`approval-${decision}`, `printf '%s' ${secret} > ${marker}\necho "out:${secret}"`);
+            const marker = path(`approval-${decision}-${token()}.marker`);
+            const file = script(`approval-${decision}`, `${RUNTIME_SECRET}\nprintf '%s' $S > ${marker}\necho "out:$S"`);
             const turn = ask(sessionId(`approval-${decision}`), runIt(file));
             let id: string | undefined;
             // A pending approval proves the model called exec; none within the wait means it never did.
@@ -259,11 +265,9 @@ describeLive("OpenClaw exec is the model's shell (P8, P10)", () => {
             const done = await turn;
             expect(done.status, done.raw).toBe(0);
             if (decision === "allow-once") {
-              expect(readFileSync(marker, "utf8")).toBe(secret);
-              expect(done.reply).toContain(secret);
+              expect(done.reply).toContain(readFileSync(marker, "utf8"));
             } else {
               expect(existsSync(marker)).toBe(false);
-              expect(done.reply).not.toContain(secret);
             }
             return undefined;
           });
@@ -282,12 +286,10 @@ describeLive("OpenClaw exec is the model's shell (P8, P10)", () => {
       setConfig("tools.exec.security", "deny");
       try {
         await retrying("security deny", async () => {
-          const secret = token();
-          const marker = path(`security-deny-${secret}.marker`);
-          const file = script("security-deny", `printf '%s' ${secret} > ${marker}\necho "out:${secret}"`);
+          const marker = path(`security-deny-${token()}.marker`);
+          const file = script("security-deny", `${RUNTIME_SECRET}\nprintf '%s' $S > ${marker}\necho "out:$S"`);
           const turn = await ask(sessionId("security-deny"), runIt(file));
           expect(existsSync(marker)).toBe(false);
-          expect(turn.reply).not.toContain(secret);
           if (!calledExec(turn)) return "the model never called exec";
           expect(turn.status, turn.raw).toBe(0);
           // OpenClaw's own denial text reached the model ("exec denied: host=gateway security=deny").
@@ -384,12 +386,12 @@ describeLive("OpenClaw exec is the model's shell (P8, P10)", () => {
     "relays a long-running call (20 s) and its output",
     async () => {
       await retrying("long", async () => {
-        const secret = token();
-        const file = script("long", `sleep 20\nprintf '%s' ${secret} > ${path(`long-${secret}.marker`)}\necho "out:${secret}"`);
+        const marker = path(`long-${token()}.marker`);
+        const file = script("long", `sleep 20\n${RUNTIME_SECRET}\nprintf '%s' $S > ${marker}\necho "out:$S"`);
         const turn = await ask(sessionId("long"), runIt(file));
-        if (!existsSync(path(`long-${secret}.marker`))) return "the command never finished";
+        if (!existsSync(marker)) return "the command never finished";
         expect(turn.status, turn.raw).toBe(0);
-        expect(turn.reply).toContain(secret);
+        expect(turn.reply).toContain(readFileSync(marker, "utf8"));
         return undefined;
       });
     },
@@ -406,6 +408,9 @@ describeLive("OpenClaw exec is the model's shell (P8, P10)", () => {
         const file = script("huge", `echo "HEAD:${head}"\nhead -c 3000000 /dev/zero | tr '\\000' x\necho\necho "TAIL:${tail}"\ntouch ${marker}`);
         const turn = await ask(sessionId("huge"), runIt(file, "Quote the HEAD and TAIL values it printed, if you can see them.\n"));
         if (!existsSync(marker)) return "the command never ran";
+        // A big result can push the turn over OpenClaw's context budget, and its compaction then needs
+        // an API model this host does not have: a host limit, not what the row tests. Try again.
+        if (turn.status !== 0 && /compaction failed/i.test(turn.raw)) return "OpenClaw's budget compaction failed the turn";
         expect(turn.status, turn.raw).toBe(0);
         // OpenClaw's output cap keeps one end or both and says so: either secret or the notice must come back.
         expect(turn.reply).toMatch(new RegExp(`${head}|${tail}|truncat|cap|omitted`, "i"));
@@ -421,13 +426,13 @@ describeLive("OpenClaw exec is the model's shell (P8, P10)", () => {
     "reports a non-zero exit code the model was not told",
     async () => {
       await retrying("exit code", async () => {
-        const secret = token();
         const code = 37 + (randomBytes(1)[0]! % 63);
-        const file = script("exit", `echo "out:${secret}"\nexit ${code}`);
+        const marker = path(`exit-${token()}.marker`);
+        const file = script("exit", `${RUNTIME_SECRET}\nprintf '%s' $S > ${marker}\necho "out:$S"\nexit ${code}`);
         const turn = await ask(sessionId("exit"), runIt(file, "Report the command's exit code too.\n"));
         if (!calledExec(turn)) return "the model never called exec";
         expect(turn.status, turn.raw).toBe(0);
-        expect(turn.reply).toContain(secret);
+        expect(turn.reply).toContain(readFileSync(marker, "utf8"));
         expect(turn.reply).toMatch(new RegExp(`\\b${code}\\b`));
         return undefined;
       });
@@ -476,14 +481,13 @@ describeLive("OpenClaw exec is the model's shell (P8, P10)", () => {
       // A Gateway whose own environment has no key at all.
       gateway = await startGateway(PORT_KEYLESS, { omitEnv: ["CURSOR_API_KEY"] });
       await retrying("key isolation", async () => {
-        const secret = token();
-        const out = path(`keyless-${secret}.txt`);
-        const file = script("keyless", `if env | grep -q '^CURSOR_API_KEY='; then echo present > ${out}; else echo absent > ${out}; fi\necho "out:${secret}"`);
+        const out = path(`keyless-${token()}.txt`);
+        const file = script("keyless", `${RUNTIME_SECRET}\nif env | grep -q '^CURSOR_API_KEY='; then echo present > ${out}; else echo absent > ${out}; fi\nprintf '%s' $S > ${out}.secret\necho "out:$S"`);
         const turn = await ask(sessionId("keyless"), runIt(file));
         // The turn itself (Cursor with the key from the plugin config) must have worked.
         if (!existsSync(out)) return `the command never ran (status ${turn.status}, tools ${turn.tools.join(",")})`;
         expect(turn.status, turn.raw).toBe(0);
-        expect(turn.reply).toContain(secret);
+        expect(turn.reply).toContain(readFileSync(`${out}.secret`, "utf8"));
         expect(readFileSync(out, "utf8").trim()).toBe("absent");
         return undefined;
       });

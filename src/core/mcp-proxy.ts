@@ -346,7 +346,8 @@ export async function listToolNames(target: McpTarget, signal?: AbortSignal): Pr
     });
     if (!res.ok) return undefined;
     const text = (await res.text()).trim();
-    const json = text.includes("data:") ? text.split("\n").find((line) => line.startsWith("data:"))?.slice(5) : text;
+    // JSON, or an event stream whose `data:` line holds it (tool descriptions may contain "data:").
+    const json = text.startsWith("{") ? text : text.split("\n").find((line) => line.startsWith("data:"))?.slice(5);
     const tools = (JSON.parse(json ?? "") as { result?: { tools?: Array<{ name?: unknown }> } }).result?.tools;
     return Array.isArray(tools) ? tools.flatMap((tool) => (typeof tool.name === "string" ? [tool.name] : [])) : undefined;
   } catch {

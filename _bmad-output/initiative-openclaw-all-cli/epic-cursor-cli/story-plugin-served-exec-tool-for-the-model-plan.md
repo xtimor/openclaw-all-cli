@@ -3,7 +3,7 @@ title: 'Plugin-served exec tool for the model'
 type: 'feature'
 ticket: '19'
 created: '2026-10-18'
-status: 'in-progress'
+status: done
 baseline_revision: '1b76c2c62a505e53d392aa373165b6ae98688e32'
 route: 'full'
 route_source: 'auto'
@@ -142,6 +142,7 @@ Thorough review, 4 lenses. Fixed:
 9. The flaky cap test now starts the second turn only after the first prompt is running and sleeps 1500 ms.
 Follow-up review, fixed:
 - (major) `hostOwnedTools` does not reflect tool policy, so the marker alone put Cursor in `agent` mode with no exec when `tools.deny`/`tools.allow` dropped it. The core now reads the host's `tools/list` (`listToolNames`) before the open and sets `hostShell` only if `exec` is in it; an unreadable list, a missing target or no marker means `ask` (fail safe). Tests: list with exec, without exec, empty, failing, no marker, no target; the backend + fake agent asserts the exact mode (`agent` with exec, `ask` without). Known gap: a reused warm process keeps the mode of its open (the reuse key has the marker, not the list); OpenClaw 2026.10.3 restarts the process every turn, so it does not occur there.
+- Found by the live run: the first `listToolNames` parsed the answer wrongly (tool descriptions contain `data:`), so every real turn fell back to `ask`; the unit tests had used short descriptions. Fixed (JSON first, SSE `data:` line second) with a test whose descriptions contain `data:`. The live rows now compute their secret when the script runs, so a model that reads the script cannot quote it; a turn failed by OpenClaw's budget compaction (no API model on this host) counts as an unusable try and the rows try up to five times.
 - (major, docs) `cursor-cli.env` keeps the key out of exec's environment, not out of its reach (same user: `/proc/<pid>/environ`, the config file); docs recommend login, approvals, sandbox.
 - The deadline leaves a response alone once it carries data (JSON and SSE tests); a batch containing a `tools/call` gets the deadline and is answered as a batch (tool error per stopped call, a JSON-RPC error for each other request); a batch without a call has none.
 10. Deferred: an offline test that pins the host contract (that this backend shape makes the host serve exec/process). It needs the host's `resolveCliMcpToolOwnership`, which is not exported; the live rows cover it.
