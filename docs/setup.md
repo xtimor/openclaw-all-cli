@@ -43,14 +43,14 @@ Skip what `node --version`, `openclaw --version`, and `cursor-agent --version` a
 3. **Cursor CLI.**
 
    ```sh
-   curl https://cursor.com/install -fsS | bash
+   curl https://cursor.com/install -fsS | bash      # behind a proxy it can fail once with SSL_ERROR_SYSCALL: run it again
    export PATH="$HOME/.local/bin:$PATH"     # the installer puts cursor-agent in ~/.local/bin
    cursor-agent --version
    ```
 
    Add that `PATH` line to your shell profile. The Gateway needs `cursor-agent` on its own `PATH`, or `cursor-cli.command` set (see [Configure](#3-configure)).
 
-Behind a firewall or HTTP proxy, allow `cursor.com` and `*.cursor.sh` (the CLI, the model list, and the usage ledger at `api2.cursor.sh`). Node's `fetch` ignores `HTTPS_PROXY` unless the Gateway starts with `NODE_USE_ENV_PROXY=1`.
+Behind a firewall or HTTP proxy, allow `cursor.com` and `*.cursor.sh` (the CLI, the model list, and the usage ledger at `api2.cursor.sh`). Node's `fetch` ignores `HTTPS_PROXY` unless the Gateway starts with `NODE_USE_ENV_PROXY=1`. A proxy that denies `telemetry.openclaw.ai:443` is harmless.
 
 ## 1. Sign in to Cursor
 
@@ -146,9 +146,9 @@ openclaw config set agents.defaults.model.primary cursor-cli/auto    # makes the
 openclaw gateway run                                                  # stays in the foreground; use a second terminal
 ```
 
-Wait for the log line `[gateway] ready`. Stop it with Ctrl-C or SIGTERM. A loopback Gateway needs no auth setup for local commands. Start it from a shell where `cursor-agent` is on `PATH` (or `cursor-cli.command` is set), and with `NODE_USE_ENV_PROXY=1` behind a proxy. To keep it running, background it (`nohup openclaw gateway run > gateway.log 2>&1 &`; `$!` is the wrapper's pid, so find the Gateway with `pgrep -x openclaw-gateway`) or use your own process manager. Stop it by pid: `kill -TERM <pid>`.
+Wait for the log line `[gateway] ready`. Stop it with Ctrl-C or SIGTERM. A loopback Gateway needs no auth setup for local commands. Start it from a shell where `cursor-agent` is on `PATH` (or `cursor-cli.command` is set), and with `NODE_USE_ENV_PROXY=1` behind a proxy. To keep it running, background it (`nohup openclaw gateway run > gateway.log 2>&1 &`; `$!` is the wrapper's pid, so find the Gateway with `ps -eo pid,comm,args | grep '[o]penclaw-gateway'`; Linux truncates the process name to 15 characters, so `pgrep -x openclaw-gateway` finds nothing) or use your own process manager. Stop it by pid: `kill -TERM <pid>`.
 
-**After stopping, check for leftovers.** Cursor's `worker-server` process, and its `typescript-language-server` / `tsserver` children, can outlive the Gateway for a few minutes (the plugin does not track them). List them with `ps -eo pid,args | grep -E 'cursor|tsserver|typescript-language' | grep -v grep` and stop each by pid with `kill <pid>`. Do not use `pkill -f`: it matches your own shell's command line.
+**After stopping, check for leftovers.** Cursor's `worker-server` process, and its `typescript-language-server` / `tsserver` children, can outlive the Gateway for a few minutes (the plugin does not track them). List them with `ps -eo pid,comm,args | grep -E '[c]ursor|[t]sserver|[t]ypescript-language'` and stop each by pid with `kill <pid>`. Do not use `pkill -f`: it matches your own shell's command line.
 
 **You already run a Gateway** (for example `~/.openclaw`): restart it once, so it loads the plugin you just installed and the default model above (set the default only if you want `cursor-cli` as your default model; otherwise the plugin loads on the first `cursor-cli/...` turn and `/model` lists the Cursor rows after it). Its environment must provide `cursor-agent` on `PATH`; with option 2 above the key is in the config, so the Gateway needs no key variable.
 
@@ -172,6 +172,7 @@ The first command must report `"status": "loaded"` and `cursor-cli` under `cliBa
 | `Gateway start blocked: existing config is missing gateway.mode` | A fresh OpenClaw has no Gateway config | `openclaw config set gateway.mode local`, then start again |
 | `Another gateway (pid N) already owns this state directory` | A Gateway for the same OpenClaw state is running | Use it (restart it with `openclaw gateway stop`, then start again), or give the new one its own state with `--profile <name>` |
 | The Gateway cannot bind port 18789 | Another program uses the port (wording unverified) | Stop that program, or start the Gateway with `--port <n>` and set `OPENCLAW_GATEWAY_PORT=<n>` for the other commands |
+| `plugin provenance-invalid` warning in the Gateway log ("OpenClaw can't verify where this plugin came from") | A plugin installed from a local `.tgz` has no registry provenance for OpenClaw to check | Harmless for your own build; ignore it |
 | `remote model catalog refresh failed` in the Gateway log at startup | Behind a proxy OpenClaw cannot refresh its remote model catalog | Harmless; ignore it |
 | `Couldn't connect to OpenClaw.` from `openclaw agent` | No Gateway is running; `agent` without `--local` needs one | Start it ([step 4](#4-start-the-gateway)), or add `--local` |
 | `curl`, `cursor-agent`, or the usage ledger time out or fail TLS behind a proxy | Cursor's hosts are blocked, or Node ignores the proxy | Allow `cursor.com` and `*.cursor.sh`; start the Gateway with `NODE_USE_ENV_PROXY=1` |

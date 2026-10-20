@@ -124,11 +124,14 @@ All in a throwaway copy of the tree (`git ls-files -co`, no `.spike/`), temp `HO
 - Post-check gaps (coordinator): 7 `cursor-agent` writes the key and tokens to `~/.config/cursor/auth.json` (docs state it, `cursor-agent logout`, exec reach, harness lists it as expected); 8 `worker-server`/`tsserver` leftovers after stop (setup.md stop instructions).
 - Checklist: pass-1 result recorded by the coordinator; pass 2 must show gaps 1-8 are closed.
 
-### Pass 2 (only if pass 1 had `doc` gaps)
+### Pass 2
 
-(same fields)
+- Date 2026-10-20; docs at commit 8314671; fresh agent.
+- Result: reply exact, usage 20643 / 140, Gateway SIGTERM clean; coordinator post-checks and leak check clean.
+- Gaps (all class doc; fixed): 1 `pgrep -x openclaw-gateway` fails on Linux (comm truncated to 15 chars) -> `ps -eo pid,comm,args | grep '[o]penclaw-gateway'`, same form for the leftover list; 2 `plugin provenance-invalid` warning -> troubleshooting row; 3 proxy denies `telemetry.openclaw.ai:443` -> one line in the proxy paragraph; 4 cursor.md pointer and section list at the top; 5 transient `SSL_ERROR_SYSCALL` on the Cursor install -> retry hint.
+- Pass 3 needed to confirm these are closed.
 
-### Pass 3 (only if pass 2 had `doc` gaps)
+### Pass 3 
 
 (same fields)
 

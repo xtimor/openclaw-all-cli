@@ -58,7 +58,7 @@
   - `session/new` takes about 3 s; a listing is a throwaway ACP session (no prompt) in the temp dir.
   - Host catalog: the provider entry's `catalog.run` (via `providerCatalogEntry`) must return `{provider:{baseUrl, api, models}}`. Without `api` the rows silently never reach `models.list`/`/model` (the host drops the provider). `contextWindow` and `maxTokens` can be omitted. `api: "openai-completions"` is a placeholder: a CLI backend makes no request. `catalog.run` runs only after the plugin is loaded (startup needs `agents.defaults.model.primary = cursor-cli/...`); it is called with `providerIds`, `env`, `signal`, and no refresh flag.
   - `openclaw models list` shows the rows only with a running Gateway (`--port` via `OPENCLAW_GATEWAY_PORT`); `gateway call models.list --params '{"refresh":true}' --port N --json` is the raw view (default view hides unavailable rows; `view: "all"` shows them with `unavailableReason: "missing-auth"`). `models status` stays `[indeterminate]` without a login: the CLI path has no prepared synthetic auth.
-  - `pgrep -x openclaw-gateway` fails (name over 15 chars): use `pgrep -f "^openclaw-gateway"`.
+  - `pgrep -x openclaw-gateway` fails (comm is truncated to `openclaw-gatewa`): use `ps -eo pid,comm,args | grep '[o]penclaw-gateway'` or `pgrep -x openclaw-gatewa`.
   - `cursor-agent status` prints `✓ Logged in as <email>` when logged in.
   - A listing leaves `<config dir>/acp-sessions/<sessionId>` behind; the adapter removes exactly that directory after closing the session. A shared catalog load takes no caller's signal; each caller races its own.
 - Session resume (entry 7, 2026-10-18, cursor-agent 2026.10.16 / OpenClaw 2026.10.3):
