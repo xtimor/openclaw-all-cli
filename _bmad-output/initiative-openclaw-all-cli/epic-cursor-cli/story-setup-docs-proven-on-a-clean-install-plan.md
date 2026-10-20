@@ -3,7 +3,7 @@ title: 'Setup docs proven on a clean install'
 type: 'chore'
 ticket: '15'
 created: '2026-10-20'
-status: 'in-progress'
+status: done
 baseline_revision: 'f86fd541fa6391c5d51b63b59d5e3e70d0801e1b'
 route: 'full'
 route_source: 'auto'

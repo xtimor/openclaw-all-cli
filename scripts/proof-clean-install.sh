@@ -42,13 +42,31 @@ run_pids() {
 }
 
 # The key TEXT (not the variable name) in the environment of any process of the run: must be none.
+# True when the pid is a Cursor process or a descendant of one. `cursor-cli.env` gives the key to the
+# CLI process on purpose, and its children (worker-server, language servers) inherit it.
+under_cursor() {
+  local pid="$1" comm args
+  while [ -n "$pid" ] && [ "$pid" -gt 1 ] 2>/dev/null; do
+    # Only the executable path (the first word) counts, never text further along the command line.
+    args="$(ps -o args= -p "$pid" 2>/dev/null | awk '{print $1}')"
+    case "$args" in *cursor-agent*) return 0 ;; esac
+    pid="$(ps -o ppid= -p "$pid" 2>/dev/null | tr -d ' ')"
+  done
+  return 1
+}
+
+# The Gateway and everything that is not under cursor-agent must not hold the key text: an `exec`
+# command is a child of the Gateway. Processes under cursor-agent hold it by design and are listed.
 env_scan() {
-  local run="$1" pid hits="" n=0
+  local run="$1" pid bad="" ok="" n=0
   for pid in $(run_pids "$run"); do
     n=$((n + 1))
-    if { grep -qaF -f <(printf '%s\n' "$CURSOR_API_KEY") "/proc/$pid/environ"; } 2>/dev/null; then hits="$hits $pid"; fi
+    if { grep -qaF -f <(printf '%s\n' "$CURSOR_API_KEY") "/proc/$pid/environ"; } 2>/dev/null; then
+      if under_cursor "$pid"; then ok="$ok $pid"; else bad="$bad $pid"; fi
+    fi
   done
-  if [ -n "$hits" ]; then echo "FAIL key text in the environment of pids:$hits"; return 1; fi
+  if [ -n "$bad" ]; then echo "FAIL key text in the environment of pids outside the Cursor process tree:$bad"; return 1; fi
+  if [ -n "$ok" ]; then echo "ok   key text only in the Cursor process tree (expected, cursor-cli.env), pids:$ok; none of the other $((n - $(echo $ok | wc -w))) run processes hold it"; return 0; fi
   echo "ok   key text in none of $n run process environments"
 }
 

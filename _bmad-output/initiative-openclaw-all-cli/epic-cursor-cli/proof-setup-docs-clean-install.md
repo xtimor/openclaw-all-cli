@@ -144,6 +144,14 @@ All in a throwaway copy of the tree (`git ls-files -co`, no `.spike/`), temp `HO
 - Coordinator checks: no process with the run's HOME, port 18789 free, `.spike/openclaw.json`, real `~/.openclaw`, `~/.cursor`/`~/.config/cursor`, `~/.local/bin` unchanged; the key text appears only in the run's OpenClaw config (and its backups) and in cursor-agent's own auth.json; leak check over README.md, docs, MEMORY.md, _bmad-output, scripts and /tmp/openclaw: nothing.
 - Checklist: all items pass. The one `doc` gap of pass 3 is cosmetic and fixed in the same change; no pass 4 (the plan allows three).
 
+### Verification pass (after the review fixes)
+
+- Date 2026-10-20; docs and script at commit b53cfcd; a fresh agent; the key delivered from a 0600 file, not exported; the Gateway left running for inspection.
+- Result: reply exact (`NONCE-a461a8627a4b41ec`), usage input 16740 / output 128 / cacheRead 3840 / total 20708; no doc gaps (the `Not logged in` retry, the unexercised clone URL and the `npm install` script warning are noted and harmless).
+- Key check on the live processes: the Gateway (pid 31594) has no `CURSOR_API_KEY` in its environment; the key text is only in the Cursor process tree (the ACP `cursor-agent`, its `worker-server` and their language-server children), which is the intended effect of `cursor-cli.env`. A command run through OpenClaw `exec` is a child of the Gateway, so it does not inherit the key in its environment. It can still read `~/.config/cursor/auth.json` and the OpenClaw config (see the risk notes in setup.md).
+- `check-env` now separates the two groups: it fails only for a holder outside the Cursor process tree and lists the expected holders.
+- After the pass: Gateway stopped with SIGTERM; the leftover `worker-server`, `npx typescript-language-server`, and `tsserver` processes were stopped by pid; `check` reported no leftovers and no change to `.spike`, `~/.openclaw`, `~/.cursor`, `~/.config/cursor`, `~/.local/bin`.
+
 ## Part D. Command audit
 
 Every command in `docs/setup.md`, with where it ran. `probe` = build worker (Part B, temp HOME); `pass` = to be run by the fresh agent; fill the result column from the final pass.
