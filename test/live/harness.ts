@@ -1,5 +1,7 @@
 import { spawn, spawnSync } from "node:child_process";
 import { writeFileSync } from "node:fs";
+import { createServer, type Server } from "node:http";
+import { connect, type Socket } from "node:net";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { describe } from "vitest";
@@ -263,5 +265,109 @@ export async function connectApprovalClient(port: number, timeoutMs = 15_000): P
       await send("exec.approval.resolve", { id, decision });
     },
     close: () => ws.close(),
+  };
+}
+
+export type ToggleProxy = {
+  /** `http://127.0.0.1:<port>`, for `HTTPS_PROXY`. */
+  url: string;
+  /** Answer `403 Forbidden` to every CONNECT to a matching host from now on. */
+  block(): void;
+  /** Tunnel every CONNECT again. */
+  allow(): void;
+  /** The `host:port` of each CONNECT it saw, and whether it let it through. */
+  seen: Array<{ target: string; blocked: boolean }>;
+  close(): Promise<void>;
+};
+
+/**
+ * A CONNECT proxy for a CLI's HTTPS traffic that a test can switch to failing midway. It chains to the
+ * environment's own `HTTPS_PROXY` (a sandbox's egress proxy) when there is one, else connects direct.
+ * `blockedHost` picks what `block()` refuses. The default is the host of the model turn
+ * (`agentn.*.cursor.sh`): `session/new` talks to other hosts, so blocking it fails the turn after the
+ * session started, which is when Cursor reports an error as a reply chunk (cursor-agent 2026.10.19).
+ */
+export async function startToggleProxy(blockedHost: RegExp = /^agentn\..*\.cursor\.sh$/): Promise<ToggleProxy> {
+  let blocked = false;
+  const seen: ToggleProxy["seen"] = [];
+  const upstream = process.env.HTTPS_PROXY || process.env.https_proxy;
+  const tunnels = new Set<Socket>();
+  const server: Server = createServer((req, res) => {
+    // Only CONNECT tunnels are served; note anything else so a CLI that does not tunnel shows up.
+    seen.push({ target: `${req.method} ${req.url}`, blocked: false });
+    res.writeHead(405).end();
+  });
+  server.on("connect", (req, client: Socket, head) => {
+    const target = req.url ?? "";
+    const host = target.replace(/:\d+$/, "");
+    const refuse = blocked && blockedHost.test(host);
+    seen.push({ target, blocked: refuse });
+    client.on("error", () => {});
+    tunnels.add(client);
+    client.on("close", () => tunnels.delete(client));
+    if (refuse) {
+      client.end("HTTP/1.1 403 Forbidden\r\nContent-Length: 0\r\n\r\n");
+      return;
+    }
+    const finish = (remote: Socket, leftover?: Buffer) => {
+      client.write("HTTP/1.1 200 Connection Established\r\n\r\n");
+      if (leftover?.length) client.write(leftover);
+      if (head.length) remote.write(head);
+      remote.pipe(client);
+      client.pipe(remote);
+    };
+    if (!upstream) {
+      const [name, port] = [host, Number(target.slice(host.length + 1)) || 443];
+      const remote = connect(port, name, () => finish(remote));
+      remote.on("error", () => client.destroy());
+      client.on("close", () => remote.destroy());
+      return;
+    }
+    const proxy = new URL(upstream);
+    const remote = connect(Number(proxy.port) || 80, proxy.hostname, () => {
+      const auth = proxy.username
+        ? `Proxy-Authorization: Basic ${Buffer.from(`${decodeURIComponent(proxy.username)}:${decodeURIComponent(proxy.password)}`).toString("base64")}\r\n`
+        : "";
+      remote.write(`CONNECT ${target} HTTP/1.1\r\nHost: ${target}\r\n${auth}\r\n`);
+    });
+    remote.on("error", () => client.destroy());
+    client.on("close", () => remote.destroy());
+    let buffered = Buffer.alloc(0);
+    const onData = (chunk: Buffer) => {
+      buffered = Buffer.concat([buffered, chunk]);
+      const end = buffered.indexOf("\r\n\r\n");
+      if (end < 0) return;
+      remote.off("data", onData);
+      remote.pause();
+      const status = /^HTTP\/1\.[01] (\d{3})/.exec(buffered.subarray(0, end).toString("latin1"))?.[1];
+      if (status === "200") {
+        finish(remote, buffered.subarray(end + 4));
+        remote.resume();
+      } else {
+        client.end(`HTTP/1.1 ${status ?? "502"} Upstream proxy refused\r\nContent-Length: 0\r\n\r\n`);
+        remote.destroy();
+      }
+    };
+    remote.on("data", onData);
+  });
+  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+  const address = server.address();
+  const port = typeof address === "object" && address ? address.port : 0;
+  return {
+    url: `http://127.0.0.1:${port}`,
+    block: () => {
+      blocked = true;
+    },
+    allow: () => {
+      blocked = false;
+    },
+    seen,
+    close: () =>
+      new Promise<void>((resolve) => {
+        // A CONNECT socket leaves the HTTP server's care: close the tunnels ourselves.
+        for (const tunnel of tunnels) tunnel.destroy();
+        server.closeAllConnections();
+        server.close(() => resolve());
+      }),
   };
 }

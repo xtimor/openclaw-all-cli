@@ -62,13 +62,13 @@ deferred: []
 ## Tasks & Acceptance
 
 **Execution:**
-- [ ] `src/transports/acp/session.ts`, `runtime.ts` -- add `classifyReplyError?(text): CliErrorInfo | undefined`; hold a recognised text chunk, flush it on any later event, turn it into `error` in `settleTurn` on `end_turn`; drop on cancel -- the transport decides timing, the hook decides wording
-- [ ] `src/adapters/cursor/errors.ts` -- classifier: a chunk starting `\n\nError: ` then `[code]` or `<Name>: `, or one of the four exact phrases; `RetriableError` sets retryable; maps per the matrix -- Cursor wording in one place
-- [ ] `src/adapters/cursor/index.ts` -- pass the classifier on both open paths
-- [ ] `src/transports/acp/handshake.ts` -- include `data.message` in start failures
-- [ ] `src/transports/acp/session.test.ts`, `src/adapters/cursor/errors.test.ts`, fake agent -- unit tests for every matrix row
-- [ ] `test/live/errors.live.test.ts` -- forced failure gives an OpenClaw error turn, no assistant text
-- [ ] docs (`cursor.md` errors section and known limit: a reply that is exactly such a final chunk reads as an error; `setup.md` rows; AD-11 sentence)
+- [x] `src/transports/acp/session.ts`, `runtime.ts` -- add `classifyReplyError?(text): CliErrorInfo | undefined`; hold a recognised text chunk, flush it on any later event, turn it into `error` in `settleTurn` on `end_turn`; drop on cancel -- the transport decides timing, the hook decides wording
+- [x] `src/adapters/cursor/errors.ts` -- classifier: a chunk starting `\n\nError: ` then `[code]` or `<Name>: `, or one of the four exact phrases; `RetriableError` sets retryable; maps per the matrix -- Cursor wording in one place
+- [x] `src/adapters/cursor/index.ts` -- pass the classifier on both open paths
+- [x] `src/transports/acp/handshake.ts` -- include `data.message` in start failures
+- [x] `src/transports/acp/session.test.ts`, `src/adapters/cursor/errors.test.ts`, fake agent -- unit tests for every matrix row
+- [x] `test/live/errors.live.test.ts` -- forced failure gives an OpenClaw error turn, no assistant text
+- [x] docs (`cursor.md` errors section and known limit: a reply that is exactly such a final chunk reads as an error; `setup.md` rows; AD-11 sentence)
 
 **Acceptance Criteria:**
 - Given a final failure chunk and `end_turn`, when the turn ends, then the consumer gets one `error` event with the matrix class and no `result` and no assistant text.

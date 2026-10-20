@@ -28,6 +28,7 @@
 //   FAKE_CURSOR_AUTH_METHODS=<json> replaces `initialize`'s authMethods (default `[{id:"cursor_login"}]`); `null` reports none at all
 //   (session/new also creates `<CURSOR_CONFIG_DIR>/acp-sessions/<id>`, like Cursor)
 //   FAKE_CURSOR_LOAD_ERROR=<json> `session/load` fails with the JSON-RPC error {code, message, data?}
+//   FAKE_CURSOR_NEW_ERROR=<json> `session/new` fails with the JSON-RPC error {code, message, data?}
 //   FAKE_CURSOR_LOAD_CRASH=1    the process exits while `session/load` runs
 //   FAKE_CURSOR_LOAD_RENAMES=1  `session/load` answers with `sessionId: "<id>-moved"`, the way an agent that moved the chat would
 //
@@ -35,6 +36,7 @@
 // requests the permission the JSON describes ({toolCall, announce?, options?}; `announce` is sent first
 // as a `tool_call` update, like Cursor does), "[[hang]]" never
 // finishes until cancelled, "[[refuse]]" ends with stopReason refusal, "[[crash]]" exits, "say:<text>" replies with <text>.
+// "[[error]]<text>" sends <text> as the one and only reply chunk (a failed Cursor turn: "\n\nError: ...") and ends with end_turn.
 // "[[sleep:<ms>]]" waits <ms> before the reply (a turn that takes a while), then answers like any other prompt.
 // "[[images]]" replies "images:<n>:<mime>/<bytes>,..." for the image blocks of the prompt. The log's `session/prompt` line shows each
 // image block as {type, mimeType, bytes, sha256}, never its data, and the history keeps text only.
@@ -47,7 +49,7 @@
 // arrived first; an `isError` result is prefixed `tool-error:`).
 // "[[updates]]<json array>" sends each item as a `session/update` body, in order, a few ms apart, then ends the
 // turn. An item `{"$":"say","text":"..."}` sends a message chunk, `{"$":"crash"}` exits, `{"$":"ask","toolCall":{...}}` sends a permission request and waits for the answer, `{"$":"hang"}` waits for a
-// cancel and answers `cancelled`, `{"$":"wait","ms":n}` pauses. Use it to script tool calls the way Cursor sends them.
+// cancel and answers `cancelled`, `{"$":"end","stopReason":"..."}` answers at once with that stop reason, `{"$":"wait","ms":n}` pauses. Use it to script tool calls the way Cursor sends them.
 import { createHash, randomUUID } from "node:crypto";
 import { appendFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
@@ -181,6 +183,12 @@ async function runPrompt(id, params) {
   if (sleep) await new Promise((resolve) => setTimeout(resolve, Number(sleep[1])));
   if (text.includes("[[crash]]")) process.exit(3);
   if (text.includes("[[refuse]]")) return reply(id, { stopReason: "refusal" });
+  if (text.includes("[[error]]")) {
+    // Like Cursor's failed turn: the error text is the one and only reply chunk, then a normal end.
+    const failure = text.slice(text.indexOf("[[error]]") + "[[error]]".length);
+    update(params.sessionId, { sessionUpdate: "agent_message_chunk", content: { type: "text", text: failure } });
+    return reply(id, { stopReason: "end_turn" });
+  }
   if (text.includes("[[hang]]")) {
     await new Promise((resolve) => {
       const timer = setInterval(() => {
@@ -206,6 +214,7 @@ async function runPrompt(id, params) {
     const items = JSON.parse(text.slice(text.indexOf("[[updates]]") + "[[updates]]".length));
     for (const item of items) {
       if (item.$ === "crash") process.exit(3);
+      if (item.$ === "end") return reply(id, { stopReason: item.stopReason });
       if (item.$ === "wait") {
         await new Promise((resolve) => setTimeout(resolve, item.ms));
       } else if (item.$ === "hang") {
@@ -343,6 +352,10 @@ rl.on("line", (line) => {
     case "authenticate":
       return reply(id, {});
     case "session/new": {
+      if (process.env.FAKE_CURSOR_NEW_ERROR) {
+        const error = JSON.parse(process.env.FAKE_CURSOR_NEW_ERROR);
+        return fail(id, error.code, error.message, error.data);
+      }
       const sessionId = storeDir ? `fake-session-${randomUUID().slice(0, 8)}` : `fake-session-${nextSession++}`;
       const session = { model: process.env.FAKE_CURSOR_DEFAULT_MODEL ?? "default[]", mode: process.env.FAKE_CURSOR_START_MODE ?? "agent", prompts: 0, history: [] };
       sessions.set(sessionId, session);

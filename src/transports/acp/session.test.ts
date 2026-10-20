@@ -792,6 +792,170 @@ describe("AcpSession", () => {
   });
 });
 
+describe("AcpSession reply errors", () => {
+  const FAIL = "FAIL: backend said no";
+  const classify = (text: string) =>
+    text.startsWith("FAIL:") ? { code: "rate_limit" as const, retryable: true, message: `limit hit, ${text}` } : undefined;
+  const say = (text: string) => ({ $: "say", text });
+  const script = (...items: unknown[]) => `[[updates]]${JSON.stringify(items)}`;
+  const texts = (events: NormalizedEvent[]) => events.flatMap((event) => (event.kind === "text" ? [event.text] : []));
+  const kinds = (events: NormalizedEvent[]) => events.map((event) => event.kind);
+
+  it("turns a recognised final chunk into one error: no result, no text, retryable", async () => {
+    const session = await start({ classifyReplyError: classify });
+    const events = await collect(session.prompt(`[[error]]${FAIL}`));
+    expect(kinds(events)).toEqual(["thinking", "error"]);
+    expect(events.at(-1)).toEqual({ kind: "error", error: { code: "rate_limit", retryable: true, message: `limit hit, ${FAIL}` } });
+  });
+
+  it("keeps the session usable after an error turn", async () => {
+    const session = await start({ classifyReplyError: classify });
+    await collect(session.prompt(`[[error]]${FAIL}`));
+    const next = await collect(session.prompt("say:fine"));
+    expect(next.at(-1)).toMatchObject({ kind: "result", text: "fine" });
+  });
+
+  it("leaves a normal turn unchanged", async () => {
+    const session = await start({ classifyReplyError: classify });
+    const events = await collect(session.prompt("say:Hello there, how are you"));
+    expect(kinds(events)).toEqual(["thinking", "text", "text", "result"]);
+    expect(events.at(-1)).toEqual({ kind: "result", text: "Hello there, how are you", stopReason: "end_turn" });
+  });
+
+  it("treats the chunk as plain text without a hook", async () => {
+    const session = await start();
+    const events = await collect(session.prompt(`[[error]]${FAIL}`));
+    expect(events.at(-1)).toEqual({ kind: "result", text: FAIL, stopReason: "end_turn" });
+  });
+
+  it("flushes the chunk as ordinary text, in order, when text follows", async () => {
+    const session = await start({ classifyReplyError: classify });
+    const events = await collect(session.prompt(script(say(FAIL), say(" and more"))));
+    expect(texts(events)).toEqual([FAIL, " and more"]);
+    expect(events.at(-1)).toEqual({ kind: "result", text: `${FAIL} and more`, stopReason: "end_turn" });
+  });
+
+  it("flushes the chunk when thinking follows", async () => {
+    const session = await start({ classifyReplyError: classify });
+    const thought = { sessionUpdate: "agent_thought_chunk", content: { type: "text", text: "hm" } };
+    const events = await collect(session.prompt(script(say(FAIL), thought)));
+    expect(kinds(events)).toEqual(["thinking", "text", "thinking", "result"]);
+    expect(events.at(-1)).toMatchObject({ kind: "result", text: FAIL });
+  });
+
+  it("flushes the chunk before a tool call that follows", async () => {
+    const session = await start({ classifyReplyError: classify });
+    const events = await collect(
+      session.prompt(
+        script(say(FAIL), { sessionUpdate: "tool_call", toolCallId: "t1", title: "Read a.txt", kind: "read", status: "completed", rawInput: { path: "/w/a.txt" } }),
+      ),
+    );
+    expect(kinds(events).filter((kind) => kind !== "thinking")).toEqual(["text", "toolStart", "toolResult", "result"]);
+    expect(events.at(-1)).toMatchObject({ kind: "result", text: FAIL });
+  });
+
+  it("flushes the chunk before a permission request that follows", async () => {
+    const seen: string[] = [];
+    const session = await start({
+      classifyReplyError: classify,
+      onPermissionRequest: async () => {
+        seen.push("asked");
+        return "reject_once";
+      },
+    });
+    const events = await collect(
+      session.prompt(script(say(FAIL), { $: "ask", toolCall: { toolCallId: "p1", title: "Run shell command", kind: "execute" } })),
+    );
+    expect(seen).toEqual(["asked"]);
+    expect(events.at(-1)).toMatchObject({ kind: "result", text: FAIL });
+  });
+
+  it("keeps earlier text and reports only the last chunk as the error", async () => {
+    const session = await start({ classifyReplyError: classify });
+    const events = await collect(session.prompt(script(say("Working on it. "), say(FAIL))));
+    expect(texts(events)).toEqual(["Working on it. "]);
+    expect(events.at(-1)).toMatchObject({ kind: "error", error: { code: "rate_limit" } });
+  });
+
+  it("flushes a recognised chunk that a second recognised chunk follows", async () => {
+    const session = await start({ classifyReplyError: classify });
+    const events = await collect(session.prompt(script(say("FAIL: first"), say("FAIL: second"))));
+    expect(texts(events)).toEqual(["FAIL: first"]);
+    expect(events.at(-1)).toMatchObject({ kind: "error", error: { message: "limit hit, FAIL: second" } });
+  });
+
+  it("makes the error not retryable once a tool started, and closes the tool first", async () => {
+    const session = await start({ classifyReplyError: classify });
+    const call = { sessionUpdate: "tool_call", toolCallId: "t1", title: "Read a.txt", kind: "read", status: "in_progress", rawInput: { path: "/w/a.txt" } };
+    const events = await collect(session.prompt(script(call, say(FAIL))));
+    expect(kinds(events).filter((kind) => kind !== "thinking")).toEqual(["toolStart", "toolResult", "error"]);
+    expect(events.at(-1)).toMatchObject({ kind: "error", error: { code: "rate_limit", retryable: false } });
+  });
+
+  it("drops a held chunk on cancel and reports the cancel", async () => {
+    const session = await start({ classifyReplyError: classify });
+    const turn = collect(session.prompt(script(say(FAIL), { $: "hang" })));
+    await new Promise((resolve) => setTimeout(resolve, 200));
+    await session.cancel();
+    const events = await turn;
+    expect(texts(events)).toEqual([]);
+    expect(events.at(-1)).toMatchObject({ kind: "error", error: { code: "unknown", message: "The CLI cancelled the turn." } });
+  });
+
+  it("flushes a held chunk as text on a refusal, which keeps its own error", async () => {
+    const session = await start({ classifyReplyError: classify });
+    const events = await collect(session.prompt(script(say(FAIL), { $: "end", stopReason: "refusal" })));
+    expect(texts(events)).toEqual([FAIL]);
+    expect(events.at(-1)).toMatchObject({ kind: "error", error: { code: "unclassified" } });
+  });
+
+  it("reads a held chunk as an error only on end_turn", async () => {
+    const session = await start({ classifyReplyError: classify });
+    const events = await collect(session.prompt(script(say(FAIL), { $: "end", stopReason: "max_tokens" })));
+    expect(events.at(-1)).toMatchObject({ kind: "result", text: FAIL, stopReason: "max_tokens" });
+  });
+
+  it("treats a throwing hook as ordinary text", async () => {
+    const session = await start({
+      classifyReplyError: () => {
+        throw new Error("bad hook");
+      },
+    });
+    const events = await collect(session.prompt("say:plain"));
+    expect(events.at(-1)).toMatchObject({ kind: "result", text: "plain" });
+  });
+
+  it("keeps a held chunk from leaking into the next turn", async () => {
+    const session = await start({ classifyReplyError: classify });
+    const failed = await collect(session.prompt(`[[error]]${FAIL}`));
+    expect(failed.at(-1)).toMatchObject({ kind: "error" });
+    const next = await collect(session.prompt("say:two"));
+    expect(texts(next)).toEqual(["two"]);
+    expect(next.at(-1)).toMatchObject({ kind: "result", text: "two" });
+  });
+});
+
+describe("AcpSession start failures", () => {
+  it("adds the JSON-RPC data.message to a failed session/new", async () => {
+    const env = { FAKE_CURSOR_NEW_ERROR: JSON.stringify({ code: -32603, message: "Internal error", data: { message: "Failed to initialize session services" } }) };
+    const error = await AcpSession.open(options({ env })).then(
+      () => undefined,
+      (caught: unknown) => caught,
+    );
+    expect(error).toBeInstanceOf(CliError);
+    expect(error).toMatchObject({
+      code: "server_error",
+      message: "The CLI could not start a session: Internal error: Failed to initialize session services",
+    });
+  });
+
+  it("does not repeat a detail the message already holds", async () => {
+    const env = { FAKE_CURSOR_NEW_ERROR: JSON.stringify({ code: -32603, message: "Failed: no network", data: { message: "no network" } }) };
+    const error = await AcpSession.open(options({ env })).catch((caught: unknown) => caught);
+    expect(error).toMatchObject({ message: "The CLI could not start a session: Failed: no network" });
+  });
+});
+
 describe("AcpSession process ID (AD-14)", () => {
   it("reports the pid once, before the handshake, and exposes it on the session", async () => {
     const seen: number[] = [];

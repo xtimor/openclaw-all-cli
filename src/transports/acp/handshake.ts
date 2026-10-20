@@ -10,8 +10,19 @@ import { isRecord } from "./tool-calls.ts";
 
 export function toCliError(error: unknown, fallback: CliErrorCode, context: string): CliError {
   if (error instanceof CliError) return error;
+  return new CliError({ code: fallback, message: `${context}: ${withDataMessage(error)}` }, { cause: error });
+}
+
+/**
+ * The error's message plus the JSON-RPC `data.message` when it adds something. An agent answers a
+ * failed start with a bare `Internal error` and the reason in `data.message`; without it the user
+ * only sees the generic text.
+ */
+function withDataMessage(error: unknown): string {
   const message = error instanceof Error ? error.message : String(error);
-  return new CliError({ code: fallback, message: `${context}: ${message}` }, { cause: error });
+  const data = (error as { data?: unknown } | null)?.data;
+  const detail = isRecord(data) && typeof data.message === "string" ? data.message.trim() : "";
+  return detail && !message.includes(detail) ? `${message}: ${detail}` : message;
 }
 
 function selectModels(options: acp.SessionConfigSelectOptions): AcpModelInfo[] {

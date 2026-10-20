@@ -22,6 +22,7 @@ import {
 import { CURSOR_MIN_VERSION, cursorManifest } from "./manifest.ts";
 import { buildCursorCatalog, selectCursorModel } from "./models.ts";
 import { CURSOR_ALWAYS_ON_NATIVE_TOOLS, toCanonicalRequest } from "./permissions.ts";
+import { classifyCursorReplyError } from "./errors.ts";
 import { describeCursorToolCall } from "./tool-display.ts";
 import { createCursorUsageReader, USAGE_URL_ENV } from "./usage.ts";
 
@@ -248,6 +249,8 @@ function open(params: OpenParams): Promise<CliSession> {
     ...(params.resumeSessionId && !sideQuestion ? { resumeSessionId: params.resumeSessionId } : {}),
     ...(params.mcpServers?.length && !sideQuestion ? { mcpServers: params.mcpServers.map(toAcpMcpServer) } : {}),
     describeToolCall: describeCursorToolCall,
+    // Cursor reports a failed turn as its last reply chunk (see errors.ts).
+    classifyReplyError: classifyCursorReplyError,
     // A request the mapping cannot name goes to the core unnamed: the core rejects it after its
     // turn check, so a late one is `cancelled`.
     onPermissionRequest: async (request) =>
@@ -284,6 +287,7 @@ async function listModels(params: ListModelsParams): Promise<readonly CliModel[]
       cwd: tmpdir(),
       env: params.env,
       ...authMethodFor(params.env),
+      classifyReplyError: classifyCursorReplyError,
       onPermissionRequest: async () => "cancelled",
       signal,
     });

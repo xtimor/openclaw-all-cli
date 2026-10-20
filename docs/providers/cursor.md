@@ -129,6 +129,25 @@ Cursor's tool activity (`tool_call` and `tool_call_update`) shows as tool progre
 - **Results are shortened.** A result longer than 8 000 characters is cut, because the events only feed the display.
 - **Retries.** An error after any tool call started in the turn is not retryable, because the call may already have run. A process that dies before any tool call is retryable. OpenClaw's JSONL contract carries only the error text, so the host never sees this flag; it is in the plugin's own event for logs and tests.
 
+## Errors
+
+Cursor reports a failed turn (network, sign-in, rate limit, plan) as its last reply chunk, then ends the turn normally (`end_turn`). Read as it comes, that is a reply that happens to say "Error". The plugin recognises these chunks and turns them into an error turn, so OpenClaw's failover, retries, and transcript see an error and no assistant message is written. Cursor's text is kept in the error message. Live check (cursor-agent 2026.10.19, `test/live/errors.live.test.ts`): a proxy that refused the model host after the session started gave `Cursor internal server error: Error: RetriableError: [internal] HTTPS proxy CONNECT failed: 403 Forbidden`, a failed `openclaw agent` run, and no reply text.
+
+A chunk counts only when it is the last thing in the turn. If any text, thinking, or tool call follows, it was ordinary text and stays in the reply in order. A cancelled turn drops it.
+
+| Cursor says | OpenClaw error class |
+| --- | --- |
+| `Error: [unauthenticated]` or `[permission_denied]`, `Please sign in to continue` | `auth` |
+| `Error: [resource_exhausted]`, `Upgrade your plan to continue` | `rate_limit` |
+| `Add a payment method to continue` | `billing` |
+| `Check your settings to continue` | `auth_permanent` |
+| `Error: [unavailable]` | `overloaded` |
+| `Error: [deadline_exceeded]` | `timeout` |
+| `Error: [invalid_argument]`, `[failed_precondition]` | `format` |
+| `Error: <Name>: [internal]`, `[unknown]`, any other code, or a name without a code | `server_error` |
+
+The error is retryable only when Cursor names it `RetriableError` and no tool call started in the turn. The plugin does not retry by itself. The host picks its own failover reason from the message text, so each message names the failure in words the host reads (for example "rate limit reached (usage limit)", "payment required") before Cursor's text. A session that fails to start gets Cursor's reason too (`Failed to initialize session services`).
+
 ## Permissions and tool availability
 
 OpenClaw owns approval authority; the plugin only asks. The static `cli-config.json` is the first line of defence: it denies shell, writes, edits, and deletes, so Cursor blocks them without asking. A permission request still arises for what the file leaves open (for example a web fetch or search, or another MCP server). The plugin names the request in OpenClaw's terms (`exec`, `write`, `edit`, `delete`, `web_fetch`, `web_search`, `read`, `grep`, `glob`, or `mcp__<server>__<tool>`), asks the host (`requestToolPermission`), and answers Cursor from the result:
@@ -308,6 +327,8 @@ Live test: `test/live/usage.live.test.ts`.
 - **Native read, grep, and glob stay reachable, also in a side question.** `Read(**)` is allowed, and Cursor's `grep` and `glob` are not blocked by a `Read` rule. So a run that selects no native tools is refused (see Permissions and tool availability). A second, static home that also denies `Grep(**)` and `Glob(**)` would lift this (checked: those rules make grep and glob return nothing); it is not built.
 - **Agent mode is token-hungry.** A turn with host `exec` runs in agent mode and can use many tokens (tool calls the model tries, then Cursor blocks). When OpenClaw's `cli_budget` compaction then runs and has no API model to summarize with, the turn fails with `CLI transcript compaction failed for cursor-cli/auto`. Seen once in the live suite (not reproduced on a re-run). A Cursor API-key profile or an API model for compaction avoids it.
 - **Shell limits.** `exec` calls are stopped at 55 s, a rooted or exec-host-`node` run has no `exec` (a capped run is refused), and commands can read the Gateway's environment. See Shell commands (OpenClaw exec).
+- **A reply that is exactly such a final chunk reads as an error.** A model answer whose last chunk starts with a blank line and `Error: <Name>: ` or `Error: [code]`, or is one of the four phrases above on its own, becomes an error turn.
+- **A quoted `403` or `401` makes the host read an auth failure.** The host classifies by message text, and Cursor's own text is kept in it. A proxy refusal such as `HTTPS proxy CONNECT failed: 403 Forbidden` therefore reaches the host as `reason=auth` (seen live) although the plugin's class is `server_error`.
 - **Native edits are never approved by the host.** Cursor cannot ask before editing.
 - **Permissions are not configurable.** Every agent gets the same rules; changing them in `cli-config.json` has no lasting effect.
 

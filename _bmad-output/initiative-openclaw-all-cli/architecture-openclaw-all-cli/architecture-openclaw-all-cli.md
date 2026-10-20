@@ -133,6 +133,7 @@ flowchart LR
   - **Timers.** The host owns timing: the core honors `ctx.timeoutMs`, `ctx.abortSignal`, and the backend's `reliability.watchdog`, and starts no timer of its own.
   - **Abort.** On abort, the core answers every pending CLI permission request with `cancelled`, calls `cancel`, then `close` after a 5-second grace.
   - **Errors.** Adapters throw only `CliError { code, retryable, message }`. `code` is a closed union mapped one-to-one onto OpenClaw's `FailoverReason`. `retryable` is false once any tool call started in the turn.
+  - **Errors reported as reply text.** A CLI that reports a failed turn as its last reply chunk plus a normal stop (Cursor does) gets a hook on the transport, `classifyReplyError(text)`. The transport holds a recognised chunk; anything after it flushes it as ordinary text, a normal stop right after it makes the turn that `error` (no `result`, retryable only if the hook says so and no tool started), and a cancel drops it. Only the adapter knows the wording, and its messages carry the keywords the host reads, since the host classifies by message text alone.
 
 ### AD-12 — A stable MCP proxy per live session
 
