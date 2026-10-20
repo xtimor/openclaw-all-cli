@@ -101,7 +101,7 @@ EOF
       if [ "$now" = "$value" ]; then echo "ok   ${name#baseline_} unchanged"; else echo "FAIL ${name#baseline_} changed"; status=1; fi
     done <"$RUN/baseline"
     if [ -n "${CURSOR_API_KEY:-}" ]; then
-      echo "key text inside the run dir (expected: only the OpenClaw config of the run's HOME):"
+      echo "key text inside the run dir (expected: the OpenClaw config and home/.config/cursor/auth.json, which cursor-agent writes itself):"
       (cd "$RUN" && grep -rlF -f <(printf '%s\n' "$CURSOR_API_KEY") . 2>/dev/null | sed 's/^/     /') || true
     else
       echo "skip key location (CURSOR_API_KEY not set in this shell)"

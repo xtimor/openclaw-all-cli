@@ -66,7 +66,7 @@ Then collect checklist evidence from the run (use `source $RUN/env.sh &&` while 
 
 - `openclaw plugins inspect openclaw-all-cli --runtime --json` shows `"status": "loaded"` and `cursor-cli`.
 - `openclaw models list --provider cursor-cli` shows more than `auto`.
-- The key text is only in `RUN/home/.openclaw/openclaw.json` (what `check` lists), unless the agent chose another documented path. It must not be in the Gateway's environment: with the Gateway pid `P`, `tr '\0' '\n' < /proc/$P/environ | grep -c '^CURSOR_API_KEY='` is `0`.
+- The key text is only in `RUN/home/.openclaw/openclaw.json` and `RUN/home/.config/cursor/auth.json` (written by `cursor-agent` itself; what `check` lists), unless the agent chose another documented path. It must not be in the Gateway's environment: with the Gateway pid `P`, `tr '\0' '\n' < /proc/$P/environ | grep -c '^CURSOR_API_KEY='` is `0`.
 - The agent's `--json` output: usage non-zero (if zero, the Usage statement in `cursor.md` and `setup.md` must say so instead; see the plan's third acceptance criterion).
 - The reply contains the nonce.
 
@@ -117,13 +117,12 @@ All in a throwaway copy of the tree (`git ls-files -co`, no `.spike/`), temp `HO
 
 ### Pass 1
 
-- Date / versions (Node, OpenClaw, cursor-agent) / source commit + dirty flag:
+- Date 2026-10-20; Node v24.22.0 (agent-installed tarball), OpenClaw 2026.10.3, cursor-agent 2026.10.19; source commit and dirty flag in the run's `source-commit` (not recorded here).
 - Brief: as in Part A (key by name only).
-- Steps (condensed):
-- Files read:
-- Gaps (step, what was missing, how learned, class doc|env, fix):
-- Reply / usage / Gateway pid and exit:
-- Checklist result:
+- Result: reply exact, usage input 456 / output 45 / cacheRead 20224, Gateway SIGTERM clean.
+- Gaps (all class doc; fix in parentheses): 1 Node 24 without nvm (tarball one-liner); 2 `about` printed `Not logged in` on the first run after install (retry note, non-empty check); 3 usage path (`result.meta.agentMeta.usage`); 4 Gateway pid with `nohup` (`pgrep -x openclaw-gateway`); 5 `remote model catalog refresh failed` behind a proxy (troubleshooting row); 6 tested versions (note in Requirements).
+- Post-check gaps (coordinator): 7 `cursor-agent` writes the key and tokens to `~/.config/cursor/auth.json` (docs state it, `cursor-agent logout`, exec reach, harness lists it as expected); 8 `worker-server`/`tsserver` leftovers after stop (setup.md stop instructions).
+- Checklist: pass-1 result recorded by the coordinator; pass 2 must show gaps 1-8 are closed.
 
 ### Pass 2 (only if pass 1 had `doc` gaps)
 
@@ -140,12 +139,12 @@ Every command in `docs/setup.md`, with where it ran. `probe` = build worker (Par
 | Section | Command | Run in | Result |
 | --- | --- | --- | --- |
 | Install the requirements | `node --version` | probe | v24.22.0 / v22.22.0 shown, as the docs say |
-| Install the requirements | `nvm install 24` / nodejs.org | pass | |
+| Install the requirements | `nvm install 24` / nodejs.org tarball one-liner | pass 1 (tarball, v24.22.0) | ok |
 | Install the requirements | `npm install -g openclaw@2026.10.3`, `openclaw --version` | probe (a1) | ok, `OpenClaw 2026.10.3 (59cb447)` |
-| Install the requirements | `curl https://cursor.com/install -fsS \| bash`, `export PATH=...`, `cursor-agent --version` | pass | |
+| Install the requirements | `curl https://cursor.com/install -fsS \| bash`, `export PATH=...`, `cursor-agent --version` | pass 1 | ok (2026.10.19) |
 | 1 | `cursor-agent login`, `cursor-agent status` | login: not run (needs a browser); `status`: probe (b) | |
-| 1 | `read -rs CURSOR_KEY`; `CURSOR_API_KEY="$CURSOR_KEY" cursor-agent about \| grep 'User Email'` | `about`: probe (b2); `read -rs`: pass | |
-| The API key | `openclaw config set ...cursor-cli.env "$(printf ...)" --strict-json`; `unset CURSOR_KEY` | pass | |
+| 1 | `read -rs CURSOR_KEY`; `CURSOR_API_KEY="$CURSOR_KEY" cursor-agent about \| grep 'User Email'` | `about`: probe (b2), pass 1 (first run printed `Not logged in`, retry ok: gap 2 fixed in docs); `read -rs`: not run (agent used a variable assignment) | |
+| The API key | `openclaw config set ...cursor-cli.env "$(printf ...)" --strict-json`; `unset CURSOR_KEY` | pass 1 | ok |
 | The API key | `printf '%s\n' "$CURSOR_KEY" \| openclaw models auth paste-api-key --provider cursor-cli`; `models auth logout ... --yes` | unchanged from before (entry 11); not part of the clean path | |
 | 2 | `git clone https://github.com/xtimor/openclaw-all-cli.git`, `npm install`, `npm link openclaw`, `npm run package` | probe (a1) with a local tree; clone URL in the pass uses `RUN/origin` | |
 | 2 | `openclaw plugins install ./openclaw-all-cli-<version>.tgz --accept-capabilities` (with `--force`) | probe (e) | ok: `Installed plugin: openclaw-all-cli`, `Saved for the next Gateway start` |

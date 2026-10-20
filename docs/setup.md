@@ -13,6 +13,8 @@ How to run `cursor-cli/<model>` in your OpenClaw.
 | Cursor CLI (`cursor-agent`) | 2026.07.06 or later | `cursor-agent --version` |
 | Cursor plan | Headless CLI allowed (admins can disable it) | see [step 1](#1-sign-in-to-cursor) |
 
+Tested with OpenClaw 2026.10.3 and `cursor-agent` 2026.10.16 (developed against) and 2026.10.19 (proven on a clean install).
+
 The plugin runs `cursor-agent --version` before its first process and fails a turn on a build older than 2026.07.06 (`unsupported_version`). Older OpenClaw builds treat CLI backends as text-only, with no tools and no streaming. Older `cursor-agent` builds can corrupt `cli-config.json` when several agents run at once.
 
 ### Install the requirements
@@ -20,6 +22,16 @@ The plugin runs `cursor-agent --version` before its first process and fails a tu
 Skip what `node --version`, `openclaw --version`, and `cursor-agent --version` already show in range.
 
 1. **Node.js 24.16+.** OpenClaw refuses Node 25 and anything below 24.16 (it prints `Running on an unsupported Node`; `npm install -g` warns `EBADENGINE`). Install a current 24.x from [nodejs.org](https://nodejs.org/en/download), or with [nvm](https://github.com/nvm-sh/nvm): `nvm install 24`. Use a Node whose global npm prefix you can write (nvm does), so `npm install -g` needs no `sudo`.
+
+   Without nvm or a browser, unpack the official tarball into your home (use `arm64` instead of `x64` on ARM; any 24.x from 24.16 on works):
+
+   ```sh
+   curl -fsSL https://nodejs.org/dist/v24.22.0/node-v24.22.0-linux-x64.tar.xz | tar -xJ -C "$HOME"
+   export PATH="$HOME/node-v24.22.0-linux-x64/bin:$PATH"      # add this line to your shell profile
+   node --version
+   ```
+
+   The global npm prefix is then that directory, so `npm install -g` needs no `sudo`.
 2. **OpenClaw**, from npm. Pin the version this plugin was built against:
 
    ```sh
@@ -54,7 +66,9 @@ read -rs CURSOR_KEY                     # paste the key; nothing is echoed or ke
 CURSOR_API_KEY="$CURSOR_KEY" cursor-agent about | grep 'User Email'
 ```
 
-It must show your email. A wrong key prints `The provided API key is invalid`.
+It must show your email. A wrong key prints `The provided API key is invalid`. If it prints `Not logged in` with a key set, run it once more (the first run right after installing `cursor-agent` can fail), and check the variable is non-empty without printing it: `[ -n "$CURSOR_KEY" ] && echo set`.
+
+**Cursor stores the key on disk.** When `cursor-agent` runs with `CURSOR_API_KEY` (this check, or any turn), it writes the key and its tokens to `~/.config/cursor/auth.json` (mode 0600). That is Cursor's behavior, independent of the plugin and of `CURSOR_CONFIG_DIR`. Remove it with `cursor-agent logout`.
 
 Each agent runs Cursor with its own config and chat store under `<agentDir>/openclaw-all-cli/cursor-cli/`, which the plugin creates.
 
@@ -63,7 +77,7 @@ Each agent runs Cursor with its own config and chat store under `<agentDir>/open
 With OpenClaw's `exec` enabled, any command the model runs inherits the Gateway's environment and can read every variable in it, a `CURSOR_API_KEY` exported to the Gateway included. The plugin does not strip it. In order of preference:
 
 1. **Use the login** (`cursor-agent login`). Its credentials live in the Cursor home, not in the environment. Usage then shows 0 (see [Usage](providers/cursor.md#usage)).
-2. **Give the key to the Cursor process only**, through the plugin config. `cursor-cli.env` is passed to `cursor-agent` and to the plugin's own probes and usage reads, and not put into the Gateway's environment or the environment `exec` starts commands with. That keeps the key out of `env` output, not out of reach: `exec` runs as the same user (unsandboxed by default), so a command can still read the key from `/proc/<pid>/environ` of the `cursor-agent` process or from the OpenClaw config file that holds it. Set it from the shell variable of the check above, so the key text is never typed into a command:
+2. **Give the key to the Cursor process only**, through the plugin config. `cursor-cli.env` is passed to `cursor-agent` and to the plugin's own probes and usage reads, and not put into the Gateway's environment or the environment `exec` starts commands with. That keeps the key out of `env` output only, not out of reach: `exec` runs as the same user (unsandboxed by default), so a command can still read the key from `/proc/<pid>/environ` of the `cursor-agent` process, from the OpenClaw config file that holds it, and from `~/.config/cursor/auth.json`, where `cursor-agent` itself writes the key and its tokens whenever it runs with a key. Exec approvals (`tools.exec.ask`) and a sandbox are the protection. Set it from the shell variable of the check above, so the key text is never typed into a command:
 
    ```sh
    openclaw config set plugins.entries.openclaw-all-cli.config.cursor-cli.env \
@@ -108,7 +122,7 @@ All settings are optional. They live under `plugins.entries.openclaw-all-cli.con
 | Key | Default | Meaning |
 | --- | --- | --- |
 | `cursor-cli.command` | `cursor-agent` | Path or name of the Cursor CLI. Set it when the Gateway's `PATH` does not include `cursor-agent`. |
-| `cursor-cli.env` | none | Variables for the `cursor-agent` process only, such as `CURSOR_API_KEY`. Kept out of the environment `exec` starts commands with, but not out of its reach (same user, see [The API key](#the-api-key)). |
+| `cursor-cli.env` | none | Variables for the `cursor-agent` process only, such as `CURSOR_API_KEY`. Kept out of the environment `exec` starts commands with only; not out of its reach (same user, and Cursor writes the key to `~/.config/cursor/auth.json`; see [The API key](#the-api-key)). |
 | `cursor-cli.maxConcurrentTurns` | `4` | Turns that run at once (1 to 64). More wait in order for a free slot. |
 | `cursor-cli.maxProcesses` | `8` | `cursor-agent` processes alive at once, idle ones included (1 to 64, at least `maxConcurrentTurns`). At the cap the least recently used idle process is closed. |
 
@@ -132,7 +146,9 @@ openclaw config set agents.defaults.model.primary cursor-cli/auto    # makes the
 openclaw gateway run                                                  # stays in the foreground; use a second terminal
 ```
 
-Wait for the log line `[gateway] ready`. Stop it with Ctrl-C or SIGTERM. A loopback Gateway needs no auth setup for local commands. Start it from a shell where `cursor-agent` is on `PATH` (or `cursor-cli.command` is set), and with `NODE_USE_ENV_PROXY=1` behind a proxy. To keep it running, background it from your shell (note its pid, stop it with SIGTERM) or use your own process manager.
+Wait for the log line `[gateway] ready`. Stop it with Ctrl-C or SIGTERM. A loopback Gateway needs no auth setup for local commands. Start it from a shell where `cursor-agent` is on `PATH` (or `cursor-cli.command` is set), and with `NODE_USE_ENV_PROXY=1` behind a proxy. To keep it running, background it (`nohup openclaw gateway run > gateway.log 2>&1 &`; `$!` is the wrapper's pid, so find the Gateway with `pgrep -x openclaw-gateway`) or use your own process manager. Stop it by pid: `kill -TERM <pid>`.
+
+**After stopping, check for leftovers.** Cursor's `worker-server` process, and its `typescript-language-server` / `tsserver` children, can outlive the Gateway for a few minutes (the plugin does not track them). List them with `ps -eo pid,args | grep -E 'cursor|tsserver|typescript-language' | grep -v grep` and stop each by pid with `kill <pid>`. Do not use `pkill -f`: it matches your own shell's command line.
 
 **You already run a Gateway** (for example `~/.openclaw`): restart it once, so it loads the plugin you just installed and the default model above (set the default only if you want `cursor-cli` as your default model; otherwise the plugin loads on the first `cursor-cli/...` turn and `/model` lists the Cursor rows after it). Its environment must provide `cursor-agent` on `PATH`; with option 2 above the key is in the config, so the Gateway needs no key variable.
 
@@ -144,7 +160,7 @@ openclaw models list --provider cursor-cli
 openclaw agent --model cursor-cli/auto --message "Say hi"
 ```
 
-The first command must report `"status": "loaded"` and `cursor-cli` under `cliBackendIds`. The second lists your account's Cursor models (more than `auto`) and needs a running Gateway that has loaded the plugin and a login or key. The third runs through your Gateway and prints Cursor's reply. Add `--json` to see the turn's usage (non-zero with a key, 0 with a login only). In the isolated OpenClaw (see Develop) no Gateway runs by default: run the command with `--local`, or start one as shown there and drop `--local`.
+The first command must report `"status": "loaded"` and `cursor-cli` under `cliBackendIds`. The second lists your account's Cursor models (more than `auto`) and needs a running Gateway that has loaded the plugin and a login or key. The third runs through your Gateway and prints Cursor's reply. Add `--json` to see the turn's usage at `result.meta.agentMeta.usage` (`input`, `output`, `cacheRead`, `cacheWrite`, `total`; non-zero with a key, 0 with a login only). In the isolated OpenClaw (see Develop) no Gateway runs by default: run the command with `--local`, or start one as shown there and drop `--local`.
 
 ## Troubleshooting
 
@@ -156,6 +172,7 @@ The first command must report `"status": "loaded"` and `cursor-cli` under `cliBa
 | `Gateway start blocked: existing config is missing gateway.mode` | A fresh OpenClaw has no Gateway config | `openclaw config set gateway.mode local`, then start again |
 | `Another gateway (pid N) already owns this state directory` | A Gateway for the same OpenClaw state is running | Use it (restart it with `openclaw gateway stop`, then start again), or give the new one its own state with `--profile <name>` |
 | The Gateway cannot bind port 18789 | Another program uses the port (wording unverified) | Stop that program, or start the Gateway with `--port <n>` and set `OPENCLAW_GATEWAY_PORT=<n>` for the other commands |
+| `remote model catalog refresh failed` in the Gateway log at startup | Behind a proxy OpenClaw cannot refresh its remote model catalog | Harmless; ignore it |
 | `Couldn't connect to OpenClaw.` from `openclaw agent` | No Gateway is running; `agent` without `--local` needs one | Start it ([step 4](#4-start-the-gateway)), or add `--local` |
 | `curl`, `cursor-agent`, or the usage ledger time out or fail TLS behind a proxy | Cursor's hosts are blocked, or Node ignores the proxy | Allow `cursor.com` and `*.cursor.sh`; start the Gateway with `NODE_USE_ENV_PROXY=1` |
 | `openclaw models list --provider cursor-cli` prints `No models found.` | No login and no key, or the plugin is not loaded | Sign in or set the key (step 1), restart the Gateway, name a `cursor-cli/...` default model |
