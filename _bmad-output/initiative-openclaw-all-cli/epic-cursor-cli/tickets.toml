@@ -185,13 +185,46 @@ hitl = false
 risk = "low"
 
 [[entry]]
+id = 20
+type = "story"
+title = "Cursor errors must not appear as normal reply text"
+description = "Found by the refactor sweep plan (D2/F1): a Cursor error can reach the user as ordinary reply text. Makes every Cursor failure an error event with the right class so OpenClaw failover, retries and the transcript treat it as an error, with a live check."
+verify = "A forced Cursor failure (bad model, rate limit, auth) produces an OpenClaw error turn, never an assistant message that contains the error text."
+covers = ["CAP-2"]
+after = [16]
+hitl = false
+risk = "medium"
+
+[[entry]]
+id = 21
+type = "story"
+title = "Leftovers of throwaway sessions and Cursor worker processes"
+description = "Found by the refactor sweep plan (D22/F3): a side question's throwaway session directory stays in the agent home, the model listing process is untracked, and a Cursor worker-server with its language-server children can outlive the Gateway. Cleans up what the plugin can safely own (session dirs by id, tracked listing process, reaping of worker-server by recorded pid with the existing start-time guard) and documents the rest."
+verify = "After a side question, a model listing and a Gateway stop, no throwaway session directory and no cursor-agent, worker-server or language-server process recorded by the plugin remains."
+covers = ["CAP-9"]
+after = [16]
+hitl = false
+risk = "high"
+
+[[entry]]
+id = 22
+type = "story"
+title = "Stabilize the timing-based usage tests"
+description = "Found by the refactor sweep plan (F4): the usage reader tests depend on millisecond timing and fail under load. Replaces real timers and clock arithmetic with an injected clock so the tests are deterministic, keeping every assertion's intent and proving each still fails when its guard is removed."
+verify = "The usage test files pass 50 times in a row under parallel load, and each guard mutation still fails its test."
+covers = ["CAP-3"]
+after = [16]
+hitl = false
+risk = "low"
+
+[[entry]]
 id = 17
 type = "story"
 title = "Parity live suite and success-signal demo"
 description = "Collects every row's live test into one suite, adds tests for rows no entry owns, a check that no file is written in the workspace (AD-7), and the spec's success-signal scenario end to end."
 verify = "`OPENCLAW_ALL_CLI_LIVE=1` runs the suite green in the isolated OpenClaw, and the success-signal scenario passes."
 covers = ["CAP-11"]
-after = [16, 19]
+after = [16, 19, 20, 21, 22]
 hitl = false
 risk = "medium"
 
