@@ -12,7 +12,7 @@ review: 'quick'
 review_source: 'pinned'
 lenses_ran: [quick]
 review_loop_iteration: 0
-followup_review_recommended: true
+followup_review_recommended: false
 context:
   - '{project-root}/MEMORY.md'
 warnings: []
@@ -95,6 +95,13 @@ Investigation (live, cursor-agent 2026.10.19): see commit 35886af. Failure text 
   - `[low]` `reject` handshake `toCliError` wider than the plan and beside `errorDetail` — the wider message helps every start/resume failure the same way; `errorDetail` joins all data strings for matching, a different job; merging adds more code than it removes
   - `[low]` `reject` toggle-proxy test polling has no deadline — vitest's per-test timeout ends it; a deadline adds code to a test helper nobody will hit in everyday use
 
+### 2026-10-20 — Review pass (follow-up)
+- verdicts: 3 findings — high 0, medium 1, low 1, false 1, maybe-false 0
+- findings:
+  - `[medium]` `patch` label "reported a server error" drops the host's `timeout` class for transient server errors (pass-1 patch was wrong; host files "internal server error" under `timeout` on purpose) — label restored, docs and MEMORY corrected
+  - `[false]` `reject` live test requiring JSON stdout fails a correct error turn — refuted: the live test passed against real cursor-agent after the patch (and again after this pass)
+  - `[low]` `patch` whitespace-only chunk after a held failure flushes it as text — guard extended, test added
+
 ## Verification
 
 **Commands:**
@@ -112,8 +119,8 @@ Files changed:
 
 Review (quick, pass 1): 7 findings; 5 patched (3 medium, 2 low), 2 rejected as low (see Review Triage Log). Deferred: 0.
 
-Follow-up review recommended: true. Three medium entries were patched (server-error wording, empty-chunk flush, weak live assertion), so one more pass should check the patches themselves.
+Follow-up review (pass 2) ran: 1 medium and 1 low patched, 1 rejected. Follow-up review recommended: false (no `high` patched).
 
-Verification: `npm run typecheck` clean; `npm test` 857 passed, 61 skipped; `test/live/errors.live.test.ts` passed against real cursor-agent 2026.10.19 with `CURSOR_API_KEY` (1 test, 62 s).
+Verification: `npm run typecheck` clean; `npm test` 858 passed, 61 skipped; `test/live/errors.live.test.ts` passed against real cursor-agent 2026.10.19 with `CURSOR_API_KEY` (1 test, 62 s).
 
 Residual risks: a proxy `403 Forbidden` quoted in Cursor's text is read by the host as `auth` (documented); a model reply that is exactly a failure-shaped final chunk reads as an error (documented).

@@ -842,6 +842,13 @@ describe("AcpSession reply errors", () => {
     expect(events.at(-1)).toMatchObject({ kind: "error", error: { code: "rate_limit" } });
   });
 
+  it("ignores a whitespace-only chunk after the failure chunk: the error still ends the turn", async () => {
+    const session = await start({ classifyReplyError: classify });
+    const events = await collect(session.prompt(script(say(FAIL), say("\n"))));
+    expect(texts(events)).toEqual([]);
+    expect(events.at(-1)).toMatchObject({ kind: "error", error: { code: "rate_limit" } });
+  });
+
   it("flushes the chunk when thinking follows", async () => {
     const session = await start({ classifyReplyError: classify });
     const thought = { sessionUpdate: "agent_thought_chunk", content: { type: "text", text: "hm" } };

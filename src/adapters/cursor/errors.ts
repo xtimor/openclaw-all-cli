@@ -17,7 +17,7 @@ type Failure = { code: CliErrorCode; label: string };
 
 const AUTH: Failure = { code: "auth", label: "authentication failed (unauthorized)" };
 const RATE_LIMIT: Failure = { code: "rate_limit", label: "rate limit reached (usage limit)" };
-const SERVER_ERROR: Failure = { code: "server_error", label: "reported a server error" };
+const SERVER_ERROR: Failure = { code: "server_error", label: "internal server error" };
 
 /** Connect error codes (https://connectrpc.com/docs/protocol#error-codes) that Cursor passes through. */
 const CONNECT_CODES: Readonly<Record<string, Failure>> = {

@@ -131,7 +131,7 @@ Cursor's tool activity (`tool_call` and `tool_call_update`) shows as tool progre
 
 ## Errors
 
-Cursor reports a failed turn (network, sign-in, rate limit, plan) as its last reply chunk, then ends the turn normally (`end_turn`). Read as it comes, that is a reply that happens to say "Error". The plugin recognises these chunks and turns them into an error turn, so OpenClaw's failover, retries, and transcript see an error and no assistant message is written. Cursor's text is kept in the error message. Live check (cursor-agent 2026.10.19, `test/live/errors.live.test.ts`): a proxy that refused the model host after the session started gave `Cursor reported a server error: Error: RetriableError: [internal] HTTPS proxy CONNECT failed: 403 Forbidden`, a failed `openclaw agent` run, and no reply text.
+Cursor reports a failed turn (network, sign-in, rate limit, plan) as its last reply chunk, then ends the turn normally (`end_turn`). Read as it comes, that is a reply that happens to say "Error". The plugin recognises these chunks and turns them into an error turn, so OpenClaw's failover, retries, and transcript see an error and no assistant message is written. Cursor's text is kept in the error message. Live check (cursor-agent 2026.10.19, `test/live/errors.live.test.ts`): a proxy that refused the model host after the session started gave `Cursor internal server error: Error: RetriableError: [internal] HTTPS proxy CONNECT failed: 403 Forbidden`, a failed `openclaw agent` run, and no reply text.
 
 A chunk counts only when it is the last thing in the turn. If any text, thinking, or tool call follows, it was ordinary text and stays in the reply in order. A cancelled turn drops it.
 
@@ -146,7 +146,7 @@ A chunk counts only when it is the last thing in the turn. If any text, thinking
 | `Error: [invalid_argument]` | `format` |
 | `Error: <Name>: [internal]`, `[unknown]`, any other code (`[failed_precondition]` too), or a name without a code | `server_error` |
 
-The error is retryable only when Cursor names it `RetriableError` and no tool call started in the turn. The plugin does not retry by itself. The host picks its own failover reason from the message text, so each message names the failure in words the host reads (for example "rate limit reached (usage limit)", "payment required") before Cursor's text. A session that fails to start gets Cursor's reason too (`Failed to initialize session services`).
+The error is retryable only when Cursor names it `RetriableError` and no tool call started in the turn. The plugin does not retry by itself. The host picks its own failover reason from the message text, so each message names the failure in words the host reads (for example "rate limit reached (usage limit)", "payment required") before Cursor's text. A Cursor server error carries "internal server error", which the host files as `timeout` (its class for transient server errors), so it gets its retry and cooldown handling. A session that fails to start gets Cursor's reason too (`Failed to initialize session services`).
 
 ## Permissions and tool availability
 
