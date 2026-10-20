@@ -1,9 +1,7 @@
 ---
 title: "Cursor errors must not appear as normal reply text"
 ticket: 20
-status: blocked
-blocked_at: "2026-10-20"
-blocked_reason: "no subagents"
+status: draft
 ---
 
 ## Auto Run Result
