@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import type { AgentHome } from "./home.ts";
 import { toRecord, type CoreRecord, type TurnSummary } from "./events.ts";
-import { takeHostImages } from "./images.ts";
+import { IMAGE_FRESHNESS_MS, takeHostImages } from "./images.ts";
 import { listToolNames, startMcpProxy, type McpProxy } from "./mcp-proxy.ts";
 import { OPENCLAW_MCP_SERVER, readTurnTarget, type TurnTarget } from "./mcp-target.ts";
 import { recordProcess, type ProcessLock } from "./pid-locks.ts";
@@ -542,7 +542,7 @@ export function createExecute(adapter: CliAdapter, options: ExecuteOptions): Cli
     return entry as OpenEntry;
   }
 
-  async function* run(ctx: ExecuteContext): ReturnType<CliBackendExecute> {
+  async function* run(ctx: ExecuteContext, turnStart: number): ReturnType<CliBackendExecute> {
     ctx.assertCurrent?.();
     ctx.abortSignal?.throwIfAborted();
     const sideQuestion = modeOf(ctx) === "side-question";
@@ -656,6 +656,18 @@ export function createExecute(adapter: CliAdapter, options: ExecuteOptions): Cli
       }
       ctx.abortSignal?.throwIfAborted();
 
+      // AD-16: the host's image paths leave the text and the images go as blocks. Nothing is written. Read
+      // first: an abort here must leave the chat's fresh-chat mark and the continuity note untouched.
+      const host = deliversImages
+        ? await takeHostImages(ctx.prompt, {
+            ...(ctx.abortSignal ? { signal: ctx.abortSignal } : {}),
+            warn,
+            notBefore: turnStart - IMAGE_FRESHNESS_MS,
+            ...(options.imageRoots ? { roots: options.imageRoots } : {}),
+          })
+        : undefined;
+      ctx.abortSignal?.throwIfAborted();
+
       // The host binds the chat to the id the CLI ended up with, so every turn names it, also when
       // `session/load` returned another one. A side question's chat is thrown away: no id.
       const summary: TurnSummary = sideQuestion ? {} : { sessionId: active.session.sessionId };
@@ -679,10 +691,6 @@ export function createExecute(adapter: CliAdapter, options: ExecuteOptions): Cli
       const lead =
         delivering === "block" ? systemPromptBlock(system) : delivering === "note" ? runtimeUpdateNote(system) : undefined;
       const startedAt = Date.now();
-      // AD-16: the host's image paths leave the text and the images go as blocks. Nothing is written.
-      const host = deliversImages
-        ? await takeHostImages(ctx.prompt, { ...(ctx.abortSignal ? { signal: ctx.abortSignal } : {}), warn, ...(options.imageRoots ? { roots: options.imageRoots } : {}) })
-        : undefined;
       ctx.abortSignal?.throwIfAborted();
       for await (const event of active.session.prompt(
         composePrompt(ctx, note, lead, deliversSystemPrompt, host?.text ?? ctx.prompt),
@@ -747,6 +755,8 @@ export function createExecute(adapter: CliAdapter, options: ExecuteOptions): Cli
   }
 
   return async function* execute(ctx) {
+    // The host wrote the turn's image files just before it called us; the wait for a slot may be long.
+    const turnStart = Date.now();
     ctx.abortSignal?.throwIfAborted();
     // AD-14: the turn slot comes first and is held for the whole turn. The wait has no timer of
     // its own (AD-11): it ends on a free slot or on the host's abort.
@@ -761,7 +771,7 @@ export function createExecute(adapter: CliAdapter, options: ExecuteOptions): Cli
       return;
     }
     try {
-      yield* run(ctx);
+      yield* run(ctx, turnStart);
     } finally {
       slot.release();
     }

@@ -10,10 +10,12 @@ import type { PromptImage } from "./ports.ts";
  * the text and reads the files, so the CLI gets the pixels through its protocol instead of a path it
  * could open itself. It writes, copies, and deletes nothing: the files belong to the host.
  *
- * It reads local files named in a prompt, so every step is strict: the path must have the host's exact
- * shape, and the file must be a regular file the process owns, in the host's own directory, of an
- * allowed type by its first bytes, within the size caps. It never logs or puts in an error a path,
- * image bytes, or base64.
+ * It reads local files named in a prompt, so every step is strict. The block counts only when every
+ * line has the host's exact path shape and every file is fresh (the host writes the files at turn time,
+ * so a path typed by a user or a channel for an older cache file is left as text). Each file must then be
+ * a regular file with one link that the process owns, in a directory the process owns that others cannot
+ * write, of an allowed type by its first bytes, within the size caps. It never logs or puts in an
+ * error a path, image bytes, or base64.
  */
 
 export type ImageLimits = {
@@ -31,6 +33,16 @@ export const DEFAULT_IMAGE_LIMITS: ImageLimits = {
   maxTotalBytes: 20 * 1024 * 1024,
 };
 
+/** How long before the turn began a cache file may have been written and still count as this turn's (ms). */
+export const IMAGE_FRESHNESS_MS = 120_000;
+
+/** A block longer than the count limit plus this is not the host's (it would be refused anyway): nothing is read. */
+const COUNT_MARGIN = 8;
+/** Lines of a trailing run that are looked at; a longer run is not the host's block. */
+const MAX_SCAN_LINES = 1000;
+/** No cache path is this long. */
+const MAX_LINE = 1024;
+
 export type TakeHostImagesOptions = {
   /** Aborts the reads; the abort propagates. */
   signal?: AbortSignal;
@@ -41,9 +53,16 @@ export type TakeHostImagesOptions = {
    * `os.tmpdir()`. Tests inject their own.
    */
   roots?: readonly string[];
-  /** The owner every file must have. Default: this process's uid; without one nothing is sent. */
+  /** The owner every file and directory must have. Default: this process's uid. Without one (Windows) the prompt is left as it is. */
   uid?: number | undefined;
   limits?: Partial<ImageLimits>;
+  /** Epoch ms. A file written before it is not this turn's, and the block is then left as text. Absent: no freshness check. */
+  notBefore?: number;
+  /** Test seams, called between the steps that a swapped file could exploit. */
+  hooks?: {
+    afterLstat?: (file: string) => void | Promise<void>;
+    afterStat?: (file: string) => void | Promise<void>;
+  };
 };
 
 export type TakenImages = {
@@ -54,7 +73,6 @@ export type TakenImages = {
 
 const CACHE_DIR_NAME = "openclaw-cli-images";
 const FILE_NAME = /^[0-9a-f]{64}\.[a-z0-9]+$/;
-const ROOT_NAME = /^openclaw(?:-\d+)?$/;
 
 /** The image type from the first bytes, never from the file name. Absent: not an allowed type. */
 export function sniffImageMime(buf: Uint8Array): string | undefined {
@@ -81,86 +99,110 @@ async function realOrUndefined(target: string): Promise<string | undefined> {
   }
 }
 
+const isBlank = (line: string) => line.trim() === "";
+
 /**
  * The trailing run of non-empty lines, when it follows an empty line or is the whole prompt.
- * `body` is the text before it.
+ * `body` is the text before it. Linear in the prompt: no backtracking pattern runs over it.
  */
 function trailingBlock(prompt: string): { body: string; lines: string[] } | undefined {
   const all = prompt.split("\n");
   let end = all.length;
-  while (end > 0 && all[end - 1]!.trim() === "") end--;
+  while (end > 0 && isBlank(all[end - 1]!)) end--;
   let start = end;
-  while (start > 0 && all[start - 1]!.trim() !== "") start--;
+  while (start > 0 && !isBlank(all[start - 1]!)) {
+    start--;
+    // Stop reading lines of a block that is already too long: it is not the host's.
+    if (end - start > MAX_SCAN_LINES) break;
+  }
   if (start === end) return undefined;
-  return { body: all.slice(0, start).join("\n").replace(/\s+$/, ""), lines: all.slice(start, end) };
+  return { body: all.slice(0, start).join("\n").trimEnd(), lines: all.slice(start, end) };
 }
 
-/**
- * Path shape only, no file is opened. Returns the directory the file must really sit in, with its
- * parent resolved: the last component itself must not be a link.
- */
-async function checkedDirectory(line: string, roots: readonly string[] | undefined): Promise<string | undefined> {
-  if (!path.isAbsolute(line) || path.normalize(line) !== line) return undefined;
+/** The pure shape of one line: `<root>/openclaw-cli-images/<64 hex>.<ext>`. No file is touched. */
+function lineShape(line: string): { dir: string } | undefined {
+  if (line.length > MAX_LINE || !path.isAbsolute(line) || path.normalize(line) !== line) return undefined;
   const dir = path.dirname(line);
   if (path.basename(dir) !== CACHE_DIR_NAME || !FILE_NAME.test(path.basename(line))) return undefined;
-  if (roots) {
-    if (!roots.some((root) => path.normalize(root) === dir)) return undefined;
-    const parent = await realOrUndefined(path.dirname(dir));
-    return parent && path.join(parent, CACHE_DIR_NAME);
-  }
-  const hostRoot = path.dirname(dir);
-  if (!ROOT_NAME.test(path.basename(hostRoot))) return undefined;
-  const base = await realOrUndefined(path.dirname(hostRoot));
-  if (!base) return undefined;
-  const temps = await Promise.all(["/tmp", os.tmpdir()].map(realOrUndefined));
-  if (!temps.includes(base)) return undefined;
-  return path.join(base, path.basename(hostRoot), CACHE_DIR_NAME);
+  return { dir };
 }
 
-type Failure = "unsupported" | "large" | "gone" | "unreadable";
+type Failure = "unsupported" | "large" | "gone" | "unreadable" | "empty" | "budget";
 
 const FAILURE_TEXT: Record<Failure, string> = {
   unsupported: "unsupported type",
   large: "too large",
   gone: "no longer available",
   unreadable: "could not be read",
+  empty: "empty file",
+  budget: "over the total size limit",
 };
 
-type Loaded = { image: PromptImage; bytes: number } | { failure: Failure; bytes?: number };
+const TELL_USER = " Tell the user it could not be used.";
 
-async function loadOne(
-  file: string,
-  directory: string,
-  uid: number | undefined,
-  limits: ImageLimits,
-  budget: number,
-  signal: AbortSignal | undefined,
-): Promise<Loaded | "overflow-size"> {
+const failureNote = (failure: Failure) => `[OpenClaw] An attached image was not passed to the model: ${FAILURE_TEXT[failure]}.${TELL_USER}`;
+
+function overflowNote(count: number, reason: string): string {
+  return `[OpenClaw] ${count === 1 ? "An attached image was" : `${count} attached images were`} not passed to the model: ${reason}.${TELL_USER}`;
+}
+
+type Delivery = {
+  uid: number;
+  limits: ImageLimits;
+  signal: AbortSignal | undefined;
+  hooks: TakeHostImagesOptions["hooks"];
+};
+
+type Loaded = { image: PromptImage; bytes: number } | { failure: Failure };
+
+/** Owned by the process and not writable by group or others. */
+async function privateDirectory(dir: string, uid: number): Promise<boolean> {
+  try {
+    const st = await fsp.lstat(dir);
+    return st.isDirectory() && st.uid === uid && (st.mode & 0o022) === 0;
+  } catch {
+    return false;
+  }
+}
+
+async function loadOne(file: string, delivery: Delivery, budget: number): Promise<Loaded> {
+  const { uid, limits, signal, hooks } = delivery;
   let handle: fsp.FileHandle | undefined;
   try {
-    const link = await fsp.lstat(file);
-    if (!link.isFile() || link.isSymbolicLink()) return { failure: "unreadable" };
-    if (uid === undefined || link.uid !== uid) return { failure: "unreadable" };
-    if ((await realOrUndefined(path.dirname(file))) !== directory) return { failure: "unreadable" };
-    // O_NOFOLLOW and a check on the open descriptor close the window between lstat and read.
-    handle = await fsp.open(file, fsConstants.O_RDONLY | fsConstants.O_NOFOLLOW);
-    const st = await handle.stat();
-    if (!st.isFile() || st.uid !== uid || st.ino !== link.ino || st.dev !== link.dev) return { failure: "unreadable" };
-    if (st.size > limits.maxBytes) return { failure: "large" };
-    if (st.size > budget) return "overflow-size";
-    const buf = Buffer.alloc(st.size);
-    let read = 0;
-    while (read < buf.length) {
+    // One retry: the host rewrites a content-addressed file atomically, so the inode may change between the steps.
+    for (let attempt = 0; attempt < 2; attempt++) {
+      const link = await fsp.lstat(file);
+      if (!link.isFile() || link.isSymbolicLink() || link.uid !== uid || link.nlink !== 1) return { failure: "unreadable" };
+      await hooks?.afterLstat?.(file);
+      // O_NOFOLLOW refuses a link swapped in after the lstat; O_NONBLOCK keeps a FIFO swapped in from blocking the open.
+      handle = await fsp.open(file, fsConstants.O_RDONLY | fsConstants.O_NOFOLLOW | fsConstants.O_NONBLOCK);
+      const st = await handle.stat();
+      if (st.ino !== link.ino || st.dev !== link.dev) {
+        await handle.close().catch(() => {});
+        handle = undefined;
+        if (attempt === 0) continue;
+        return { failure: "unreadable" };
+      }
+      await hooks?.afterStat?.(file);
+      if (!st.isFile() || st.uid !== uid || st.nlink !== 1) return { failure: "unreadable" };
+      if (st.size === 0) return { failure: "empty" };
+      if (st.size > limits.maxBytes) return { failure: "large" };
+      if (st.size > budget) return { failure: "budget" };
+      const buf = Buffer.alloc(st.size);
+      let read = 0;
+      while (read < buf.length) {
+        signal?.throwIfAborted();
+        const { bytesRead } = await handle.read(buf, read, buf.length - read, read);
+        if (bytesRead === 0) break;
+        read += bytesRead;
+      }
       signal?.throwIfAborted();
-      const { bytesRead } = await handle.read(buf, read, buf.length - read, read);
-      if (bytesRead === 0) break;
-      read += bytesRead;
+      if (read !== buf.length) return { failure: "unreadable" };
+      const mimeType = sniffImageMime(buf);
+      if (!mimeType) return { failure: "unsupported" };
+      return { image: { mimeType, data: buf.toString("base64") }, bytes: buf.length };
     }
-    signal?.throwIfAborted();
-    if (read !== buf.length) return { failure: "unreadable" };
-    const mimeType = sniffImageMime(buf);
-    if (!mimeType) return { failure: "unsupported" };
-    return { image: { mimeType, data: buf.toString("base64") }, bytes: buf.length };
+    return { failure: "unreadable" };
   } catch (error) {
     if (signal?.aborted) throw error;
     return { failure: (error as NodeJS.ErrnoException).code === "ENOENT" ? "gone" : "unreadable" };
@@ -171,23 +213,65 @@ async function loadOne(
 
 /**
  * Takes the host's image block off the end of `prompt` and reads the images. Anything that is not
- * exactly that block leaves the prompt unchanged and reads nothing. An image that cannot be sent
- * becomes a one-line note in the text (it names OpenClaw and holds no path).
+ * exactly that block (shape, and with `notBefore`, freshness) leaves the prompt unchanged and reads
+ * nothing. An image that cannot be sent becomes a one-line note in the text (it names OpenClaw and
+ * holds no path).
  */
 export async function takeHostImages(prompt: string, options: TakeHostImagesOptions = {}): Promise<TakenImages> {
-  const { signal, warn, roots } = options;
+  const { signal, warn, roots, notBefore, hooks } = options;
   const uid = "uid" in options ? options.uid : process.getuid?.();
   const limits: ImageLimits = { ...DEFAULT_IMAGE_LIMITS, ...options.limits };
   const unchanged: TakenImages = { text: prompt, images: [] };
 
   const block = trailingBlock(prompt);
-  if (!block) return unchanged;
-  const directories: string[] = [];
-  for (const line of block.lines) {
-    const directory = await checkedDirectory(line, roots);
-    if (!directory) return unchanged;
-    directories.push(directory);
+  if (!block || block.lines.length > limits.maxCount + COUNT_MARGIN) return unchanged;
+  const shapes = block.lines.map(lineShape);
+  if (shapes.some((shape) => !shape)) return unchanged;
+  if (uid === undefined) {
+    warn?.("images stay in the prompt text: this platform has no process uid to check file owners");
+    return unchanged;
   }
+
+  // The directory each member must really sit in, with its parent resolved: the last component itself must not be a link.
+  const expected = new Map<string, string | undefined>();
+  const temps = roots ? [] : (await Promise.all(["/tmp", os.tmpdir()].map(realOrUndefined))).filter((dir): dir is string => dir !== undefined);
+  for (const { dir } of shapes as Array<{ dir: string }>) {
+    if (expected.has(dir)) continue;
+    const hostRoot = path.dirname(dir);
+    let parent: string | undefined;
+    if (roots) {
+      parent = roots.some((root) => path.normalize(root) === dir) ? await realOrUndefined(hostRoot) : undefined;
+    } else if (["openclaw", `openclaw-${uid}`].includes(path.basename(hostRoot))) {
+      const base = await realOrUndefined(path.dirname(hostRoot));
+      parent = base !== undefined && temps.includes(base) ? path.join(base, path.basename(hostRoot)) : undefined;
+    }
+    expected.set(dir, parent && path.join(parent, CACHE_DIR_NAME));
+  }
+  if ([...expected.values()].some((dir) => dir === undefined)) return unchanged;
+
+  // Correlate with this turn: the host writes each file when it prepares the turn. A file that is gone or
+  // older is a path someone typed, not the host's block.
+  for (const line of block.lines) {
+    signal?.throwIfAborted();
+    try {
+      const st = await fsp.lstat(line);
+      if (notBefore !== undefined && st.mtimeMs < notBefore) return unchanged;
+    } catch {
+      return unchanged;
+    }
+  }
+
+  const delivery: Delivery = { uid, limits, signal, hooks };
+  const trusted = new Map<string, boolean>();
+  const trustedDirectory = async (dir: string): Promise<boolean> => {
+    let ok = trusted.get(dir);
+    if (ok === undefined) {
+      const real = expected.get(dir)!;
+      ok = (await realOrUndefined(dir)) === real && (await privateDirectory(real, uid)) && (await privateDirectory(path.dirname(real), uid));
+      trusted.set(dir, ok);
+    }
+    return ok;
+  };
 
   const images: PromptImage[] = [];
   const notes: string[] = [];
@@ -200,14 +284,10 @@ export async function takeHostImages(prompt: string, options: TakeHostImagesOpti
       warn?.(`${left} image(s) not sent: too many images`);
       break;
     }
-    const loaded = await loadOne(block.lines[i]!, directories[i]!, uid, limits, limits.maxTotalBytes - total, signal);
-    if (loaded === "overflow-size") {
-      notes.push(overflowNote(left, `total size over ${limits.maxTotalBytes / (1024 * 1024)} MiB`));
-      warn?.(`${left} image(s) not sent: total size over the limit`);
-      break;
-    }
+    const file = block.lines[i]!;
+    const loaded = (await trustedDirectory(shapes[i]!.dir)) ? await loadOne(file, delivery, limits.maxTotalBytes - total) : ({ failure: "unreadable" } as const);
     if ("failure" in loaded) {
-      notes.push(`[OpenClaw] An attached image was not passed to the model: ${FAILURE_TEXT[loaded.failure]}.`);
+      notes.push(failureNote(loaded.failure));
       warn?.(`image not sent: ${FAILURE_TEXT[loaded.failure]}`);
       continue;
     }
@@ -216,8 +296,4 @@ export async function takeHostImages(prompt: string, options: TakeHostImagesOpti
   }
   const text = [block.body, notes.join("\n")].filter(Boolean).join("\n\n");
   return { text, images };
-}
-
-function overflowNote(count: number, reason: string): string {
-  return `[OpenClaw] ${count === 1 ? "An attached image was" : `${count} attached images were`} not passed to the model: ${reason}.`;
 }

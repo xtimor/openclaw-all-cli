@@ -76,7 +76,24 @@ describe("manifest", () => {
       }
     });
 
+    // Rows whose matrix cell is the manifest note itself (older rows keep a shorter summary in the matrix).
+    it("says the same in the matrix for the decided rows that copy their note (P13)", () => {
+      const mismatched: string[] = [];
+      for (const [id, row] of Object.entries(adapter.manifest.rows)) {
+        if (id !== "P13" || (row.status !== "approx" && row.status !== "match")) continue;
+        const text = plain(cell(id));
+        if (!text.startsWith(`${row.status}: `) || !text.includes(plain(row.note))) mismatched.push(id);
+      }
+      expect(mismatched).toEqual([]);
+    });
+
     // P3 (streaming) and P17 (clearEnv, timers, caps) are done for every adapter: the adapter still documents them.
+    it("records Cursor's compaction (P14) as a gap and images (P13) as approx", () => {
+      if (adapter.id !== "cursor") return;
+      expect(adapter.manifest.rows.P14.status).toBe("gap");
+      expect(adapter.manifest.rows.P13.status).toBe("approx");
+    });
+
     it("leaves the rows the core has no mechanism for undecided", () => {
       for (const id of ["P6", "P14"] as ParityRowId[]) {
         expect(["match", "approx"], id).not.toContain(adapter.manifest.rows[id].status);

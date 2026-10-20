@@ -1,4 +1,5 @@
 import { type ChildProcess, spawn } from "node:child_process";
+import { randomBytes } from "node:crypto";
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -95,9 +96,10 @@ describeLive("images and compaction (P13, P14)", () => {
   }
 
   const readers = (turn: Turn) => turn.tools.filter((name) => ["read", "grep", "glob"].includes(name));
+  // The file name has nothing to do with the word, and the word is in no text: only the pixels carry it.
   const writePng = (word: string): { file: string; bytes: Buffer } => {
     const bytes = wordPng(word);
-    const name = `word-${word.toLowerCase()}.png`;
+    const name = `img-${randomBytes(6).toString("hex")}.png`;
     const file = join(workspace, name);
     writeFileSync(file, bytes);
     written.push(name);
@@ -115,7 +117,12 @@ describeLive("images and compaction (P13, P14)", () => {
       const word = randomWord();
       const { file } = writePng(word);
       chat = `live-images-${stamp}-${n}`;
-      const turn = ask(chat, `What word is written in the image ${file}? Reply with the word only. Do not use any tools.`);
+      const question = (path: string) => `What word is written in the image ${path}? Reply with the word only. Do not use any tools.`;
+      // Control: the same prompt naming a file that does not exist attaches no image, and must not yield the word.
+      const control = ask(`${chat}-control`, question(join(workspace, `img-${randomBytes(6).toString("hex")}.png`)));
+      expect(control.status, control.raw).toBe(0);
+      expect(control.reply.toUpperCase(), "the word must not be derivable without the image").not.toContain(word);
+      const turn = ask(chat, question(file));
       expect(turn.status, turn.raw).toBe(0);
       if (turn.reply.toUpperCase().includes(word) && readers(turn).length === 0) {
         chatWord = word;
@@ -142,6 +149,20 @@ describeLive("images and compaction (P13, P14)", () => {
     expect(readdirSync(workspace).sort()).toEqual([...new Set(written)].sort());
     expect(existsSync(join(workspace, ".openclaw-cli-images"))).toBe(false);
     expect(existsSync(join(workspace, ".cursor"))).toBe(false);
+  });
+
+  it("leaves no image file in the agent's home (c2)", () => {
+    const stray: string[] = [];
+    const walk = (dir: string) => {
+      for (const entry of readdirSync(dir, { withFileTypes: true })) {
+        if (entry.isDirectory()) {
+          if (entry.name.includes("openclaw-cli-images")) stray.push(join(dir, entry.name));
+          walk(join(dir, entry.name));
+        } else if (/\.(png|jpe?g|gif|webp|bmp)$/i.test(entry.name)) stray.push(join(dir, entry.name));
+      }
+    };
+    walk(join(ISOLATED_STATE_DIR, "agents", agent, "agent"));
+    expect(stray).toEqual([]);
   });
 
   it("hands the CLI a text block without the cache path and one PNG block (d)", () => {

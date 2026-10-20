@@ -57,7 +57,7 @@ export const FLAG_ROWS: Record<keyof DerivedFlags, ParityRowId> = {
 };
 
 /**
- * Rows that set no flag, each with the reason. P6 and P14 have no core mechanism, so an
+ * Rows that set no flag, each with the reason. P6 has no core mechanism and P14 has none an adapter could drive (a backend without native compaction gets the host's), so an
  * adapter must not decide them (a `match` or `approx` would promise nothing). P11 rides on P12:
  * the host's skills catalog is part of the system prompt, so an adapter that decides P11 decides P12. P3 and P17 describe
  * what the core does for every adapter (streaming; the `clearEnv` safety list, the host's timers,

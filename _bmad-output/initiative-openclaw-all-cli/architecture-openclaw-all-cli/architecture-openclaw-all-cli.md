@@ -7,7 +7,7 @@ paradigm: 'hexagonal (ports and adapters)'
 scope: 'The openclaw-all-cli OpenClaw plugin: shared core plus one adapter per coding CLI (Cursor first, Antigravity next)'
 status: final
 created: '2026-10-15'
-updated: '2026-10-15'
+updated: '2026-10-20'
 binds: [CAP-1, CAP-2, CAP-3, CAP-4, CAP-5, CAP-6, CAP-7, CAP-8, CAP-9, CAP-10, CAP-11, CAP-12]
 sources:
   - ../spec-cursor-cli-provider/spec-cursor-cli-provider.md
@@ -167,13 +167,13 @@ flowchart LR
 - **Prevents:** a CLI that never sees OpenClaw's instructions or skills; a chat thrown away whenever the tool list changes; instruction files written into a workspace or home.
 - **Rule:** The host's system prompt, with its skills catalog, reaches a CLI that has no per-turn system-prompt channel as a marked block at the start of the prompt. It is sent on a native chat's first prompt and again when it changes (the date and the runtime line's model, channel, capabilities, and active-node fields do not count; a change of only those sends a one-line runtime update with the current values). The core keeps a delivery cache of hashes keyed by (home, native session id), in memory over a small file in the agent home; like AD-5's binding rule it is a cache, not a session binding: losing it costs one duplicate block. The core neutralizes the block's header, update opener, and tag name (any spelling, original case kept, one zero-width space added) in the text it forwards; text that reaches the CLI by other routes (tool output, the CLI's own reads) is not covered. When P12 is decided (AD-10), the backend declares `systemPromptWhen: "always"` with a marker arg the host never passes to a plugin-owned execute. No instruction or skill file is written into a workspace or user home (AD-6, AD-7); the only file is the hash cache in the plugin's own agent home.
 
-### AD-16 — Images reach a CLI as its protocol's image blocks
+### AD-16 — Images reach a CLI as image blocks; compaction stays the host's
 
 - **Binds:** CAP-11
-- **Prevents:** a CLI that gets only a file path it must open itself; image files the plugin writes, copies, or must clean up; a prompt parser that reads any file a user names.
+- **Prevents:** a CLI that gets only a file path it must open itself; image files the plugin writes, copies, or must clean up; a prompt parser that reads any file a user names; a plugin that declares native compaction it cannot drive and so switches off the host's.
 - **Rule:** Images reach a CLI as its protocol's image blocks. The core reads them from the host's own image cache (the trailing path block OpenClaw appends to the prompt for a backend without `imageArg`). It checks the directory, owner, type by magic bytes, and size, and drops the paths from the text. The plugin writes, copies, and deletes no image file (AD-6, AD-7). An image it cannot pass becomes a one-line note, never a silent drop. A CLI without native compaction leaves compaction to the host's transcript compaction; P14 sets no flag.
-  - **Block membership** (path shape only; no file is opened): the trailing run of lines must follow an empty line or be the whole prompt, and every line must be a normalized absolute path `<tmp>/openclaw[-<uid>]/openclaw-cli-images/<64 hex>.<ext>` under `/tmp` or `os.tmpdir()`. One failing line leaves the prompt unchanged.
-  - **Delivery** (per image): a regular file, not a link, owned by the process uid, in the checked directory, at most 10 MiB (10 images and 20 MiB in all), and png, jpeg, gif, webp, or bmp by its first bytes. The file is opened with `O_NOFOLLOW` and checked again on the descriptor.
+  - **Block membership** (path shape, then freshness): the trailing run of lines must follow an empty line or be the whole prompt, be at most the image limit plus a small margin, and every line must be a normalized absolute path `<tmp>/openclaw[-<uid>]/openclaw-cli-images/<64 hex>.<ext>`, where `<tmp>` resolves to `/tmp` or `os.tmpdir()` and `<uid>` is exactly the process uid. Every file must have been written shortly before the turn began (the host writes them at turn time), so a path a user typed for an older cache file stays text. One failing line leaves the prompt unchanged and reads nothing.
+  - **Delivery** (per image): a regular file, not a link, one hard link, owned by the process uid, in a directory the uid owns that group and others cannot write, at most 10 MiB (10 images and 20 MiB in all; an image that does not fit the remaining total is skipped), and png, jpeg, gif, webp, or bmp by its first bytes. The file is opened with `O_NOFOLLOW` and `O_NONBLOCK` and checked again on the descriptor. Without a process uid (Windows) the prompt is left as it is.
   - **Logs.** No base64, image bytes, or cache path reaches a log, a note, or an error.
   - **Compaction.** The backend declares neither `ownsNativeCompaction` nor `manualCompaction`: the first would switch off the host's compaction, the only one that works; the second needs a summary prompt the CLI does not honor. A host compaction drops the CLI chat binding, and the next turn starts a fresh chat (AD-15 block, P15 note).
 

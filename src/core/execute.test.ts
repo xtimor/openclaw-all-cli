@@ -1,4 +1,4 @@
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { createServer } from "node:http";
 import type { AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
@@ -556,6 +556,31 @@ describe("createExecute continuity note (P15)", () => {
       makeCtx({ env: usableEnv, useResume: true, sessionId: "native-42" }),
     );
     expect(sessions[0]?.prompts).toEqual(["hi"]);
+  });
+
+  it("reads the images before it records the chat or uses up the note, so an abort during the read leaves both (P13)", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "oac-exec-images-"));
+    try {
+      const root = join(dir, "openclaw", "openclaw-cli-images");
+      mkdirSync(root, { recursive: true, mode: 0o700 });
+      chmodSync(join(dir, "openclaw"), 0o700);
+      const junk = join(root, `${"a".repeat(64)}.png`);
+      writeFileSync(junk, "not an image", { mode: 0o600 });
+      const { adapter, sessions } = makeAdapter();
+      const controller = new AbortController();
+      const execute = createExecute(adapter, { home: HOME, continuity: true, images: true, imageRoots: [root], warn: () => controller.abort() });
+      const seen: Record<string, unknown>[] = [];
+      await expect(
+        (async () => {
+          for await (const record of execute(makeCtx({ env: usableEnv, prompt: `see\n\n${junk}`, abortSignal: controller.signal }))) seen.push(record);
+        })(),
+      ).rejects.toThrow();
+      // No chat id was reported to the host, and no prompt went out.
+      expect(parsed(seen).some((event) => event.kind === "sessionId")).toBe(false);
+      expect(sessions.every((session) => session.prompts.length === 0)).toBe(true);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 
   it("sends a note again when a restart opens a fresh chat", async () => {

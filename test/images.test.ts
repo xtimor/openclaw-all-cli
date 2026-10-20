@@ -1,14 +1,26 @@
 import { createHash } from "node:crypto";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, utimesSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterAll, describe, expect, it } from "vitest";
+import { afterAll, describe, expect, it, vi } from "vitest";
 import { cursorAdapter } from "../src/adapters/cursor/index.ts";
 import { buildCliBackend } from "../src/core/backend.ts";
 import { CONTINUITY_NOTE } from "../src/core/execute.ts";
 import { createManifest } from "../src/core/ports.ts";
 import { systemPromptBlock } from "../src/core/system-prompt.ts";
 import { FAKE_CURSOR_AGENT, fakeEnv } from "./fixtures/paths.ts";
+
+const calls = vi.hoisted(() => ({ options: [] as Array<Record<string, unknown>> }));
+vi.mock("../src/core/images.ts", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../src/core/images.ts")>();
+  return {
+    ...actual,
+    takeHostImages: (prompt: string, options: Record<string, unknown>) => {
+      calls.options.push(options);
+      return actual.takeHostImages(prompt, options);
+    },
+  };
+});
 
 // P13 through buildCliBackend -> prepareExecution -> execute, against the fake agent and an injected image root.
 describe("images (P13)", () => {
@@ -177,7 +189,7 @@ describe("images (P13)", () => {
     const bad = image(Buffer.from("not an image"));
     await turn(agentDir, log, withImages("see", bad, image(PNG)));
     const [prompt] = sentPrompts(log);
-    expect(prompt![0]!.text).toBe("see\n\n[OpenClaw] An attached image was not passed to the model: unsupported type.");
+    expect(prompt![0]!.text).toBe("see\n\n[OpenClaw] An attached image was not passed to the model: unsupported type. Tell the user it could not be used.");
     expect(prompt!.filter((block) => block.type === "image")).toHaveLength(1);
     expect(prompt![0]!.text).not.toContain(root);
   });
@@ -192,15 +204,60 @@ describe("images (P13)", () => {
   it("sends no prompt when the turn is aborted while the images are read", async () => {
     const { agentDir, log } = freshDir("abort");
     const controller = new AbortController();
-    const gone = image(PNG);
-    rmSync(gone);
+    const junk = image(Buffer.from("not an image"));
     onWarn = () => controller.abort();
     try {
-      await expect(turn(agentDir, log, withImages("see", gone, image(PNG)), { signal: controller.signal })).rejects.toThrow();
+      await expect(turn(agentDir, log, withImages("see", junk, image(PNG)), { signal: controller.signal })).rejects.toThrow();
     } finally {
       onWarn = undefined;
     }
     expect(existsSync(log) && logLines(log).some((line) => line.method === "session/prompt")).toBe(false);
+  });
+
+  it("sends no prompt when the abort lands after the last image was read", async () => {
+    const { agentDir, log } = freshDir("abort-last");
+    const controller = new AbortController();
+    const junk = image(Buffer.from("not an image"));
+    onWarn = () => controller.abort();
+    try {
+      await expect(turn(agentDir, log, withImages("see", junk), { signal: controller.signal })).rejects.toThrow();
+    } finally {
+      onWarn = undefined;
+    }
+    expect(existsSync(log) && logLines(log).some((line) => line.method === "session/prompt")).toBe(false);
+  });
+
+  it("hands the reader the turn's abort signal, the injected root, and a freshness bound", async () => {
+    const { agentDir, log } = freshDir("options");
+    const controller = new AbortController();
+    const before = Date.now();
+    calls.options.length = 0;
+    await turn(agentDir, log, withImages("see", image(PNG)), { signal: controller.signal });
+    expect(calls.options).toHaveLength(1);
+    const options = calls.options[0]!;
+    expect(options.signal).toBe(controller.signal);
+    expect(options.roots).toEqual([root]);
+    expect(options.notBefore as number).toBeLessThanOrEqual(before);
+    expect(options.notBefore as number).toBeGreaterThan(before - 10 * 60_000);
+  });
+
+  it("leaves a typed path to an old cache file as text (not the host's block for this turn)", async () => {
+    const { agentDir, log } = freshDir("typed");
+    const file = image(PNG);
+    const old = new Date(Date.now() - 60 * 60_000);
+    utimesSync(file, old, old);
+    const prompt = withImages("please look at this", file);
+    await turn(agentDir, log, prompt);
+    expect(sentPrompts(log)).toEqual([[{ type: "text", text: prompt }]]);
+  });
+
+  it("leaves a typed path to a missing cache file as text, with no note", async () => {
+    const { agentDir, log } = freshDir("typed-gone");
+    const file = image(PNG);
+    rmSync(file);
+    const prompt = withImages("please look at this", file);
+    await turn(agentDir, log, prompt);
+    expect(sentPrompts(log)).toEqual([[{ type: "text", text: prompt }]]);
   });
 
   it("never writes base64, image data, or the cache path to a log, a warning, or a record", async () => {

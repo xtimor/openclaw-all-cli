@@ -199,6 +199,16 @@ deferred: []
 
 ## Review Triage Log
 
+Thorough review of d0783d2 (4 lenses), all items patched (2026-10-20):
+
+- Blocker 1 (live oracle): the PNG now has a random file name unrelated to the word, the word is in no text, a control turn (same prompt, a file that does not exist) must not yield it, and (c2) checks the agent home for image files.
+- Major 2: `trailingBlock` used a quadratic `\s+$` replace; now `trimEnd` and index slicing, scan capped. The block-marker regex in `system-prompt.ts` had two adjacent `GAP` groups around an optional slash (quadratic after `<`); the slash and its gap are now one optional group. Timing tests (200k whitespace, zero-width, openers) for both.
+- Major 3: without `process.getuid` (Windows) the prompt is left as it is, nothing is read, one warn. Documented in cursor.md.
+- Major 4: no host field proves the turn's images (the host's image-turn block exists for claude-cli only). A block counts only when every file is fresh (mtime within 2 min before the execute call; the host writes them at turn time) and exists; otherwise the text stays untouched. A missing file no longer replaces the user's text with a note.
+- Major 5: tests on the host's real rule (default roots) for each guard, hook-based swap tests (symlink after lstat, inode swap, FIFO, truncation), real default caps, abort at each point, full failure-kind log test, "reads nothing" asserted by a hook spy, P14 `gap` pinned, P13 matrix cell equals the note. Mutation checks: reverting each fix failed its test, except three redundant layers (O_NOFOLLOW vs inode check, lstat nlink vs descriptor nlink, per-loop vs read-loop abort checks), kept as defense in depth.
+- Minor 6-11: exact `openclaw` or `openclaw-<uid>` root; owner and no group/world write on the directory chain; `nlink === 1`; `O_NONBLOCK`; block longer than count + 8 refused before any fs call; temp realpaths once per turn; a budget overflow skips that image only (`continue`); one retry when the inode changes; images are read before the chat id is reported and the continuity note is used; empty file note; notes ask the model to tell the user.
+- Item 12: docs, AD-16 (title, Prevents, updated), manifest header, matrix `≤`, unverified claims marked, host 6 MiB cap documented, `capability_mismatch` for a CLI without image support documented.
+
 ## Design Notes
 
 - **Probes** (2026-10-20, cursor-agent 2026.10.16, temp `CURSOR_CONFIG_DIR`, API key; OpenClaw 2026.10.3 in a copied state with the fake shim):

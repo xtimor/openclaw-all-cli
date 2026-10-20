@@ -91,6 +91,31 @@ describe("neutralizeBlockMarkers", () => {
   });
 });
 
+describe("neutralizeBlockMarkers speed", () => {
+  const ZW = "\u200b";
+  it("runs in linear time on long runs of whitespace, zero-width characters, and openers", () => {
+    const n = 200_000;
+    const inputs = [
+      `<${" ".repeat(n)}`,
+      `<${" ".repeat(n)}x`,
+      `[${" ".repeat(n)}`,
+      `<openclaw${" ".repeat(n)}`,
+      `<openclaw${" ".repeat(n)}system${" ".repeat(n)}`,
+      `<${ZW.repeat(n)}`,
+      `<openclaw${ZW.repeat(n)}`,
+      `<${" ".repeat(n)}/${" ".repeat(n)}`,
+      "<".repeat(n),
+      "[ ".repeat(n),
+      "<openclaw ".repeat(n / 10),
+    ];
+    for (const input of inputs) {
+      const start = performance.now();
+      neutralizeBlockMarkers(input);
+      expect(performance.now() - start, input.slice(0, 12)).toBeLessThan(200);
+    }
+  });
+});
+
 describe("stablePrompt", () => {
   const base = [
     "intro",

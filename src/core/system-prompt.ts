@@ -28,7 +28,7 @@ const OPENCLAW = spaced("openclaw");
 /** The block's tag in any spelling a model would read as it: `<`, `</`, fullwidth brackets, any case, spaces, `-`, `_`, zero-width characters. */
 const MARKER_SPELLINGS = new RegExp(
   [
-    `[<\uff1c]${GAP}[/\uff0f]?${GAP}${OPENCLAW}${SEP}${spaced("system")}${SEP}${spaced("prompt")}`,
+    `[<\uff1c]${GAP}(?:[/\uff0f]${GAP})?${OPENCLAW}${SEP}${spaced("system")}${SEP}${spaced("prompt")}`,
     // The header opener, and the runtime update note's: `[OpenClaw system instructions]`, `[OpenClaw runtime update]`.
     `[\\[\uff3b]${GAP}${OPENCLAW}${SEP}(?:${spaced("system")}${SEP}${spaced("instructions")}|${spaced("runtime")}${SEP}${spaced("update")})${GAP}[\\]\uff3d]`,
   ].join("|"),
