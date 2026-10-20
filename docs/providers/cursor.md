@@ -2,13 +2,13 @@
 
 What `cursor-cli/<model>` does in OpenClaw and how it compares with `claude-cli`. Setup is in [Setup](../setup.md).
 
-> **Status:** walking skeleton. Rows marked *spike* or *planned* change as the plugin grows; each change to a row updates this page and that row's live test together.
+> **Status:** pre-release, installed from source ([Setup](../setup.md)). Rows marked *spike* or *planned* in the parity table change as the plugin grows; each change to a row updates this page and that row's live test together.
 
 ## How it runs
 
 OpenClaw selects the `cursor-cli` backend from the model ref `cursor-cli/<model>`. The plugin starts `cursor-agent acp` and talks to it over the Agent Client Protocol (ACP). One process serves one conversation. The plugin keeps it warm between turns (closed after 15 idle minutes) whenever OpenClaw allows reuse; see the P4 row. OpenClaw owns the session binding: it stores the Cursor session ID the plugin reports, and the next turn resumes it with ACP `session/load` when OpenClaw says to.
 
-Each agent gets its own Cursor home, `<agentDir>/openclaw-all-cli/cursor-cli/` (`agentDir` is OpenClaw's per-agent directory). The plugin points `CURSOR_CONFIG_DIR` at it and `CURSOR_DATA_DIR` at its `data/` folder, so agents share no Cursor config or chat store. The Cursor login stays shared. The plugin writes nothing into the agent's working directory. If OpenClaw gives no agent directory, the turn fails with `OpenClaw gave no agent directory`; the plugin never falls back to a shared home.
+Each agent gets its own Cursor home, `<agentDir>/openclaw-all-cli/cursor-cli/` (`agentDir` is OpenClaw's per-agent directory). The plugin points `CURSOR_CONFIG_DIR` at it and `CURSOR_DATA_DIR` at its `data/` folder, so agents share no Cursor config or chat store. The Cursor login stays shared (the Keychain on macOS, `~/.config/cursor/auth.json` on Linux; the per-agent config directory still sees it, checked on Linux). The plugin writes nothing into the agent's working directory. If OpenClaw gives no agent directory, the turn fails with `OpenClaw gave no agent directory`; the plugin never falls back to a shared home.
 
 The home holds one file the plugin writes, `cli-config.json`, with the same static permissions for every agent:
 
@@ -199,7 +199,7 @@ Cursor's own model IDs carry parameters, for example `grok-4.7[context=256k,reas
 | --- | --- |
 | Logged in, or `CURSOR_API_KEY` set | The models are listed and available |
 | Listing fails (`cursor-agent` missing, an error, no answer in 30 seconds) | Only `cursor-cli/auto` is listed and the failure is logged; no turn fails. The next listing attempt is at least 30 seconds later |
-| Not logged in and no key | Only `cursor-cli/auto` is listed, as unavailable (`missing-auth` in the Gateway's model list, `Auth: no` in `openclaw models list`). A turn fails with the login error. `openclaw models status` still says `[indeterminate]`: that command reads no prepared auth |
+| Not logged in and no key | Only `cursor-cli/auto` is listed, as unavailable (`missing-auth` in the Gateway's raw model list). The default `openclaw models list --provider cursor-cli` then prints `No models found.` (checked on a fresh install with OpenClaw 2026.10.3). A turn fails with the login error. `openclaw models status` still says `[indeterminate]`: that command reads no prepared auth |
 | A model the account does not have | The turn fails with `Cursor has no model "<name>" for this account` (error code `model_not_found`) |
 | A model the plan cannot use | Cursor answers with its own plan message, for example `Upgrade your plan to continue`; the plugin does not filter it out |
 
@@ -240,7 +240,7 @@ Cursor's ACP reports no token counts, so the plugin reads them from Cursor's ser
 
 After a turn ends with a result, the plugin exchanges `CURSOR_API_KEY` for a short-lived access token (`POST /auth/exchange_user_api_key`), then polls `POST /aiserver.v1.DashboardService/GetFilteredUsageEvents` for an event of the turn's session stamped inside the turn's time window. It puts `input` (Cursor's `inputTokens`, which excludes cache), `output`, `cacheRead`, `cacheWrite`, and their sum on the result, and OpenClaw writes them on the assistant entry of its transcript. Two turns of one chat each get only their own event.
 
-- **Needs `CURSOR_API_KEY`** in the Gateway's environment. With a login only, no usage is recorded and no request is made.
+- **Needs `CURSOR_API_KEY`** in the Cursor process's environment: the plugin config `cursor-cli.env` (preferred, see [Setup](../setup.md#the-api-key)) or the Gateway's environment. The plugin reads the key from the same environment it starts `cursor-agent` with. With a login only, no usage is recorded and no request is made.
 - **Where the key goes.** Only to `api2.cursor.sh`, the host `cursor-agent` already talks to. The key and the token stay in memory; no log line, warning, or file holds them, or a response body. Redirects are not followed.
 - **Cost.** The ledger shows the event about 1 s after the turn, so the turn closes about 1 to 2 s later, and at most about 6 s later when the event does not appear (every request is cut at that deadline). The reply text has already streamed by then. A cancelled turn stops waiting at once.
 - **The ledger is undocumented.** When it fails the reply still reaches OpenClaw, without usage:
@@ -312,8 +312,4 @@ Live test: `test/live/usage.live.test.ts`.
 
 ## Check it works
 
-```sh
-OPENCLAW_ALL_CLI_LIVE=1 npm run test:live
-```
-
-The live test needs a Cursor login and must run outside any sandbox that hides the login.
+Follow [Setup, Verify](../setup.md#5-verify): the plugin is loaded, your Cursor models are listed, and `openclaw agent --model cursor-cli/auto` answers. Contributors also have a live test suite; see Develop in [Setup](../setup.md#develop).

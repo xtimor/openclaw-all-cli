@@ -18,6 +18,10 @@ The same contract then carries over to other CLIs, Antigravity next. A new provi
 - **Isolation on request.** An agent can get its own CLI workspace: its own resume, its own state directory, its own cwd.
 - **Agents don't interfere.** Two agents never share one resume, one lock, or one write to per-agent CLI state. A shared CLI login is allowed.
 
+## Status
+
+Pre-release. Not published; you build it from source and install the `.tgz` ([Setup](docs/setup.md)). Cursor CLI only.
+
 ## Docs
 
 - [Setup](docs/setup.md): requirements, install, configuration, verification, troubleshooting.
