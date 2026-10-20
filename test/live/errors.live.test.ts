@@ -51,12 +51,18 @@ describeLive("Cursor errors are error turns, not reply text (AD-11)", () => {
       // An error turn: a failed run, whose message is the plugin's (it names the failure in words
       // the host classifies), and no assistant reply holding Cursor's raw error text.
       expect(failed.status, output).not.toBe(0);
-      expect(output).toMatch(/Cursor (internal server error|authentication failed|rate limit reached|is overloaded|timed out)/);
+      expect(output).toMatch(/Cursor (reported a server error|authentication failed|rate limit reached|is overloaded|timed out)/);
       const start = failed.stdout.indexOf("{");
-      if (start >= 0) {
-        const json = JSON.parse(failed.stdout.slice(start)) as { payloads?: Array<{ text?: string }> };
-        expect((json.payloads ?? []).map((payload) => payload.text ?? "").join("\n")).not.toContain("RetriableError");
+      let json: { payloads?: Array<{ text?: string }>; result?: { payloads?: Array<{ text?: string }> } } | undefined;
+      try {
+        json = start >= 0 ? JSON.parse(failed.stdout.slice(start)) : undefined;
+      } catch {
+        json = undefined;
       }
+      expect(json, `stdout is not JSON: ${failed.stdout}`).toBeDefined();
+      const reply = [...(json!.payloads ?? []), ...(json!.result?.payloads ?? [])].map((payload) => payload.text ?? "").join("\n");
+      expect(reply).not.toContain("Error:");
+      expect(reply).not.toMatch(/Cursor (reported a server error|authentication failed|rate limit reached|is overloaded|timed out)/);
     },
     LIVE_TIMEOUT_MS * 2,
   );

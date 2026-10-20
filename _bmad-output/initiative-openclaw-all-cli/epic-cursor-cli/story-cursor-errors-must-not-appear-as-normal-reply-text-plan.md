@@ -3,7 +3,7 @@ title: "Cursor errors must not appear as normal reply text"
 type: 'bugfix'
 ticket: 20
 created: '2026-10-20'
-status: in-review
+status: built
 baseline_revision: '874a33204b676fcf75dfe4c0f4a5a067d8b2f8e1'
 route: 'full'
 route_source: 'auto'
@@ -12,7 +12,7 @@ review: 'quick'
 review_source: 'pinned'
 lenses_ran: [quick]
 review_loop_iteration: 0
-followup_review_recommended: false
+followup_review_recommended: true
 context:
   - '{project-root}/MEMORY.md'
 warnings: []
@@ -100,3 +100,20 @@ Investigation (live, cursor-agent 2026.10.19): see commit 35886af. Failure text 
 **Commands:**
 - `npm run typecheck && npm test` -- expected: pass
 - `npm run test:live -- errors` -- expected: pass with a Cursor login; otherwise record as not run
+
+## Auto Run Result
+
+Status: built. Summary: a Cursor failure reported as the last reply chunk now ends the turn as an `error` event with a failover class; ordinary text is unchanged.
+
+Files changed:
+- `src/transports/acp/{session,runtime,handshake}.ts` -- `classifyReplyError` hook, held chunk, `data.message` in start failures.
+- `src/adapters/cursor/{errors,index}.ts` -- Cursor classifier, wired on both open paths.
+- `test/` (fake agent, live harness and `errors.live.test.ts`, `toggle-proxy.test.ts`), unit tests, `docs/`, AD-11, `MEMORY.md`.
+
+Review (quick, pass 1): 7 findings; 5 patched (3 medium, 2 low), 2 rejected as low (see Review Triage Log). Deferred: 0.
+
+Follow-up review recommended: true. Three medium entries were patched (server-error wording, empty-chunk flush, weak live assertion), so one more pass should check the patches themselves.
+
+Verification: `npm run typecheck` clean; `npm test` 857 passed, 61 skipped; `test/live/errors.live.test.ts` passed against real cursor-agent 2026.10.19 with `CURSOR_API_KEY` (1 test, 62 s).
+
+Residual risks: a proxy `403 Forbidden` quoted in Cursor's text is read by the host as `auth` (documented); a model reply that is exactly a failure-shaped final chunk reads as an error (documented).

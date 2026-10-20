@@ -11,7 +11,7 @@ describe("classifyCursorReplyError", () => {
     expect(classifyCursorReplyError(RETRIABLE)).toEqual({
       code: "server_error",
       retryable: true,
-      message: `Cursor internal server error: ${RETRIABLE.trim()}`,
+      message: `Cursor reported a server error: ${RETRIABLE.trim()}`,
     });
   });
 
@@ -26,10 +26,10 @@ describe("classifyCursorReplyError", () => {
     ["unavailable", "overloaded", /overloaded/],
     ["deadline_exceeded", "timeout", /timed out/],
     ["invalid_argument", "format", /invalid request format/],
-    ["failed_precondition", "format", /invalid request format/],
-    ["internal", "server_error", /internal server error/],
-    ["unknown", "server_error", /internal server error/],
-    ["something_new", "server_error", /internal server error/],
+    ["internal", "server_error", /reported a server error/],
+    ["unknown", "server_error", /reported a server error/],
+    ["something_new", "server_error", /reported a server error/],
+    ["failed_precondition", "server_error", /reported a server error/],
   ])("maps the connect code [%s] to %s", (code, expected, keyword) => {
     for (const text of [`\n\nError: [${code}] detail`, `\n\nError: NonRetriableError: [${code}] detail`]) {
       const result = classifyCursorReplyError(text);

@@ -231,6 +231,8 @@ export function createClient(runtime: Runtime, onPermissionRequest: AcpSessionOp
         return;
       }
       if (update.sessionUpdate === "agent_message_chunk" && update.content.type === "text") {
+        // An empty chunk says nothing: it must not flush a held failure.
+        if (!update.content.text) return;
         flushHeld(runtime, turn);
         const error = classifyChunk(runtime, update.content.text);
         if (error) runtime.held = { text: update.content.text, error };
