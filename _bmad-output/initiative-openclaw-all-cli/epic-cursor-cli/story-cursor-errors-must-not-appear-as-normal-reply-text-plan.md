@@ -1,31 +1,91 @@
 ---
 title: "Cursor errors must not appear as normal reply text"
+type: 'bugfix'
 ticket: 20
-status: draft
+created: '2026-10-20'
+status: ready-for-dev
+baseline_revision: '874a33204b676fcf75dfe4c0f4a5a067d8b2f8e1'
+route: 'full'
+route_source: 'auto'
+risk: 'medium'
+review: ''
+review_source: ''
+lenses_ran: []
+review_loop_iteration: 0
+followup_review_recommended: false
+context:
+  - '{project-root}/MEMORY.md'
+warnings: []
+deferred: []
 ---
 
-## Auto Run Result
+<intent-contract>
 
-Status: blocked. Blocking condition: `no subagents`. This worker has no subagent-launching tool (the workflow requires a review subagent and, on the full route, an implementing subagent). No code was changed. The working tree was clean before this file was added.
+## Intent
 
-Investigation done (carry into the retry; checked live with cursor-agent 2026.10.19 and `CURSOR_API_KEY`, outside the sandbox):
+**Problem:** Cursor reports a failed turn (network, auth, rate limit, plan) as one final `agent_message_chunk` and then `stopReason: end_turn`. The plugin shows it as a normal assistant reply, so OpenClaw failover, retries, and the transcript never see an error.
 
-- Cursor's `session/prompt` turn catch (bundle `6136.index.js`) sends the failure as ONE final `agent_message_chunk`, then returns `end_turn`:
-  - `ActionRequiredError`: `"\n\n" + {login:"Please sign in to continue", upgrade:"Upgrade your plan to continue", payment:"Add a payment method to continue", config:"Check your settings to continue"}[action] ?? e.message` (no `Error:` prefix).
-  - Unauthenticated connect error: `"\n\nError: [unauthenticated] Backend rejected authentication. Verify this is a User API Key ..."`.
-  - Anything else: `"\n\nError: " + String(e)`, with `e.name` one of `RetriableError`, `NonRetriableError` (or a plain JS error name) and a message that usually starts `[<connect code>] ` (`internal`, `resource_exhausted`, `unavailable`, `deadline_exceeded`, ...).
-  - A `CancelledError` returns silently.
-- Reproduced live with a toggleable chaining CONNECT proxy (block after `session/new`): reply chunk `"\n\nError: RetriableError: [internal] HTTPS proxy CONNECT failed: 403 Forbidden"` or `"... Failed to negotiate an HTTP CONNECT tunnel with the configured proxy"`, stopReason `end_turn`, no other text. A bad `CURSOR_API_KEY` or no network at start fails `session/new` with JSON-RPC `-32603 Internal error`, `data.message` `Failed to initialize session services` (already an error turn, class `server_error`; `toCliError` drops `data.message`).
-- The host derives the failover reason from the error MESSAGE text only (`createCliOutputFailoverError` -> `classifyFailoverReason(message)`); `code`/`retryable` never reach it. Tested with the host's `classify-*.mjs`: `"Cursor rate limit reached: Upgrade your plan to continue"` -> rate_limit; `"... payment required"` -> billing; `"Cursor rejected the API key (unauthorized): invalid API key"` -> auth; bare `"Upgrade your plan to continue"`, `"Please sign in to continue"`, `"Check your settings to continue"` -> unclassified; any text with `403 Forbidden` -> auth. So the message wording is part of the fix.
+**Approach:** The ACP transport takes an optional adapter hook that recognises such a final chunk. A recognised chunk that ends the turn becomes an `error` event with a failover class; the Cursor adapter supplies the classifier.
 
-Proposed design (not built):
+## Boundaries & Constraints
 
-1. Generic hook in `src/transports/acp/session.ts` / `runtime.ts`: `AcpSessionOptions.classifyReplyError?(text): CliErrorInfo | undefined`. A text chunk the hook recognises is held back instead of pushed; any later text, thinking, or tool event flushes it as ordinary text (it was not final); if the prompt ends `end_turn` with it still held, `settleTurn` closes open tools and pushes `{kind:"error"}` (retryable only if the hook says so and no tool started) instead of `result`. `cancelled`/`refusal` keep their paths; a held chunk is dropped on cancel.
-2. `src/adapters/cursor/errors.ts` (new): the classifier for the three shapes above, matching only a chunk that starts `\n\nError: ` followed by `[code]` or `<Name>: `, or one of the four exact action phrases. Map connect codes: unauthenticated/permission_denied -> auth, resource_exhausted -> rate_limit, unavailable -> overloaded, deadline_exceeded -> timeout, invalid_argument/failed_precondition -> format, internal/unknown -> server_error; RetriableError -> retryable. Action phrases: login -> auth, upgrade -> rate_limit ("usage limit"), payment -> billing, config -> auth_permanent (invalid key or outdated client). Messages carry host-recognised keywords plus Cursor's original text.
-3. `src/transports/acp/handshake.ts`: include JSON-RPC `data.message` in start failures.
-4. Tests: classifier unit tests; `session.test.ts` hold/flush/error cases; fake agent `[[error]]<text>` support; a live row in `test/live/` using the toggleable CONNECT proxy (probe script idea: block `*.cursor.sh` after `session/new`), asserting an error turn and no assistant text.
-5. Docs: `docs/providers/cursor.md` (new errors section, Known limits: a model reply that is exactly a final chunk starting `\n\nError: <Name>: ` would be read as an error), `docs/setup.md` troubleshooting rows, one sentence in AD-11.
+**Always:** The transport stays CLI-neutral (AD-2): only the hook knows Cursor's wording. Error messages carry Cursor's original text plus keywords the host classifier reads (it reads message text only). Text that is followed by anything else in the turn stays ordinary text. A tool that started makes the error non-retryable.
 
-Estimated size: well over 100 lines, so route `full`; risk `medium`.
+**Never:** No change to `result` handling for normal turns, to cancel/refusal paths, or to usage. No retry loop in the plugin. Do not read `rawOutput` or other CLI files.
 
-Report: plan_file above; final status `blocked`; followup_review_recommended false; deferred items 0; code reverted or re-derived: no.
+## I/O & Edge-Case Matrix
+
+| Scenario | Input / State | Expected Output / Behavior | Error Handling |
+|----------|--------------|---------------------------|----------------|
+| Normal reply | text chunks, `end_turn` | text + `result`, unchanged | none |
+| Failure chunk is last | final chunk `\n\nError: RetriableError: [internal] ...`, `end_turn` | `error` event (`server_error`, retryable if no tool started), no `result`, no assistant text | held chunk dropped from the reply |
+| Action phrase last | `Upgrade your plan to continue` / `Please sign in to continue` / `Add a payment method to continue` / `Check your settings to continue` | `error`: `rate_limit` / `auth` / `billing` / `auth_permanent` | message has host keywords + original text |
+| Look-alike, more follows | recognised chunk, then any text, thinking, or tool event | chunk flushed as ordinary text in order | none |
+| Connect codes | `[unauthenticated]` `[permission_denied]` `[resource_exhausted]` `[unavailable]` `[deadline_exceeded]` `[invalid_argument]` | `auth`, `auth`, `rate_limit`, `overloaded`, `timeout`, `format` | unknown code: `server_error` |
+| Start failure | `session/new` JSON-RPC `-32603`, `data.message` set | `CliError` message includes `data.message` | existing code mapping |
+| Cancel with held chunk | `cancelled` stop | held chunk dropped, existing cancel error | none |
+
+</intent-contract>
+
+## Code Map
+
+- `src/transports/acp/session.ts` -- `AcpSessionOptions`, `prompt()` loop, `settleTurn` (pushes `result`/`error`).
+- `src/transports/acp/runtime.ts` -- `createClient.sessionUpdate` pushes `text`; hold logic goes here or in a small helper beside it.
+- `src/transports/acp/handshake.ts` -- `toCliError`, `errorDetail` (reads JSON-RPC `data`); use it for start failures.
+- `src/core/ports.ts` -- `CliErrorInfo`, `CliErrorCode` (reuse; no new codes).
+- `src/adapters/cursor/index.ts` -- passes options to `AcpSession.open` (~l.222, ~l.281); add the hook.
+- `src/adapters/cursor/errors.ts` -- new classifier. Do not change `tool-display.ts`, `usage.ts`.
+- `test/fixtures/fake-cursor-agent.mjs` -- add `[[error]]<text>`: sends `<text>` as a final chunk, `end_turn`.
+- `test/live/` + `harness.ts` -- add a live row (toggleable CONNECT proxy blocking `*.cursor.sh` after `session/new`); skip without a login.
+- `docs/providers/cursor.md`, `docs/setup.md` (Troubleshooting), architecture spine AD-11 -- docs.
+
+## Tasks & Acceptance
+
+**Execution:**
+- [ ] `src/transports/acp/session.ts`, `runtime.ts` -- add `classifyReplyError?(text): CliErrorInfo | undefined`; hold a recognised text chunk, flush it on any later event, turn it into `error` in `settleTurn` on `end_turn`; drop on cancel -- the transport decides timing, the hook decides wording
+- [ ] `src/adapters/cursor/errors.ts` -- classifier: a chunk starting `\n\nError: ` then `[code]` or `<Name>: `, or one of the four exact phrases; `RetriableError` sets retryable; maps per the matrix -- Cursor wording in one place
+- [ ] `src/adapters/cursor/index.ts` -- pass the classifier on both open paths
+- [ ] `src/transports/acp/handshake.ts` -- include `data.message` in start failures
+- [ ] `src/transports/acp/session.test.ts`, `src/adapters/cursor/errors.test.ts`, fake agent -- unit tests for every matrix row
+- [ ] `test/live/errors.live.test.ts` -- forced failure gives an OpenClaw error turn, no assistant text
+- [ ] docs (`cursor.md` errors section and known limit: a reply that is exactly such a final chunk reads as an error; `setup.md` rows; AD-11 sentence)
+
+**Acceptance Criteria:**
+- Given a final failure chunk and `end_turn`, when the turn ends, then the consumer gets one `error` event with the matrix class and no `result` and no assistant text.
+- Given a recognised chunk followed by more output, when the turn ends, then the chunk is in the reply in order and the turn ends with `result`.
+- Given a forced Cursor failure through the real OpenClaw, when it runs, then the turn is an error turn (live; recorded `not run` if no Cursor login).
+- Given `npm test`, and typecheck, when run, then all pass.
+
+## Implementation Notes
+
+Investigation (live, cursor-agent 2026.10.19): see commit 35886af. Failure text shapes: `\n\nError: <Name>: [<code>] ...`, `\n\nError: [unauthenticated] ...`, and bare action phrases. The host classifies by message text only, so wording matters: "rate limit", "payment required", "unauthorized" style keywords.
+
+## Plan Change Log
+
+## Review Triage Log
+
+## Verification
+
+**Commands:**
+- `npm run typecheck && npm test` -- expected: pass
+- `npm run test:live -- errors` -- expected: pass with a Cursor login; otherwise record as not run
