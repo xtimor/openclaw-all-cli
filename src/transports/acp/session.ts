@@ -3,6 +3,7 @@ import * as acp from "@agentclientprotocol/sdk";
 import {
   CliError,
   type CliCapability,
+  type CliErrorInfo,
   type CliSession,
   type NormalizedEvent,
   type NormalizedUsage,
@@ -91,6 +92,13 @@ export type AcpSessionOptions = {
    * defers the start by one update, and the final update falls back to the agent's own name.
    */
   describeToolCall?: DescribeToolCall;
+  /**
+   * Recognises a text chunk that is really a failure the agent reported as its reply. A recognised
+   * chunk is held back: if the turn ends right after it (`end_turn`), the turn is that error and the
+   * chunk is not part of the reply; if anything else follows (text, thinking, a tool), the chunk is
+   * ordinary text and goes out in order. Retryable is cleared when a tool call started.
+   */
+  classifyReplyError?: (text: string) => CliErrorInfo | undefined;
   clientName?: string;
   clientVersion?: string;
   signal?: AbortSignal;
@@ -174,6 +182,7 @@ export class AcpSession implements CliSession {
     runtime.turn = channel.queue;
     const tools = new ToolCallTable(runtime.describeToolCall);
     runtime.tools = tools;
+    runtime.held = undefined;
 
     // A death after a tool call started is not retryable: the call may already have run (AD-11).
     const died = runtime.exited.then(() => {
@@ -202,6 +211,7 @@ export class AcpSession implements CliSession {
       await settled;
       runtime.turn = undefined;
       runtime.tools = undefined;
+      runtime.held = undefined;
       runtime.toolCalls.clear();
     }
   }
@@ -278,6 +288,12 @@ type TurnParams = {
   images: readonly PromptImage[];
 };
 
+function takeHeld(runtime: Runtime): Runtime["held"] {
+  const held = runtime.held;
+  runtime.held = undefined;
+  return held;
+}
+
 /** Runs the prompt and settles the turn's queue with its closing events; never rejects. */
 async function settleTurn({ connection, sessionId, command, runtime, tools, queue, died, text, images }: TurnParams): Promise<void> {
   try {
@@ -292,11 +308,19 @@ async function settleTurn({ connection, sessionId, command, runtime, tools, queu
       }),
       died,
     ]);
+    // A held chunk is the turn's error only when the agent ended the turn right after it; a cancel
+    // drops it; on any other stop it was ordinary text, said before the tools below closed.
+    const held = takeHeld(runtime);
+    const replyError = response.stopReason === "end_turn" ? held?.error : undefined;
+    if (held && !replyError && response.stopReason !== "cancelled") queue.push({ kind: "text", text: held.text });
     // Nothing stays pending for the host when the turn closes.
     for (const event of tools.closeOpen()) queue.push(event);
     const usage = mapUsage(response.usage);
     if (usage) queue.push({ kind: "usage", usage });
-    if (response.stopReason === "cancelled") {
+    if (replyError) {
+      // A tool that started may already have had an effect: the turn is not safe to retry (AD-11).
+      queue.push({ kind: "error", error: { ...replyError, retryable: replyError.retryable && !tools.started } });
+    } else if (response.stopReason === "cancelled") {
       queue.push({
         kind: "error",
         error: { code: "unknown", retryable: false, message: "The CLI cancelled the turn." },
@@ -315,6 +339,8 @@ async function settleTurn({ connection, sessionId, command, runtime, tools, queu
     const failure = runtime.hasExited
       ? deathError(runtime, command, !tools.started)
       : toCliError(error, "server_error", "The CLI turn failed");
+    const held = takeHeld(runtime);
+    if (held) queue.push({ kind: "text", text: held.text });
     for (const event of tools.closeOpen()) queue.push(event);
     queue.push({ kind: "error", error: failure.toInfo() });
   } finally {

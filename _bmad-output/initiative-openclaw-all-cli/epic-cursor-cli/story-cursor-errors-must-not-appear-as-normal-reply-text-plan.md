@@ -3,7 +3,7 @@ title: "Cursor errors must not appear as normal reply text"
 type: 'bugfix'
 ticket: 20
 created: '2026-10-20'
-status: ready-for-dev
+status: in-progress
 baseline_revision: '874a33204b676fcf75dfe4c0f4a5a067d8b2f8e1'
 route: 'full'
 route_source: 'auto'

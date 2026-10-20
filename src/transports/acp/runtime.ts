@@ -1,7 +1,7 @@
 import { spawn, type ChildProcess } from "node:child_process";
 import { statSync } from "node:fs";
 import * as acp from "@agentclientprotocol/sdk";
-import { CliError, type NormalizedEvent, type PermissionDecision } from "../../core/ports.ts";
+import { CliError, type CliErrorInfo, type NormalizedEvent, type PermissionDecision } from "../../core/ports.ts";
 import type { AcpPermissionRequest, AcpSessionOptions } from "./session.ts";
 import { ToolCallTable, isRecord, mergeToolFacts, type DescribeToolCall } from "./tool-calls.ts";
 
@@ -35,7 +35,32 @@ export type Runtime = {
   describeToolCall?: DescribeToolCall;
   /** The running turn's tool calls, folded into `toolStart` and `toolResult` events. */
   tools?: ToolCallTable;
+  /** The adapter's recogniser for a failure the agent sends as reply text. */
+  classifyReplyError?: (text: string) => CliErrorInfo | undefined;
+  /**
+   * A text chunk the adapter recognised as a failure, held back until the turn shows whether it was
+   * the last thing said. Anything after it flushes it as ordinary text.
+   */
+  held?: { text: string; error: CliErrorInfo };
 };
+
+/** Pushes a held chunk as ordinary text: something followed it, so it was not the end of the turn. */
+function flushHeld(runtime: Runtime, turn: TurnQueue): void {
+  const held = runtime.held;
+  if (!held) return;
+  runtime.held = undefined;
+  turn.push({ kind: "text", text: held.text });
+}
+
+/** What the adapter's hook says about a chunk; a throwing hook counts as "not an error". */
+function classifyChunk(runtime: Runtime, text: string): CliErrorInfo | undefined {
+  if (!runtime.classifyReplyError || !text) return undefined;
+  try {
+    return runtime.classifyReplyError(text);
+  } catch {
+    return undefined;
+  }
+}
 
 /** The error for a process that is gone: a missing binary, or an exit nobody asked for. */
 export function deathError(runtime: Runtime, command: string, retryable = true): CliError {
@@ -128,6 +153,7 @@ export function spawnRuntime(options: AcpSessionOptions): Runtime {
     pending: new Set(),
     toolCalls: new Map(),
     ...(options.describeToolCall ? { describeToolCall: options.describeToolCall } : {}),
+    ...(options.classifyReplyError ? { classifyReplyError: options.classifyReplyError } : {}),
     exited: Promise.resolve(),
   };
   runtime.exited = new Promise<void>((resolve) => {
@@ -173,6 +199,7 @@ export function createClient(runtime: Runtime, onPermissionRequest: AcpSessionOp
     requestPermission(params) {
       // An approved call may run without ever being announced: it still counts as a tool (AD-11).
       if (runtime.tools) runtime.tools.started = true;
+      if (runtime.turn) flushHeld(runtime, runtime.turn);
       const request = permissionRequest(runtime, params);
       return new Promise<acp.RequestPermissionResponse>((resolve) => {
         const entry: PendingPermission = { resolve };
@@ -198,13 +225,18 @@ export function createClient(runtime: Runtime, onPermissionRequest: AcpSessionOp
       if (!turn) return;
       const update = params.update;
       if (update.sessionUpdate === "tool_call" || update.sessionUpdate === "tool_call_update") {
+        flushHeld(runtime, turn);
         rememberToolCall(runtime, update);
         for (const event of runtime.tools?.update(update) ?? []) turn.push(event);
         return;
       }
       if (update.sessionUpdate === "agent_message_chunk" && update.content.type === "text") {
-        turn.push({ kind: "text", text: update.content.text });
+        flushHeld(runtime, turn);
+        const error = classifyChunk(runtime, update.content.text);
+        if (error) runtime.held = { text: update.content.text, error };
+        else turn.push({ kind: "text", text: update.content.text });
       } else if (update.sessionUpdate === "agent_thought_chunk" && update.content.type === "text") {
+        flushHeld(runtime, turn);
         turn.push({ kind: "thinking", text: update.content.text });
       }
     },
