@@ -3,14 +3,14 @@ title: "Cursor errors must not appear as normal reply text"
 type: 'bugfix'
 ticket: 20
 created: '2026-10-20'
-status: in-progress
+status: in-review
 baseline_revision: '874a33204b676fcf75dfe4c0f4a5a067d8b2f8e1'
 route: 'full'
 route_source: 'auto'
 risk: 'medium'
-review: ''
-review_source: ''
-lenses_ran: []
+review: 'quick'
+review_source: 'pinned'
+lenses_ran: [quick]
 review_loop_iteration: 0
 followup_review_recommended: false
 context:
@@ -83,6 +83,17 @@ Investigation (live, cursor-agent 2026.10.19): see commit 35886af. Failure text 
 ## Plan Change Log
 
 ## Review Triage Log
+
+### 2026-10-20 — Review pass
+- verdicts: 7 findings — high 0, medium 3, low 4, false 0, maybe-false 0
+- findings:
+  - `[medium]` `patch` SERVER_ERROR label "internal server error" reaches the host as `timeout` — checked with the host classifier; label changed to "reported a server error" (host gives no class)
+  - `[medium]` `patch` empty trailing chunk flushes the held error as reply text — confirmed in `sessionUpdate` order; empty chunks are ignored, test added
+  - `[low]` `patch` `failed_precondition` mapped to `format` against the plan's six codes — removed, falls to `server_error`
+  - `[medium]` `patch` live test "no assistant text" check is weak and can throw unclearly — parse safely, assert no reply payload carries the error text
+  - `[low]` `patch` setup.md row lacks the invalid-request-format message — row extended
+  - `[low]` `reject` handshake `toCliError` wider than the plan and beside `errorDetail` — the wider message helps every start/resume failure the same way; `errorDetail` joins all data strings for matching, a different job; merging adds more code than it removes
+  - `[low]` `reject` toggle-proxy test polling has no deadline — vitest's per-test timeout ends it; a deadline adds code to a test helper nobody will hit in everyday use
 
 ## Verification
 
