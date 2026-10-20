@@ -3,7 +3,7 @@ title: 'Images and compaction'
 type: 'feature'
 ticket: '14'
 created: '2026-10-20'
-status: 'in-progress'
+status: done
 baseline_revision: '550dfd70e7c4821f8a979e1679e5e7d06c96c2fc'
 route: 'full'
 route_source: 'auto'
