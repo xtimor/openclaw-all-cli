@@ -3,7 +3,7 @@ title: 'Refactor sweep'
 type: 'refactor'
 ticket: '16'
 created: '2026-10-20'
-status: 'ready-for-dev'
+status: 'in-progress'
 baseline_revision: 'dffa35de26e75c871998b3fd5391d44509c3c85a'
 route: 'full'
 route_source: 'auto'
@@ -67,16 +67,16 @@ Refactor hazards. Each row must hold after its step.
 ## Tasks & Acceptance
 
 **Execution:**
-- [ ] Step 0 `<scratchpad>/size.mjs` (not committed) -- record the baseline commands' output in Implementation Notes; write a size script on `node_modules/rolldown/dist/parse-ast-index.mjs` `parseAst` that prints file lines and function lengths, a factory measured by its own statements -- the size AC needs a check.
-- [ ] Step 1 `claude-cli-parity.md` -- P16 cell: put `test/live/usage.live.test.ts` in the cursor-cli cell, Antigravity back to `tbd`, drop the `-p` lead -- docs drift.
-- [ ] Step 2 `src/core/{manifest,catalog,execute,images,pid-locks,pool,system-prompt,config,events}.ts`, `src/transports/acp/tool-calls.ts`, `src/adapters/cursor/models.ts` -- delete `MissingCapability`, drop the `export` keywords listed in Code Map -- dead surface.
-- [ ] Step 3 `src/core/mcp-proxy.ts` -- one body parse (`requestsOf` gives the id: single request's id, else null); top-level pure `expiredPayload(...)` and `upstreamUrl(...)`; `handle` ≤ 80 lines -- length, duplicate parse.
-- [ ] Step 4 `src/transports/acp/handshake.ts` (new) + `session.ts` + `tool-calls.ts` -- move `setup`, `login`, `switchModel`, the model-fact readers, `SESSION_UNKNOWN`/`errorDetail`/`resumeError` to `handshake.ts`; split `open` into spawn/runtime and client-handler helpers, `prompt` into queue and settle helpers, and `setup` into capability check and new-or-load helpers; one `settleExit(runtime)`; `tool-calls.ts` exports `isRecord` and a `mergeToolFacts` used by `ToolCallTable.update` and `rememberToolCall` -- session.ts ≤ 450 lines, functions ≤ 80.
-- [ ] Step 5 `src/core/tool-ledger.ts`, `chat-registry.ts`, `turn-prompt.ts` (new) + `execute.ts` + `system-prompt.ts` -- move `ToolLedger`; move `chats`, `chatKey`, claim/release/holder-exit wait and the post-open re-key (module-level, takes `home` and grace as arguments); move `composePrompt`, `CONTINUITY_NOTE`, `HOST_SHELL_ARG` and `splitHostShell` (computed once per turn) to `turn-prompt.ts`, re-exported from `execute.ts`; add a delivery-plan helper in `system-prompt.ts` for lines 681-692 and 706; split `run` into an open-fresh-entry helper and a turn-body helper, and `attachSession` into open and post-open (capability check, chat re-key, exit hooks) helpers -- execute.ts ≤ 450 lines, functions ≤ 80.
-- [ ] Step 6 `src/core/backend.ts` -- extract `prepareExecution` into a named builder -- `buildCliBackend` ≤ 80 lines.
-- [ ] After each of steps 1-6, `package.json` scripts `typecheck` and `test` -- same counts as baseline; for steps 3-5 also the mutation checks in Design Notes, each result recorded in Implementation Notes -- one green step at a time, so a failure points at one step.
-- [ ] Step 7 `package.json` scripts `build`, `dev:install`, `test:live`, plus `test/isolated-openclaw.test.ts` -- `npx tsc --noEmit --noUnusedLocals --noUnusedParameters`, build, install, the isolated load test, then the live suite once under the re-run rule; run the size script -- final net.
-- [ ] Step 8 `MEMORY.md` -- `CONTINUITY_NOTE` now in `src/core/turn-prompt.ts`; one line with the new module map (chat registry, turn prompt, tool ledger, ACP handshake). `docs/`: no change (no setup, config, or behavior change); say so in Implementation Notes.
+- [x] Step 0 `<scratchpad>/size.mjs` (not committed) -- record the baseline commands' output in Implementation Notes; write a size script on `node_modules/rolldown/dist/parse-ast-index.mjs` `parseAst` that prints file lines and function lengths, a factory measured by its own statements -- the size AC needs a check.
+- [x] Step 1 `claude-cli-parity.md` -- P16 cell: put `test/live/usage.live.test.ts` in the cursor-cli cell, Antigravity back to `tbd`, drop the `-p` lead -- docs drift.
+- [x] Step 2 `src/core/{manifest,catalog,execute,images,pid-locks,pool,system-prompt,config,events}.ts`, `src/transports/acp/tool-calls.ts`, `src/adapters/cursor/models.ts` -- delete `MissingCapability`, drop the `export` keywords listed in Code Map -- dead surface.
+- [x] Step 3 `src/core/mcp-proxy.ts` -- one body parse (`requestsOf` gives the id: single request's id, else null); top-level pure `expiredPayload(...)` and `upstreamUrl(...)`; `handle` ≤ 80 lines -- length, duplicate parse.
+- [x] Step 4 `src/transports/acp/handshake.ts` (new) + `session.ts` + `tool-calls.ts` -- move `setup`, `login`, `switchModel`, the model-fact readers, `SESSION_UNKNOWN`/`errorDetail`/`resumeError` to `handshake.ts`; split `open` into spawn/runtime and client-handler helpers, `prompt` into queue and settle helpers, and `setup` into capability check and new-or-load helpers; one `settleExit(runtime)`; `tool-calls.ts` exports `isRecord` and a `mergeToolFacts` used by `ToolCallTable.update` and `rememberToolCall` -- session.ts ≤ 450 lines, functions ≤ 80.
+- [x] Step 5 `src/core/tool-ledger.ts`, `chat-registry.ts`, `turn-prompt.ts` (new) + `execute.ts` + `system-prompt.ts` -- move `ToolLedger`; move `chats`, `chatKey`, claim/release/holder-exit wait and the post-open re-key (module-level, takes `home` and grace as arguments); move `composePrompt`, `CONTINUITY_NOTE`, `HOST_SHELL_ARG` and `splitHostShell` (computed once per turn) to `turn-prompt.ts`, re-exported from `execute.ts`; add a delivery-plan helper in `system-prompt.ts` for lines 681-692 and 706; split `run` into an open-fresh-entry helper and a turn-body helper, and `attachSession` into open and post-open (capability check, chat re-key, exit hooks) helpers -- execute.ts ≤ 450 lines, functions ≤ 80.
+- [x] Step 6 `src/core/backend.ts` -- extract `prepareExecution` into a named builder -- `buildCliBackend` ≤ 80 lines.
+- [x] After each of steps 1-6, `package.json` scripts `typecheck` and `test` -- same counts as baseline; for steps 3-5 also the mutation checks in Design Notes, each result recorded in Implementation Notes -- one green step at a time, so a failure points at one step.
+- [x] Step 7 `package.json` scripts `build`, `dev:install`, `test:live`, plus `test/isolated-openclaw.test.ts` -- `npx tsc --noEmit --noUnusedLocals --noUnusedParameters`, build, install, the isolated load test, then the live suite once under the re-run rule; run the size script -- final net.
+- [x] Step 8 `MEMORY.md` -- `CONTINUITY_NOTE` now in `src/core/turn-prompt.ts`; one line with the new module map (chat registry, turn prompt, tool ledger, ACP handshake). `docs/`: no change (no setup, config, or behavior change); say so in Implementation Notes.
 
 **Acceptance Criteria:**
 - Given the baseline, when `npx vitest run` runs after the sweep, then 802 tests pass and 60 skip, and `git diff dffa35de26e75c871998b3fd5391d44509c3c85a --stat -- '*.test.ts' test/` prints nothing.
@@ -86,6 +86,70 @@ Refactor hazards. Each row must hold after its step.
 - Given this plan, when a reader looks up any deferred finding of the epic's plans, then the Deferred Findings table gives it a verdict, fixed or dropped, with a reason.
 
 ## Implementation Notes
+
+Build worker run, 2026-10-20, branch `claude/friendly-hawking-tn9eme`, Node v24.22.0 (`.spike/node`). Nothing committed. No test, fixture, `images.ts` or `pid-locks.ts` change except the two `export` removals.
+
+**Baseline** (before any edit): `npm run typecheck` clean, `npm run build` clean, `npx vitest run` 27 files passed / 14 skipped, 802 tests passed / 60 skipped. After every step 2-6 the same three commands gave the same counts, and `npx tsc --noEmit --noUnusedLocals --noUnusedParameters` stayed clean.
+
+**Size script** (`<scratchpad>/size.mjs`, not committed): rolldown `parseAst` (`lang: "ts"`); prints file lines and functions over 80 lines, a function measured by its own statements (nested functions subtracted) and also flagged when its total is over 80. Baseline flagged `execute.ts` 779, `session.ts` 714, and `attachSession` 88, `run` 205, `setup` 86, `handle` 54/107, `open` 61/134, `prompt` 49/111, `buildCliBackend` 78/126 (own/total). After: every file under `src/` is at most 439 lines; no function is over 80 lines except `takeHostImages` (91, kept whole) and the factories measured by their own statements (`createExecute` 54, `startMcpProxy` 22, `createCursorUsageReader` 36).
+
+| File | Before | After |
+|------|-------:|------:|
+| `src/core/execute.ts` | 779 | 439 |
+| `src/transports/acp/session.ts` | 714 | 323 |
+| `src/core/mcp-proxy.ts` | 375 | 378 (`handle` 107 to 80) |
+| `src/core/backend.ts` | 160 | 179 (`buildCliBackend` 126 to 78) |
+| new `attach-session.ts`, `live-entry.ts`, `chat-registry.ts`, `turn-prompt.ts`, `tool-ledger.ts` | | 155, 116, 108, 46, 36 |
+| new `acp/handshake.ts`, `acp/runtime.ts` | | 255, 243 |
+
+**Steps.**
+- Step 1: P16 cell now has the live test in the cursor-cli cell, Antigravity `tbd`, no `-p` lead.
+- Step 2: `MissingCapability` deleted (`missingCapabilities` returns `RequiredCapability[]`); the 11 listed `export` keywords removed.
+- Step 3: `requestId` removed (the id is the single request's id from `requestsOf`, else null); top-level `expiredPayload`, `upstreamUrl`, `relayedHeaders`; `handle` is 80 lines. The guards did not move.
+- Step 4: new `acp/handshake.ts` (`setup` split into `checkCapabilities`, `authenticate`, `startSession`; `login`, `switchModel`, model readers, `SESSION_UNKNOWN`, `errorDetail`, `resumeError`, `toCliError`). `open` and `prompt` split into helpers; `settleExit` replaces the two exit races; `tool-calls.ts` exports `isRecord` and `mergeToolFacts`, used by `ToolCallTable.update` and `rememberToolCall`. Deviation: a second new file, `acp/runtime.ts` (process spawn and kill, client callbacks, turn queue, `Runtime`), because `session.ts` stayed at 544 lines with `handshake.ts` alone. Both files import only `core/ports` and each other (AD-2 test green).
+- Step 5: `tool-ledger.ts`, `chat-registry.ts` (module-level `chats`, takes `home` and the grace as arguments), `turn-prompt.ts` (`composePrompt`, `CONTINUITY_NOTE`, `HOST_SHELL_ARG`, `HOST_SHELL_TOOL`, `splitHostShell`, `modeOf`; `execute.ts` re-exports the two tests import), `planDelivery` in `system-prompt.ts`. `splitHostShell` is computed once per `run`; `reuseKey` takes its `hostShell`. Deviation: two more new files, `live-entry.ts` (entry types, the `liveEntries` WeakMap that is the "entries" state, handle and proxy creation) and `attach-session.ts` (`attachSession` split into `openProcess` and `settleOpened`), because `execute.ts` could not reach 450 lines otherwise. The shared state stays module-level: one `chats` map and one `liveEntries` map for every `createExecute`. `run` is now `run`, `openFresh`, `runTurn`, `promptTurn`. `vi.mock("./mcp-proxy.ts")` still applies: `live-entry.ts` imports from that path; `takeHostImages` is still imported by `execute.ts` from `./images.ts`.
+- Step 6: `prepareExecutionFor` and `resolveExecutionArgsFor` extracted from `buildCliBackend`; same fields, same spread order.
+- Step 8: `MEMORY.md`: `CONTINUITY_NOTE` path fixed, one module-map entry added. `docs/`: no change (no setup, config, or behavior change).
+
+**Mutation spot checks** (guard removed in a copy of the tree under the scratchpad, named test file run, tree restored and diffed identical to `src/` each time). All failed as required:
+- `mcp-proxy.test.ts`: token check (4 failed), path check (1), `!current` 503 (2), `REQUEST_DROP_PREFIXES` filter (2), `relayedData` guard (1).
+- `session.test.ts`: `SESSION_UNKNOWN` branch forced true (4), capability check moved after login (2), `requiredModeId` check off (1), `cancelled` maps to an option (1).
+- `execute.test.ts` + `test/system-prompt.test.ts` + `test/exec-tool.test.ts`: neutralization flag off (1), side-question/approvals reject path off (2), `hostShell` without the `exec` listing check (5), `degraded` on an unreadable list removed (1), busy-holder refusal off (2), discard for a resumed chat (1), ledger record on any event (2).
+- No guard went unchecked, so there is no gap for F5 from this sweep. `images.ts` and `pid-locks.ts` guards did not move (only `export` removals), so no mutation was run on them.
+
+**Final disposition** (every deferred finding D1-D22 and open item O1-O8; reasons in Design Notes):
+
+| # | Final | Where / reason |
+|---|-------|----------------|
+| D1, D7 | fixed | ticket 1.6 |
+| D14 | fixed | tickets 1.4, 1.19 |
+| D16 | fixed | ticket 1.19 |
+| D2 | own ticket | 1.20 (F1): needs text heuristics, a behavior change |
+| D22 | own ticket | 1.21 (F3): lifecycle change |
+| O2 | own ticket | 1.21 (F3): adds a delete |
+| O3 | own ticket | 1.22 (F4): needs test edits |
+| D3 | dropped | host reads only `errorText`; clearing the binding is host-side for `claude-cli` only |
+| D4 | dropped | the host fingerprint already hashes argv, argv0, env |
+| D5 | dropped | host watchdog aborts `ctx.abortSignal`; `open` ends on abort |
+| D6 | dropped | the static home is the lock, checked live |
+| D8 | dropped | rewritten only when permissions differ |
+| D9 | dropped | per-agent config dir sees the Linux login (1.15 proof) |
+| D10-D12 | dropped | need warm reuse, which 2026.10.3 never does; MEMORY open risk covers the recheck |
+| D13, D21 | dropped here | offline host-contract tests: F5, no own ticket, fits 1.17 |
+| D15 | dropped | host-bound, MEMORY open risk |
+| D17 | dropped | no stable signal from Cursor; documented |
+| D18 | dropped | host-blocked on 2026.10.3; changes resume behavior |
+| D19, D20 | dropped | no clock source / invisible over ACP; Known limits |
+| O1 | dropped | changes reply text; F2, no own ticket |
+| O4 | dropped | restart risks one double count within 5 s; persisting is a behavior change |
+| O5 | kept | host contract; `splitHostShell` now computed once per turn |
+| O6 | dropped | the host's reference backend, not an adapted CLI; AD-2 test passes |
+| O7 | fixed | step 1 |
+| O8 | fixed | steps 2-6 |
+
+**Step 7**: `npx tsc --noEmit --noUnusedLocals --noUnusedParameters` clean; `npm run build` and `npm run dev:install` ok; `npx vitest run test/isolated-openclaw.test.ts` passed (1 test, not skipped). `git diff dffa35d --stat -- '*.test.ts' test/` printed nothing. 
+
+**Live result** (after `npm run build && npm run dev:install`, one `npm run test:live`, 12:35-13:27 UTC, 3107 s, `CURSOR_API_KEY` set): first run 12 files passed, 2 failed (57 tests passed, 2 failed, 1 skipped). Both match the re-run rule. (1) `history-continuity` (e) probe: `CLI transcript compaction failed for cursor-cli/auto: No API key found` (the recorded `cli_budget` compaction flake); it failed again in the paired re-run with the same message and passed alone on the third run. (2) `exec-tool` "stops a foreground command that runs past Cursor's 60 s call limit": the row exhausted its retries with an empty reply (recorded flake: an exec row that exhausts its retries); the re-run of `exec-tool` and `history-continuity` passed `exec-tool` fully. The 3 MB exec test passed in the first run. No other live file failed. No stray process remained except one orphaned `cursor-agent worker-server` with its `typescript-language-server` child (the recorded orphan behavior), killed by pid; no temp dir of this run is left.
 
 ## Plan Change Log
 

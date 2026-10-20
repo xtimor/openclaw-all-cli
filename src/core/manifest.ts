@@ -1,7 +1,6 @@
 import { capabilityMismatch, type CapabilityManifest, type CliCapability, type ParityRowId, type RequiredCapability } from "./ports.ts";
 
 export { capabilityMismatch };
-export type MissingCapability = RequiredCapability;
 
 /**
  * Backend flags the core derives from a manifest, and nothing else (AD-10). Each flag comes from
@@ -93,6 +92,6 @@ export function requiredCapabilities(manifest: CapabilityManifest): RequiredCapa
 }
 
 /** The capabilities a decided row needs and the CLI did not report. */
-export function missingCapabilities(manifest: CapabilityManifest, reported: ReadonlySet<CliCapability>): MissingCapability[] {
+export function missingCapabilities(manifest: CapabilityManifest, reported: ReadonlySet<CliCapability>): RequiredCapability[] {
   return requiredCapabilities(manifest).filter((item) => !reported.has(item.capability));
 }

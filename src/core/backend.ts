@@ -37,11 +37,6 @@ export function buildCliBackend(adapter: CliAdapter, options: BuildBackendOption
   const command = options.settings.command ?? adapter.command;
   const args = [...adapter.launchArgs];
   const pool = options.pool ?? new ProcessPool(capsOf(options.settings));
-  // A selection that lists native `exec` is accepted although the CLI can never run it (`Shell(*)` is
-  // denied): over-restrictive, not a bypass. Refusing it would break runs that select every native tool.
-  const enforceableSelection = (availability: PrepareExecutionContext["toolAvailability"]): boolean =>
-    !availability || unenforceableNativeTools(availability, adapter.alwaysOnNativeTools).length === 0;
-
   return {
     id: backendIdFor(adapter),
     // P19: the host's live-test defaults, read only by its own tests, never at runtime.
@@ -63,12 +58,7 @@ export function buildCliBackend(adapter: CliAdapter, options: BuildBackendOption
           toolAvailabilityEnforcement: "execution-args" as const,
           // The launch args stay the host's `baseArgs`; when the host serves its `exec` for this run, a
           // marker rides along for `execute` to read and strip (see `HOST_SHELL_ARG`).
-          resolveExecutionArgs: (ctx: Parameters<NonNullable<CliBackendPlugin["resolveExecutionArgs"]>>[0]) =>
-            !enforceableSelection(ctx.toolAvailability)
-              ? undefined
-              : ctx.hostOwnedTools?.includes("exec")
-                ? [...ctx.baseArgs, HOST_SHELL_ARG]
-                : ctx.baseArgs,
+          resolveExecutionArgs: resolveExecutionArgsFor(adapter),
         }
       : { nativeToolMode: "always-on" as const }),
     ...(flags.mcp
@@ -117,44 +107,73 @@ export function buildCliBackend(adapter: CliAdapter, options: BuildBackendOption
       ...(flags.models && adapter.modelAliases ? { modelAliases: { ...adapter.modelAliases } } : {}),
     },
     parseJsonlEvent: (line) => parseJsonlEvent(line),
-    prepareExecution: async (ctx) => {
-      // The run's native selection must be one the adapter enforces: it cannot switch off the
-      // tools its permission file keeps open. Refuse before any process starts (AD-9).
-      const blocked = ctx.toolAvailability
-        ? unenforceableNativeTools(ctx.toolAvailability, adapter.alwaysOnNativeTools)
-        : [];
-      if (blocked.length > 0) {
-        throw new Error(
-          `${backendIdFor(adapter)} keeps native ${blocked.join(", ")} on in every turn and cannot switch ${blocked.length > 1 ? "them" : "it"} off for this run. ` +
-            "Select those native tools or run this turn on another model. OpenClaw did not start the run.",
-        );
-      }
-      try {
-        const home = await prepareAgentHome(adapter, backendIdFor(adapter), ctx.agentDir, options.warn);
-        return {
-          execute: createExecute(adapter, {
-            ...options.execute,
-            home,
-            pool,
-            mcp: flags.mcp,
-            approvals: flags.approvals,
-            usage: flags.usage,
-            continuity: flags.history && flags.mcp,
-            systemPrompt: flags.systemPrompt,
-            images: flags.images,
-            ...(ctx.authProfileId ? { authProfileId: ctx.authProfileId } : {}),
-            ...(options.warn ? { warn: options.warn } : {}),
-          }),
-        };
-      } catch (error) {
-        // Fail the turn the way an open failure does: an error record, never a shared home.
-        const record = errorRecord(error);
-        return {
-          execute: async function* () {
-            yield record;
-          },
-        };
-      }
-    },
+    prepareExecution: prepareExecutionFor(adapter, flags, pool, options),
+  };
+}
+
+/**
+ * `resolveExecutionArgs` for one backend. A selection that lists native `exec` is accepted although
+ * the CLI can never run it (`Shell(*)` is denied): over-restrictive, not a bypass. Refusing it would
+ * break runs that select every native tool.
+ */
+function resolveExecutionArgsFor(adapter: CliAdapter): NonNullable<CliBackendPlugin["resolveExecutionArgs"]> {
+  const enforceableSelection = (availability: PrepareExecutionContext["toolAvailability"]): boolean =>
+    !availability || unenforceableNativeTools(availability, adapter.alwaysOnNativeTools).length === 0;
+  return (ctx) =>
+    !enforceableSelection(ctx.toolAvailability)
+      ? undefined
+      : ctx.hostOwnedTools?.includes("exec")
+        ? [...ctx.baseArgs, HOST_SHELL_ARG]
+        : ctx.baseArgs;
+}
+
+/**
+ * `prepareExecution` for one backend: refuses a tool selection the adapter cannot enforce, prepares
+ * the agent's home, and returns the run's `execute`.
+ */
+function prepareExecutionFor(
+  adapter: CliAdapter,
+  flags: ReturnType<typeof deriveFlags>,
+  pool: ProcessPool,
+  options: BuildBackendOptions,
+): NonNullable<CliBackendPlugin["prepareExecution"]> {
+  return async (ctx) => {
+    // The run's native selection must be one the adapter enforces: it cannot switch off the
+    // tools its permission file keeps open. Refuse before any process starts (AD-9).
+    const blocked = ctx.toolAvailability
+      ? unenforceableNativeTools(ctx.toolAvailability, adapter.alwaysOnNativeTools)
+      : [];
+    if (blocked.length > 0) {
+      throw new Error(
+        `${backendIdFor(adapter)} keeps native ${blocked.join(", ")} on in every turn and cannot switch ${blocked.length > 1 ? "them" : "it"} off for this run. ` +
+          "Select those native tools or run this turn on another model. OpenClaw did not start the run.",
+      );
+    }
+    try {
+      const home = await prepareAgentHome(adapter, backendIdFor(adapter), ctx.agentDir, options.warn);
+      return {
+        execute: createExecute(adapter, {
+          ...options.execute,
+          home,
+          pool,
+          mcp: flags.mcp,
+          approvals: flags.approvals,
+          usage: flags.usage,
+          continuity: flags.history && flags.mcp,
+          systemPrompt: flags.systemPrompt,
+          images: flags.images,
+          ...(ctx.authProfileId ? { authProfileId: ctx.authProfileId } : {}),
+          ...(options.warn ? { warn: options.warn } : {}),
+        }),
+      };
+    } catch (error) {
+      // Fail the turn the way an open failure does: an error record, never a shared home.
+      const record = errorRecord(error);
+      return {
+        execute: async function* () {
+          yield record;
+        },
+      };
+    }
   };
 }

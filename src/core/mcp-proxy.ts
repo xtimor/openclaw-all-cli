@@ -138,18 +138,48 @@ function batchDeadlineMessage(ms: number): string {
   return `The batch this call was in ran longer than ${Math.round(ms / 1000)} seconds, so it was cut off and the status of this call is unknown: it may have finished or been cancelled. Check what it did before running it again.`;
 }
 
-/** The JSON-RPC id of a single request body, so an error answers the right call. */
-function requestId(body: Buffer): string | number | null {
-  try {
-    const parsed: unknown = JSON.parse(body.toString("utf8"));
-    if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
-      const id = (parsed as { id?: unknown }).id;
-      if (typeof id === "string" || typeof id === "number") return id;
-    }
-  } catch {
-    // Not JSON (a GET or DELETE has no body): the error carries a null id.
-  }
-  return null;
+/**
+ * The body that answers a request the deadline cut off, or undefined for a batch of notifications
+ * only (JSON-RPC: no body). A batch is answered as a batch. Stopping the upstream request ends all
+ * of it, so every request with an id gets an answer: a `tools/call` a tool error that only says
+ * its status is unknown (one timer covers the batch, so it may have finished), any other request a
+ * JSON-RPC error.
+ */
+function expiredPayload(parsedBody: { batch: boolean; requests: RequestInfo[] }, id: string | number | null, ms: number): string | undefined {
+  const toolError = (requestId: string | number | null, text: string) => ({
+    jsonrpc: "2.0",
+    id: requestId,
+    result: { isError: true, content: [{ type: "text", text }] },
+  });
+  const answered = parsedBody.requests.filter((request) => request.id !== null);
+  if (parsedBody.batch && answered.length === 0) return undefined;
+  return JSON.stringify(
+    parsedBody.batch
+      ? answered.map((request) =>
+          request.call
+            ? toolError(request.id, batchDeadlineMessage(ms))
+            : { jsonrpc: "2.0", id: request.id, error: { code: -32000, message: "The batch was cut off because one of its tool calls ran too long." } },
+        )
+      : toolError(id, deadlineMessage(ms)),
+  );
+}
+
+/** The target keeps its own path and query; the CLI's subpath and query are merged onto them. */
+function upstreamUrl(targetUrl: string, incoming: URL): URL {
+  const url = new URL(targetUrl);
+  url.pathname = trimTrailingSlashes(url.pathname) + incoming.pathname.slice(PROXY_PATH.length);
+  for (const [name, value] of incoming.searchParams) url.searchParams.append(name, value);
+  return url;
+}
+
+/** The upstream response headers worth relaying. */
+function relayedHeaders(upstream: Headers): Record<string, string | string[]> {
+  const headers: Record<string, string | string[]> = {};
+  upstream.forEach((value, name) => {
+    const lower = name.toLowerCase();
+    if (!HOP_BY_HOP.has(lower) && !RESPONSE_DROP.has(lower) && lower !== "set-cookie") headers[name] = value;
+  });
+  return headers;
 }
 
 function reject(res: ServerResponse, status: number, message: string, id: string | number | null = null): void {
@@ -200,11 +230,12 @@ export async function startMcpProxy(options: StartMcpProxyOptions = {}): Promise
       return reject(res, 404, "Not found.");
     }
     const body = await readBody(req);
-    const id = requestId(body);
+    const parsedBody = requestsOf(body);
+    // The id of a single request, so an error answers the right call; null for a batch or no JSON.
+    const id = !parsedBody.batch && parsedBody.requests.length === 1 ? parsedBody.requests[0]!.id : null;
     // Read after the body: the turn may have ended while the request was arriving.
     const current = target;
     if (!current) return reject(res, 503, "OpenClaw tools are not available outside a turn.", id);
-
     const controller = new AbortController();
     running.add(controller);
     // A tool call gets a deadline just under the CLI's own; on expiry the upstream request is
@@ -214,7 +245,6 @@ export async function startMcpProxy(options: StartMcpProxyOptions = {}): Promise
     let relayed: Readable | undefined;
     // A response that already carries data is final or on its way: the deadline then leaves it alone.
     let relayedData = false;
-    const parsedBody = requestsOf(body);
     const deadline = callDeadlineMs !== undefined && parsedBody.requests.some((request) => request.call)
       ? setTimeout(() => {
           if (relayedData) return;
@@ -226,29 +256,11 @@ export async function startMcpProxy(options: StartMcpProxyOptions = {}): Promise
       : undefined;
     function answerExpired() {
       if (res.writableEnded || res.destroyed) return;
-      const toolError = (requestId: string | number | null, text: string) => ({
-        jsonrpc: "2.0",
-        id: requestId,
-        result: { isError: true, content: [{ type: "text", text }] },
-      });
-      // A batch is answered as a batch. Stopping the upstream request ends all of it, so every
-      // request with an id gets an answer: a `tools/call` a tool error that only says its status is
-      // unknown (one timer covers the batch, so it may have finished), any other request a JSON-RPC
-      // error. A batch of notifications only gets no body, as JSON-RPC says.
-      const answered = parsedBody.requests.filter((request) => request.id !== null);
-      if (parsedBody.batch && answered.length === 0) {
+      const payload = expiredPayload(parsedBody, id, callDeadlineMs ?? 0);
+      if (payload === undefined) {
         if (!res.headersSent) res.writeHead(202);
         return void res.end();
       }
-      const payload = JSON.stringify(
-        parsedBody.batch
-          ? answered.map((request) =>
-              request.call
-                ? toolError(request.id, batchDeadlineMessage(callDeadlineMs ?? 0))
-                : { jsonrpc: "2.0", id: request.id, error: { code: -32000, message: "The batch was cut off because one of its tool calls ran too long." } },
-            )
-          : toolError(id, deadlineMessage(callDeadlineMs ?? 0)),
-      );
       // Keepalive frames may already have started the response: only the body is left to write.
       if (!res.headersSent) res.writeHead(200, { "Content-Type": eventStream ? "text/event-stream" : "application/json" });
       res.end(eventStream ? `event: message\ndata: ${payload}\n\n` : payload);
@@ -260,24 +272,15 @@ export async function startMcpProxy(options: StartMcpProxyOptions = {}): Promise
       running.delete(controller);
     });
     try {
-      // The target keeps its own path and query; the CLI's subpath and query are merged onto them.
-      const url = new URL(current.url);
-      url.pathname = trimTrailingSlashes(url.pathname) + incoming.pathname.slice(PROXY_PATH.length);
-      for (const [name, value] of incoming.searchParams) url.searchParams.append(name, value);
-      const upstream = await fetch(url, {
+      const upstream = await fetch(upstreamUrl(current.url, incoming), {
         method: req.method ?? "POST",
         headers: forwardedHeaders(req, current),
         ...(body.length > 0 && req.method !== "GET" && req.method !== "HEAD" ? { body: new Uint8Array(body) } : {}),
         signal: controller.signal,
       });
-      const headers: Record<string, string | string[]> = {};
-      upstream.headers.forEach((value, name) => {
-        const lower = name.toLowerCase();
-        if (!HOP_BY_HOP.has(lower) && !RESPONSE_DROP.has(lower) && lower !== "set-cookie") headers[name] = value;
-      });
       eventStream = (upstream.headers.get("content-type") ?? "").includes("text/event-stream");
       if (expired) return;
-      res.writeHead(upstream.status, headers);
+      res.writeHead(upstream.status, relayedHeaders(upstream.headers));
       if (!upstream.body) return void res.end();
       const stream = Readable.fromWeb(upstream.body as never);
       relayed = stream;

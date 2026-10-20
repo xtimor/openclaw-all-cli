@@ -46,7 +46,7 @@ export type AcpToolUpdate = {
 };
 
 /** Display-only results are capped: a file read would otherwise travel through the host whole. */
-export const MAX_TOOL_RESULT_CHARS = 8_000;
+const MAX_TOOL_RESULT_CHARS = 8_000;
 
 type CallState = {
   title: string;
@@ -62,8 +62,19 @@ type CallState = {
   finished: boolean;
 };
 
-function isRecord(value: unknown): value is Record<string, unknown> {
+export function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+/** Merges the raw input (when it is a non-empty object) and the touched paths of an update into a call's facts. */
+export function mergeToolFacts(
+  facts: { rawInput?: Record<string, unknown>; paths: string[] },
+  update: { rawInput?: unknown; locations?: ReadonlyArray<{ path: string }> | null },
+): void {
+  if (isRecord(update.rawInput) && Object.keys(update.rawInput).length > 0) facts.rawInput = update.rawInput;
+  for (const location of update.locations ?? []) {
+    if (!facts.paths.includes(location.path)) facts.paths.push(location.path);
+  }
 }
 
 function truncate(text: string): string {
@@ -131,10 +142,7 @@ export class ToolCallTable {
     if (typeof update.title === "string" && update.title) call.title = update.title;
     if (typeof update.name === "string" && update.name) call.name = update.name;
     if (update.kind) call.kind = update.kind;
-    if (isRecord(update.rawInput) && Object.keys(update.rawInput).length > 0) call.rawInput = update.rawInput;
-    for (const location of update.locations ?? []) {
-      if (!call.paths.includes(location.path)) call.paths.push(location.path);
-    }
+    mergeToolFacts(call, update);
     if (update.content) call.content = update.content;
     call.seen += 1;
 

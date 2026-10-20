@@ -13,7 +13,7 @@ import { join } from "node:path";
 const PIDS_DIR = "pids";
 const PS_TIMEOUT_MS = 5_000;
 /** After SIGTERM an orphan gets this long to exit before SIGKILL. */
-export const REAP_KILL_GRACE_MS = 2_000;
+const REAP_KILL_GRACE_MS = 2_000;
 const POLL_MS = 100;
 
 /** What `ps` says about a pid. A zombie counts as gone: it runs nothing and only awaits its parent. */

@@ -1,12 +1,8 @@
-import { spawn, type ChildProcess } from "node:child_process";
-import { statSync } from "node:fs";
 import { Readable, Writable } from "node:stream";
 import * as acp from "@agentclientprotocol/sdk";
 import {
   CliError,
-  capabilityMismatch,
   type CliCapability,
-  type CliErrorCode,
   type CliSession,
   type NormalizedEvent,
   type NormalizedUsage,
@@ -14,6 +10,20 @@ import {
   type PromptImage,
   type RequiredCapability,
 } from "../../core/ports.ts";
+import { setup, toCliError } from "./handshake.ts";
+import {
+  KILL_GRACE_MS,
+  assertDirectory,
+  cancelPermissions,
+  createClient,
+  createTurnChannel,
+  deathError,
+  settleExit,
+  spawnRuntime,
+  terminate,
+  type Runtime,
+  type TurnQueue,
+} from "./runtime.ts";
 import { ToolCallTable, type DescribeToolCall } from "./tool-calls.ts";
 
 export type { AcpToolCallView, AcpToolDisplay, DescribeToolCall } from "./tool-calls.ts";
@@ -86,191 +96,6 @@ export type AcpSessionOptions = {
   signal?: AbortSignal;
 };
 
-const STDERR_TAIL_CHARS = 600;
-const KILL_GRACE_MS = 2_000;
-const EXIT_SETTLE_MS = 500;
-
-type TurnQueue = { push(event: NormalizedEvent): void; end(): void };
-type PendingPermission = { resolve: (response: acp.RequestPermissionResponse) => void };
-type ToolCallFacts = { rawInput?: Record<string, unknown>; paths: string[] };
-
-/** The agent reports a tool call before it asks about it; keep this many calls' facts. */
-const MAX_TOOL_CALL_FACTS = 256;
-
-/** Everything the ACP client callbacks and the session share. */
-type Runtime = {
-  child: ChildProcess;
-  exited: Promise<void>;
-  hasExited: boolean;
-  spawnError?: Error;
-  stderrTail: string;
-  turn?: TurnQueue;
-  pending: Set<PendingPermission>;
-  /** What `tool_call` updates said about each call of the running turn, for permission requests. */
-  toolCalls: Map<string, ToolCallFacts>;
-  describeToolCall?: DescribeToolCall;
-  /** The running turn's tool calls, folded into `toolStart` and `toolResult` events. */
-  tools?: ToolCallTable;
-};
-
-function toCliError(error: unknown, fallback: CliErrorCode, context: string): CliError {
-  if (error instanceof CliError) return error;
-  const message = error instanceof Error ? error.message : String(error);
-  return new CliError({ code: fallback, message: `${context}: ${message}` }, { cause: error });
-}
-
-/** The error for a process that is gone: a missing binary, or an exit nobody asked for. */
-function deathError(runtime: Runtime, command: string, retryable = true): CliError {
-  if (runtime.spawnError) {
-    const missing = (runtime.spawnError as NodeJS.ErrnoException).code === "ENOENT";
-    return new CliError({
-      code: missing ? "cli_not_found" : "server_error",
-      message: missing
-        ? `Could not find the CLI binary "${command}". Install it or set its path in the plugin config.`
-        : `Could not start "${command}": ${runtime.spawnError.message}`,
-    });
-  }
-  const tail = runtime.stderrTail.trim();
-  return new CliError({
-    code: "server_error",
-    message: `The CLI process exited unexpectedly${tail ? `: ${tail}` : "."}`,
-    retryable,
-  });
-}
-
-/** SIGTERM now, SIGKILL if the process is still there after the grace period. */
-function terminate(runtime: Runtime): void {
-  if (runtime.hasExited) return;
-  runtime.child.kill("SIGTERM");
-  const forceKill = setTimeout(() => runtime.child.kill("SIGKILL"), KILL_GRACE_MS);
-  forceKill.unref();
-  void runtime.exited.then(() => clearTimeout(forceKill));
-}
-
-function assertDirectory(cwd: string): void {
-  let isDirectory = false;
-  try {
-    isDirectory = statSync(cwd).isDirectory();
-  } catch {
-    // Reported below.
-  }
-  if (!isDirectory) {
-    throw new CliError({ code: "unclassified", message: `The working directory "${cwd}" does not exist.` });
-  }
-}
-
-function cancelPermissions(runtime: Runtime): void {
-  for (const entry of [...runtime.pending]) {
-    runtime.pending.delete(entry);
-    entry.resolve({ outcome: { outcome: "cancelled" } });
-  }
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
-}
-
-/** Merges what a `tool_call` or `tool_call_update` says into the facts kept for that call. */
-function rememberToolCall(
-  runtime: Runtime,
-  update: { toolCallId: string; rawInput?: unknown; locations?: Array<{ path: string }> | null },
-): void {
-  const facts = runtime.toolCalls.get(update.toolCallId) ?? { paths: [] };
-  if (isRecord(update.rawInput) && Object.keys(update.rawInput).length > 0) facts.rawInput = update.rawInput;
-  for (const location of update.locations ?? []) {
-    if (!facts.paths.includes(location.path)) facts.paths.push(location.path);
-  }
-  runtime.toolCalls.delete(update.toolCallId);
-  runtime.toolCalls.set(update.toolCallId, facts);
-  if (runtime.toolCalls.size > MAX_TOOL_CALL_FACTS) {
-    const oldest = runtime.toolCalls.keys().next();
-    if (!oldest.done) runtime.toolCalls.delete(oldest.value);
-  }
-}
-
-function selectModels(options: acp.SessionConfigSelectOptions): AcpModelInfo[] {
-  const models: AcpModelInfo[] = [];
-  for (const entry of options) {
-    if ("value" in entry) models.push({ id: entry.value, name: entry.name });
-    else for (const inner of entry.options) models.push({ id: inner.value, name: inner.name });
-  }
-  return models;
-}
-
-/**
- * The ACP `models` state of a `session/new` or `session/load` result. The SDK's schema does not
- * type it, and agents send it as an extra field (ACP's model selection is still unstable).
- */
-type SessionModelState = { currentModelId?: string; availableModels?: Array<{ modelId: string; name: string }> };
-
-function readModelState(result: object): SessionModelState | undefined {
-  const models = (result as { models?: unknown }).models;
-  return typeof models === "object" && models !== null && !Array.isArray(models) ? (models as SessionModelState) : undefined;
-}
-
-/** What the agent says about its models: the `models` state, and a `model` select in `configOptions`. */
-function readModelFacts(
-  models: SessionModelState | null | undefined,
-  configOptions: acp.SessionConfigOption[] | null | undefined,
-): { offered: AcpModelInfo[]; currentId?: string; option?: acp.SessionConfigOption & { type: "select" } } {
-  const found = configOptions?.find((candidate) => candidate.category === "model");
-  const option = found?.type === "select" ? found : undefined;
-  const offered: AcpModelInfo[] = (models?.availableModels ?? []).map((model) => ({
-    id: model.modelId,
-    name: model.name,
-  }));
-  if (offered.length === 0 && option) offered.push(...selectModels(option.options));
-  const currentId = models?.currentModelId ?? option?.currentValue;
-  return { offered, ...(currentId ? { currentId } : {}), ...(option ? { option } : {}) };
-}
-
-/** The ID an agent answers `session/load` with when it moved the chat; undefined when it did not. */
-function readMovedSessionId(result: object): string | undefined {
-  const id = (result as { sessionId?: unknown }).sessionId;
-  return typeof id === "string" && id.trim() ? id : undefined;
-}
-
-/**
- * Whether an error says the *session* is unknown. A bare JSON-RPC `-32602`, or a "not found" about
- * anything else (an API key, a workspace), is not enough: only a phrase tied to "session" counts.
- * The reference CLI answers a missing chat with `Invalid params` and `data.message` `Session "<id>" not
- * found` (checked 2026-10-18), so the detail is read too.
- */
-const SESSION_UNKNOWN =
-  /\bsession\b[^.\n]{0,200}\b(not found|does not exist|doesn't exist|unknown|no such|expired)\b|\b(no such|unknown|invalid) session\b/i;
-
-function errorDetail(error: unknown): string {
-  const parts = [error instanceof Error ? error.message : String(error)];
-  const data = (error as { data?: unknown } | null)?.data;
-  if (typeof data === "string") parts.push(data);
-  else if (isRecord(data)) {
-    for (const value of Object.values(data)) if (typeof value === "string") parts.push(value);
-  }
-  return parts.join(" ");
-}
-
-/**
- * A `session/load` that failed. An agent that says it does not know the session (another agent's
- * home, a deleted chat) is `session_expired`, so the host can recover the way its
- * `freshSessionRecovery` says and nothing silently starts a new chat. The message carries
- * "session not found" because the host reads the text to classify the failure. Anything else (a
- * dead pipe, a timeout, a bare invalid-params) is a failed process, not a lost chat.
- */
-function resumeError(error: unknown, sessionId: string): CliError {
-  if (error instanceof CliError) return error;
-  const detail = errorDetail(error);
-  if (SESSION_UNKNOWN.test(detail)) {
-    return new CliError(
-      {
-        code: "session_expired",
-        message: `CLI session not found: the CLI does not know session "${sessionId}" in this agent's home (the chat belongs to another agent or was deleted), so it cannot resume. ${detail}`,
-      },
-      { cause: error },
-    );
-  }
-  return toCliError(error, "server_error", "The CLI could not resume the session");
-}
-
 function mapUsage(usage: acp.Usage | null | undefined): NormalizedUsage | undefined {
   if (!usage) return undefined;
   return {
@@ -308,101 +133,10 @@ export class AcpSession implements CliSession {
   static async open(options: AcpSessionOptions): Promise<AcpSession> {
     options.signal?.throwIfAborted();
     assertDirectory(options.cwd);
-    const child = spawn(options.command, [...options.args], {
-      cwd: options.cwd,
-      env: options.env,
-      stdio: ["pipe", "pipe", "pipe"],
-    });
+    const runtime = spawnRuntime(options);
+    const { child } = runtime;
 
-    // A process that failed to spawn has no pid; its `error` event reports why.
-    if (child.pid !== undefined) {
-      try {
-        options.onProcessStart?.(child.pid);
-      } catch {
-        // A failing observer must not leak the process it was told about.
-      }
-    }
-
-    const runtime: Runtime = {
-      child,
-      hasExited: false,
-      stderrTail: "",
-      pending: new Set(),
-      toolCalls: new Map(),
-      ...(options.describeToolCall ? { describeToolCall: options.describeToolCall } : {}),
-      exited: Promise.resolve(),
-    };
-    runtime.exited = new Promise<void>((resolve) => {
-      child.once("error", (error) => {
-        runtime.spawnError = error;
-        runtime.hasExited = true;
-        resolve();
-      });
-      child.once("exit", () => {
-        runtime.hasExited = true;
-        resolve();
-      });
-    });
-    child.stderr?.on("data", (chunk: Buffer) => {
-      runtime.stderrTail = (runtime.stderrTail + chunk.toString("utf8")).slice(-STDERR_TAIL_CHARS);
-    });
-    // A closed pipe after the process dies must not crash the host with an unhandled error.
-    child.stdin?.on("error", () => {});
-
-    const clientHandler: acp.Client = {
-      requestPermission(params) {
-        const call = params.toolCall;
-        // An approved call may run without ever being announced: it still counts as a tool (AD-11).
-        if (runtime.tools) runtime.tools.started = true;
-        const known = runtime.toolCalls.get(call.toolCallId);
-        const paths = [...(known?.paths ?? [])];
-        for (const location of call.locations ?? []) if (!paths.includes(location.path)) paths.push(location.path);
-        const rawInput = isRecord(call.rawInput) ? call.rawInput : known?.rawInput;
-        const request: AcpPermissionRequest = {
-          toolCallId: call.toolCallId,
-          title: call.title ?? "tool call",
-          ...(call.kind ? { kind: call.kind } : {}),
-          ...(rawInput ? { rawInput } : {}),
-          paths,
-          content: call.content ?? [],
-          optionIds: params.options.map((item) => item.optionId),
-        };
-        return new Promise<acp.RequestPermissionResponse>((resolve) => {
-          const entry: PendingPermission = { resolve };
-          runtime.pending.add(entry);
-          const settle = (decision: PermissionDecision) => {
-            if (!runtime.pending.delete(entry)) return;
-            const kind = decision === "allow_once" ? "allow_once" : "reject_once";
-            const option = decision === "cancelled" ? undefined : params.options.find((item) => item.kind === kind);
-            resolve(
-              option
-                ? { outcome: { outcome: "selected", optionId: option.optionId } }
-                : { outcome: { outcome: "cancelled" } },
-            );
-          };
-          Promise.resolve()
-            .then(() => options.onPermissionRequest(request))
-            .then(settle, () => settle("cancelled"));
-        });
-      },
-      sessionUpdate(params) {
-        // Updates outside a prompt are history replays from `session/load`; drop them.
-        const turn = runtime.turn;
-        if (!turn) return;
-        const update = params.update;
-        if (update.sessionUpdate === "tool_call" || update.sessionUpdate === "tool_call_update") {
-          rememberToolCall(runtime, update);
-          for (const event of runtime.tools?.update(update) ?? []) turn.push(event);
-          return;
-        }
-        if (update.sessionUpdate === "agent_message_chunk" && update.content.type === "text") {
-          turn.push({ kind: "text", text: update.content.text });
-        } else if (update.sessionUpdate === "agent_thought_chunk" && update.content.type === "text") {
-          turn.push({ kind: "thinking", text: update.content.text });
-        }
-      },
-    };
-
+    const clientHandler = createClient(runtime, options.onPermissionRequest);
     const stream = acp.ndJsonStream(
       Writable.toWeb(child.stdin!) as WritableStream<Uint8Array>,
       Readable.toWeb(child.stdout!) as ReadableStream<Uint8Array>,
@@ -422,19 +156,7 @@ export class AcpSession implements CliSession {
       const started = await Promise.race([setup(connection, options), died]);
       return new AcpSession(started.sessionId, runtime, connection, options.command, started.models, started.capabilities);
     } catch (error) {
-      // A dead process closes its pipes before `exit` fires, and the pipe error can win the race
-      // against the exit: give the exit a moment, so a death is reported as one (retryable).
-      // A deliberate answer (a lost chat, a missing capability) is not a death, whatever follows.
-      const deliberate = error instanceof CliError && error.code !== "server_error";
-      if (!deliberate) {
-        await Promise.race([runtime.exited, new Promise((resolve) => setTimeout(resolve, EXIT_SETTLE_MS))]);
-      }
-      const diedOnItsOwn = runtime.hasExited;
-      terminate(runtime);
-      await runtime.exited;
-      options.signal?.throwIfAborted();
-      if (runtime.spawnError || (diedOnItsOwn && !deliberate)) throw deathError(runtime, options.command);
-      throw toCliError(error, "server_error", "The CLI session failed to start");
+      return await failedOpen(runtime, options, error);
     } finally {
       options.signal?.removeEventListener("abort", stopOnAbort);
     }
@@ -448,20 +170,8 @@ export class AcpSession implements CliSession {
       return;
     }
 
-    const buffer: NormalizedEvent[] = [];
-    let wake: (() => void) | undefined;
-    let ended = false;
-    const queue: TurnQueue = {
-      push: (event) => {
-        buffer.push(event);
-        wake?.();
-      },
-      end: () => {
-        ended = true;
-        wake?.();
-      },
-    };
-    runtime.turn = queue;
+    const channel = createTurnChannel();
+    runtime.turn = channel.queue;
     const tools = new ToolCallTable(runtime.describeToolCall);
     runtime.tools = tools;
 
@@ -471,85 +181,46 @@ export class AcpSession implements CliSession {
     });
     died.catch(() => {});
 
-    const settled = (async () => {
-      try {
-        const response = await Promise.race([
-          this.connection.prompt({
-            sessionId: this.sessionId,
-            // The data is never logged. The text block is omitted when empty (an image-only turn).
-            prompt: [
-              ...(text ? [{ type: "text" as const, text }] : []),
-              ...images.map((image) => ({ type: "image" as const, mimeType: image.mimeType, data: image.data })),
-            ],
-          }),
-          died,
-        ]);
-        // Nothing stays pending for the host when the turn closes.
-        for (const event of tools.closeOpen()) queue.push(event);
-        const usage = mapUsage(response.usage);
-        if (usage) queue.push({ kind: "usage", usage });
-        if (response.stopReason === "cancelled") {
-          queue.push({
-            kind: "error",
-            error: { code: "unknown", retryable: false, message: "The CLI cancelled the turn." },
-          });
-        } else if (response.stopReason === "refusal") {
-          queue.push({
-            kind: "error",
-            error: { code: "unclassified", retryable: false, message: "The CLI refused the request." },
-          });
-        } else {
-          queue.push({ kind: "result", text: "", stopReason: response.stopReason });
-        }
-      } catch (error) {
-        // A dead process closes its pipes before `exit` fires; give the exit a moment to land.
-        await Promise.race([runtime.exited, new Promise((resolve) => setTimeout(resolve, EXIT_SETTLE_MS))]);
-        const failure = runtime.hasExited
-          ? deathError(runtime, this.command, !tools.started)
-          : toCliError(error, "server_error", "The CLI turn failed");
-        for (const event of tools.closeOpen()) queue.push(event);
-        queue.push({ kind: "error", error: failure.toInfo() });
-      } finally {
-        queue.end();
-      }
-    })();
+    const { connection, sessionId, command } = this;
+    const settled = settleTurn({ connection, sessionId, command, runtime, tools, queue: channel.queue, died, text, images });
 
     let reply = "";
     try {
       for (;;) {
-        const next = buffer.shift();
+        const next = channel.take();
         if (next) {
           if (next.kind === "text") reply += next.text;
           // The transport owns the accumulated reply, so the closing event carries the full text.
           yield next.kind === "result" ? { ...next, text: reply } : next;
           continue;
         }
-        if (ended) break;
-        await new Promise<void>((resolve) => {
-          wake = resolve;
-        });
-        wake = undefined;
+        if (channel.ended) break;
+        await channel.wait();
       }
     } finally {
-      if (!ended) {
-        // The consumer stopped early (abort): stop the turn and let it settle. A CLI that
-        // ignores the cancel gets the kill grace, then the process is closed.
-        let timer: NodeJS.Timeout | undefined;
-        const gaveUp = new Promise<boolean>((resolve) => {
-          timer = setTimeout(() => resolve(true), KILL_GRACE_MS);
-        });
-        const timedOut = await Promise.race([
-          this.cancel().then(() => settled).then(() => false),
-          gaveUp,
-        ]);
-        clearTimeout(timer);
-        if (timedOut) await this.close();
-      }
+      if (!channel.ended) await this.stopTurn(settled);
       await settled;
       runtime.turn = undefined;
       runtime.tools = undefined;
       runtime.toolCalls.clear();
     }
+  }
+
+  /**
+   * The consumer stopped early (abort): stop the turn and let it settle. A CLI that ignores the
+   * cancel gets the kill grace, then the process is closed.
+   */
+  private async stopTurn(settled: Promise<void>): Promise<void> {
+    let timer: NodeJS.Timeout | undefined;
+    const gaveUp = new Promise<boolean>((resolve) => {
+      timer = setTimeout(() => resolve(true), KILL_GRACE_MS);
+    });
+    const timedOut = await Promise.race([
+      this.cancel().then(() => settled).then(() => false),
+      gaveUp,
+    ]);
+    clearTimeout(timer);
+    if (timedOut) await this.close();
   }
 
   async cancel(): Promise<void> {
@@ -576,139 +247,77 @@ export class AcpSession implements CliSession {
   }
 }
 
-/** The ACP handshake: initialize, log in, then start or resume a session in the right mode and model. */
-async function setup(
-  connection: acp.ClientSideConnection,
-  options: AcpSessionOptions,
-): Promise<{ sessionId: string; models: AcpModelInfo[]; capabilities: ReadonlySet<CliCapability> }> {
-  const init = await connection.initialize({
-    protocolVersion: acp.PROTOCOL_VERSION,
-    clientCapabilities: {},
-    clientInfo: { name: options.clientName ?? "openclaw-all-cli", version: options.clientVersion ?? "0.0.0" },
-  });
-  if (init.protocolVersion !== acp.PROTOCOL_VERSION) {
-    throw new CliError({
-      code: "unsupported_version",
-      message: `The CLI speaks ACP protocol ${init.protocolVersion}; this plugin supports ${acp.PROTOCOL_VERSION}.`,
-    });
+/** The error of an open that failed: a death is reported as one, anything else as the failure it was. */
+async function failedOpen(runtime: Runtime, options: AcpSessionOptions, error: unknown): Promise<never> {
+  // A dead process closes its pipes before `exit` fires, and the pipe error can win the race
+  // against the exit: give the exit a moment, so a death is reported as one (retryable).
+  // A deliberate answer (a lost chat, a missing capability) is not a death, whatever follows.
+  const deliberate = error instanceof CliError && error.code !== "server_error";
+  if (!deliberate) {
+    await settleExit(runtime);
   }
-  const caps = init.agentCapabilities;
-  const capabilities = new Set<CliCapability>();
-  if (caps?.loadSession === true) capabilities.add("resumeSession");
-  if (caps?.mcpCapabilities?.http === true) capabilities.add("httpMcp");
-  if (caps?.promptCapabilities?.image === true) capabilities.add("imagePrompts");
-  // Before any login or session: a mismatch costs no chat. A resume needs `loadSession` even when
-  // the adapter did not list it.
-  const needed = [...(options.requiredCapabilities ?? [])];
-  if (options.resumeSessionId && !needed.some((item) => item.capability === "resumeSession")) {
-    needed.push({ row: "P5", capability: "resumeSession" });
-  }
-  const missing = needed.filter((item) => !capabilities.has(item.capability));
-  if (missing.length > 0) throw capabilityMismatch(options.displayName ?? "The CLI", missing);
-  if (options.authMethodId) {
-    const methods = init.authMethods;
-    // An absent list is today's behavior: log in. An empty list needs no login. A list without
-    // the adapter's method means the login the adapter relies on is gone.
-    if (!methods) {
-      await login(connection, options.authMethodId);
-    } else if (methods.length > 0) {
-      if (!methods.some((method) => method.id === options.authMethodId)) {
-        throw new CliError({
-          code: "capability_mismatch",
-          message: `The CLI offered no "${options.authMethodId}" login method (it lists ${methods.map((method) => `"${method.id}"`).join(", ")}). Update the CLI.`,
-        });
-      }
-      await login(connection, options.authMethodId);
-    }
-  }
+  const diedOnItsOwn = runtime.hasExited;
+  terminate(runtime);
+  await runtime.exited;
+  options.signal?.throwIfAborted();
+  if (runtime.spawnError || (diedOnItsOwn && !deliberate)) throw deathError(runtime, options.command);
+  throw toCliError(error, "server_error", "The CLI session failed to start");
+}
 
-  const base = { cwd: options.cwd, mcpServers: options.mcpServers ?? [] };
-  let sessionId: string;
-  let modes: acp.SessionModeState | null | undefined;
-  let modelState: SessionModelState | undefined;
-  let configOptions: acp.SessionConfigOption[] | null | undefined;
-  if (options.resumeSessionId) {
-    try {
-      const loaded = await connection.loadSession({ sessionId: options.resumeSessionId, ...base });
-      // ACP's load answers for the ID it was given; an agent that moves the chat to another ID
-      // says so in an extra `sessionId` field. The new ID is the one the host must keep.
-      sessionId = readMovedSessionId(loaded) ?? options.resumeSessionId;
-      modes = loaded.modes;
-      modelState = readModelState(loaded);
-      configOptions = loaded.configOptions;
-    } catch (error) {
-      throw resumeError(error, options.resumeSessionId);
-    }
-  } else {
-    try {
-      const created = await connection.newSession(base);
-      sessionId = created.sessionId;
-      modes = created.modes;
-      modelState = readModelState(created);
-      configOptions = created.configOptions;
-    } catch (error) {
-      throw toCliError(error, "server_error", "The CLI could not start a session");
-    }
-  }
+/** Everything one turn's prompt call needs besides the session itself. */
+type TurnParams = {
+  connection: acp.ClientSideConnection;
+  sessionId: string;
+  command: string;
+  runtime: Runtime;
+  tools: ToolCallTable;
+  queue: TurnQueue;
+  /** Rejects when the process exits. */
+  died: Promise<never>;
+  text: string;
+  images: readonly PromptImage[];
+};
 
-  if (options.requiredModeId) {
-    const wanted = options.requiredModeId;
-    if (!modes?.availableModes.some((mode) => mode.id === wanted)) {
-      throw new CliError({
-        code: "capability_mismatch",
-        message: `The CLI offers no "${wanted}" mode, so it cannot run safely.`,
+/** Runs the prompt and settles the turn's queue with its closing events; never rejects. */
+async function settleTurn({ connection, sessionId, command, runtime, tools, queue, died, text, images }: TurnParams): Promise<void> {
+  try {
+    const response = await Promise.race([
+      connection.prompt({
+        sessionId,
+        // The data is never logged. The text block is omitted when empty (an image-only turn).
+        prompt: [
+          ...(text ? [{ type: "text" as const, text }] : []),
+          ...images.map((image) => ({ type: "image" as const, mimeType: image.mimeType, data: image.data })),
+        ],
+      }),
+      died,
+    ]);
+    // Nothing stays pending for the host when the turn closes.
+    for (const event of tools.closeOpen()) queue.push(event);
+    const usage = mapUsage(response.usage);
+    if (usage) queue.push({ kind: "usage", usage });
+    if (response.stopReason === "cancelled") {
+      queue.push({
+        kind: "error",
+        error: { code: "unknown", retryable: false, message: "The CLI cancelled the turn." },
       });
+    } else if (response.stopReason === "refusal") {
+      queue.push({
+        kind: "error",
+        error: { code: "unclassified", retryable: false, message: "The CLI refused the request." },
+      });
+    } else {
+      queue.push({ kind: "result", text: "", stopReason: response.stopReason });
     }
-    if (modes.currentModeId !== wanted) {
-      await connection.setSessionMode({ sessionId, modeId: wanted });
-    }
-  }
-
-  const facts = readModelFacts(modelState, configOptions);
-  if (options.selectModel || options.modelId) await switchModel(connection, sessionId, facts, options);
-  return { sessionId, models: facts.offered, capabilities };
-}
-
-async function login(connection: acp.ClientSideConnection, methodId: string): Promise<void> {
-  try {
-    await connection.authenticate({ methodId });
   } catch (error) {
-    throw toCliError(error, "auth", "The CLI rejected its login");
-  }
-}
-
-/**
- * Switches the session to the wanted model. A `model` select in `configOptions` is the standard
- * way; an agent that only reports the `models` state is switched with `session/set_model`. The
- * wanted ID must be one the agent offered, so a stale or unknown name fails as `model_not_found`.
- */
-async function switchModel(
-  connection: acp.ClientSideConnection,
-  sessionId: string,
-  facts: ReturnType<typeof readModelFacts>,
-  options: AcpSessionOptions,
-): Promise<void> {
-  const { offered, currentId, option } = facts;
-  const wanted = options.selectModel ? options.selectModel(offered, currentId) : options.modelId;
-  if (wanted === null) return;
-  if (wanted === undefined || !offered.some((model) => model.id === wanted)) {
-    const asked = wanted ?? options.modelId ?? "";
-    throw new CliError(
-      offered.length === 0
-        ? {
-            code: "capability_mismatch",
-            message: `The CLI does not list models, so it cannot switch to a model${asked ? ` "${asked}"` : ""}.`,
-          }
-        : { code: "model_not_found", message: `The CLI has no model${asked ? ` "${asked}"` : ""} for this account.` },
-    );
-  }
-  if (wanted === currentId) return;
-  try {
-    if (option) await connection.setSessionConfigOption({ sessionId, configId: option.id, value: wanted });
-    else await connection.extMethod("session/set_model", { sessionId, modelId: wanted });
-  } catch (error) {
-    // An agent that refuses the value says so as invalid params; anything else is a failed process.
-    const refused = error instanceof Error && /\b(invalid|unknown|not found|no such)\b/i.test(error.message);
-    throw toCliError(error, refused ? "model_not_found" : "server_error", `The CLI could not switch to model "${wanted}"`);
+    // A dead process closes its pipes before `exit` fires; give the exit a moment to land.
+    await settleExit(runtime);
+    const failure = runtime.hasExited
+      ? deathError(runtime, command, !tools.started)
+      : toCliError(error, "server_error", "The CLI turn failed");
+    for (const event of tools.closeOpen()) queue.push(event);
+    queue.push({ kind: "error", error: failure.toInfo() });
+  } finally {
+    queue.end();
   }
 }

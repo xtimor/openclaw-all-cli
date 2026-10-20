@@ -4,7 +4,7 @@ import type { CliModel } from "../../core/ports.ts";
 export type CursorModelEntry = { id: string; name: string };
 
 /** The model name that means "let Cursor choose". Cursor's own ID for it is `default[]`. */
-export const AUTO_MODEL = "auto";
+const AUTO_MODEL = "auto";
 const CURSOR_AUTO_BASE = "default";
 
 type ParsedId = { base: string; params: Array<[key: string, value: string]> };

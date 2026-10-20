@@ -30,8 +30,8 @@ export type ModelCatalogOptions = {
   warn?: (message: string) => void;
 };
 
-export const DEFAULT_CATALOG_TTL_MS = 60_000;
-export const DEFAULT_CATALOG_FAILURE_TTL_MS = 30_000;
+const DEFAULT_CATALOG_TTL_MS = 60_000;
+const DEFAULT_CATALOG_FAILURE_TTL_MS = 30_000;
 
 /** The model every account has: the default model of the adapter, as a catalog row. */
 export function defaultCatalogRow(adapter: CliAdapter): CatalogRow {

@@ -4,7 +4,7 @@ import { CliError } from "./ports.ts";
 export const DEFAULT_MAX_TURNS = 4;
 export const DEFAULT_MAX_PROCESSES = 8;
 /** `closeAll` waits this long for the processes to exit: the transport's SIGKILL grace plus a margin. */
-export const POOL_CLOSE_WAIT_MS = 3_000;
+const POOL_CLOSE_WAIT_MS = 3_000;
 
 export type PoolOptions = {
   /** Turns that run at once. Later turns wait in FIFO order. */

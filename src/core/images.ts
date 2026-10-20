@@ -27,7 +27,7 @@ export type ImageLimits = {
   maxTotalBytes: number;
 };
 
-export const DEFAULT_IMAGE_LIMITS: ImageLimits = {
+const DEFAULT_IMAGE_LIMITS: ImageLimits = {
   maxBytes: 10 * 1024 * 1024,
   maxCount: 10,
   maxTotalBytes: 20 * 1024 * 1024,

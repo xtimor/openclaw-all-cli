@@ -7,7 +7,7 @@ import type { NormalizedEvent, NormalizedUsage } from "./ports.ts";
  *
  * Result records carry `type: "result"` because the host watches that field to know a turn ended.
  */
-export const RECORD_MARKER = "openclaw-all-cli";
+const RECORD_MARKER = "openclaw-all-cli";
 
 export type CoreRecord = {
   type: "oac-event" | "result";

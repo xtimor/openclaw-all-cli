@@ -2,7 +2,7 @@ import { z } from "zod";
 import { DEFAULT_MAX_PROCESSES, DEFAULT_MAX_TURNS } from "./pool.ts";
 
 /** Settings of one backend under `plugins.entries.openclaw-all-cli.config.<backendId>`. */
-export const backendConfigSchema = z
+const backendConfigSchema = z
   .object({
     /** Path or name of the CLI binary. Defaults to the adapter's command. */
     command: z.string().min(1).optional(),

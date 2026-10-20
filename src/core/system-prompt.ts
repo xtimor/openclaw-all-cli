@@ -88,7 +88,7 @@ export function stablePrompt(text: string): string {
 }
 
 /** The masked fields with their current values, as `Current date: ...` and `key=value` items, in prompt order. */
-export function volatileFields(text: string): string[] {
+function volatileFields(text: string): string[] {
   const items: string[] = [];
   for (const line of text.split("\n")) {
     const date = DATE_LINE.exec(line);
@@ -247,4 +247,47 @@ export class DeliveredPrompts {
 /** Where a home keeps its delivery cache, next to the CLI's config. */
 export function deliveredFileFor(homeDir: string): string {
   return join(homeDir, "system-prompt-delivered.json");
+}
+
+/** What a turn sends of the host's system prompt, and what it records once the turn finishes. */
+export type DeliveryPlan = {
+  /** The block, the runtime update note, or nothing: the start of the prompt. */
+  lead: string | undefined;
+  /** Records the delivery. Called for a finished turn only: a failed or aborted one resends next time. */
+  recordResult(): void;
+};
+
+/**
+ * AD-15: the host's system prompt, once per chat and again when it changes. A side question's chat
+ * is thrown away, so it always gets the block and leaves the ledger alone.
+ */
+export function planDelivery(input: {
+  /** Whether the backend delivers the system prompt at all. */
+  enabled: boolean;
+  systemPrompt: string | undefined;
+  sideQuestion: boolean;
+  /** The native session id the CLI ended up with. */
+  sessionId: string;
+  useResume: boolean | undefined;
+  /** The id the host stored for the chat, which the turn resumed. */
+  resumedId: string | undefined;
+  delivered: DeliveredPrompts | undefined;
+}): DeliveryPlan {
+  const { delivered } = input;
+  const system = input.enabled ? (input.systemPrompt ?? "").trim() : "";
+  // The chat is the id the CLI ended up with, which the host stores for the next turn. A load that
+  // moved the chat answers with a new id, so the id the turn resumed counts as the same chat.
+  const chat = input.sideQuestion ? undefined : input.sessionId;
+  const resumed = input.sideQuestion || !input.useResume ? undefined : input.resumedId;
+  // A side question always gets the block; a chat gets the block, a short runtime update (only the date,
+  // model, channel, capabilities, or active computer changed), or nothing.
+  const delivering = !system ? "none" : !chat ? "block" : delivered!.decide([chat, ...(resumed ? [resumed] : [])], system);
+  const lead = delivering === "block" ? systemPromptBlock(system) : delivering === "note" ? runtimeUpdateNote(system) : undefined;
+  return {
+    lead,
+    // A moved chat is recorded under its new id.
+    recordResult() {
+      if (chat && system && (delivering !== "none" || (resumed && resumed !== chat))) delivered?.record(chat, system);
+    },
+  };
 }
