@@ -116,7 +116,7 @@ Build worker run, 2026-10-20, branch `claude/friendly-hawking-tn9eme`, Node v24.
 - `mcp-proxy.test.ts`: token check (4 failed), path check (1), `!current` 503 (2), `REQUEST_DROP_PREFIXES` filter (2), `relayedData` guard (1).
 - `session.test.ts`: `SESSION_UNKNOWN` branch forced true (4), capability check moved after login (2), `requiredModeId` check off (1), `cancelled` maps to an option (1).
 - `execute.test.ts` + `test/system-prompt.test.ts` + `test/exec-tool.test.ts`: neutralization flag off (1), side-question/approvals reject path off (2), `hostShell` without the `exec` listing check (5), `degraded` on an unreadable list removed (1), busy-holder refusal off (2), discard for a resumed chat (1), ledger record on any event (2).
-- No guard went unchecked, so there is no gap for F5 from this sweep. `images.ts` and `pid-locks.ts` guards did not move (only `export` removals), so no mutation was run on them.
+- Review lens record (verification-gap): 45 guard-removal mutations on the moved code at its new locations; 40 were caught by existing tests, 3 guards survived with the suite green: (1) the chat re-key after an open (`chat-registry.ts` close of another holder, `attach-session.ts` `rekeyChat` call), (2) the two closed-handle checks around the claim in `attachSession`, (3) both `proxy.close()` calls on process exit. Closed by the new additive `test/refactor-guards.test.ts` (7 tests); each was revert-checked: guard removed in a copy of the tree, the new test failed, and it passes on the real tree. The reviewer did not run 32 further mutations: all of `mcp-proxy.ts`, `handshake.ts`, `runtime.ts`, the `tool-calls.ts` merge, the backend exec marker, and the `execute.ts` failed-turn flags. Those areas were verified by the build worker's 16 spot checks listed above (mcp-proxy 5, session 4, execute 7), not re-verified by the reviewer; the exec marker and failed-turn flags are covered only through the execute/exec-tool tests in the suite. `images.ts` and `pid-locks.ts` guards did not move (only `export` removals), so no mutation was run on them.
 
 **Final disposition** (every deferred finding D1-D22 and open item O1-O8; reasons in Design Notes):
 
@@ -166,7 +166,7 @@ Build worker run, 2026-10-20, branch `claude/friendly-hawking-tn9eme`, Node v24.
 | # | Item (source plan) | Verdict |
 |---|---|---|
 | D1 | Non-auto model fails, Cursor reports `models` not a select (1.1) | Fixed in 1.6 (`readModelFacts`, `session/set_model`) |
-| D2 | Cursor backend errors arrive as reply text with `end_turn` (1.1) | Dropped: needs text heuristics, a behavior change. F1 |
+| D2 | Cursor backend errors arrive as reply text with `end_turn` (1.1) | Own ticket 1.20 (F1): needs text heuristics, a behavior change |
 | D3 | `code`/`retryable` never reach failover; dead chat never dropped (1.1) | Dropped: host reads only `errorText`; `resumeError` text gives `session_expired`; clearing the binding is host-side for `claude-cli` only (MEMORY entry 7). `FAILOVER_REASON_BY_CODE` stays: AD-11 names it |
 | D4 | Reuse key ignores command, args, env (1.1) | Dropped: `reusable()` requires the host fingerprint, which hashes argv, argv0, env (`buildCliLiveSessionFingerprint`, OpenClaw 2026.10.3: `dist/cli-live-session-registry-Iq0txoVH.mjs` lines 1641-1657) |
 | D5 | Handshake has no own timeout (1.1) | Dropped: host watchdog aborts `ctx.abortSignal` (entry 8); `open` terminates on abort |
@@ -184,10 +184,10 @@ Build worker run, 2026-10-20, branch `claude/friendly-hawking-tn9eme`, Node v24.
 | D19 | Clock skew over 5 s gives 0 usage (1.10) | Dropped: no clock source; Known limits |
 | D20 | Cursor may shorten the block (1.13) | Dropped: invisible over ACP; Known limits |
 | D21 | Offline pin of the host's exec-serving contract (1.19) | Dropped: host function not exported; live rows cover it. F5 |
-| D22 | `worker-server` child outlives its parent; listing process unlocked (1.8) | Dropped: lifecycle change; Known limits. F3 |
+| D22 | `worker-server` child outlives its parent; listing process unlocked (1.8) | Own ticket 1.21 (F3): lifecycle change; stays in Known limits until then |
 | O1 | Text before and after a tool call joins without a separator (entry 5) | Dropped: changes reply text. F2 |
-| O2 | Side question leaves its `acp-sessions/<id>` dir (1.7) | Dropped: adds a delete. F3 |
-| O3 | Timing-based `usage.test.ts` bounds (wall clock < 400-450 ms) | Dropped: needs test edits. F4 |
+| O2 | Side question leaves its `acp-sessions/<id>` dir (1.7) | Own ticket 1.21 (F3): adds a delete |
+| O3 | Timing-based `usage.test.ts` bounds (wall clock < 400-450 ms) | Own ticket 1.22 (F4): needs test edits |
 | O4 | In-memory usage stamps vs on-disk prompt ledger | Dropped: a restart only risks one double count within 5 s (CAP-3 row); persisting is a behavior change |
 | O5 | Host-shell and system-prompt marker args | Kept (host contract); `splitHostShell` computed once per turn (step 5) |
 | O6 | `claude-cli` named in core comments | Dropped: the host's reference backend, not an adapted CLI; AD-2 test passes |
