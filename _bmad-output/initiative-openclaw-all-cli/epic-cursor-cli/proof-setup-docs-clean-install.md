@@ -131,9 +131,14 @@ All in a throwaway copy of the tree (`git ls-files -co`, no `.spike/`), temp `HO
 - Gaps (all class doc; fixed): 1 `pgrep -x openclaw-gateway` fails on Linux (comm truncated to 15 chars) -> `ps -eo pid,comm,args | grep '[o]penclaw-gateway'`, same form for the leftover list; 2 `plugin provenance-invalid` warning -> troubleshooting row; 3 proxy denies `telemetry.openclaw.ai:443` -> one line in the proxy paragraph; 4 cursor.md pointer and section list at the top; 5 transient `SSL_ERROR_SYSCALL` on the Cursor install -> retry hint.
 - Pass 3 needed to confirm these are closed.
 
-### Pass 3 
+### Pass 3
 
-(same fields)
+- Date 2026-10-20; docs at commit 1abf9f3; fresh agent; Node v24.22.0 (tarball), OpenClaw 2026.10.3, cursor-agent 2026.10.19.
+- Result: reply exact, usage input 16741 / output 131 / cacheRead 3840 / total 20712, Gateway SIGTERM clean (`shutdown completed cleanly`); the agent stopped the leftover worker-server and tsserver processes by pid as the docs say.
+- Files read: README.md and docs/setup.md (cursor.md was not needed). No `--help` lookups.
+- Gaps: 1 the `export PATH` line applies to one shell only (the harness runs each command in a new shell; the docs already say to add it to the shell profile: class env); 2 the clone URL was not exercised (local origin used: class env); 3 the Gateway log has ANSI color codes, so `grep 'gateway\] ready'` matched nothing (class doc; fixed: `grep -a ready` / `NO_COLOR=1` in setup.md); 4 none.
+- Coordinator checks: no process with the run's HOME, port 18789 free, `.spike/openclaw.json`, real `~/.openclaw`, `~/.cursor`/`~/.config/cursor`, `~/.local/bin` unchanged; the key text appears only in the run's OpenClaw config (and its backups) and in cursor-agent's own auth.json; leak check over README.md, docs, MEMORY.md, _bmad-output, scripts and /tmp/openclaw: nothing.
+- Checklist: all items pass. The one `doc` gap of pass 3 is cosmetic and fixed in the same change; no pass 4 (the plan allows three).
 
 ## Part D. Command audit
 
