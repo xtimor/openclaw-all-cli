@@ -292,6 +292,7 @@ Live test: `test/live/usage.live.test.ts`.
 - **A side question takes a turn slot.** A side question, or any nested turn, holds a turn slot like every other turn: with `maxConcurrentTurns` 1 it waits for the running turn.
 - **`worker-server` children.** `cursor-agent` may start a `worker-server` child that is not recorded and can outlive a reaped or closed parent for a few minutes; "no `cursor-agent` process left" holds for the recorded `acp` process only.
 - **A model listing is not tracked.** The throwaway `cursor-agent` process behind a model listing (a few seconds) is closed by the listing itself, but it has no pid lock and is not closed on unload; a Gateway killed in that window can leave one.
+- **No separator around a tool call.** Cursor's message chunks carry no break between the text before and after a tool call, so a reply can read `...sentence.Next text`. The plugin passes the text through unchanged.
 - **Usage and a skewed clock.** A host clock more than 5 s off Cursor's makes usage 0 until the cooldown (see Usage).
 - **Usage needs an API key.** With a Cursor login only (no `CURSOR_API_KEY`), OpenClaw records 0 tokens for a turn. See Usage.
 - **HEIC, AVIF, SVG, TIFF, and empty images are not sent.** They get a one-line note. See Images.

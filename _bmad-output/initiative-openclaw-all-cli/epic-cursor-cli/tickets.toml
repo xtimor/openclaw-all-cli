@@ -199,8 +199,8 @@ risk = "medium"
 id = 21
 type = "story"
 title = "Leftovers of throwaway sessions and Cursor worker processes"
-description = "Found by the refactor sweep plan (D22/F3): a side question's throwaway session directory stays in the agent home, the model listing process is untracked, and a Cursor worker-server with its language-server children can outlive the Gateway. Cleans up what the plugin can safely own (session dirs by id, tracked listing process, reaping of worker-server by recorded pid with the existing start-time guard) and documents the rest."
-verify = "After a side question, a model listing and a Gateway stop, no throwaway session directory and no cursor-agent, worker-server or language-server process recorded by the plugin remains."
+description = "Found by the refactor sweep plan (D22/O2/F3): a side question's throwaway session directory stays in the agent home, the model listing process is untracked and unlocked, and a Cursor worker-server (not recorded; docs/providers/cursor.md Known limits) with its language-server children can outlive the Gateway. Cleans up what the plugin can safely own: side-question session dir removal by id, a tracked and closed listing process with a pid lock, unload handling of the listing process, and process-group handling or another recorded way to find and stop worker-server and its children (the ticket's plan decides which is safe). Documents what stays."
+verify = "After a side question, a model listing and a Gateway stop, no throwaway session directory remains, the listing process is closed and its pid lock released, and the way chosen in the plan leaves no worker-server or language-server child of a process the plugin started (or the docs name the exact remainder)."
 covers = ["CAP-9"]
 after = [16]
 hitl = false
@@ -221,8 +221,8 @@ risk = "low"
 id = 17
 type = "story"
 title = "Parity live suite and success-signal demo"
-description = "Collects every row's live test into one suite, adds tests for rows no entry owns, a check that no file is written in the workspace (AD-7), and the spec's success-signal scenario end to end."
-verify = "`OPENCLAW_ALL_CLI_LIVE=1` runs the suite green in the isolated OpenClaw, and the success-signal scenario passes."
+description = "Collects every row's live test into one suite, adds tests for rows no entry owns, a check that no file is written in the workspace (AD-7), and the spec's success-signal scenario end to end. Also adds the offline host-contract tests (sweep follow-up F5, D13/D21): tests that import OpenClaw's own host code to confirm that the backend shape makes the host serve exec/process, the live-session fingerprint behavior, and the settings-file and live-session contract."
+verify = "`OPENCLAW_ALL_CLI_LIVE=1` runs the suite green in the isolated OpenClaw, the success-signal scenario passes, and offline tests that load the host's own code confirm the exec/process serving, fingerprint, and live-session contract of the backend shape."
 covers = ["CAP-11"]
 after = [16, 19, 20, 21, 22]
 hitl = false

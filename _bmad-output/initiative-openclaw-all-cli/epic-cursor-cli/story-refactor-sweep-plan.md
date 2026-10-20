@@ -3,7 +3,7 @@ title: 'Refactor sweep'
 type: 'refactor'
 ticket: '16'
 created: '2026-10-20'
-status: 'in-progress'
+status: 'done'
 baseline_revision: 'dffa35de26e75c871998b3fd5391d44509c3c85a'
 route: 'full'
 route_source: 'auto'
@@ -47,7 +47,7 @@ Refactor hazards. Each row must hold after its step.
 | Permission-request facts | Shared `rawInput`/`locations` merge helper for `session.ts` and `tool-calls.ts` | `requestPermission` keeps its own rule (an empty `rawInput` object wins there); the 256-entry LRU and post-finish merging of `toolCalls` stay | none |
 | Unhandled rejections | `died.catch(() => {})` in `open` and `prompt`; `settleExit` helper for the two identical exit races | Every created rejection still has a catch | No unhandled rejection in the suite |
 | TS narrowing | `marked && turnTarget.ok` in `run` | Kept: it narrows `turnTarget` for `.target` | none |
-| AD-2 scan | New files `chat-registry.ts`, `turn-prompt.ts`, `tool-ledger.ts`, `acp/handshake.ts` | `test/import-boundary.test.ts` passes | none |
+| AD-2 scan | New files `chat-registry.ts`, `turn-prompt.ts`, `tool-ledger.ts`, `live-entry.ts`, `attach-session.ts`, `acp/handshake.ts`, `acp/runtime.ts` (7; the last three added in the build, see Plan Change Log) | `test/import-boundary.test.ts` passes | none |
 | Backend fields | `buildCliBackend` with `prepareExecution` extracted | Same fields and spread order; `test/backend.test.ts` field tests pass | `prepareExecution` failures still become one error record |
 
 </intent-contract>
@@ -62,6 +62,7 @@ Refactor hazards. Each row must hold after its step.
 - Unused exports (no importer anywhere): `MissingCapability` type alias (`manifest.ts`, delete); remove `export` from `DEFAULT_CATALOG_TTL_MS`, `DEFAULT_CATALOG_FAILURE_TTL_MS` (`catalog.ts`), `DEFAULT_IDLE_MS`, `DEFAULT_ABORT_GRACE_MS` (`execute.ts`), `DEFAULT_IMAGE_LIMITS` (`images.ts`), `REAP_KILL_GRACE_MS` (`pid-locks.ts`), `POOL_CLOSE_WAIT_MS` (`pool.ts`), `MAX_TOOL_RESULT_CHARS` (`tool-calls.ts`), `volatileFields` (`system-prompt.ts`), `AUTO_MODEL` (`adapters/cursor/models.ts`), `backendConfigSchema` (`config.ts`), `RECORD_MARKER` (`events.ts`). Keep `FAILOVER_REASON_BY_CODE` (see D3). `tsc --noUnusedLocals --noUnusedParameters` is clean at baseline.
 - `_bmad-output/initiative-openclaw-all-cli/spec-cursor-cli-provider/claude-cli-parity.md` -- row P16: the live-test path sits in the Antigravity column (should be `tbd`), and the cursor cell leads with a `-p` transport the plugin does not use.
 - Read-only: `src/core/images.ts`, `src/core/pid-locks.ts` (guards; only `export` removals), `src/core/ports.ts`, all tests and fixtures, `src/adapters/cursor/usage.ts` (factory closure of small functions; its timing tests are the flaky ones).
+- As built, the split is 7 new modules (planned 4): `src/core/{tool-ledger,chat-registry,turn-prompt,live-entry,attach-session}.ts` and `src/transports/acp/{handshake,runtime}.ts`. `live-entry.ts` holds the entry types, the `liveEntries` WeakMap and handle/proxy creation; `attach-session.ts` holds `attachSession`; `acp/runtime.ts` holds process spawn and kill, client callbacks and the turn queue.
 - Baseline (Node 24 from `.spike/node/bin`): `npx tsc --noEmit` clean; `npx vitest run` 27 files passed, 14 skipped; 802 tests passed, 60 skipped. This host has `cursor-agent` and `CURSOR_API_KEY`.
 
 ## Tasks & Acceptance
@@ -71,8 +72,8 @@ Refactor hazards. Each row must hold after its step.
 - [x] Step 1 `claude-cli-parity.md` -- P16 cell: put `test/live/usage.live.test.ts` in the cursor-cli cell, Antigravity back to `tbd`, drop the `-p` lead -- docs drift.
 - [x] Step 2 `src/core/{manifest,catalog,execute,images,pid-locks,pool,system-prompt,config,events}.ts`, `src/transports/acp/tool-calls.ts`, `src/adapters/cursor/models.ts` -- delete `MissingCapability`, drop the `export` keywords listed in Code Map -- dead surface.
 - [x] Step 3 `src/core/mcp-proxy.ts` -- one body parse (`requestsOf` gives the id: single request's id, else null); top-level pure `expiredPayload(...)` and `upstreamUrl(...)`; `handle` ≤ 80 lines -- length, duplicate parse.
-- [x] Step 4 `src/transports/acp/handshake.ts` (new) + `session.ts` + `tool-calls.ts` -- move `setup`, `login`, `switchModel`, the model-fact readers, `SESSION_UNKNOWN`/`errorDetail`/`resumeError` to `handshake.ts`; split `open` into spawn/runtime and client-handler helpers, `prompt` into queue and settle helpers, and `setup` into capability check and new-or-load helpers; one `settleExit(runtime)`; `tool-calls.ts` exports `isRecord` and a `mergeToolFacts` used by `ToolCallTable.update` and `rememberToolCall` -- session.ts ≤ 450 lines, functions ≤ 80.
-- [x] Step 5 `src/core/tool-ledger.ts`, `chat-registry.ts`, `turn-prompt.ts` (new) + `execute.ts` + `system-prompt.ts` -- move `ToolLedger`; move `chats`, `chatKey`, claim/release/holder-exit wait and the post-open re-key (module-level, takes `home` and grace as arguments); move `composePrompt`, `CONTINUITY_NOTE`, `HOST_SHELL_ARG` and `splitHostShell` (computed once per turn) to `turn-prompt.ts`, re-exported from `execute.ts`; add a delivery-plan helper in `system-prompt.ts` for lines 681-692 and 706; split `run` into an open-fresh-entry helper and a turn-body helper, and `attachSession` into open and post-open (capability check, chat re-key, exit hooks) helpers -- execute.ts ≤ 450 lines, functions ≤ 80.
+- [x] Step 4 (as built: also `src/transports/acp/runtime.ts`, new, for process/client/turn-queue helpers) `src/transports/acp/handshake.ts` (new) + `session.ts` + `tool-calls.ts` -- move `setup`, `login`, `switchModel`, the model-fact readers, `SESSION_UNKNOWN`/`errorDetail`/`resumeError` to `handshake.ts`; split `open` into spawn/runtime and client-handler helpers, `prompt` into queue and settle helpers, and `setup` into capability check and new-or-load helpers; one `settleExit(runtime)`; `tool-calls.ts` exports `isRecord` and a `mergeToolFacts` used by `ToolCallTable.update` and `rememberToolCall` -- session.ts ≤ 450 lines, functions ≤ 80.
+- [x] Step 5 (as built: also `src/core/live-entry.ts` and `attach-session.ts`, new; `attachSession` lives there, `createEntry` became `createLiveEntry`) `src/core/tool-ledger.ts`, `chat-registry.ts`, `turn-prompt.ts` (new) + `execute.ts` + `system-prompt.ts` -- move `ToolLedger`; move `chats`, `chatKey`, claim/release/holder-exit wait and the post-open re-key (module-level, takes `home` and grace as arguments); move `composePrompt`, `CONTINUITY_NOTE`, `HOST_SHELL_ARG` and `splitHostShell` (computed once per turn) to `turn-prompt.ts`, re-exported from `execute.ts`; add a delivery-plan helper in `system-prompt.ts` for lines 681-692 and 706; split `run` into an open-fresh-entry helper and a turn-body helper, and `attachSession` into open and post-open (capability check, chat re-key, exit hooks) helpers -- execute.ts ≤ 450 lines, functions ≤ 80.
 - [x] Step 6 `src/core/backend.ts` -- extract `prepareExecution` into a named builder -- `buildCliBackend` ≤ 80 lines.
 - [x] After each of steps 1-6, `package.json` scripts `typecheck` and `test` -- same counts as baseline; for steps 3-5 also the mutation checks in Design Notes, each result recorded in Implementation Notes -- one green step at a time, so a failure points at one step.
 - [x] Step 7 `package.json` scripts `build`, `dev:install`, `test:live`, plus `test/isolated-openclaw.test.ts` -- `npx tsc --noEmit --noUnusedLocals --noUnusedParameters`, build, install, the isolated load test, then the live suite once under the re-run rule; run the size script -- final net.
@@ -87,7 +88,7 @@ Refactor hazards. Each row must hold after its step.
 
 ## Implementation Notes
 
-Build worker run, 2026-10-20, branch `claude/friendly-hawking-tn9eme`, Node v24.22.0 (`.spike/node`). Nothing committed. No test, fixture, `images.ts` or `pid-locks.ts` change except the two `export` removals.
+Build worker run, 2026-10-20, branch `claude/friendly-hawking-tn9eme`, Node v24.22.0 (`.spike/node`). Committed afterwards by the coordinator as 03e5bdd (the worker committed nothing). No test, fixture, `images.ts` or `pid-locks.ts` change except the two `export` removals.
 
 **Baseline** (before any edit): `npm run typecheck` clean, `npm run build` clean, `npx vitest run` 27 files passed / 14 skipped, 802 tests passed / 60 skipped. After every step 2-6 the same three commands gave the same counts, and `npx tsc --noEmit --noUnusedLocals --noUnusedParameters` stayed clean.
 
@@ -106,7 +107,7 @@ Build worker run, 2026-10-20, branch `claude/friendly-hawking-tn9eme`, Node v24.
 - Step 1: P16 cell now has the live test in the cursor-cli cell, Antigravity `tbd`, no `-p` lead.
 - Step 2: `MissingCapability` deleted (`missingCapabilities` returns `RequiredCapability[]`); the 11 listed `export` keywords removed.
 - Step 3: `requestId` removed (the id is the single request's id from `requestsOf`, else null); top-level `expiredPayload`, `upstreamUrl`, `relayedHeaders`; `handle` is 80 lines. The guards did not move.
-- Step 4: new `acp/handshake.ts` (`setup` split into `checkCapabilities`, `authenticate`, `startSession`; `login`, `switchModel`, model readers, `SESSION_UNKNOWN`, `errorDetail`, `resumeError`, `toCliError`). `open` and `prompt` split into helpers; `settleExit` replaces the two exit races; `tool-calls.ts` exports `isRecord` and `mergeToolFacts`, used by `ToolCallTable.update` and `rememberToolCall`. Deviation: a second new file, `acp/runtime.ts` (process spawn and kill, client callbacks, turn queue, `Runtime`), because `session.ts` stayed at 544 lines with `handshake.ts` alone. Both files import only `core/ports` and each other (AD-2 test green).
+- Step 4: new `acp/handshake.ts` (`setup` split into `checkCapabilities`, `authenticate`, `startSession`; `login`, `switchModel`, model readers, `SESSION_UNKNOWN`, `errorDetail`, `resumeError`, `toCliError`). `open` and `prompt` split into helpers; `settleExit` replaces the two exit races; `tool-calls.ts` exports `isRecord` and `mergeToolFacts`, used by `ToolCallTable.update` and `rememberToolCall`. Deviation: a second new file, `acp/runtime.ts` (process spawn and kill, client callbacks, turn queue, `Runtime`), because `session.ts` stayed at 544 lines with `handshake.ts` alone. Both files import `core/ports` and each other (types from `./session.ts`, helpers from `./tool-calls.ts`), nothing else in the repo (AD-2 test green).
 - Step 5: `tool-ledger.ts`, `chat-registry.ts` (module-level `chats`, takes `home` and the grace as arguments), `turn-prompt.ts` (`composePrompt`, `CONTINUITY_NOTE`, `HOST_SHELL_ARG`, `HOST_SHELL_TOOL`, `splitHostShell`, `modeOf`; `execute.ts` re-exports the two tests import), `planDelivery` in `system-prompt.ts`. `splitHostShell` is computed once per `run`; `reuseKey` takes its `hostShell`. Deviation: two more new files, `live-entry.ts` (entry types, the `liveEntries` WeakMap that is the "entries" state, handle and proxy creation) and `attach-session.ts` (`attachSession` split into `openProcess` and `settleOpened`), because `execute.ts` could not reach 450 lines otherwise. The shared state stays module-level: one `chats` map and one `liveEntries` map for every `createExecute`. `run` is now `run`, `openFresh`, `runTurn`, `promptTurn`. `vi.mock("./mcp-proxy.ts")` still applies: `live-entry.ts` imports from that path; `takeHostImages` is still imported by `execute.ts` from `./images.ts`.
 - Step 6: `prepareExecutionFor` and `resolveExecutionArgsFor` extracted from `buildCliBackend`; same fields, same spread order.
 - Step 8: `MEMORY.md`: `CONTINUITY_NOTE` path fixed, one module-map entry added. `docs/`: no change (no setup, config, or behavior change).
@@ -129,12 +130,12 @@ Build worker run, 2026-10-20, branch `claude/friendly-hawking-tn9eme`, Node v24.
 | O2 | own ticket | 1.21 (F3): adds a delete |
 | O3 | own ticket | 1.22 (F4): needs test edits |
 | D3 | dropped | host reads only `errorText`; clearing the binding is host-side for `claude-cli` only |
-| D4 | dropped | the host fingerprint already hashes argv, argv0, env |
+| D4 | dropped | the host fingerprint already hashes argv, argv0, env (`buildCliLiveSessionFingerprint`, `.spike/openclaw/node_modules/openclaw/dist/cli-live-session-registry-Iq0txoVH.mjs` lines 1590-1658: `argv` 1642, `argv0` 1643, `env` 1656) |
 | D5 | dropped | host watchdog aborts `ctx.abortSignal`; `open` ends on abort |
 | D6 | dropped | the static home is the lock, checked live |
 | D8 | dropped | rewritten only when permissions differ |
 | D9 | dropped | per-agent config dir sees the Linux login (1.15 proof) |
-| D10-D12 | dropped | need warm reuse, which 2026.10.3 never does; MEMORY open risk covers the recheck |
+| D10-D12 | dropped | need warm reuse, which 2026.10.3 never does; MEMORY open risk "warm-reuse effects" (added after review) covers the recheck |
 | D13, D21 | dropped here | offline host-contract tests: F5, no own ticket, fits 1.17 |
 | D15 | dropped | host-bound, MEMORY open risk |
 | D17 | dropped | no stable signal from Cursor; documented |
@@ -153,6 +154,9 @@ Build worker run, 2026-10-20, branch `claude/friendly-hawking-tn9eme`, Node v24.
 
 ## Plan Change Log
 
+- Build, 2026-10-20: the planned 4 new modules became 7. (1) `src/transports/acp/runtime.ts`: with `handshake.ts` alone `session.ts` was still 544 lines against the 450 limit, so the process spawn/kill, client callbacks and turn queue moved too (`session.ts` 323, `runtime.ts` 243, `handshake.ts` 255). (2) `src/core/live-entry.ts` and (3) `src/core/attach-session.ts`: after the planned moves `execute.ts` was about 530 lines (779 minus ledger, registry, turn prompt), too many for 450, so the entry types with handle/proxy creation and `attachSession` moved out (`execute.ts` 439, `live-entry.ts` 116, `attach-session.ts` 155). `entries` became `liveEntries` in `live-entry.ts`; `chats` stays module-level in `chat-registry.ts`. Verbatim moves, no behavior change; the AD-2 scan and the size AC cover the new files.
+- Review follow-ups (docs only): F5 added to ticket 1.17, ticket 1.21 rewritten to what is feasible, F2 added to Known limits, D4 evidence referenced, P16 matrix cell given the manifest caveats, MEMORY open risk for D10-D12.
+
 ## Review Triage Log
 
 ## Design Notes
@@ -164,13 +168,13 @@ Build worker run, 2026-10-20, branch `claude/friendly-hawking-tn9eme`, Node v24.
 | D1 | Non-auto model fails, Cursor reports `models` not a select (1.1) | Fixed in 1.6 (`readModelFacts`, `session/set_model`) |
 | D2 | Cursor backend errors arrive as reply text with `end_turn` (1.1) | Dropped: needs text heuristics, a behavior change. F1 |
 | D3 | `code`/`retryable` never reach failover; dead chat never dropped (1.1) | Dropped: host reads only `errorText`; `resumeError` text gives `session_expired`; clearing the binding is host-side for `claude-cli` only (MEMORY entry 7). `FAILOVER_REASON_BY_CODE` stays: AD-11 names it |
-| D4 | Reuse key ignores command, args, env (1.1) | Dropped: `reusable()` requires the host fingerprint, which hashes argv, argv0, env (`buildCliLiveSessionFingerprint`, OpenClaw 2026.10.3) |
+| D4 | Reuse key ignores command, args, env (1.1) | Dropped: `reusable()` requires the host fingerprint, which hashes argv, argv0, env (`buildCliLiveSessionFingerprint`, OpenClaw 2026.10.3: `dist/cli-live-session-registry-Iq0txoVH.mjs` lines 1641-1657) |
 | D5 | Handshake has no own timeout (1.1) | Dropped: host watchdog aborts `ctx.abortSignal` (entry 8); `open` terminates on abort |
 | D6 | `current_mode_update` could lift `ask` (1.1) | Dropped: the static home is the lock, checked live in `agent` mode (entry 19); the update is ignored |
 | D7 | `auto` keeps the previous model on resume (1.1) | Fixed in 1.6 (switch back to Auto) |
 | D8 | `cli-config.json` read-modify-rename race (1.2) | Dropped: rewritten only when permissions differ; Cursor writes only the last model there, which every open sets again |
 | D9 | `probeAuth` reads the shared home (1.2) | Dropped: a per-agent config dir sees the Linux login (1.15 proof) |
-| D10-D12 | `degraded` from settings; SSE cut between turns; `Mcp-Session-Id` across turns (1.3) | Dropped: need warm reuse, which 2026.10.3 never does; MEMORY open risk covers the recheck |
+| D10-D12 | `degraded` from settings; SSE cut between turns; `Mcp-Session-Id` across turns (1.3) | Dropped: need warm reuse, which 2026.10.3 never does; MEMORY open risk "warm-reuse effects" covers the recheck |
 | D13 | No login-free check of the host settings-file contract (1.3) | Dropped here (adds a test): F5 |
 | D14 | Host flags without enforcement (1.3) | Fixed in 1.4/1.19 (`execution-args`, `resolveExecutionArgs`) |
 | D15 | Per-turn credentials 401 if the fingerprint stabilises (1.3) | Dropped: host-bound, MEMORY open risk |
@@ -209,4 +213,6 @@ Follow-ups: F1 classify Cursor error text; F2 tool-call text separator; F3 side-
 
 ## Auto Run Result
 
-Status: ready-for-dev (halted after planning, as asked). Route full (auto), risk high (raised from low), review thorough recommended. Baseline `dffa35de26e75c871998b3fd5391d44509c3c85a`: typecheck clean, unused-locals check clean, 802 tests passed and 60 skipped. No product code written; nothing committed.
+Planning result (historical): ready-for-dev, route full (auto), risk high (raised from low), review thorough recommended. Baseline `dffa35de26e75c871998b3fd5391d44509c3c85a`: typecheck clean, unused-locals check clean, 802 tests passed and 60 skipped. No product code was written at that point.
+
+Build result: implemented, committed as 03e5bdd, 802 passed / 60 skipped, live suite green under the re-run rule (see Implementation Notes). Status: done.
