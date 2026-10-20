@@ -237,18 +237,27 @@ describe("images (P13)", () => {
     const options = calls.options[0]!;
     expect(options.signal).toBe(controller.signal);
     expect(options.roots).toEqual([root]);
-    expect(options.notBefore as number).toBeLessThanOrEqual(before);
-    expect(options.notBefore as number).toBeGreaterThan(before - 10 * 60_000);
+    expect(options.notBefore as number).toBeGreaterThanOrEqual(before - 15 * 60_000);
+    expect(options.notBefore as number).toBeLessThanOrEqual(Date.now() - 15 * 60_000);
   });
 
-  it("leaves a typed path to an old cache file as text (not the host's block for this turn)", async () => {
-    const { agentDir, log } = freshDir("typed");
-    const file = image(PNG);
-    const old = new Date(Date.now() - 60 * 60_000);
-    utimesSync(file, old, old);
-    const prompt = withImages("please look at this", file);
+  it("takes an image that waited 10 minutes in the host's queue, and notes one that is 20 minutes old", async () => {
+    const { agentDir, log } = freshDir("queued");
+    const queued = image(PNG);
+    const tenMinutes = new Date(Date.now() - 10 * 60_000);
+    utimesSync(queued, tenMinutes, tenMinutes);
+    await turn(agentDir, log, withImages("see", queued));
+    expect(sentPrompts(log)[0]!.filter((block) => block.type === "image")).toHaveLength(1);
+    const old = image(PNG);
+    const twenty = new Date(Date.now() - 20 * 60_000);
+    utimesSync(old, twenty, twenty);
+    const before = warnings.length;
+    const prompt = withImages("see", old);
     await turn(agentDir, log, prompt);
-    expect(sentPrompts(log)).toEqual([[{ type: "text", text: prompt }]]);
+    const [second] = sentPrompts(log).slice(1);
+    expect(second!.filter((block) => block.type === "image")).toHaveLength(0);
+    expect(second![0]!.text).toBe(`${prompt}\n\n[OpenClaw] An attached image was not passed to the model: too old to be read. Tell the user it could not be used.`);
+    expect(warnings.slice(before).filter((line) => line.includes("image"))).toEqual(["1 image(s) not sent: too old"]);
   });
 
   it("leaves a typed path to a missing cache file as text, with no note", async () => {

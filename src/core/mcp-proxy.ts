@@ -262,7 +262,7 @@ export async function startMcpProxy(options: StartMcpProxyOptions = {}): Promise
     try {
       // The target keeps its own path and query; the CLI's subpath and query are merged onto them.
       const url = new URL(current.url);
-      url.pathname = url.pathname.replace(/\/+$/, "") + incoming.pathname.slice(PROXY_PATH.length);
+      url.pathname = trimTrailingSlashes(url.pathname) + incoming.pathname.slice(PROXY_PATH.length);
       for (const [name, value] of incoming.searchParams) url.searchParams.append(name, value);
       const upstream = await fetch(url, {
         method: req.method ?? "POST",
@@ -365,4 +365,11 @@ export async function listToolNames(target: McpTarget, signal?: AbortSignal): Pr
   } catch {
     return undefined;
   }
+}
+
+/** Linear: a pattern like `/\/+$/` backtracks quadratically on a long run of slashes. */
+function trimTrailingSlashes(value: string): string {
+  let end = value.length;
+  while (end > 0 && value[end - 1] === "/") end--;
+  return value.slice(0, end);
 }

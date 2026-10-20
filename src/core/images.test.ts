@@ -167,27 +167,58 @@ describe("takeHostImages", () => {
 
   describe("this turn's files (freshness)", () => {
     const now = Date.now();
-    it("takes a file written within the window", async () => {
-      const result = await take(withText("x", put(PNG)), { notBefore: now - IMAGE_FRESHNESS_MS });
-      expect(result.images).toHaveLength(1);
+    const notBefore = now - IMAGE_FRESHNESS_MS;
+    const ago = (file: string, minutes: number) => {
+      const when = new Date(now - minutes * 60_000);
+      utimesSync(file, when, when);
+      return file;
+    };
+    it("waits 15 minutes for the host's queue", () => {
+      expect(IMAGE_FRESHNESS_MS).toBe(15 * 60_000);
     });
-    it("leaves a typed path to an older cache file as text", async () => {
-      const file = put(PNG);
-      const old = new Date(now - 10 * 60_000);
-      utimesSync(file, old, old);
+    it("takes a file written within the window, also one that waited 10 minutes in the host's queue", async () => {
+      expect((await take(withText("x", put(PNG)), { notBefore })).images).toHaveLength(1);
+      const result = await take(withText("x", ago(put(PNG), 10)), { notBefore });
+      expect(result.images).toHaveLength(1);
+      expect(result.text).toBe("x");
+    });
+    it("rejects a file older than the window with a warn and a note, and keeps the text", async () => {
+      const file = ago(put(PNG), 20);
       const prompt = withText("Look at this", file);
-      expect(await take(prompt, { notBefore: now - IMAGE_FRESHNESS_MS })).toEqual(unchangedOf(prompt));
+      const warns: string[] = [];
+      const result = await take(prompt, { notBefore, warn: (m) => warns.push(m) });
+      expect(result.images).toEqual([]);
+      expect(result.text).toBe(`${prompt}\n\n[OpenClaw] An attached image was not passed to the model: too old to be read.${TELL}`);
+      expect(warns).toEqual(["1 image(s) not sent: too old"]);
+      expect(`${result.text.replace(prompt, "")}${warns.join("")}`).not.toContain(injected);
+    });
+    it("counts every stale image in one note", async () => {
+      const prompt = withText("x", ago(put(PNG), 30), ago(put(PNG), 40));
+      const result = await take(prompt, { notBefore });
+      expect(result.text).toContain("2 attached images were not passed to the model: too old to be read.");
     });
     it("leaves a typed path to a file that does not exist as text, with no note", async () => {
       const prompt = withText("Look at this", join(injected, nameFor()));
-      expect(await take(prompt, { notBefore: now - IMAGE_FRESHNESS_MS })).toEqual(unchangedOf(prompt));
+      expect(await take(prompt, { notBefore })).toEqual(unchangedOf(prompt));
+    });
+    it("leaves a typed path to an old file the process does not own as text, with no note", async () => {
+      const prompt = withText("Look at this", ago(put(PNG), 60));
+      const warns: string[] = [];
+      expect(await take(prompt, { notBefore, uid: uid + 1, warn: (m) => warns.push(m) })).toEqual(unchangedOf(prompt));
+      expect(warns).toEqual([]);
+    });
+    it("leaves an old file in a directory that is not the host's private one as text", async () => {
+      const open = join(scratch, "stale-open", "openclaw-cli-images");
+      mkdirSync(open, { recursive: true });
+      chmodSync(open, 0o777);
+      const prompt = withText("x", ago(put(PNG, "png", open), 60));
+      expect(await takeHostImages(prompt, { roots: [open], notBefore })).toEqual(unchangedOf(prompt));
     });
     it("takes nothing when one file of the block is stale", async () => {
-      const stale = put(PNG);
-      const old = new Date(now - 10 * 60_000);
-      utimesSync(stale, old, old);
-      const prompt = withText("x", put(PNG), stale);
-      expect(await take(prompt, { notBefore: now - IMAGE_FRESHNESS_MS })).toEqual(unchangedOf(prompt));
+      const prompt = withText("x", put(PNG), ago(put(PNG), 60));
+      const result = await take(prompt, { notBefore });
+      expect(result.images).toEqual([]);
+      expect(result.text).toContain("too old to be read");
     });
   });
 
@@ -308,6 +339,14 @@ describe("takeHostImages", () => {
       expect(b.images).toEqual([]);
       const c = await take(withText("x", put(PNG)), { uid: uid + 1 });
       expect(c.images).toEqual([]);
+    });
+
+    it("refuses a directory chain owned by another uid while the file is the process's own", async () => {
+      const result = await take(withText("x", put(PNG)), { dirUid: uid + 1 });
+      expect(result.images).toEqual([]);
+      expect(result.text).toBe(`x\n\n${NOTE}could not be read.${TELL}`);
+      // The same file passes with the right directory owner.
+      expect((await take(withText("x", put(PNG)))).images).toHaveLength(1);
     });
 
     it("refuses a directory entry that is not a regular file, and a FIFO swapped in after the lstat without hanging", async () => {

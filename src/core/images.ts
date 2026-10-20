@@ -33,8 +33,12 @@ export const DEFAULT_IMAGE_LIMITS: ImageLimits = {
   maxTotalBytes: 20 * 1024 * 1024,
 };
 
-/** How long before the turn began a cache file may have been written and still count as this turn's (ms). */
-export const IMAGE_FRESHNESS_MS = 120_000;
+/**
+ * How long before the turn began a cache file may have been written and still count as this turn's (ms).
+ * The host writes the files before it waits in its own per-session queue, so a turn that waited behind a
+ * long run on the same session finds them minutes old: that wait is the only legitimate delay.
+ */
+export const IMAGE_FRESHNESS_MS = 15 * 60_000;
 
 /** A block longer than the count limit plus this is not the host's (it would be refused anyway): nothing is read. */
 const COUNT_MARGIN = 8;
@@ -53,10 +57,12 @@ export type TakeHostImagesOptions = {
    * `os.tmpdir()`. Tests inject their own.
    */
   roots?: readonly string[];
+  /** The owner every directory must have. Default: `uid`. Tests inject another to reach the directory check alone. */
+  dirUid?: number;
   /** The owner every file and directory must have. Default: this process's uid. Without one (Windows) the prompt is left as it is. */
   uid?: number | undefined;
   limits?: Partial<ImageLimits>;
-  /** Epoch ms. A file written before it is not this turn's, and the block is then left as text. Absent: no freshness check. */
+  /** Epoch ms. A file written before it is not this turn's: the block is left as text (with a note when it was the host's, only too old). Absent: no freshness check. */
   notBefore?: number;
   /** Test seams, called between the steps that a swapped file could exploit. */
   hooks?: {
@@ -249,29 +255,40 @@ export async function takeHostImages(prompt: string, options: TakeHostImagesOpti
   }
   if ([...expected.values()].some((dir) => dir === undefined)) return unchanged;
 
-  // Correlate with this turn: the host writes each file when it prepares the turn. A file that is gone or
-  // older is a path someone typed, not the host's block.
-  for (const line of block.lines) {
-    signal?.throwIfAborted();
-    try {
-      const st = await fsp.lstat(line);
-      if (notBefore !== undefined && st.mtimeMs < notBefore) return unchanged;
-    } catch {
-      return unchanged;
-    }
-  }
-
-  const delivery: Delivery = { uid, limits, signal, hooks };
   const trusted = new Map<string, boolean>();
+  const dirOwner = options.dirUid ?? uid;
   const trustedDirectory = async (dir: string): Promise<boolean> => {
     let ok = trusted.get(dir);
     if (ok === undefined) {
       const real = expected.get(dir)!;
-      ok = (await realOrUndefined(dir)) === real && (await privateDirectory(real, uid)) && (await privateDirectory(path.dirname(real), uid));
+      ok = (await realOrUndefined(dir)) === real && (await privateDirectory(real, dirOwner)) && (await privateDirectory(path.dirname(real), dirOwner));
       trusted.set(dir, ok);
     }
     return ok;
   };
+
+  // Correlate with this turn: the host writes each file when it prepares the turn. A file that is gone is a
+  // path someone typed. An older file the process owns, in the host's directory, is most likely the host's own
+  // block after a long queue wait: say so. Anything else that is older is text.
+  let stale = 0;
+  for (const [i, line] of block.lines.entries()) {
+    signal?.throwIfAborted();
+    try {
+      const st = await fsp.lstat(line);
+      if (notBefore !== undefined && st.mtimeMs < notBefore) {
+        if (st.uid !== uid || !st.isFile() || !(await trustedDirectory(shapes[i]!.dir))) return unchanged;
+        stale++;
+      }
+    } catch {
+      return unchanged;
+    }
+  }
+  if (stale > 0) {
+    warn?.(`${stale} image(s) not sent: too old`);
+    return { text: `${prompt.trimEnd()}\n\n${overflowNote(stale, "too old to be read")}`, images: [] };
+  }
+
+  const delivery: Delivery = { uid, limits, signal, hooks };
 
   const images: PromptImage[] = [];
   const notes: string[] = [];

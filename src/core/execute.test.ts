@@ -558,7 +558,7 @@ describe("createExecute continuity note (P15)", () => {
     expect(sessions[0]?.prompts).toEqual(["hi"]);
   });
 
-  it("reads the images before it records the chat or uses up the note, so an abort during the read leaves both (P13)", async () => {
+  it("reports no chat id and sends no prompt when an abort lands while the images are read (P13)", async () => {
     const dir = mkdtempSync(join(tmpdir(), "oac-exec-images-"));
     try {
       const root = join(dir, "openclaw", "openclaw-cli-images");
