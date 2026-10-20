@@ -47,7 +47,7 @@ describe("cursor-cli backend", () => {
     expect(backend.resolveExecutionArgs).toBeTypeOf("function");
     expect(backend.parseJsonlEvent).toBeTypeOf("function");
     // P19 with P7 and P13: the host's live-test defaults.
-    expect(backend.liveTest).toEqual({ defaultModelRef: "cursor-cli/auto", defaultImageProbe: false, defaultMcpProbe: true });
+    expect(backend.liveTest).toEqual({ defaultModelRef: "cursor-cli/auto", defaultImageProbe: true, defaultMcpProbe: true });
   });
 
   it("asks the host to clear the adapter's env keys from every turn, and keeps the logins (P17)", () => {
@@ -659,15 +659,17 @@ describe("capability check (AD-10)", () => {
   });
 
   it("passes a CLI that reports more than the manifest claims", async () => {
-    const { records } = await turn(cursorAdapter, "more", { mcpCapabilities: { http: true, sse: true }, promptCapabilities: { image: false } });
+    const { records } = await turn(cursorAdapter, "more", { mcpCapabilities: { http: true, sse: true }, promptCapabilities: { image: true, audio: true } });
     expect(records.at(-1)).toMatchObject({ type: "result", is_error: false });
   });
 
   it("does not check an undecided image row, and does when it is decided (P13)", async () => {
     const caps = { promptCapabilities: { image: false } };
-    expect((await turn(cursorAdapter, "img-spike", caps)).records.at(-1)).toMatchObject({ is_error: false });
-    const decided = await turn(withRow("P13", "match"), "img-match", caps);
+    expect((await turn(withRow("P13", "spike"), "img-spike", caps)).records.at(-1)).toMatchObject({ is_error: false });
+    // Cursor's manifest decides P13 (approx); the check runs right after the open and sends no prompt.
+    const decided = await turn(cursorAdapter, "img-approx", caps);
     expect(decided.records.at(-1)!.event.error.message).toMatch(/image prompts \(parity row P13\)/);
+    expect(decided.methods).toEqual(["initialize"]);
   });
 });
 
@@ -998,7 +1000,7 @@ describe("provider catalog entry", () => {
     expect(catalog.order).toBe("late");
     const result = await catalog.run({ config, env: fakeEnv(), providerIds: ["cursor-cli"] });
     expect(ids(result)).toEqual(["auto", "fake-fast", "fake-slow", "twin", "twin-high"]);
-    expect(result?.provider.models[0]).toMatchObject({ id: "auto", name: "Auto", reasoning: false, input: ["text"] });
+    expect(result?.provider.models[0]).toMatchObject({ id: "auto", name: "Auto", reasoning: false, input: ["text", "image"] });
     // OpenClaw drops a provider with no base URL or api; no request goes to either.
     expect(result?.provider.baseUrl).toBeTruthy();
     expect(result?.provider.api).toBeTruthy();

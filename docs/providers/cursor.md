@@ -87,6 +87,32 @@ Cursor has no system-prompt channel on ACP (`session/new` takes only the working
 
 Live test: `test/live/skills-system-prompt.live.test.ts`. No setup change is needed.
 
+## Images
+
+An image you attach to a `cursor-cli` turn reaches Cursor as pixels, not as a path. OpenClaw 2026.10.3 writes the image to its private cache (`<OpenClaw temp>/openclaw-cli-images`, mode 0700, swept after 7 days) and, because the backend declares no `imageArg`, appends the file paths at the end of the prompt. The plugin takes that path block off the text, reads the files, and sends them as ACP `image` blocks after the text block. Cursor never sees the cache path, so its native read cannot open it.
+
+- **What counts as the host's block.** The trailing lines of the prompt, after an empty line (or the whole prompt), where every line is an absolute, normalized path `<temp>/openclaw[-<uid>]/openclaw-cli-images/<64 hex>.<ext>` under `/tmp` or the system temp dir. If any line does not match, the prompt goes through unchanged and no file is read. A cache path you type in the middle of your text is left alone.
+- **What is sent.** Each file must be a regular file (no link), owned by the user running the Gateway, in that directory, and PNG, JPEG, GIF, WebP, or BMP **by its first bytes**, never by its extension (a `.png` that holds JPEG goes as `image/jpeg`). At most 10 MiB per image, 10 images, and 20 MiB per turn; the first images that fit are sent. HEIC, AVIF, SVG, TIFF, and unknown bytes are not sent.
+- **Nothing is dropped silently.** An image that cannot be sent is removed from the text and replaced by a one-line note at the end of the prompt, for example `[OpenClaw] An attached image was not passed to the model: unsupported type.` (also `too large`, `no longer available`, `could not be read`, or a count of images left out and why). The plugin logs a warning with the reason only: never the path, the bytes, or base64.
+- **Nothing is written.** The plugin creates, copies, changes, and deletes no image file, in the workspace, a home, or the temp dir. The cache belongs to OpenClaw, which sweeps it. The images go to Cursor's server as part of the chat, like any prompt text.
+- **Later turns.** Cursor keeps an image in its chat, so a later turn of the same chat (also after `session/load`) can ask about it and the plugin resends nothing. After a fresh chat (a lost chat, `/reset`, or compaction, see Compaction) the earlier images are gone from Cursor's side; attach the image again.
+- **Local images named in your text.** OpenClaw also attaches local images your message names (inside the agent's allowed folders) in the same way, so they arrive as image blocks too.
+- **Side questions** get their images like any other turn.
+- **Models.** The catalog rows declare `text` and `image` input, so OpenClaw routes images to Cursor models instead of treating them as files.
+- **Requirement.** `cursor-agent` must report `promptCapabilities.image` at open (see Capability check).
+
+Live test: `test/live/images-compaction.live.test.ts` (real Cursor reads a random word from a PNG with no native read and recalls it in a later turn; a fake agent shows the blocks).
+
+## Compaction
+
+Cursor's ACP mode has no compaction control. `available_commands_update` lists none, `/summarize` and `/compress` sent over ACP are plain model text that leave the chat store unchanged, and the TUI's `/summarize` uses a conversation action the ACP agent never sends. Cursor may summarize a long chat on its own server, but nothing shows it or can trigger it. So the backend declares neither `ownsNativeCompaction` nor `manualCompaction`, and OpenClaw compacts its own transcript as it does for any CLI backend.
+
+- **`/compact` and budget compaction.** `/compact` (`sessions.compact`) and the pre-turn `cli_budget` compaction summarize the OpenClaw transcript with an API model: `agents.defaults.compaction.model`, else the agent's own model. They then drop the Cursor chat binding. The next turn starts a fresh Cursor chat with the system block and the continuity note, and the model reads the compacted conversation through `sessions_history`. Cursor's own chat (and any image in it) is not carried over.
+- **Without an API model.** If no usable API model exists, compaction fails with OpenClaw's reason (for example `No route-compatible authentication source is configured`) and the Cursor chat stays as it is. Set `agents.defaults.compaction.model` (see [Setup](../setup.md#3-configure)).
+- **Where to send `/compact`.** It is a chat command, so it cannot go through `openclaw agent --message`. Use a chat channel or `openclaw sessions compact <key>` against a running Gateway.
+
+Live test: `test/live/images-compaction.live.test.ts` (row e: a mock API compaction model, `sessions compact` reports `compacted: true`, the next turn opens one new Cursor chat and still knows the earlier fact).
+
 ## Streaming and tool progress
 
 Cursor's replies reach OpenClaw while the turn runs, not when it ends: every `agent_message_chunk` becomes a text delta and every `agent_thought_chunk` a thinking delta, in order, and the closing record carries the full reply, which is exactly the concatenation of the text deltas. Nothing waits for the end of the turn. Live run (real `cursor-agent`, 2026.10.16): 159 text and 4 thinking deltas, the first one 9.6 s before the closing record.
@@ -178,7 +204,7 @@ Cursor keeps the model you last used in the agent's own config (`<agentDir>/open
 
 OpenClaw loads the plugin before the first turn only when your config names a `cursor-cli/...` model, for example as the default model. Until then the Gateway's model list has no Cursor rows.
 
-Every model is declared as text-only to OpenClaw, because images (P13) are still a `spike` row: image attachments are not routed to Cursor models until the adapter sends them.
+Every model is declared to OpenClaw with `text` and `image` input, because the plugin sends images as ACP image blocks (P13, see Images), so OpenClaw routes image attachments to Cursor models.
 
 ## Operations
 
@@ -199,7 +225,7 @@ Right after `initialize`, before the login, `session/new` or `session/load`, the
 | --- | --- | --- |
 | Session resume | P5 | `agentCapabilities.loadSession` (a resume needs it even without the row) |
 | HTTP MCP servers | P7 | `agentCapabilities.mcpCapabilities.http` (the MCP proxy is HTTP) |
-| Image prompts | P13 | `agentCapabilities.promptCapabilities.image`, checked once the row is decided (it is `spike` now) |
+| Image prompts | P13 | `agentCapabilities.promptCapabilities.image`, checked, as the row is decided (`approx`) |
 
 Also checked at open: the login method. If `authMethods` lists methods and `cursor_login` is not one of them, the turn fails with `capability_mismatch` and the text `The CLI offered no "cursor_login" login method` (an empty list skips the login; an absent list logs in as before). Checks that already existed: the mode the turn needs must exist: `ask` for a side question or a turn without host `exec` (P18), `agent` when OpenClaw serves `exec`; a named model needs the CLI's model list (P1); an ACP protocol other than 1 and a build below the minimum version fail as `unsupported_version` (P19). Rows with no signal at open (P3, P4, P8, P10, P15, P16) are not checked; P6, P11, P12 and P14 have no mechanism in the core.
 
@@ -249,8 +275,8 @@ Live test: `test/live/usage.live.test.ts`.
 | P10 | `tools.allow` and `tools.deny` | approx | The backend declares `execution-args` like `claude-cli`; the host filters the OpenClaw tool list and the adapter translates nothing. A run's native tool selection is accepted only if it keeps `read`, `grep`, and `glob`. Live tests: `test/live/permission-routing.live.test.ts`, `test/live/exec-tool.live.test.ts` (`tools.deny: [exec, process]` removes the shell) |
 | P11 | Skills as a native plugin | approx | OpenClaw puts its skills catalog (name, description, `SKILL.md` location) into the system prompt for every backend but `claude-cli`; P12 delivers it, and Cursor reads a `SKILL.md` with its native read. No `--plugin-dir` (`acp` ignores it) and no skill file is written. See System prompt and skills. Live test: `test/live/skills-system-prompt.live.test.ts` |
 | P12 | System prompt every turn | approx | OpenClaw's system prompt is sent as a marked block at the start of a chat's first prompt and again when it changes, not on every turn (that would add thousands of tokens per turn). The backend declares `systemPromptWhen: "always"`, so a changed tool list keeps the chat. See System prompt and skills. Live test: `test/live/skills-system-prompt.live.test.ts` |
-| P13 | Images | spike | |
-| P14 | Native and manual compaction | spike | |
+| P13 | Images | approx | The host writes each image to its private cache and appends the paths to the prompt; the plugin takes that trailing block off, reads each file (cache directory, owner, regular file, at most 10 MiB, 10 images, 20 MiB in all, PNG/JPEG/GIF/WebP/BMP by magic bytes) and sends ACP image blocks after the text. An image it cannot send becomes a one-line note. Nothing is written. Catalog rows declare image input; Cursor keeps earlier images in its chat (no resend); needs `promptCapabilities.image`. See Images. |
+| P14 | Native and manual compaction | gap | `cursor-agent acp` offers no compaction (no command is listed; `/summarize` and `/compress` over ACP are plain model text), so the backend declares neither `ownsNativeCompaction` nor `manualCompaction`. OpenClaw then compacts its own transcript: `/compact` and the `cli_budget` compaction summarize with an API model (`agents.defaults.compaction.model`, else the agent's model), drop the Cursor chat, and the next turn starts a fresh chat; without a usable API model compaction fails with the host's reason. Cursor may summarize its own chat server-side, invisible over ACP. See Compaction. |
 | P15 | History reseed and fallback prelude | approx | The backend sets `reseedFromRawTranscriptWhenUncompacted`, so with a Cursor API-key profile OpenClaw builds its history prompt for a lost `cursor-cli` chat (its fresh retry did not run on 2026.10.3 in the live probe). OpenClaw never copies history across a switch from an API model (auth boundary), so the first prompt of a fresh chat carries a note that points the model to `sessions_history`. The fallback prelude is a gap: OpenClaw builds it only for `claude-cli`; a model that takes over still reads the cursor turns from the transcript. See Chat continuity across a model switch. Live test: `test/live/history-continuity.live.test.ts` |
 | P16 | Usage per turn | approx | Read after each turn from Cursor's usage ledger with `CURSOR_API_KEY` (see Usage): exact when it answers, up to 6 s added to the turn's close, none without the key or when the undocumented ledger fails. Live test: `test/live/usage.live.test.ts` |
 | P17 | Clean env, watchdog, timeouts | match | OpenClaw's watchdog and timeouts end a turn through its abort signal and the plugin adds no timer; `clearEnv` drops endpoint, harness, debug, and telemetry keys; per backend 4 turns and 8 processes by default; a pid lock per process and reaping of a killed Gateway's orphans; every process closed on unload. See Operations. Live test: `test/live/operations.live.test.ts` |
@@ -265,6 +291,9 @@ Live test: `test/live/usage.live.test.ts`.
 - **A model listing is not tracked.** The throwaway `cursor-agent` process behind a model listing (a few seconds) is closed by the listing itself, but it has no pid lock and is not closed on unload; a Gateway killed in that window can leave one.
 - **Usage and a skewed clock.** A host clock more than 5 s off Cursor's makes usage 0 until the cooldown (see Usage).
 - **Usage needs an API key.** With a Cursor login only (no `CURSOR_API_KEY`), OpenClaw records 0 tokens for a turn. See Usage.
+- **HEIC, AVIF, SVG, and TIFF images are not sent.** They get a one-line note. See Images.
+- **Compaction replaces the Cursor chat.** After `/compact` or a budget compaction the next turn is a fresh Cursor chat: Cursor's own context, including earlier images, is gone. The model reads the summary through `sessions_history`. Without an API compaction model, compaction fails. See Compaction.
+- **Cursor's own summarization is not visible.** Cursor may summarize a long chat server-side; ACP shows nothing of it and offers no way to trigger it.
 - **Cursor may shorten the system prompt.** The block lives in Cursor's chat. If Cursor summarizes a long chat, the instructions may be shortened until the prompt changes. Nothing detects this.
 - **A stopped turn costs a block.** A turn that errors, crashes, or is aborted records no delivery, so the next turn resends the block (about 8,000 tokens in Cursor's chat each time).
 - **Copies of the block add to the chat's size.** OpenClaw's `cli_budget` compaction takes the larger of its transcript estimate and the session's total tokens from usage, which counts every block copy in Cursor's chat. With an API key a long chat can reach the budget sooner; with no API model or Cursor API-key profile the compaction then fails the turn.

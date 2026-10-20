@@ -11,6 +11,7 @@ import {
   type NormalizedEvent,
   type NormalizedUsage,
   type PermissionDecision,
+  type PromptImage,
   type RequiredCapability,
 } from "../../core/ports.ts";
 import { ToolCallTable, type DescribeToolCall } from "./tool-calls.ts";
@@ -439,7 +440,7 @@ export class AcpSession implements CliSession {
     }
   }
 
-  async *prompt(text: string): AsyncGenerator<NormalizedEvent> {
+  async *prompt(text: string, images: readonly PromptImage[] = []): AsyncGenerator<NormalizedEvent> {
     const { runtime } = this;
     if (!this.alive || runtime.turn) {
       const message = this.alive ? "A turn is already running in this session." : "The CLI session is closed.";
@@ -473,7 +474,14 @@ export class AcpSession implements CliSession {
     const settled = (async () => {
       try {
         const response = await Promise.race([
-          this.connection.prompt({ sessionId: this.sessionId, prompt: [{ type: "text", text }] }),
+          this.connection.prompt({
+            sessionId: this.sessionId,
+            // The data is never logged. The text block is omitted when empty (an image-only turn).
+            prompt: [
+              ...(text ? [{ type: "text" as const, text }] : []),
+              ...images.map((image) => ({ type: "image" as const, mimeType: image.mimeType, data: image.data })),
+            ],
+          }),
           died,
         ]);
         // Nothing stays pending for the host when the turn closes.

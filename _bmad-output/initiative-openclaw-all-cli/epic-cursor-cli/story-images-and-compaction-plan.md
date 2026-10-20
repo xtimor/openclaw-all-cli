@@ -3,7 +3,7 @@ title: 'Images and compaction'
 type: 'feature'
 ticket: '14'
 created: '2026-10-20'
-status: 'ready-for-dev'
+status: 'in-progress'
 baseline_revision: '550dfd70e7c4821f8a979e1679e5e7d06c96c2fc'
 route: 'full'
 route_source: 'auto'
@@ -127,7 +127,7 @@ deferred: []
 ## Tasks & Acceptance
 
 **Execution:**
-- [ ] `src/core/images.ts`, `src/core/images.test.ts`: reader per the Code Map. One unit test per matrix row it owns:
+- [x] `src/core/images.ts`, `src/core/images.test.ts`: reader per the Code Map. One unit test per matrix row it owns:
   - one, many, and only-image prompts
   - the separator rule
   - not at the end
@@ -138,11 +138,11 @@ deferred: []
   - missing file
   - abort
   - notes and warns hold no path and no base64
-- [ ] `src/core/ports.ts`, `src/transports/acp/session.ts`, `src/transports/acp/session.test.ts`: optional images on `prompt` and the ACP block mapping. Test: blocks sent in order, and the text block is omitted when empty.
-- [ ] `src/core/execute.ts`, `src/core/backend.ts`: wiring per the Code Map.
-- [ ] `src/core/manifest.ts`, `src/adapters/cursor/manifest.ts`, `src/core/manifest.test.ts`: P13 approx, P14 gap, the new P14 reason. Keep "leaves the rows the core has no mechanism for undecided" (P6 and P14 are both `gap`). The gap-reason test checks that the matrix cell matches.
-- [ ] `test/fixtures/fake-cursor-agent.mjs`: image summary logging and `[[images]]`.
-- [ ] `test/images.test.ts` (new), through `buildCliBackend` → `prepareExecution` → `execute` with the fake and an injected image root:
+- [x] `src/core/ports.ts`, `src/transports/acp/session.ts`, `src/transports/acp/session.test.ts`: optional images on `prompt` and the ACP block mapping. Test: blocks sent in order, and the text block is omitted when empty.
+- [x] `src/core/execute.ts`, `src/core/backend.ts`: wiring per the Code Map.
+- [x] `src/core/manifest.ts`, `src/adapters/cursor/manifest.ts`, `src/core/manifest.test.ts`: P13 approx, P14 gap, the new P14 reason. Keep "leaves the rows the core has no mechanism for undecided" (P6 and P14 are both `gap`). The gap-reason test checks that the matrix cell matches.
+- [x] `test/fixtures/fake-cursor-agent.mjs`: image summary logging and `[[images]]`.
+- [x] `test/images.test.ts` (new), through `buildCliBackend` → `prepareExecution` → `execute` with the fake and an injected image root:
   - image turn: the log shows a text block without the path, and an image block with the right MIME and byte count
   - fresh chat: block, then note, then prompt in the text block, images after it
   - resumed chat (`session/load`) image
@@ -154,8 +154,8 @@ deferred: []
   - backend has no compaction or `image*` fields
   - catalog rows include `image` for the Cursor adapter
   - Plus the toggled-row table: P13 adds no config field, only the execute option
-- [ ] `test/live/png-word.ts` (new helper): pure-Node PNG (zlib `deflateSync`, CRC32) that draws a word in a 5x7 bitmap font scaled about 12x, black on white. Random 6-letter consonant-vowel word from `BDFGHKLMNPRSTVZ` and `AEIOU`.
-- [ ] `test/live/images-compaction.live.test.ts` (gated; P13, P14). Agent `oac-images` with a temp workspace; Gateway on port 18941 for row (e). Rows:
+- [x] `test/live/png-word.ts` (new helper): pure-Node PNG (zlib `deflateSync`, CRC32) that draws a word in a 5x7 bitmap font scaled about 12x, black on white. Random 6-letter consonant-vowel word from `BDFGHKLMNPRSTVZ` and `AEIOU`.
+- [x] `test/live/images-compaction.live.test.ts` (gated; P13, P14). Agent `oac-images` with a temp workspace; Gateway on port 18941 for row (e). Rows:
   - (a) `--local --json`: "What word is written in the image `<abs png in workspace>`? Reply with the word only. Do not use any tools." The reply holds the word and `meta.toolSummary` has no `read`, `glob`, or `grep`. Retry twice.
   - (b) Same session: "What word was in the image I sent before? Reply with the word only. Do not use any tools." The reply holds the word, and no read.
   - (c) The workspace holds only the files the test wrote: no `.openclaw-cli-images`, no `.cursor`.
@@ -166,7 +166,7 @@ deferred: []
     - turn 2: "What code word did I ask you to remember? Reply with it only."
     - The reply holds `KW-<stamp>`, and `<state>/agents/oac-images/agent/openclaw-all-cli/cursor-cli/acp-sessions` gained exactly one new chat directory.
   - `afterAll`: delete the agent, unset `cursor-cli.command`, `models.providers.mockapi`, and `agents.defaults.compaction` (unset the parent if `{}` is left), stop the Gateway and the mock.
-- [ ] Docs:
+- [x] Docs:
   - `docs/providers/cursor.md`:
     - new sections "Images" (delivery, limits, allow-list, notes, nothing written, earlier images lost after a fresh chat or compaction) and "Compaction" (no Cursor control, what `/compact` and budget compaction do, the API compaction model)
     - Models paragraph (line 181): rows now declare image input
@@ -185,6 +185,15 @@ deferred: []
 - Given the Cursor manifest, when the backend is built, then it declares no `ownsNativeCompaction`, `manualCompaction`, or `image*` field, P14 is `gap` with its reason in the manifest, the matrix, and the docs, and no image file appears in the workspace or the agent home.
 
 ## Implementation Notes
+
+- Built to the Code Map. `src/core/images.ts` (`takeHostImages`, `sniffImageMime`): membership by path shape first (normalized absolute path, `openclaw-cli-images` parent, `openclaw[-<uid>]` grandparent under the realpath of `/tmp` or `os.tmpdir()`, 64-hex name), then per file `lstat` (regular, no link), uid, directory realpath equal to the checked directory, an `O_NOFOLLOW` open with a second check on the descriptor (dev/ino/uid/size, closing the lstat-to-read window), size caps, magic bytes. A failure gives a one-line note and a warn with the reason only. A count or total overflow stops the loop and gives one summary note for the rest (the first images that fit are sent). Without `process.getuid` nothing is sent.
+- Wiring: `CliSession.prompt(text, images?)` (`PromptImage` in ports); ACP `prompt` sends the text block only when non-empty, then image blocks; `ExecuteOptions.images` (from `flags.images`) and `imageRoots` (tests only, passed through `BuildOptions.execute`); `composePrompt` takes the host text so the 1.13 neutralization still covers it; abort is checked after the reads and before `session/prompt`. `createExecute` stays otherwise unchanged.
+- Manifest: Cursor P13 `approx` (keeps `requires: imagePrompts`), P14 `gap`; matrix cells and `NO_FLAG_ROWS.P14` reason updated. Side effects of P13 decided: catalog rows declare `image`; the host's `liveTest.defaultImageProbe` is now true; the 1.12 test for the undecided image row now uses a spiked copy of the manifest. Backend `config` is identical with P13 on or off (asserted).
+- Fake agent logs image blocks as `{type, mimeType, bytes, sha256}` and has the `[[images]]` steer.
+- Tests: `src/core/images.test.ts` (46), `test/images.test.ts` (14, through `buildCliBackend`), one ACP session test. Unit suite: 774 passed, 59 skipped, stable across two runs.
+- Live `test/live/images-compaction.live.test.ts` (real cursor-agent 2026.10.16, OpenClaw 2026.10.3): 5 of 5 passed twice (a: word read with no native read; b: recalled in the next turn; c: workspace holds only the test's files; d: fake shim shows a text block without the cache path and one `image/png` block of the PNG's size; e: mock API compaction model, `sessions compact` gave `compacted: true`, one new Cursor chat, fact kept). The second run followed a test-cleanup fix: `config get` reports defaults, so the test reads `.spike/openclaw.json` to decide whether to unset the empty `agents.defaults.compaction` it created. Nothing was left in the config, the agents, or `/tmp` by it.
+- Docs: `docs/providers/cursor.md` (Images, Compaction, Models, capability table, parity rows, known limits), `docs/setup.md` (compaction model), matrix, AD-16, Open Questions row, CAP-11 map row, MEMORY entry 14.
+- Not covered: Windows (no `getuid`: nothing is sent); other CLIs; Cursor's own server-side summarization.
 
 ## Plan Change Log
 

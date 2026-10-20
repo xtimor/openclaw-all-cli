@@ -255,6 +255,9 @@ export type OpenParams = {
   signal?: AbortSignal;
 };
 
+/** One image for a prompt (parity row P13): its type from the file's first bytes, and its bytes in base64. Never logged. */
+export type PromptImage = { mimeType: string; data: string };
+
 /** One live conversation with a CLI process. */
 export interface CliSession {
   /** The native session ID. */
@@ -265,8 +268,11 @@ export interface CliSession {
   readonly alive: boolean;
   /** What the CLI reported at open. Absent: the session reports nothing and is not checked. */
   readonly capabilities?: ReadonlySet<CliCapability>;
-  /** Sends one prompt and yields the turn's events. The last event is `result` or `error`. */
-  prompt(text: string): AsyncIterable<NormalizedEvent>;
+  /**
+   * Sends one prompt and yields the turn's events. The last event is `result` or `error`. The images
+   * follow the text in the CLI's protocol; an empty text sends no text.
+   */
+  prompt(text: string, images?: readonly PromptImage[]): AsyncIterable<NormalizedEvent>;
   /** Asks the CLI to stop the running turn and answers pending permission requests `cancelled`. */
   cancel(): Promise<void>;
   /** Ends the process. Safe to call twice. */

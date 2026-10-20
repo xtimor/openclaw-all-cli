@@ -67,7 +67,7 @@ export const NO_FLAG_ROWS: Partial<Record<ParityRowId, string>> = {
   P3: "streaming is the AD-3 seam itself: every adapter streams, so there is nothing to switch",
   P6: "the core has no fork or checkpoint mechanism",
   P11: "the host puts its skills catalog into the system prompt for every backend but claude-cli; P12 delivers it, so P11 sets no flag",
-  P14: "the core has no mechanism for it",
+  P14: "the CLI offers no compaction the plugin can drive; a backend that does not own native compaction gets OpenClaw's transcript compaction, so P14 sets no flag",
   P17: "clearEnv is a safety list the core applies whenever the adapter declares one; timers belong to the host; caps and pid locks apply to every adapter",
 };
 

@@ -21,7 +21,7 @@ export function nativeAuthMarkerFor(adapter: CliAdapter): string {
 
 export type BuildBackendOptions = {
   settings: BackendConfig;
-  execute?: Pick<ExecuteOptions, "idleMs" | "abortGraceMs" | "callDeadlineMs">;
+  execute?: Pick<ExecuteOptions, "idleMs" | "abortGraceMs" | "callDeadlineMs" | "imageRoots">;
   /** Receives warnings, for example a turn that runs without OpenClaw tools. */
   warn?: (message: string) => void;
   /** The backend's limits (AD-14). Absent: a pool sized from `settings`. The registrar passes its own to close it on unload. */
@@ -141,6 +141,7 @@ export function buildCliBackend(adapter: CliAdapter, options: BuildBackendOption
             usage: flags.usage,
             continuity: flags.history && flags.mcp,
             systemPrompt: flags.systemPrompt,
+            images: flags.images,
             ...(ctx.authProfileId ? { authProfileId: ctx.authProfileId } : {}),
             ...(options.warn ? { warn: options.warn } : {}),
           }),

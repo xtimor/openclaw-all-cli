@@ -167,6 +167,16 @@ flowchart LR
 - **Prevents:** a CLI that never sees OpenClaw's instructions or skills; a chat thrown away whenever the tool list changes; instruction files written into a workspace or home.
 - **Rule:** The host's system prompt, with its skills catalog, reaches a CLI that has no per-turn system-prompt channel as a marked block at the start of the prompt. It is sent on a native chat's first prompt and again when it changes (the date and the runtime line's model, channel, capabilities, and active-node fields do not count; a change of only those sends a one-line runtime update with the current values). The core keeps a delivery cache of hashes keyed by (home, native session id), in memory over a small file in the agent home; like AD-5's binding rule it is a cache, not a session binding: losing it costs one duplicate block. The core neutralizes the block's header, update opener, and tag name (any spelling, original case kept, one zero-width space added) in the text it forwards; text that reaches the CLI by other routes (tool output, the CLI's own reads) is not covered. When P12 is decided (AD-10), the backend declares `systemPromptWhen: "always"` with a marker arg the host never passes to a plugin-owned execute. No instruction or skill file is written into a workspace or user home (AD-6, AD-7); the only file is the hash cache in the plugin's own agent home.
 
+### AD-16 — Images reach a CLI as its protocol's image blocks
+
+- **Binds:** CAP-11
+- **Prevents:** a CLI that gets only a file path it must open itself; image files the plugin writes, copies, or must clean up; a prompt parser that reads any file a user names.
+- **Rule:** Images reach a CLI as its protocol's image blocks. The core reads them from the host's own image cache (the trailing path block OpenClaw appends to the prompt for a backend without `imageArg`). It checks the directory, owner, type by magic bytes, and size, and drops the paths from the text. The plugin writes, copies, and deletes no image file (AD-6, AD-7). An image it cannot pass becomes a one-line note, never a silent drop. A CLI without native compaction leaves compaction to the host's transcript compaction; P14 sets no flag.
+  - **Block membership** (path shape only; no file is opened): the trailing run of lines must follow an empty line or be the whole prompt, and every line must be a normalized absolute path `<tmp>/openclaw[-<uid>]/openclaw-cli-images/<64 hex>.<ext>` under `/tmp` or `os.tmpdir()`. One failing line leaves the prompt unchanged.
+  - **Delivery** (per image): a regular file, not a link, owned by the process uid, in the checked directory, at most 10 MiB (10 images and 20 MiB in all), and png, jpeg, gif, webp, or bmp by its first bytes. The file is opened with `O_NOFOLLOW` and checked again on the descriptor.
+  - **Logs.** No base64, image bytes, or cache path reaches a log, a note, or an error.
+  - **Compaction.** The backend declares neither `ownsNativeCompaction` nor `manualCompaction`: the first would switch off the host's compaction, the only one that works; the second needs a summary prompt the CLI does not honor. A host compaction drops the CLI chat binding, and the next turn starts a fresh chat (AD-15 block, P15 note).
+
 ## Consistency Conventions
 
 | Concern | Convention |
@@ -251,7 +261,7 @@ sequenceDiagram
 | CAP-8 isolation | `src/core/` homes | AD-6, AD-7, AD-13 |
 | CAP-9 concurrency | host lanes, `src/core/` caps and operations | AD-8, AD-11, AD-14 |
 | CAP-10 setup docs | `docs/` | AD-10, conventions |
-| CAP-11 claude-cli parity | adapter manifests, `test/live/` | AD-3, AD-9, AD-10, AD-15 |
+| CAP-11 claude-cli parity | adapter manifests, `src/core/images.ts`, `test/live/` | AD-3, AD-9, AD-10, AD-15, AD-16 |
 | CAP-12 new CLI as adapter | `src/adapters/<cli>/`, `src/transports/` | AD-1, AD-2, AD-4, AD-10 |
 
 ## Open Questions
@@ -265,7 +275,7 @@ sequenceDiagram
 | Is a Cursor API key billed against the subscription (spec Q3)? | CAP-5 reseed setup |
 | Can two Cursor processes resume one chat safely (spec Q4)? Answered by a live probe (2026-10-18, cursor-agent 2026.10.16): no. Both load the chat without an error, but each keeps its own view and a turn in one is invisible to the other; the stored chat keeps one process's turns. The core therefore allows one process per chat (it closes an idle holder, refuses while one is mid-turn). | AD-13 |
 | Is OpenClaw #148584 (plugin skipped at Gateway startup) fixed? | CAP-1 |
-| Does Cursor ACP honor images, compaction? Skills and a system prompt: answered by ticket 1.13 (no: `acp` ignores `--plugin-dir` and has no system-prompt channel; the skills catalog and system prompt reach Cursor as a prompt block, AD-15). | Parity rows P13, P14 |
+| Does Cursor ACP honor images, compaction? Images: yes, ACP `image` blocks work (ticket 1.14, AD-16). Compaction: no control over ACP, so P14 is a gap and OpenClaw's own transcript compaction applies (ticket 1.14). Skills and a system prompt: answered by ticket 1.13 (no: `acp` ignores `--plugin-dir` and has no system-prompt channel; the skills catalog and system prompt reach Cursor as a prompt block, AD-15). | Parity rows P13, P14 |
 
 ## Deferred
 

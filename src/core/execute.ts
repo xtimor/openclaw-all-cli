@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import type { AgentHome } from "./home.ts";
 import { toRecord, type CoreRecord, type TurnSummary } from "./events.ts";
+import { takeHostImages } from "./images.ts";
 import { listToolNames, startMcpProxy, type McpProxy } from "./mcp-proxy.ts";
 import { OPENCLAW_MCP_SERVER, readTurnTarget, type TurnTarget } from "./mcp-target.ts";
 import { recordProcess, type ProcessLock } from "./pid-locks.ts";
@@ -77,6 +78,13 @@ export type ExecuteOptions = {
    * start of a chat's first prompt, and again whenever it changes (AD-15). Default false.
    */
   systemPrompt?: boolean;
+  /**
+   * Parity row P13: the host's image paths at the end of `ctx.prompt` are taken off the text and the
+   * images go to the CLI as image blocks (AD-16). Off: the prompt goes through unchanged. Default false.
+   */
+  images?: boolean;
+  /** The allowed `openclaw-cli-images` directories for P13. Default: the host's cache under the temp dir. Tests inject one. */
+  imageRoots?: readonly string[];
 };
 
 /**
@@ -168,10 +176,10 @@ function reuseKey(ctx: ExecuteContext, home: AgentHome, authProfileId: string | 
  * text (user text and both contexts, which may carry channel messages or tool output) is stripped of
  * the block's header and tags, so it can never pass for a system block.
  */
-function composePrompt(ctx: ExecuteContext, note?: string, system?: string, guard = false): string {
+function composePrompt(ctx: ExecuteContext, note?: string, system?: string, guard = false, promptText = ctx.prompt): string {
   const { prependContext, appendContext } = ctx.promptContext ?? {};
   const plain = (text: string | undefined) => (guard && text ? neutralizeBlockMarkers(text) : text);
-  return [system, note, plain(prependContext), plain(ctx.prompt), plain(appendContext)].filter((part): part is string => Boolean(part)).join("\n\n");
+  return [system, note, plain(prependContext), plain(promptText), plain(appendContext)].filter((part): part is string => Boolean(part)).join("\n\n");
 }
 
 /**
@@ -235,6 +243,7 @@ export function createExecute(adapter: CliAdapter, options: ExecuteOptions): Cli
   const callDeadlineMs = options.callDeadlineMs ?? (adapter.mcpCallTimeoutMs ? Math.max(1_000, adapter.mcpCallTimeoutMs - MCP_DEADLINE_MARGIN_MS) : undefined);
   const continuity = options.continuity ?? false;
   const deliversSystemPrompt = options.systemPrompt ?? false;
+  const deliversImages = options.images ?? false;
   // AD-15: what each chat of this home last received (hashes only), kept in the home so a restart or a `--local` run does not resend.
   const delivered = deliversSystemPrompt ? new DeliveredPrompts(deliveredFileFor(home.dir)) : undefined;
   const approvals = options.approvals ?? true;
@@ -670,8 +679,14 @@ export function createExecute(adapter: CliAdapter, options: ExecuteOptions): Cli
       const lead =
         delivering === "block" ? systemPromptBlock(system) : delivering === "note" ? runtimeUpdateNote(system) : undefined;
       const startedAt = Date.now();
+      // AD-16: the host's image paths leave the text and the images go as blocks. Nothing is written.
+      const host = deliversImages
+        ? await takeHostImages(ctx.prompt, { ...(ctx.abortSignal ? { signal: ctx.abortSignal } : {}), warn, ...(options.imageRoots ? { roots: options.imageRoots } : {}) })
+        : undefined;
+      ctx.abortSignal?.throwIfAborted();
       for await (const event of active.session.prompt(
-        composePrompt(ctx, note, lead, deliversSystemPrompt),
+        composePrompt(ctx, note, lead, deliversSystemPrompt, host?.text ?? ctx.prompt),
+        host?.images,
       )) {
         if (event.kind === "usage") {
           summary.usage = event.usage;

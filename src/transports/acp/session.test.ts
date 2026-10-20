@@ -69,6 +69,26 @@ describe("AcpSession", () => {
     expect(requests(file).find((entry) => entry.method === "session/set_mode")?.params).toMatchObject({ modeId: "ask" });
   });
 
+  it("sends images as image blocks after the text, and no text block when the text is empty (P13)", async () => {
+    const file = logFile();
+    const session = await start({ env: { FAKE_CURSOR_LOG: file } });
+    const png = Buffer.from("\x89PNG-bytes");
+    const jpeg = Buffer.from("jpeg-bytes!!");
+    const images = [
+      { mimeType: "image/png", data: png.toString("base64") },
+      { mimeType: "image/jpeg", data: jpeg.toString("base64") },
+    ];
+    const first = await collect(session.prompt("[[images]]", images));
+    expect(first.at(-1)).toMatchObject({ kind: "result", text: `images:2:image/png/${png.length},image/jpeg/${jpeg.length}` });
+    const second = await collect(session.prompt("", [images[0]!, images[1]!]));
+    expect(second.at(-1)).toMatchObject({ kind: "result", stopReason: "end_turn" });
+    const prompts = requests(file).filter((entry) => entry.method === "session/prompt");
+    // The fake's log shows each image block as its size and hash, never its data.
+    expect((prompts[0]!.params.prompt as Array<{ type: string }>).map((block) => block.type)).toEqual(["text", "image", "image"]);
+    expect((prompts[1]!.params.prompt as Array<{ type: string }>).map((block) => block.type)).toEqual(["image", "image"]);
+    expect(readFileSync(file, "utf8")).not.toContain(images[0]!.data);
+  });
+
   it("keeps one process for several turns", async () => {
     const session = await start();
     const first = await collect(session.prompt("say:one"));

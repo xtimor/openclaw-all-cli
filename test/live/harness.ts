@@ -131,6 +131,9 @@ export function writeSettingsFile(dir: string, name: string, url: string, token:
 /** The isolated OpenClaw's state directory (`.spike/state`), where agent homes live. */
 export const ISOLATED_STATE_DIR = fileURLToPath(new URL("../../.spike/state", import.meta.url));
 
+/** The isolated OpenClaw's config file (`.spike/openclaw.json`). */
+export const ISOLATED_CONFIG_PATH = fileURLToPath(new URL("../../.spike/openclaw.json", import.meta.url));
+
 export type TestGateway = {
   port: number;
   env: Record<string, string>;

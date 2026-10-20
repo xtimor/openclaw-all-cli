@@ -36,6 +36,8 @@
 // as a `tool_call` update, like Cursor does), "[[hang]]" never
 // finishes until cancelled, "[[refuse]]" ends with stopReason refusal, "[[crash]]" exits, "say:<text>" replies with <text>.
 // "[[sleep:<ms>]]" waits <ms> before the reply (a turn that takes a while), then answers like any other prompt.
+// "[[images]]" replies "images:<n>:<mime>/<bytes>,..." for the image blocks of the prompt. The log's `session/prompt` line shows each
+// image block as {type, mimeType, bytes, sha256}, never its data, and the history keeps text only.
 // "[[recall]]" replies with the prompts the session has seen before this one ("recall:a|b"), including those from before a
 // `session/load` when FAKE_CURSOR_STORE is set.
 // "[[mcp-call]]<json>" calls tools on the session's own MCP server (the first `mcpServers` entry), as a model would:
@@ -46,7 +48,7 @@
 // "[[updates]]<json array>" sends each item as a `session/update` body, in order, a few ms apart, then ends the
 // turn. An item `{"$":"say","text":"..."}` sends a message chunk, `{"$":"crash"}` exits, `{"$":"ask","toolCall":{...}}` sends a permission request and waits for the answer, `{"$":"hang"}` waits for a
 // cancel and answers `cancelled`, `{"$":"wait","ms":n}` pauses. Use it to script tool calls the way Cursor sends them.
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { appendFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { createInterface } from "node:readline";
@@ -155,6 +157,15 @@ const configOptions = (session) =>
         },
       ];
 const modelFields = (session) => (noModels || surface === "options" ? {} : { models: modelsState(session) });
+// The log never holds image data: an image block is logged as its size and hash.
+const summarizePrompt = (params) => ({
+  ...params,
+  prompt: (params?.prompt ?? []).map((block) =>
+    block?.type === "image"
+      ? { type: "image", mimeType: block.mimeType, bytes: Buffer.from(block.data ?? "", "base64").length, sha256: createHash("sha256").update(Buffer.from(block.data ?? "", "base64")).digest("hex") }
+      : block,
+  ),
+});
 const knownModel = (value) => MODELS.some((model) => model.modelId === value);
 
 async function runPrompt(id, params) {
@@ -279,9 +290,12 @@ async function runPrompt(id, params) {
     });
     return reply(id, { stopReason: "end_turn" });
   }
+  const imageBlocks = params.prompt.filter((block) => block.type === "image");
   const say = text.includes("[[mode]]")
     ? `mode:${session.mode}`
-    : text.includes("[[recall]]")
+    : text.includes("[[images]]")
+      ? `images:${imageBlocks.length}:${imageBlocks.map((block) => `${block.mimeType}/${Buffer.from(block.data ?? "", "base64").length}`).join(",")}`
+      : text.includes("[[recall]]")
       ? `recall:${before.join("|")}`
       : /say:(.*)/.exec(text)?.[1];
   const answer = say ?? `Hi from fake cursor (model ${session.model}, prompt ${session.prompts})`;
@@ -303,7 +317,7 @@ rl.on("line", (line) => {
   }
   log({
     method: message.method,
-    params: message.params,
+    params: message.method === "session/prompt" ? summarizePrompt(message.params) : message.params,
     ...(message.method === "initialize"
       ? { pid: process.pid, argv: args, env: { CURSOR_CONFIG_DIR: process.env.CURSOR_CONFIG_DIR, CURSOR_DATA_DIR: process.env.CURSOR_DATA_DIR } }
       : {}),
