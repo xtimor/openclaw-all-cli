@@ -115,13 +115,14 @@ describeLive("images and compaction (P13, P14)", () => {
     const seen: string[] = [];
     for (let n = 0; n < TRIES; n += 1) {
       const word = randomWord();
-      const { file } = writePng(word);
       chat = `live-images-${stamp}-${n}`;
       const question = (path: string) => `What word is written in the image ${path}? Reply with the word only. Do not use any tools.`;
       // Control: the same prompt naming a file that does not exist attaches no image, and must not yield the word.
       const control = ask(`${chat}-control`, question(join(workspace, `img-${randomBytes(6).toString("hex")}.png`)));
       expect(control.status, control.raw).toBe(0);
       expect(control.reply.toUpperCase(), "the word must not be derivable without the image").not.toContain(word);
+      // Written only now: while the control ran, no file in the workspace held this word.
+      const { file } = writePng(word);
       const turn = ask(chat, question(file));
       expect(turn.status, turn.raw).toBe(0);
       if (turn.reply.toUpperCase().includes(word) && readers(turn).length === 0) {
