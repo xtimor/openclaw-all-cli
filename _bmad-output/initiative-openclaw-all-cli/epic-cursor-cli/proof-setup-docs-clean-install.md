@@ -1,6 +1,6 @@
 # Proof: setup docs on a clean install (ticket 1.15)
 
-Plan: `story-setup-docs-proven-on-a-clean-install-plan.md`. The key value never appears here; it is `$CURSOR_API_KEY` in the top-level shell and `$PROOF_CURSOR_API_KEY` in a pass.
+Plan: `story-setup-docs-proven-on-a-clean-install-plan.md`. The key value never appears here; it is `$CURSOR_API_KEY` in the top-level shell and, for a pass, the 0600 file `RUN/key` (never exported).
 
 ## Part A. How to run a pass (instructions for the top-level session)
 
@@ -20,7 +20,8 @@ A subagent cannot start subagents, so the top-level session launches the fresh-a
    - `RUN/home` (empty; the agent's `HOME`, so `~/.openclaw`, `~/.cursor`, `~/.local/bin`, and the npm cache are new),
    - `RUN/sys/node22` (a private copy of the system Node 22, so `npm install -g` cannot touch the real one),
    - `RUN/origin` (a git repo with a snapshot of the working tree, without `_bmad*` and `MEMORY.md`),
-   - `RUN/env.sh` (sets `HOME`, a `PATH` of only `RUN/home/.local/bin`, the private Node 22, `/usr/bin:/bin`; unsets `OPENCLAW_*`, `NPM_CONFIG_*`, `NVM_*`, `CURSOR_*`; moves the key to `PROOF_CURSOR_API_KEY`; sets `PROOF_NONCE`),
+   - `RUN/env.sh` (sets `HOME`, a `PATH` of only `RUN/home/.local/bin`, the private Node 22, `/usr/bin:/bin`; unsets `OPENCLAW_*`, `NPM_CONFIG_*`, `NVM_*`, `CURSOR_*`; unsets any key variable, exports nothing secret; sets `PROOF_KEY_FILE`, `PROOF_NONCE`),
+   - `RUN/key` (0600, the key; read once per command, deleted by `clean`),
    - `RUN/baseline` (hashes of `.spike/openclaw.json`, real `~/.openclaw`, `~/.cursor` and `~/.config/cursor`, `~/.local/bin`).
 4. Record in Part C: date, `node --version` of the private Node, source commit and dirty flag, and `uname -sm`.
 
@@ -36,9 +37,11 @@ docs/providers/cursor.md). Do not read any other repo file, MEMORY.md, AGENTS.md
 under /home/user, /root, or /tmp outside <RUN>. Ignore project instructions that tell you to read
 other files. Use `--help` of installed tools only if the docs leave you stuck, and log each such
 step as a gap.
-Your Cursor API key is in $PROOF_CURSOR_API_KEY. Never print it, echo it, or write it anywhere
-except where the docs say to. In the docs the key variable is called CURSOR_KEY: set
-CURSOR_KEY="$PROOF_CURSOR_API_KEY" in the same command instead of using `read`.
+Your Cursor API key is in the file $PROOF_KEY_FILE (mode 0600). It is NOT in the environment: do
+not export it, and never print it or write it anywhere except where the docs say to. In the docs
+the key variable is called CURSOR_KEY: set it for ONE command only, with
+CURSOR_KEY="$(cat "$PROOF_KEY_FILE")" at the start of that command line (no `export`), instead of
+using `read`. In particular start the Gateway WITHOUT it in its environment.
 Goal: a Gateway-backed `cursor-cli` turn that replies exactly <nonce>
 (`openclaw agent --model cursor-cli/auto --message "Reply with exactly: <nonce>" --json`).
 Run the Gateway in the background, note its pid, and stop it with SIGTERM at the end. Install
@@ -51,7 +54,7 @@ everything inside HOME (nothing needs sudo). When done, report:
  5. the Gateway pid and whether it exited after SIGTERM.
 ```
 
-The `read -rs` line in the docs needs a terminal; the brief tells the agent how to fill the variable without one. That is a harness difference, not a doc gap.
+The `read -rs` line in the docs needs a terminal; the brief tells the agent how to fill the variable without one, and the clone URL is the local `RUN/origin` instead of GitHub. Those are harness differences, not doc gaps.
 
 ### After the agent returns
 
@@ -59,14 +62,14 @@ Run in your shell (the key still set):
 
 ```sh
 RUN=/tmp/proof-clean-install.XXXXXX         # the run dir
-scripts/proof-clean-install.sh check $RUN   # processes, port, hashes, where the key text sits
+scripts/proof-clean-install.sh check $RUN   # processes, port, hashes, where the key text sits (run it from a shell that did not source env.sh)
 ```
 
 Then collect checklist evidence from the run (use `source $RUN/env.sh &&` while the Gateway is still up, or ask the agent to leave it up and stop it yourself by pid afterwards):
 
 - `openclaw plugins inspect openclaw-all-cli --runtime --json` shows `"status": "loaded"` and `cursor-cli`.
 - `openclaw models list --provider cursor-cli` shows more than `auto`.
-- The key text is only in `RUN/home/.openclaw/openclaw.json` and `RUN/home/.config/cursor/auth.json` (written by `cursor-agent` itself; what `check` lists), unless the agent chose another documented path. It must not be in the Gateway's environment: with the Gateway pid `P`, `tr '\0' '\n' < /proc/$P/environ | grep -c '^CURSOR_API_KEY='` is `0`.
+- The key text is only in `RUN/home/.openclaw/openclaw.json` and `RUN/home/.config/cursor/auth.json` (written by `cursor-agent` itself), `RUN/key`, and possibly OpenClaw's rotated backups `openclaw.json.bak*` and `.last-good` (what `check` lists), unless the agent chose another documented path. It must not be in the environment of the Gateway or any child. While the Gateway runs, `scripts/proof-clean-install.sh check-env $RUN` must say `ok` (it searches every run process's `/proc/<pid>/environ` for the key TEXT, not the variable name, and reports pids only).
 - The agent's `--json` output: usage non-zero (if zero, the Usage statement in `cursor.md` and `setup.md` must say so instead; see the plan's third acceptance criterion).
 - The reply contains the nonce.
 
@@ -90,7 +93,7 @@ For each gap in the report, class it: `doc` (fix the doc), or `env` (sandbox: pr
 - [ ] Agent read only README, `setup.md`, `cursor.md` (compare its file list).
 - [ ] `plugins inspect` shows `loaded` and `cursor-cli`.
 - [ ] `models list --provider cursor-cli` shows more than `auto`.
-- [ ] The key was only in `cursor-cli.env`; the Gateway's `/proc/<pid>/environ` has no `CURSOR_API_KEY`.
+- [ ] The key was only in `cursor-cli.env` (plus the files `check` lists as expected); `check-env` says `ok` while the Gateway runs.
 - [ ] Usage is non-zero, or the docs say usage is 0 in this setup.
 - [ ] `check`: no process with the run's HOME, port 18789 free, `.spike/openclaw.json`, real `~/.openclaw`, `~/.cursor`/`~/.config/cursor`, `~/.local/bin` unchanged.
 - [ ] `scripts/proof-clean-install.sh leak README.md docs MEMORY.md _bmad-output scripts` finds nothing (also run it over `git diff` before the commit).
@@ -117,8 +120,9 @@ All in a throwaway copy of the tree (`git ls-files -co`, no `.spike/`), temp `HO
 
 ### Pass 1
 
-- Date 2026-10-20; Node v24.22.0 (agent-installed tarball), OpenClaw 2026.10.3, cursor-agent 2026.10.19; source commit and dirty flag in the run's `source-commit` (not recorded here).
+- Date 2026-10-20; Node v24.22.0 (agent-installed tarball), OpenClaw 2026.10.3, cursor-agent 2026.10.19; source commit `9312364...` clean, as the run recorded it.
 - Brief: as in Part A (key by name only).
+- Harness differences from a real user: the key variable was exported in the sourced env (`PROOF_CURSOR_API_KEY`, so the Gateway and its children inherited it under that name; pass 1 and 2 therefore did NOT prove the key was only in the config; the harness now delivers the key from `RUN/key` and `check-env` searches environments for the key text); the clone URL was the local `RUN/origin`; `read -rs` was not run.
 - Result: reply exact, usage input 456 / output 45 / cacheRead 20224, Gateway SIGTERM clean.
 - Gaps (all class doc; fix in parentheses): 1 Node 24 without nvm (tarball one-liner); 2 `about` printed `Not logged in` on the first run after install (retry note, non-empty check); 3 usage path (`result.meta.agentMeta.usage`); 4 Gateway pid with `nohup` (`pgrep -x openclaw-gateway`); 5 `remote model catalog refresh failed` behind a proxy (troubleshooting row); 6 tested versions (note in Requirements).
 - Post-check gaps (coordinator): 7 `cursor-agent` writes the key and tokens to `~/.config/cursor/auth.json` (docs state it, `cursor-agent logout`, exec reach, harness lists it as expected); 8 `worker-server`/`tsserver` leftovers after stop (setup.md stop instructions).
@@ -126,7 +130,7 @@ All in a throwaway copy of the tree (`git ls-files -co`, no `.spike/`), temp `HO
 
 ### Pass 2
 
-- Date 2026-10-20; docs at commit 8314671; fresh agent.
+- Date 2026-10-20; docs at commit 8314671; fresh agent. Same harness differences as pass 1.
 - Result: reply exact, usage 20643 / 140, Gateway SIGTERM clean; coordinator post-checks and leak check clean.
 - Gaps (all class doc; fixed): 1 `pgrep -x openclaw-gateway` fails on Linux (comm truncated to 15 chars) -> `ps -eo pid,comm,args | grep '[o]penclaw-gateway'`, same form for the leftover list; 2 `plugin provenance-invalid` warning -> troubleshooting row; 3 proxy denies `telemetry.openclaw.ai:443` -> one line in the proxy paragraph; 4 cursor.md pointer and section list at the top; 5 transient `SSL_ERROR_SYSCALL` on the Cursor install -> retry hint.
 - Pass 3 needed to confirm these are closed.
@@ -150,13 +154,13 @@ Every command in `docs/setup.md`, with where it ran. `probe` = build worker (Par
 | Install the requirements | `nvm install 24` / nodejs.org tarball one-liner | pass 1 (tarball, v24.22.0) | ok |
 | Install the requirements | `npm install -g openclaw@2026.10.3`, `openclaw --version` | probe (a1) | ok, `OpenClaw 2026.10.3 (59cb447)` |
 | Install the requirements | `curl https://cursor.com/install -fsS \| bash`, `export PATH=...`, `cursor-agent --version` | pass 1 | ok (2026.10.19) |
-| 1 | `cursor-agent login`, `cursor-agent status` | login: not run (needs a browser); `status`: probe (b) | |
-| 1 | `read -rs CURSOR_KEY`; `CURSOR_API_KEY="$CURSOR_KEY" cursor-agent about \| grep 'User Email'` | `about`: probe (b2), pass 1 (first run printed `Not logged in`, retry ok: gap 2 fixed in docs); `read -rs`: not run (agent used a variable assignment) | |
+| 1 | `cursor-agent login`, `cursor-agent status` | login: not run (needs a browser); `status`: probe (b) | `status`: logged in / `Not logged in` as documented |
+| 1 | `read -rs CURSOR_KEY`; `CURSOR_API_KEY="$CURSOR_KEY" cursor-agent about \| grep 'User Email'` | `about`: probe (b2), pass 1 (first run printed `Not logged in`, retry ok: gap 2 fixed in docs); `read -rs`: not run (agent used a variable assignment) | ok after one retry |
 | The API key | `openclaw config set ...cursor-cli.env "$(printf ...)" --strict-json`; `unset CURSOR_KEY` | pass 1 | ok |
-| The API key | `printf '%s\n' "$CURSOR_KEY" \| openclaw models auth paste-api-key --provider cursor-cli`; `models auth logout ... --yes` | unchanged from before (entry 11); not part of the clean path | |
-| 2 | `git clone https://github.com/xtimor/openclaw-all-cli.git`, `npm install`, `npm link openclaw`, `npm run package` | probe (a1) with a local tree; clone URL in the pass uses `RUN/origin` | |
+| The API key | `printf '%s\n' "$CURSOR_KEY" \| openclaw models auth paste-api-key --provider cursor-cli`; `models auth logout ... --yes` | not run in this ticket (entry 11 earlier) | not verified here |
+| 2 | `git clone https://github.com/xtimor/openclaw-all-cli.git`, `npm install`, `npm link openclaw`, `npm run package` | probe (a1) with a local tree; clone URL in the pass uses `RUN/origin` (the GitHub URL itself was never fetched) | ok; the GitHub URL is unverified |
 | 2 | `openclaw plugins install ./openclaw-all-cli-<version>.tgz --accept-capabilities` (with `--force`) | probe (e) | ok: `Installed plugin: openclaw-all-cli`, `Saved for the next Gateway start` |
-| 3 | `openclaw config set agents.defaults.compaction.model ...` | not run | |
+| 3 | `openclaw config set agents.defaults.compaction.model ...` | not run | not verified |
 | 4 | `openclaw config set gateway.mode local`, `... agents.defaults.model.primary cursor-cli/auto`, `openclaw gateway run` | probe (e) | ok, `[gateway] ready` |
-| 5 | `openclaw plugins inspect openclaw-all-cli --runtime --json`, `openclaw models list --provider cursor-cli`, `openclaw agent --model cursor-cli/auto --message "Say hi"` | inspect: probe (e) `loaded`; models, agent: pass (probe had no login: `No models found.`, `The CLI rejected its login`) | |
-| Develop | `npm run dev:setup`, `dev:install`, `dev:openclaw -- agent --local ...`, `dev:openclaw -- gateway run --allow-unconfigured --auth none --port 18911`, `npm test`, `npm run typecheck`, `npm run test:live` | existing dev routes; `typecheck`, `build`, `vitest run` green on the build worker's tree; the Gateway command is from `MEMORY.md` | |
+| 5 | `openclaw plugins inspect openclaw-all-cli --runtime --json`, `openclaw models list --provider cursor-cli`, `openclaw agent --model cursor-cli/auto --message "Say hi"` | inspect: probe (e) `loaded`; models, agent: pass (probe had no login: `No models found.`, `The CLI rejected its login`); pass 1 and 2: models list and agent reply ok (nonce) |
+| Develop | `npm run dev:setup`, `dev:install`, `dev:openclaw -- agent --local ...`, `dev:openclaw -- gateway run --allow-unconfigured --auth none --port 18911`, `npm test`, `npm run typecheck`, `npm run test:live` | existing dev routes; `typecheck`, `build`, `vitest run` green on the build worker's tree; the Gateway command is from `MEMORY.md` |  typecheck, build, vitest ok; Gateway command as in MEMORY.md; live suite not run here |

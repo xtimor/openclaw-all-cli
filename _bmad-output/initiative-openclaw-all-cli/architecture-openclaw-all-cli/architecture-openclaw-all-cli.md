@@ -116,6 +116,7 @@ flowchart LR
     - allow the proxy's MCP server;
     - allow native read, grep, and glob, as `claude-cli` keeps its native readers.
   - **Permission requests.** A CLI permission request goes to `ctx.requestToolPermission`. If the CLI can't ask, the tool stays denied.
+  - **Risk: credentials are readable by `exec`.** The host serves `exec` as the Gateway's user, so a model command can read `~/.config/cursor/auth.json` (the login's tokens, and the key whenever `cursor-agent` ran with one), the OpenClaw config holding `cursor-cli.env` and its rotated backups, and the `cursor-agent` process environment. The login is no safer than a key; exec approvals and a sandbox are the protection.
 
 ### AD-10 — A capability manifest per adapter
 
@@ -185,7 +186,7 @@ flowchart LR
 | Language and module | TypeScript strict, ESM, Node built-ins via `node:` prefix |
 | Config | `plugins.entries.openclaw-all-cli.config.<backendId>`, schema in `openclaw.plugin.json` (zod) |
 | Logging | OpenClaw runtime logger only; never log tokens, auth headers, or prompt text |
-| Secrets | Tokens and keys live in memory, or in per-agent home files with mode `0600` |
+| Secrets | Tokens and keys live in memory, in per-agent home files with mode `0600`, in `cursor-agent`'s own `~/.config/cursor/auth.json` (login tokens and any key it ran with, outside our control), and in `openclaw.json` with its rotated backups when `cursor-cli.env` holds a key |
 | Tests | Unit tests next to code (`*.test.ts`, vitest); live tests in `test/live/`, run only with `OPENCLAW_ALL_CLI_LIVE=1`, one per parity row |
 | Docs | `docs/setup.md` plus `docs/providers/<cli>.md`, updated in the same change as setup, config, or behavior |
 | Language | English in code, docs, commits, and names |

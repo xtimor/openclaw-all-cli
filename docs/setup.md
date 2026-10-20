@@ -68,7 +68,7 @@ CURSOR_API_KEY="$CURSOR_KEY" cursor-agent about | grep 'User Email'
 
 It must show your email. A wrong key prints `The provided API key is invalid`. If it prints `Not logged in` with a key set, run it once more (the first run right after installing `cursor-agent` can fail), and check the variable is non-empty without printing it: `[ -n "$CURSOR_KEY" ] && echo set`.
 
-**Cursor stores the key on disk.** When `cursor-agent` runs with `CURSOR_API_KEY` (this check, or any turn), it writes the key and its tokens to `~/.config/cursor/auth.json` (mode 0600). That is Cursor's behavior, independent of the plugin and of `CURSOR_CONFIG_DIR`. Remove it with `cursor-agent logout`.
+**Cursor stores credentials on disk.** The login (access and refresh tokens) and, whenever `cursor-agent` runs with `CURSOR_API_KEY` (this check, or any turn), the key too, live in `~/.config/cursor/auth.json` on Linux (mode 0600; the Keychain on macOS). That is Cursor's behavior, independent of the plugin and of `CURSOR_CONFIG_DIR`. A command the model runs through `exec` as your user can read that file; see [The API key](#the-api-key). To remove every copy of a key, in this order: `openclaw config unset plugins.entries.openclaw-all-cli.config.cursor-cli.env`, delete OpenClaw's rotated config copies next to `openclaw.json` (`openclaw.json.bak`, `openclaw.json.bak.1` to `.bak.4`, `openclaw.json.last-good`), then `cursor-agent logout` (it also removes a browser login). Unset the config first: while it holds the key, the plugin's probes write `auth.json` again. Rotating the key at Cursor is the real remedy, since a copy may already have been read.
 
 Each agent runs Cursor with its own config and chat store under `<agentDir>/openclaw-all-cli/cursor-cli/`, which the plugin creates.
 
@@ -76,8 +76,8 @@ Each agent runs Cursor with its own config and chat store under `<agentDir>/open
 
 With OpenClaw's `exec` enabled, any command the model runs inherits the Gateway's environment and can read every variable in it, a `CURSOR_API_KEY` exported to the Gateway included. The plugin does not strip it. In order of preference:
 
-1. **Use the login** (`cursor-agent login`). Its credentials live in the Cursor home, not in the environment. Usage then shows 0 (see [Usage](providers/cursor.md#usage)).
-2. **Give the key to the Cursor process only**, through the plugin config. `cursor-cli.env` is passed to `cursor-agent` and to the plugin's own probes and usage reads, and not put into the Gateway's environment or the environment `exec` starts commands with. That keeps the key out of `env` output only, not out of reach: `exec` runs as the same user (unsandboxed by default), so a command can still read the key from `/proc/<pid>/environ` of the `cursor-agent` process, from the OpenClaw config file that holds it, and from `~/.config/cursor/auth.json`, where `cursor-agent` itself writes the key and its tokens whenever it runs with a key. Exec approvals (`tools.exec.ask`) and a sandbox are the protection. Set it from the shell variable of the check above, so the key text is never typed into a command:
+1. **Use the login** (`cursor-agent login`). It keeps the credential out of the Gateway's environment and out of the OpenClaw config file, but not out of reach of `exec`: the tokens sit in `~/.config/cursor/auth.json`, readable by a same-user command just like a key. Usage then shows 0 (see [Usage](providers/cursor.md#usage)).
+2. **Give the key to the Cursor process only**, through the plugin config. `cursor-cli.env` is passed to `cursor-agent` and to the plugin's own probes and usage reads, and not put into the Gateway's environment or the environment `exec` starts commands with. That keeps the key out of `env` output only, not out of reach (the login has the same limit): `exec` runs as the same user (unsandboxed by default), so a command can still read the key from `/proc/<pid>/environ` of the `cursor-agent` process, from the OpenClaw config file that holds it, and from `~/.config/cursor/auth.json`, where `cursor-agent` itself writes the key and its tokens whenever it runs with a key. Against `exec`, exec approvals (`tools.exec.ask`) and a sandbox are the protection, for the login and the key alike. Set it from the shell variable of the check above, so the key text is never typed into a command:
 
    ```sh
    openclaw config set plugins.entries.openclaw-all-cli.config.cursor-cli.env \
@@ -85,7 +85,7 @@ With OpenClaw's `exec` enabled, any command the model runs inherits the Gateway'
    unset CURSOR_KEY
    ```
 
-   The key is visible in the process list for the moment the command runs. Do not also export it to the Gateway. The config file holds the key, so protect it like any secret. For anything you do not trust, prefer the login, keep exec approvals on (`tools.exec.ask`), and run the agent in a sandbox.
+   The key is visible in the process list for the moment the command runs. Do not also export it to the Gateway. The config file and its rotated copies hold the key, so protect them like any secret. For anything you do not trust, keep exec approvals on (`tools.exec.ask`) and run the agent in a sandbox, whichever option you use.
 3. If you export the key to the Gateway anyway, keep exec approvals on (`tools.exec.ask`) and approve commands only from prompts you trust.
 
 **Optional: Cursor API key profile.** Save the same kind of key as an OpenClaw `api_key` profile for `cursor-cli`:
@@ -170,7 +170,7 @@ The first command must report `"status": "loaded"` and `cursor-cli` under `cliBa
 | `plugin "openclaw-all-cli" requires plugin API >=2026.10.3, but this OpenClaw runtime exposes 2026.10.2` | OpenClaw is older than 2026.10.3 | `npm install -g openclaw@2026.10.3` |
 | `Cannot find module 'openclaw/plugin-sdk/...'` (or `TS2307`) during `npm run package` | The build cannot see OpenClaw's types: no global OpenClaw, or `npm install` removed the link | `npm link openclaw` after `npm install` (see [step 2](#2-install-the-plugin)) |
 | `Gateway start blocked: existing config is missing gateway.mode` | A fresh OpenClaw has no Gateway config | `openclaw config set gateway.mode local`, then start again |
-| `Another gateway (pid N) already owns this state directory` | A Gateway for the same OpenClaw state is running | Use it (restart it with `openclaw gateway stop`, then start again), or give the new one its own state with `--profile <name>` |
+| `Another gateway (pid N) already owns this state directory` | A Gateway for the same OpenClaw state is running | Use it, or stop it by pid (`kill -TERM <pid>`; `openclaw gateway stop` stops only a service install, not a `gateway run` process) and start again, or give the new one its own state with `--profile <name>` |
 | The Gateway cannot bind port 18789 | Another program uses the port (wording unverified) | Stop that program, or start the Gateway with `--port <n>` and set `OPENCLAW_GATEWAY_PORT=<n>` for the other commands |
 | `plugin provenance-invalid` warning in the Gateway log ("OpenClaw can't verify where this plugin came from") | A plugin installed from a local `.tgz` has no registry provenance for OpenClaw to check | Harmless for your own build; ignore it |
 | `remote model catalog refresh failed` in the Gateway log at startup | Behind a proxy OpenClaw cannot refresh its remote model catalog | Harmless; ignore it |
