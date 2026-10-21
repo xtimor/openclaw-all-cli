@@ -234,7 +234,9 @@ npm run dev:install    # builds, packs, and installs this plugin into the isolat
 npm run dev:openclaw -- agent --local --model cursor-cli/auto --message "Say hi"
 npm run dev:openclaw -- gateway run --allow-unconfigured --auth none --port 18911   # a Gateway for multi-turn checks
 OPENCLAW_GATEWAY_PORT=18911 npm run dev:openclaw -- agent --model cursor-cli/auto --message "Say hi"
-npm test               # unit tests, import-boundary test
+npm test               # unit tests, import-boundary test, parity-suite test, and (when .spike holds OpenClaw) the host-contract tests
 npm run typecheck
 npm run test:live      # real cursor-agent; needs a Cursor login and no sandbox
 ```
+
+`npm test` needs no Cursor login. The host-contract tests (`test/host-contract.test.ts`) load OpenClaw's own code from `.spike/openclaw/node_modules/openclaw/dist` (or the directory in `OPENCLAW_ALL_CLI_HOST_DIST`) and run it against the plugin's real backend, so they pin what the backend relies on in OpenClaw 2026.10.3 (host-served `exec`/`process`, the settings file, the live-session fingerprint); they are skipped when that directory is missing. The parity-suite test (`test/parity-suite.test.ts`) fails when the manifest, the parity matrix, the provider page (`docs/providers/cursor.md`), and the live tests disagree. `npm run test:live` runs one live test per decided parity row plus the success-signal scenario (`test/live/success-signal.live.test.ts`); it needs `CURSOR_API_KEY` for the usage check.

@@ -3,14 +3,14 @@ title: 'Parity live suite and success-signal demo'
 type: 'feature'
 ticket: 17
 created: '2026-10-21'
-status: 'in-progress'
+status: 'in-review'
 baseline_revision: '26d8970cc727d3f18858ef2f664d97764da81544'
 route: 'full'
 route_source: 'auto'
 risk: 'medium'
-review: ''
-review_source: ''
-lenses_ran: []
+review: 'quick'
+review_source: 'pinned'
+lenses_ran: [quick]
 review_loop_iteration: 0
 followup_review_recommended: false
 context:
@@ -81,6 +81,15 @@ deferred: []
 - Given the change, when `npx tsc --noEmit`, `npx vitest run`, and `npm run build && npm run dev:install` then `npm run test:live` run, then typecheck is clean, the offline suite is 901 + new passed with only the new tests added, and every live file passes under plan 1.16's re-run rule (recorded flakes only, one re-run).
 
 ## Implementation Notes
+
+Built as planned; `src/` untouched, existing tests unchanged.
+
+- Inventory (recorded): every decided row (P1-P5, P7-P13, P15-P19) already had a live file; P6, P14 are gaps; `errors.live` is `(AD-11)`. No row lacked a live test. Matrix P9, P10 and docs P13 missed file names; fixed (matrix P9 adds `permission-routing`, P10 names `permission-routing` and `exec-tool`, docs P13 names `images-compaction`).
+- Files: `test/fixtures/host-code.ts`, `test/host-contract.test.ts` (10 tests), `test/parity-suite.test.ts` (5 tests), `test/live/success-signal.live.test.ts`, `watchGatewayEvents` in `test/live/harness.ts`; docs (`docs/setup.md`, `docs/providers/cursor.md`, matrix) and `MEMORY.md`.
+- Deviation from the Code Map: the live-session test gives all turns one shared bearer token (`attemptEnvs`), because the host hashes `OPENCLAW_MCP_TOKEN` when no managed grant exists; only the settings path then differs between path A and path B. `ProcessPool.closeAll()` is final, so each turn test builds its own backend and pool.
+- Success signal: passed in try 0 each time (3 runs). No host-written workspace file appeared, so no path is excluded. Evidence of the last isolated run: 3 `chat` deltas before the final, tools `sessions_history` and `exec`, B's first frame before A's final.
+- Verification: offline 916 passed / 65 skipped (901 + 15 new, 64 + 1 skipped); typecheck clean; `OPENCLAW_ALL_CLI_HOST_DIST=/nonexistent` skips the host-contract file. Mutation checks in a scratch copy, each failed its named test alone: no `hostOwnedTools` (ownership), `readTurnTarget` without headers (3 settings tests), `reusable()` without the fingerprint (live-session), `(P9)` out of the `permission-routing` title plus matrix P9 path (parity suite).
+- Live: `npm run build && npm run dev:install`, then one `npm run test:live` (16 files, 3196 s). Three files failed first, none from this change: `history-continuity` (c) (`cli_budget` compaction, recorded flake; it failed again on its one re-run and passed on a third run), `mcp-proxy` two-turn (`cli_budget` compaction `Unknown model`; passed on re-run), `usage` second turn (plugin entry 0 while the ledger had the event; passed on re-run; not yet a recorded flake, now in `MEMORY.md`). After the run: no `openclaw-gatewa` or `cursor-agent` process, the isolated config holds no `mockapi` and no default model, `git status` shows the planned files only.
 
 ## Plan Change Log
 

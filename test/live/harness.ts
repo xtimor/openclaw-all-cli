@@ -271,6 +271,70 @@ export async function connectApprovalClient(port: number, timeoutMs = 15_000): P
   };
 }
 
+/** One `event` frame a Gateway sent to a watching client. */
+export type GatewayFrame = {
+  /** The receive order, from 1: a later frame has a higher number even when the clock tick is the same. */
+  order: number;
+  /** `Date.now()` when the frame arrived. */
+  at: number;
+  event: string;
+  payload: any;
+};
+
+export type GatewayEventWatcher = {
+  /** Every event frame received so far, in receive order. */
+  frames: GatewayFrame[];
+  close(): void;
+};
+
+/**
+ * A plain operator client (scopes read, write, admin; no capabilities) that records every `event` frame
+ * the Gateway sends it, in receive order. It is the streaming evidence: the Gateway's `chat` frames
+ * (`payload.state` `delta` or `final`, with the run's `runId` and `sessionKey`) reach such a client
+ * while a turn runs, whatever the CLI is. Needs a Gateway started with `--auth none`, as `startGateway` does.
+ */
+export async function watchGatewayEvents(port: number, timeoutMs = 15_000): Promise<GatewayEventWatcher> {
+  const ws = new WebSocket(`ws://127.0.0.1:${port}`);
+  const frames: GatewayFrame[] = [];
+  let order = 0;
+  await new Promise<void>((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error("The Gateway did not accept the event watcher.")), timeoutMs);
+    ws.onerror = () => {
+      clearTimeout(timer);
+      reject(new Error("The event watcher could not reach the Gateway."));
+    };
+    ws.onmessage = (message) => {
+      const frame = JSON.parse(String(message.data)) as { type: string; event?: string; id?: string; ok?: boolean; payload?: unknown; error?: unknown };
+      if (frame.type === "event" && frame.event === "connect.challenge") {
+        ws.send(
+          JSON.stringify({
+            type: "req",
+            id: "connect",
+            method: "connect",
+            params: {
+              minProtocol: 4,
+              maxProtocol: 4,
+              client: { id: "gateway-client", version: "0", platform: "linux", mode: "backend" },
+              role: "operator",
+              scopes: ["operator.read", "operator.write", "operator.admin"],
+              caps: [],
+              auth: {},
+            },
+          }),
+        );
+      } else if (frame.type === "res" && frame.id === "connect") {
+        clearTimeout(timer);
+        if (frame.ok) resolve();
+        else reject(new Error(`The Gateway refused the event watcher: ${JSON.stringify(frame.error)}`));
+      } else if (frame.type === "event" && frame.event !== undefined) {
+        order += 1;
+        frames.push({ order, at: Date.now(), event: frame.event, payload: frame.payload });
+      }
+    };
+  });
+  return { frames, close: () => ws.close() };
+}
+
 export type ToggleProxy = {
   /** `http://127.0.0.1:<port>`, for `HTTPS_PROXY`. */
   url: string;
