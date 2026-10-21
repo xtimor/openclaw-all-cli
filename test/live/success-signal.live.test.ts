@@ -220,8 +220,11 @@ describeLive("success signal: API turn, then cursor-cli with tools, streaming, a
       `What was the code word I gave you earlier in this conversation? Then run this command with your shell tool: od -An -N8 -tx1 /dev/urandom | tr -d ' \\n' | tee ${marker}\nReply with the code word and the command's output.`,
       "cursor-cli/auto",
     );
-    // 3. Once A's run streams, agent B runs a turn at the same time.
-    const aStreams = await waitFor(() => watcher!.frames.some((frame) => frame.order > startOrder && frame.payload?.sessionKey === keyA), 120_000);
+    // 3. Once A's cursor run streams (a frame of A's chat that is not from the API turn's run), agent B runs a turn at the same time.
+    const aStreams = await waitFor(
+      () => watcher!.frames.some((frame) => frame.order > startOrder && frame.payload?.sessionKey === keyA && frame.payload?.runId && frame.payload.runId !== api.runId),
+      120_000,
+    );
     const turnB = startTurn(AGENT_B, sessionB, `Reply with exactly: ${nonce}`);
     const a = await cursorTurn;
     const b = await turnB;
@@ -231,15 +234,17 @@ describeLive("success signal: API turn, then cursor-cli with tools, streaming, a
     const chatsA = [...chatsOf(AGENT_A)].filter((id) => !chatsBefore.a.has(id));
     const chatsB = [...chatsOf(AGENT_B)].filter((id) => !chatsBefore.b.has(id));
     if (a.status === 0 && b.status === 0) {
-      expect(homeOf(AGENT_A)).not.toBe(homeOf(AGENT_B));
       expect(chatsA.length, `agent A's home holds no new chat\n${a.raw}`).toBeGreaterThan(0);
       expect(chatsB.length, `agent B's home holds no new chat\n${b.raw}`).toBeGreaterThan(0);
       for (const id of chatsA) expect(chatsOf(AGENT_B).has(id), `chat ${id} of agent A is in agent B's home`).toBe(false);
       for (const id of chatsB) expect(chatsOf(AGENT_A).has(id), `chat ${id} of agent B is in agent A's home`).toBe(false);
     }
-    for (const agent of [AGENT_A, AGENT_B]) {
+    // The AD-9 rules in each home whose turn ran: the file must exist and hold them.
+    for (const [agent, turn] of [[AGENT_A, a], [AGENT_B, b]] as const) {
+      if (turn.status !== 0) continue;
       const config = join(homeOf(agent), "cli-config.json");
-      if (existsSync(config)) expect((JSON.parse(readFileSync(config, "utf8")) as { permissions: unknown }).permissions, `${agent}'s cli-config.json`).toEqual(CURSOR_PERMISSIONS);
+      expect(existsSync(config), `${agent}'s cli-config.json is missing`).toBe(true);
+      expect((JSON.parse(readFileSync(config, "utf8")) as { permissions: unknown }).permissions, `${agent}'s cli-config.json`).toEqual(CURSOR_PERMISSIONS);
     }
     assertWorkspacesUntouched();
 
@@ -266,13 +271,20 @@ describeLive("success signal: API turn, then cursor-cli with tools, streaming, a
     // Agent B overlapped A and answered its nonce.
     if (b.status !== 0) complaints.push(`B's turn failed (status ${b.status})`);
     if (!b.reply.includes(nonce)) complaints.push(`B's reply lacks its nonce: ${JSON.stringify(b.reply.slice(0, 300))}`);
-    const bFirst = watcher!.frames.find((frame) => frame.order > startOrder && frame.payload?.sessionKey === keyB);
-    if (!bFirst || (final && bFirst.order > final.order)) complaints.push("B's run did not start before A's run ended");
+    // Overlap, by the operator stream: B's run starts before A's cursor run ends, and ends after A's cursor run started.
+    const ofRun = (runId: string) => watcher!.frames.filter((frame) => frame.order > startOrder && runId !== "" && frame.payload?.runId === runId);
+    const aFirst = ofRun(a.runId)[0];
+    const bFirst = ofRun(b.runId).find((frame) => frame.payload?.sessionKey === keyB);
+    const bFinal = ofRun(b.runId).find((frame) => frame.event === "chat" && frame.payload?.state === "final");
+    if (!aFirst || !bFirst || !bFinal || !final) complaints.push(`the stream lacks frames to judge the overlap (A first ${aFirst?.order}, A final ${final?.order}, B first ${bFirst?.order}, B final ${bFinal?.order})`);
+    else if (!(bFirst.order < final.order && bFinal.order > aFirst.order)) {
+      complaints.push(`B's run did not overlap A's (A #${aFirst.order}-#${final.order}, B #${bFirst.order}-#${bFinal.order})`);
+    }
 
-    if (complaints.length > 0) return `try ${n}: ${complaints.join("; ")}\n--- A raw ---\n${a.raw.slice(-3000)}\n--- B raw ---\n${b.raw.slice(-1500)}`;
+    if (complaints.length > 0) return `try ${n}: ${complaints.join("; ")}\n--- A raw ---\n${a.raw}\n--- B raw ---\n${b.raw}`;
 
     process.stderr.write(
-      `success signal, try ${n}: ${deltas.length} chat deltas before the final; tools=${JSON.stringify(a.tools)}; B overlapped (first B frame #${bFirst?.order}, A final #${final?.order})\n`,
+      `success signal, try ${n}: ${deltas.length} chat deltas before the final; tools=${JSON.stringify(a.tools)}; B overlapped (A #${aFirst?.order}-#${final?.order}, B #${bFirst?.order}-#${bFinal?.order})\n`,
     );
 
     // 4. Usage: Cursor's own numbers on A's transcript entry (a ledger failure is not a model miss).
@@ -286,7 +298,7 @@ describeLive("success signal: API turn, then cursor-cli with tools, streaming, a
     const resumed = await startTurn(AGENT_A, session, "What is the code word? Answer with the word only.", "cursor-cli/auto");
     assertWorkspacesUntouched();
     if (resumed.status !== 0 || !resumed.reply.includes(code)) {
-      return `try ${n}: the resumed turn did not repeat the code word (status ${resumed.status}): ${JSON.stringify(resumed.reply.slice(0, 300))}\n${resumed.raw.slice(-1500)}`;
+      return `try ${n}: the resumed turn did not repeat the code word (status ${resumed.status}): ${JSON.stringify(resumed.reply.slice(0, 300))}\n--- resumed raw ---\n${resumed.raw}\n--- A raw ---\n${a.raw}\n--- B raw ---\n${b.raw}`;
     }
     return undefined;
   }

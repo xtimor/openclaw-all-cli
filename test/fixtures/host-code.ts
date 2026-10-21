@@ -1,4 +1,5 @@
 import { existsSync, readFileSync, readdirSync } from "node:fs";
+import { createRequire, isBuiltin } from "node:module";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { parseAst } from "vite";
@@ -100,9 +101,14 @@ function isReference(node: Node, parent: Node | undefined, key: string): boolean
   return true;
 }
 
-/** Loads a module by the specifier a chunk used: relative to the chunk, or a bare/`node:` specifier. */
+/**
+ * Loads a module by the specifier a chunk used. Relative specifiers and bare package names resolve from
+ * the chunk's own location (the host's `node_modules`), never from this repository; `node:` builtins load as is.
+ */
 async function importFrom(chunkFile: string, specifier: string): Promise<Record<string, unknown>> {
-  const target = specifier.startsWith(".") ? pathToFileURL(resolve(dirname(chunkFile), specifier)).href : specifier;
+  let target = specifier;
+  if (specifier.startsWith(".")) target = pathToFileURL(resolve(dirname(chunkFile), specifier)).href;
+  else if (!isBuiltin(specifier) && !specifier.startsWith("file:")) target = pathToFileURL(createRequire(chunkFile).resolve(specifier)).href;
   return (await import(/* @vite-ignore */ target)) as Record<string, unknown>;
 }
 

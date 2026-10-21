@@ -23,7 +23,8 @@ import { startStubMcpHost } from "./fixtures/stub-mcp-host.ts";
 type Json = Record<string, any>;
 
 describe.skipIf(!hostAvailable)("OpenClaw host contracts the backend relies on", () => {
-  const scratch = mkdtempSync(join(tmpdir(), "oac-host-contract-"));
+  // Created in beforeAll: a skipped describe still runs its body, and nothing would remove the dir.
+  let scratch = "";
   // The backend the host resolves (the registry keeps it), and the backend each turn test executes with.
   const backend = buildCliBackend(cursorAdapter, { settings: { command: FAKE_CURSOR_AGENT } });
   /** A backend of its own pool, so a test's `closeAll` (which is final for a pool) leaves the others alone. */
@@ -61,6 +62,7 @@ describe.skipIf(!hostAvailable)("OpenClaw host contracts the backend relies on",
   }
 
   beforeAll(async () => {
+    scratch = mkdtempSync(join(tmpdir(), "oac-host-contract-"));
     const requireActivePluginRegistry = await hostExport<() => { cliBackends: unknown[] }>("requireActivePluginRegistry");
     host = {
       resolveCliBackendConfig: await hostExport("resolveCliBackendConfig"),
@@ -87,7 +89,7 @@ describe.skipIf(!hostAvailable)("OpenClaw host contracts the backend relies on",
 
   afterAll(() => {
     if (registered && registry) registry.cliBackends.splice(registry.cliBackends.indexOf(registered), 1);
-    rmSync(scratch, { recursive: true, force: true });
+    if (scratch) rmSync(scratch, { recursive: true, force: true });
   });
 
   it("the host resolves the real backend with the shape the contracts below depend on", () => {
