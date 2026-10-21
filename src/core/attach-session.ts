@@ -88,8 +88,8 @@ async function openProcess(
         mode === "side-question" || !approvals
           ? async () => (!entry.turn || entry.turn.ended || ctx.abortSignal?.aborted ? "cancelled" : "reject_once")
           : (request) => routePermission(entry.turn, request, warn),
-      onProcessStart: (pid) => {
-        lock = recordProcess(home.dir, pid, warn);
+      onProcessStart: (pid, info) => {
+        lock = recordProcess(home.dir, pid, warn, { group: info?.processGroup === true });
       },
       signal: ctx.abortSignal ? AbortSignal.any([ctx.abortSignal, entry.stopOpening.signal]) : entry.stopOpening.signal,
     });
@@ -100,6 +100,16 @@ async function openProcess(
   }
   // The lock goes with the process, however the process ends.
   void session.waitForExit().then(releaseLock, releaseLock);
+  // A side question's chat is a throwaway: once its process is gone (nothing writes there any
+  // more) the directory the CLI made for it goes too. The pool waits for this before it counts
+  // the process as gone. A discard failure is ignored.
+  if (mode === "side-question") {
+    const discard = () => adapter.discardSession?.({ env: { ...ctx.env, ...home.env }, sessionId: session.sessionId });
+    entry.afterExit = session.waitForExit().then(discard, discard).then(
+      () => {},
+      () => {},
+    );
+  }
   return session;
 }
 

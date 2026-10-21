@@ -11,6 +11,7 @@ import { HOST_SHELL_ARG } from "../src/core/execute.ts";
 import { createConfigValidator, registerAdapters } from "../src/core/register.ts";
 import provider from "../src/provider-discovery.ts";
 import { createModelCatalog } from "../src/core/catalog.ts";
+import { inspectProcess } from "../src/core/pid-locks.ts";
 import { createSyntheticAuthProvider } from "../src/core/synthetic-auth.ts";
 import { FAKE_CURSOR_AGENT, fakeEnv } from "./fixtures/paths.ts";
 
@@ -399,6 +400,41 @@ describe("operations wiring (P17, P19)", () => {
     // The lock goes when the process has exited, so an empty directory means the stop waited for it.
     expect(readdirSync(pids).filter((name) => name.endsWith(".json"))).toEqual([]);
     await running;
+  });
+
+  it("aborts a model listing in flight on unload: its process is gone and its lock released when stop resolves", async () => {
+    const services: Array<{ stop: () => Promise<void> }> = [];
+    registerAdapters(
+      {
+        pluginConfig: {},
+        logger: { warn: () => {} },
+        registerCliBackend: () => {},
+        registerService: (service: { stop: () => Promise<void> }) => services.push(service),
+      } as never,
+      ADAPTERS,
+    );
+    const warnings: string[] = [];
+    const entry = createSyntheticAuthProvider(cursorAdapter, createModelCatalog(cursorAdapter, { warn: (m) => warnings.push(m) })) as unknown as {
+      catalog: { run: (context: unknown) => Promise<{ provider: { models: Array<{ id: string }> } } | null> };
+    };
+    const agentDir = mkdtempSync(join(scratch, "listing-"));
+    const config = { plugins: { entries: { "openclaw-all-cli": { config: { "cursor-cli": { command: FAKE_CURSOR_AGENT } } } } } };
+    // The fake never answers `initialize`: the listing hangs until its 30 s timeout, unless the unload aborts it.
+    const listing = entry.catalog.run({ config, agentDir, env: fakeEnv({ FAKE_CURSOR_NO_INIT: "1" }) });
+    const pids = join(agentDir, "openclaw-all-cli", "cursor-cli", "pids");
+    const locked = () => (existsSync(pids) ? readdirSync(pids).filter((name) => name.endsWith(".json")) : []);
+    for (let i = 0; i < 100 && locked().length === 0; i += 1) await sleep(50);
+    expect(locked()).toHaveLength(1);
+    const pid = Number(locked()[0]!.replace(".json", ""));
+    expect((await inspectProcess(pid)).kind).toBe("alive");
+    const started = Date.now();
+    await services[0]!.stop();
+    expect(Date.now() - started).toBeLessThan(3_500);
+    expect((await inspectProcess(pid)).kind).toBe("gone");
+    expect(locked()).toEqual([]);
+    // As a failed listing: the default row, with nothing logged for an unload.
+    expect((await listing)?.provider.models.map((model) => model.id)).toEqual(["auto"]);
+    expect(warnings).toEqual([]);
   });
 
   it("reaps the homes of the configured agents when fully loaded, and only then", async () => {
@@ -1043,6 +1079,24 @@ describe("provider catalog entry", () => {
     expect(listed).toHaveLength(1);
   });
 
+  it("records the listing in the main agent's home when OpenClaw gives an agent directory, and not otherwise", async () => {
+    const seen: Array<boolean> = [];
+    const adapter = {
+      ...quickList,
+      listModels: async (p: Parameters<typeof quickList.listModels>[0]) => (seen.push(p.onProcessStart !== undefined), quickList.listModels(p)),
+    };
+    const entry = createSyntheticAuthProvider(adapter, createModelCatalog(adapter)) as unknown as {
+      catalog: { run: (context: unknown) => Promise<Result> };
+    };
+    const agentDir = mkdtempSync(join(tmpdir(), "oac-backend-lockdir-"));
+    await entry.catalog.run({ config, agentDir, env: fakeEnv({ CURSOR_API_KEY: "a" }) });
+    await entry.catalog.run({ config, env: fakeEnv({ CURSOR_API_KEY: "b" }) });
+    // A blank directory counts as none.
+    await entry.catalog.run({ config, agentDir: "  ", env: fakeEnv({ CURSOR_API_KEY: "c" }) });
+    rmSync(agentDir, { recursive: true, force: true });
+    expect(seen).toEqual([true, false, false]);
+  });
+
   it("offers only Auto, and does not start Cursor, without a login or API key", async () => {
     const list = vi.fn(quickList.listModels);
     const adapter = { ...quickList, listModels: list };
@@ -1064,7 +1118,12 @@ describe("provider catalog entry", () => {
 
   it("offers only Auto and logs when listing fails, so no turn fails", async () => {
     const warn = vi.fn();
-    const result = await entryFor(warn).run({ config, env: fakeEnv({ FAKE_CURSOR_NO_INIT: "1" }) });
+    const agentDir = mkdtempSync(join(tmpdir(), "oac-backend-listing-"));
+    const result = await entryFor(warn).run({ config, env: fakeEnv({ FAKE_CURSOR_NO_INIT: "1" }), agentDir });
+    // The listing's process was recorded in the agent home while it ran, and the lock is gone with it.
+    const pids = join(agentDir, "openclaw-all-cli", "cursor-cli", "pids");
+    expect(existsSync(pids) ? readdirSync(pids) : []).toEqual([]);
+    rmSync(agentDir, { recursive: true, force: true });
     expect(ids(result)).toEqual(["auto"]);
     expect(warn).toHaveBeenCalledTimes(1);
     expect(warn.mock.calls[0]?.[0]).toContain("Cursor CLI");

@@ -1,4 +1,5 @@
 import { backendIdFor, buildCliBackend } from "./backend.ts";
+import { closeListings } from "./catalog.ts";
 import { buildConfigSchema, capsOf, readBackendConfig } from "./config.ts";
 import { homeDirFor } from "./home.ts";
 import { reapOnce } from "./pid-locks.ts";
@@ -41,7 +42,8 @@ export function registerAdapters(api: OpenClawPluginApi, adapters: readonly CliA
     }
   }
   const closeAll = async () => {
-    await Promise.all(pools.map((pool) => pool.closeAll()));
+    // The model listings live outside the pools: abort them too, or their processes outlive the unload.
+    await Promise.all([...pools.map((pool) => pool.closeAll()), closeListings()]);
   };
   // Checked against OpenClaw 2026.10.3: a Gateway SIGTERM runs `registerService.stop` and
   // `lifecycle.onDispose`; `registerRuntimeLifecycle.dispose` does not run. `closeAll` is

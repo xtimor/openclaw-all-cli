@@ -163,6 +163,32 @@ describe("cursor adapter", () => {
         ...(extra.timeoutMs ? { timeoutMs: extra.timeoutMs } : {}),
       });
 
+    it("reports the listing's process and its group, and has stopped the group when it settles", async () => {
+      const dir = mkdtempSync(join(tmpdir(), "oac-cursor-"));
+      try {
+        const file = join(dir, "requests.jsonl");
+        const started: Array<{ pid: number; info: unknown }> = [];
+        await cursorAdapter.listModels({
+          command: FAKE_CURSOR_AGENT,
+          args: cursorAdapter.launchArgs,
+          env: fakeEnv({ FAKE_CURSOR_LOG: file, FAKE_CURSOR_WORKER: "1" }),
+          onProcessStart: (pid, info) => started.push({ pid, info }),
+        });
+        expect(started).toHaveLength(1);
+        if (process.platform !== "win32") expect(started[0]?.info).toEqual({ processGroup: true });
+        // The worker the fake started in the listing's group is gone by the time the listing settles.
+        const worker = readFileSync(file, "utf8")
+          .trim()
+          .split("\n")
+          .map((line) => JSON.parse(line) as { event?: string; pid?: number })
+          .find((entry) => entry.event === "worker");
+        expect(worker?.pid).toBeGreaterThan(0);
+        expect(() => process.kill(worker!.pid!, 0)).toThrow();
+      } finally {
+        rmSync(dir, { recursive: true, force: true });
+      }
+    });
+
     it("lists the account's models with readable names and exact IDs, without a prompt", async () => {
       const dir = mkdtempSync(join(tmpdir(), "oac-cursor-"));
       try {

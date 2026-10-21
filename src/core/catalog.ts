@@ -1,5 +1,7 @@
 import { createHash } from "node:crypto";
 import { backendIdFor } from "./backend.ts";
+import { closeListings as closeAllListings, trackListing, type Listing } from "./listings.ts";
+import { recordProcess, type ProcessLock } from "./pid-locks.ts";
 import type { CliAdapter, CliModel } from "./ports.ts";
 
 /** A model as `/model` and `openclaw models list` show it: `<backendId>/<id>`. */
@@ -9,7 +11,24 @@ export type CatalogParams = {
   command: string;
   env: Record<string, string | undefined>;
   signal?: AbortSignal;
+  /**
+   * The agent home (`homeDirFor(agentDir, backendId)`) whose `pids/` records the listing's process
+   * from its spawn to its exit (AD-14). Absent: the listing runs unrecorded, and the catalog warns once.
+   */
+  lockDir?: string;
 };
+
+/** `closeListings` waits this long for the aborted listings' processes to exit: the transport's kill grace plus a margin. */
+const CLOSE_LISTINGS_WAIT_MS = 3_000;
+
+/**
+ * Aborts every model listing in flight, in every thread of the process (OpenClaw runs the catalog in
+ * a worker thread), so the unload leaves no listing process behind (AD-14), and waits for them to
+ * exit and release their locks, at most `waitMs`. Never throws.
+ */
+export function closeListings(waitMs: number = CLOSE_LISTINGS_WAIT_MS): Promise<void> {
+  return closeAllListings(waitMs);
+}
 
 export type ModelCatalog = {
   /**
@@ -60,6 +79,7 @@ export function createModelCatalog(adapter: CliAdapter, options: ModelCatalogOpt
   const fallback = [defaultCatalogRow(adapter)];
   const cache = new Map<string, { until: number; rows: CatalogRow[] }>();
   const pending = new Map<string, Promise<CatalogRow[]>>();
+  let warnedUnlocked = false;
 
   /** One key per command and environment; the environment is hashed so no value is kept. */
   function keyFor(params: CatalogParams): string {
@@ -69,14 +89,40 @@ export function createModelCatalog(adapter: CliAdapter, options: ModelCatalogOpt
     return createHash("sha256").update(JSON.stringify([params.command, env])).digest("hex");
   }
 
-  /** The listing runs for every waiting caller, so it never takes one caller's signal. */
+  /**
+   * The listing runs for every waiting caller, so it never takes one caller's signal. Its own
+   * signal is the unload's (`closeListings`). Its process is locked in `params.lockDir` until it exits.
+   */
   async function load(key: string, params: CatalogParams): Promise<CatalogRow[]> {
+    const controller = new AbortController();
+    let finish!: () => void;
+    const listing: Listing = {
+      abort: () => controller.abort(),
+      done: new Promise<void>((resolve) => {
+        finish = resolve;
+      }),
+    };
+    const untrack = trackListing(listing);
+    let lock: Promise<ProcessLock | undefined> | undefined;
+    if (!params.lockDir && !warnedUnlocked) {
+      warnedUnlocked = true;
+      warn(`A ${adapter.displayName} model listing ran without an agent directory, so its process is not recorded for cleanup after a crash.`);
+    }
     try {
       const env = Object.fromEntries(Object.entries(params.env).filter((entry): entry is [string, string] => entry[1] !== undefined));
+      const lockDir = params.lockDir;
       const models = await adapter.listModels({
         command: params.command,
         args: adapter.launchArgs,
         env,
+        signal: controller.signal,
+        ...(lockDir
+          ? {
+              onProcessStart: (pid: number, info?: { processGroup: boolean }) => {
+                lock = recordProcess(lockDir, pid, warn, { group: info?.processGroup === true });
+              },
+            }
+          : {}),
       });
       const rows = models.map(toRow);
       // A CLI that answers with nothing leaves the account with the default model, as a failure does.
@@ -84,10 +130,17 @@ export function createModelCatalog(adapter: CliAdapter, options: ModelCatalogOpt
       cache.set(key, { until: now() + ttlMs, rows });
       return rows;
     } catch (error) {
+      // The unload stopped the listing: not a failure of the CLI, so nothing is warned or remembered.
+      if (controller.signal.aborted) return fallback;
       const reason = error instanceof Error ? error.message : String(error);
       warn(`Could not list the ${adapter.displayName} models, so only ${fallback[0]?.id} is offered: ${reason}`);
       cache.set(key, { until: now() + failureTtlMs, rows: fallback });
       return fallback;
+    } finally {
+      // `listModels` settles after its process exited: the lock has nothing left to guard.
+      await lock?.then((held) => held?.release()).catch(() => {});
+      untrack();
+      finish();
     }
   }
 

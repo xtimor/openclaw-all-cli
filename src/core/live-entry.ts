@@ -29,6 +29,8 @@ export type LiveEntry = {
   member: PoolMember;
   /** The open in progress, so the pool can wait for a process that is still starting. */
   opening?: Promise<unknown>;
+  /** Work that follows the process's exit and must finish before the process counts as gone (a side question's discard). */
+  afterExit?: Promise<void>;
   /** Aborted by the handle's close, so a process that is still starting stops starting. */
   stopOpening: AbortController;
   /** The process opened a fresh agent chat and has not sent its first prompt yet (P15). */
@@ -72,6 +74,7 @@ export async function createLiveEntry(
           () => {},
         );
         await entry.session?.waitForExit();
+        await entry.afterExit;
       },
     },
     handle: {

@@ -13,6 +13,8 @@ import { ToolCallTable, isRecord, mergeToolFacts, type DescribeToolCall } from "
 const STDERR_TAIL_CHARS = 600;
 export const KILL_GRACE_MS = 2_000;
 const EXIT_SETTLE_MS = 500;
+/** How often a stopping group is checked for members. */
+const GROUP_POLL_MS = 100;
 
 export type TurnQueue = { push(event: NormalizedEvent): void; end(): void };
 type PendingPermission = { resolve: (response: acp.RequestPermissionResponse) => void };
@@ -24,8 +26,20 @@ const MAX_TOOL_CALL_FACTS = 256;
 /** Everything the ACP client callbacks and the session share. */
 export type Runtime = {
   child: ChildProcess;
+  /** The leader's exit. */
   exited: Promise<void>;
+  /**
+   * The process is gone: the leader exited and, when it leads its own group, the group is empty
+   * (or the SIGKILL to it was sent). Equal to `exited` without a group.
+   */
+  gone: Promise<void>;
   hasExited: boolean;
+  /** The process leads its own process group (POSIX), so every stop reaches its children too. */
+  group: boolean;
+  /** A stop was started (SIGTERM sent, SIGKILL timer set). */
+  stopping?: boolean;
+  /** The SIGKILL to the group was sent: nothing more to wait for. */
+  forceKilled?: boolean;
   spawnError?: Error;
   stderrTail: string;
   turn?: TurnQueue;
@@ -81,13 +95,65 @@ export function deathError(runtime: Runtime, command: string, retryable = true):
   });
 }
 
-/** SIGTERM now, SIGKILL if the process is still there after the grace period. */
+/**
+ * Signals the leader's whole group. A group nobody is in (ESRCH) is not an error. True when the
+ * signal went out. The pgid is the pid of a leader this process spawned, so it can name no other group.
+ */
+function signalGroup(runtime: Runtime, name: NodeJS.Signals): boolean {
+  const pid = runtime.child.pid;
+  if (pid === undefined) return false;
+  try {
+    process.kill(-pid, name);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/** True while some process is in the leader's group. Signal 0 only checks. */
+function groupHasMembers(runtime: Runtime): boolean {
+  const pid = runtime.child.pid;
+  if (pid === undefined) return false;
+  try {
+    process.kill(-pid, 0);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Stops the process: SIGTERM now, SIGKILL after the grace period if it (or, with a group, any
+ * member of its group) is still there. Idempotent. With a group the whole group gets both signals,
+ * also after the leader exited on its own, since its children may outlive it.
+ */
 export function terminate(runtime: Runtime): void {
-  if (runtime.hasExited) return;
-  runtime.child.kill("SIGTERM");
-  const forceKill = setTimeout(() => runtime.child.kill("SIGKILL"), KILL_GRACE_MS);
+  if (runtime.stopping) return;
+  if (!runtime.group) {
+    if (runtime.hasExited) return;
+    runtime.stopping = true;
+    runtime.child.kill("SIGTERM");
+    const forceKill = setTimeout(() => runtime.child.kill("SIGKILL"), KILL_GRACE_MS);
+    forceKill.unref();
+    void runtime.exited.then(() => clearTimeout(forceKill));
+    return;
+  }
+  runtime.stopping = true;
+  // Nobody left (the leader exited and took everyone along): nothing to signal or wait for.
+  if (!signalGroup(runtime, "SIGTERM")) return;
+  const forceKill = setTimeout(() => {
+    runtime.forceKilled = true;
+    if (groupHasMembers(runtime)) signalGroup(runtime, "SIGKILL");
+  }, KILL_GRACE_MS);
   forceKill.unref();
-  void runtime.exited.then(() => clearTimeout(forceKill));
+  void runtime.gone.then(() => clearTimeout(forceKill));
+}
+
+/** Resolves once the group has no member left, or the SIGKILL to it was sent. */
+async function drainGroup(runtime: Runtime): Promise<void> {
+  while (groupHasMembers(runtime) && !runtime.forceKilled) {
+    await new Promise((resolve) => setTimeout(resolve, GROUP_POLL_MS));
+  }
 }
 
 export function assertDirectory(cwd: string): void {
@@ -131,16 +197,21 @@ export function settleExit(runtime: Runtime): Promise<unknown> {
 
 /** Spawns the process and starts watching its exit, its stderr, and its pipes. */
 export function spawnRuntime(options: AcpSessionOptions): Runtime {
+  // On POSIX the process leads its own group, so the CLI's children (a worker, language servers)
+  // can be stopped with it. Windows keeps the single process.
+  const detached = process.platform !== "win32";
   const child = spawn(options.command, [...options.args], {
     cwd: options.cwd,
     env: options.env,
     stdio: ["pipe", "pipe", "pipe"],
+    detached,
   });
 
   // A process that failed to spawn has no pid; its `error` event reports why.
+  const group = detached && child.pid !== undefined;
   if (child.pid !== undefined) {
     try {
-      options.onProcessStart?.(child.pid);
+      options.onProcessStart?.(child.pid, { processGroup: group });
     } catch {
       // A failing observer must not leak the process it was told about.
     }
@@ -149,12 +220,14 @@ export function spawnRuntime(options: AcpSessionOptions): Runtime {
   const runtime: Runtime = {
     child,
     hasExited: false,
+    group,
     stderrTail: "",
     pending: new Set(),
     toolCalls: new Map(),
     ...(options.describeToolCall ? { describeToolCall: options.describeToolCall } : {}),
     ...(options.classifyReplyError ? { classifyReplyError: options.classifyReplyError } : {}),
     exited: Promise.resolve(),
+    gone: Promise.resolve(),
   };
   runtime.exited = new Promise<void>((resolve) => {
     child.once("error", (error) => {
@@ -164,9 +237,12 @@ export function spawnRuntime(options: AcpSessionOptions): Runtime {
     });
     child.once("exit", () => {
       runtime.hasExited = true;
+      // Whatever the leader started may outlive it: stop the group in this very tick.
+      if (runtime.group) terminate(runtime);
       resolve();
     });
   });
+  runtime.gone = runtime.group ? runtime.exited.then(() => drainGroup(runtime)) : runtime.exited;
   child.stderr?.on("data", (chunk: Buffer) => {
     runtime.stderrTail = (runtime.stderrTail + chunk.toString("utf8")).slice(-STDERR_TAIL_CHARS);
   });

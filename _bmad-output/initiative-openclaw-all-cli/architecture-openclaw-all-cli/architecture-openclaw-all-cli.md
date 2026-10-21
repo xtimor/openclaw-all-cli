@@ -157,10 +157,12 @@ flowchart LR
 - **Prevents:** orphaned CLI processes holding a chat after a crash; silent breakage on unsupported versions; unbounded warm processes.
 - **Rule:**
   - **Version check.** On the first turn per backend, the adapter checks the CLI version against its manifest floor (Cursor ≥ 2026.07.06) and the ACP `protocolVersion` (1). A miss fails with `CliError` `unsupported_version`.
-  - **Orphans.** Each home holds a pid lock file; on startup the core kills stale owners recorded there.
+  - **Orphans.** Each home holds a pid lock file; on startup the core kills stale owners recorded there. The lock says whether the process leads its own process group (`group: true`); the reaper then stops the group, but only while the recorded leader is alive with the recorded start time and still leads its group.
+  - **Process groups.** A transport that can starts each CLI process as the leader of its own process group (POSIX) and stops the whole group wherever it stops the process: close, eviction, abort, unload, failed start, and the leader's own exit. A process counts as gone when the leader exited and the group is empty. This ends the CLI's own children (Cursor's `worker-server` and its language servers), which survive a lone SIGTERM for about 5 minutes. Windows keeps the single process. The port reports it as `ProcessStartInfo.processGroup`.
   - **Idle processes.** Live processes close after 15 idle minutes.
-  - **Unload.** Plugin unload closes all live processes.
-  - **Exception.** The throwaway process of a model listing has no pid lock and is not closed on unload; it lives for a few seconds.
+  - **Unload.** Plugin unload closes all live processes and aborts the model listings in flight (the catalog runs in a worker thread of the host, so the abort travels over a `BroadcastChannel`).
+  - **Model listing.** The listing's process is locked in the main agent's home from spawn to exit when OpenClaw gives the catalog an `agentDir`, and it is aborted on unload. Without an `agentDir` it runs unlocked (one warning).
+  - **Throwaway chats.** A side question's chat directory is removed by its id once its process has exited; an agent chat's never.
   - **Platforms.** macOS and Linux are supported.
 
 ### AD-15 — The host's system prompt reaches the CLI as a prompt block

@@ -289,6 +289,7 @@ async function listModels(params: ListModelsParams): Promise<readonly CliModel[]
       ...authMethodFor(params.env),
       classifyReplyError: classifyCursorReplyError,
       onPermissionRequest: async () => "cancelled",
+      ...(params.onProcessStart ? { onProcessStart: params.onProcessStart } : {}),
       signal,
     });
     session = opened;

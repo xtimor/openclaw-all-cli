@@ -17,16 +17,22 @@ const REAP_KILL_GRACE_MS = 2_000;
 const POLL_MS = 100;
 
 /** What `ps` says about a pid. A zombie counts as gone: it runs nothing and only awaits its parent. */
-export type ProcessState = { kind: "alive"; startTime: string } | { kind: "gone" } | { kind: "unavailable" };
+export type ProcessState =
+  | { kind: "alive"; startTime: string; pgid?: number }
+  | { kind: "gone" }
+  | { kind: "unavailable" };
 
-/** What a lock file holds. Start times are `ps -o lstart=` text, which is the same on macOS and Linux. */
-export type PidLockRecord = { pid: number; startTime: string; ownerPid: number; ownerStartTime: string };
+/**
+ * What a lock file holds. Start times are `ps -o lstart=` text, which is the same on macOS and
+ * Linux. `group: true`: the process leads its own process group, which is stopped with it.
+ */
+export type PidLockRecord = { pid: number; startTime: string; ownerPid: number; ownerStartTime: string; group?: boolean };
 
 export function inspectProcess(pid: number): Promise<ProcessState> {
   return new Promise((resolve) => {
     execFile(
       "ps",
-      ["-o", "stat=", "-o", "lstart=", "-p", String(pid)],
+      ["-o", "stat=", "-o", "pgid=", "-o", "lstart=", "-p", String(pid)],
       // UTC and the C locale: the start time reads the same whatever zone or language the Gateway runs in.
       { timeout: PS_TIMEOUT_MS, env: { ...process.env, LC_ALL: "C", TZ: "UTC" } },
       (error, stdout) => {
@@ -35,9 +41,9 @@ export function inspectProcess(pid: number): Promise<ProcessState> {
           resolve((error as { code?: unknown }).code === 1 ? { kind: "gone" } : { kind: "unavailable" });
           return;
         }
-        const match = /^\s*(\S+)\s+(.+?)\s*$/.exec(stdout.split("\n")[0] ?? "");
+        const match = /^\s*(\S+)\s+(\d+)\s+(.+?)\s*$/.exec(stdout.split("\n")[0] ?? "");
         if (!match || match[1]!.startsWith("Z")) resolve({ kind: "gone" });
-        else resolve({ kind: "alive", startTime: match[2]! });
+        else resolve({ kind: "alive", startTime: match[3]!, pgid: Number(match[2]) });
       },
     );
   });
@@ -63,12 +69,14 @@ export type ProcessLock = { release(): Promise<void> };
 
 /**
  * Records `pid` in `<homeDir>/pids/<pid>.json` (dir 0700, file 0600, never the workspace).
+ * `group`: the process leads its own process group, and the reaper stops the group with it.
  * Resolves undefined, and warns, when it cannot: a lock is a safety net, never a reason to fail a turn.
  */
 export async function recordProcess(
   homeDir: string,
   pid: number,
   warn: (message: string) => void,
+  options: { group?: boolean } = {},
 ): Promise<ProcessLock | undefined> {
   try {
     const [process_, owner] = await Promise.all([inspectProcess(pid), readOwner()]);
@@ -86,6 +94,7 @@ export async function recordProcess(
       startTime: process_.startTime,
       ownerPid: process.pid,
       ownerStartTime: owner.startTime,
+      ...(options.group ? { group: true } : {}),
     };
     const temp = join(dir, `.${pid}.${randomUUID()}.tmp`);
     await writeFile(temp, JSON.stringify(record), { mode: 0o600 });
@@ -116,7 +125,8 @@ function parseLock(text: string, pid: number): PidLockRecord | undefined {
     typeof record.startTime === "string" &&
     typeof record.ownerPid === "number" &&
     Number.isInteger(record.ownerPid) &&
-    typeof record.ownerStartTime === "string";
+    typeof record.ownerStartTime === "string" &&
+    (record.group === undefined || typeof record.group === "boolean");
   return valid ? (record as PidLockRecord) : undefined;
 }
 
@@ -140,6 +150,77 @@ async function waitGone(pid: number, startTime: string, timeoutMs: number): Prom
     if (Date.now() >= deadline) return false;
     await new Promise((resolve) => setTimeout(resolve, POLL_MS));
   }
+}
+
+/** "denied" when the group's signal was refused (EPERM). A group nobody is in counts as sent. */
+function signalGroup(pgid: number, name: NodeJS.Signals): "sent" | "denied" {
+  try {
+    process.kill(-pgid, name);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "EPERM") return "denied";
+  }
+  return "sent";
+}
+
+/** True while some process is in the group. Signal 0 only checks. */
+function groupHasMembers(pgid: number): boolean {
+  try {
+    process.kill(-pgid, 0);
+    return true;
+  } catch (error) {
+    return (error as NodeJS.ErrnoException).code === "EPERM";
+  }
+}
+
+/** Waits until the leader is gone (or its pid is another process) and the group is empty, or `timeoutMs` passes. */
+async function waitGroupGone(pgid: number, startTime: string, timeoutMs: number): Promise<boolean> {
+  const deadline = Date.now() + timeoutMs;
+  for (;;) {
+    const state = await inspectProcess(pgid);
+    const leaderGone = state.kind === "gone" || (state.kind === "alive" && state.startTime !== startTime);
+    if (leaderGone && !groupHasMembers(pgid)) return true;
+    if (Date.now() >= deadline) return false;
+    await new Promise((resolve) => setTimeout(resolve, POLL_MS));
+  }
+}
+
+type ReapOutcome = { leaderGone: boolean; groupEmpty: boolean };
+
+/** Stops one recorded process (TERM, wait, a re-checked KILL). */
+async function reapProcess(pid: number, startTime: string): Promise<ReapOutcome> {
+  let gone = false;
+  if (signal(pid, "SIGTERM") === "sent") {
+    gone = await waitGone(pid, startTime, REAP_KILL_GRACE_MS);
+    if (!gone) {
+      // Checked again right before the kill: the pid must still be the recorded process.
+      const again = await inspectProcess(pid);
+      if (again.kind === "alive" && again.startTime === startTime) {
+        if (signal(pid, "SIGKILL") === "sent") gone = await waitGone(pid, startTime, REAP_KILL_GRACE_MS);
+      } else {
+        gone = true;
+      }
+    }
+  }
+  return { leaderGone: gone, groupEmpty: true };
+}
+
+/**
+ * Stops a recorded leader's whole process group (TERM, wait, a re-checked KILL). The caller proved
+ * the leader is alive with the recorded start time and leads the group. The KILL needs the same proof
+ * again: once the leader is gone, nothing here signals the group any more.
+ */
+async function reapGroup(pgid: number, startTime: string): Promise<ReapOutcome> {
+  if (signalGroup(pgid, "SIGTERM") === "denied") return { leaderGone: false, groupEmpty: false };
+  let done = await waitGroupGone(pgid, startTime, REAP_KILL_GRACE_MS);
+  if (!done) {
+    const again = await inspectProcess(pgid);
+    if (again.kind === "alive" && again.startTime === startTime && again.pgid === pgid) {
+      if (signalGroup(pgid, "SIGKILL") === "sent") done = await waitGroupGone(pgid, startTime, REAP_KILL_GRACE_MS);
+    }
+  }
+  const last = await inspectProcess(pgid);
+  const leaderGone = last.kind === "gone" || (last.kind === "alive" && last.startTime !== startTime);
+  return { leaderGone, groupEmpty: done || (leaderGone && !groupHasMembers(pgid)) };
 }
 
 /**
@@ -183,25 +264,20 @@ export async function reapStale(homeDir: string, warn: (message: string) => void
         return false;
       }
       if (state.kind === "alive" && state.startTime === lock.startTime) {
-        let gone = false;
-        if (signal(pid, "SIGTERM") === "sent") {
-          gone = await waitGone(pid, lock.startTime, REAP_KILL_GRACE_MS);
-          if (!gone) {
-            // Checked again right before the kill: the pid must still be the recorded process.
-            const again = await inspectProcess(pid);
-            if (again.kind === "alive" && again.startTime === lock.startTime) {
-              if (signal(pid, "SIGKILL") === "sent") gone = await waitGone(pid, lock.startTime, REAP_KILL_GRACE_MS);
-            } else {
-              gone = true;
-            }
-          }
-        }
-        if (!gone) {
+        // The group is stopped only when the recorded leader is alive and still leads its own group
+        // (`pgid == pid`): a leader that is gone or reused proves nothing about the group's members.
+        const asGroup = lock.group === true && state.pgid === pid;
+        const outcome = asGroup ? await reapGroup(pid, lock.startTime) : await reapProcess(pid, lock.startTime);
+        if (!outcome.leaderGone) {
           // Still running: the lock stays, so the next start tries again.
           warn(`Could not stop CLI process ${pid}, which a previous Gateway left running.`);
           continue;
         }
         warn(`Stopped CLI process ${pid}, which a previous Gateway left running.`);
+        if (!outcome.groupEmpty) {
+          // The leader is gone, so the lock cannot prove the rest of the group is ours: it is spent.
+          warn(`Part of the process group of CLI process ${pid} is still running; it exits by itself.`);
+        }
       }
       // Gone, reused by another process, or just killed: the lock is spent.
       await rm(file, { force: true });

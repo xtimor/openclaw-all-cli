@@ -145,6 +145,8 @@ export type TestGateway = {
   stop(): Promise<void>;
   /** SIGTERM to the Gateway process alone, not its group (a plain `kill <pid>`), then wait for the exit. */
   terminate(): Promise<void>;
+  /** SIGINT to the Gateway process alone, not its group (Ctrl-C on the Gateway), then wait for the exit. */
+  interrupt(): Promise<void>;
   /** SIGKILL to the Gateway process alone, not its group, then wait for the exit. */
   kill(): Promise<void>;
 };
@@ -197,10 +199,11 @@ export async function startGateway(
   };
   const kill = signalPid("SIGKILL");
   const terminate = signalPid("SIGTERM");
+  const interrupt = signalPid("SIGINT");
   const deadline = Date.now() + (options.timeoutMs ?? 120_000);
   while (Date.now() < deadline) {
     const probe = openclaw(["gateway", "call", "health", "--port", String(port), "--json", "--timeout", "5000"], { timeoutMs: 15_000 });
-    if (probe.status === 0) return { port, env: { OPENCLAW_GATEWAY_PORT: String(port) }, pid: child.pid!, stop, terminate, kill };
+    if (probe.status === 0) return { port, env: { OPENCLAW_GATEWAY_PORT: String(port) }, pid: child.pid!, stop, terminate, interrupt, kill };
     await new Promise((resolve) => setTimeout(resolve, 2_000));
   }
   await stop();

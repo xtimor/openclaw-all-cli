@@ -1,4 +1,4 @@
-import { chmodSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { createServer } from "node:http";
 import type { AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
@@ -22,6 +22,7 @@ import {
   type OpenParams,
   type PermissionDecision,
   type PermissionRequest,
+  type ProcessStartInfo,
   type UsageQuery,
 } from "./ports.ts";
 import { createManifest } from "./ports.ts";
@@ -1740,6 +1741,93 @@ describe("createExecute side questions (P18)", () => {
   });
 });
 
+describe("createExecute side question cleanup (O2)", () => {
+  const sideCtx = (overrides: Partial<ExecuteContext> = {}) =>
+    makeCtx({ executionMode: "side-question", env: usableEnv, ...overrides });
+  const until = async (condition: () => boolean) => {
+    for (let i = 0; i < 100 && !condition(); i += 1) await new Promise((resolve) => setTimeout(resolve, 20));
+  };
+
+  it("discards a side question's chat by its id once the process has exited", async () => {
+    const { adapter, sessions } = makeAdapter();
+    const seen: Array<{ sessionId: string; env: Record<string, string>; exited: boolean }> = [];
+    adapter.discardSession = async (params) => {
+      seen.push({ ...params, exited: !sessions[0]!.alive });
+    };
+    fake.exitDelayMs = 60;
+    try {
+      await run(createExecute(adapter, { home: HOME }), sideCtx());
+      await until(() => seen.length > 0);
+    } finally {
+      fake.exitDelayMs = 0;
+    }
+    expect(seen).toEqual([{ sessionId: "native-1", env: { ...usableEnv, ...HOME.env }, exited: true }]);
+  });
+
+  it("makes the pool wait for the discard before it counts the process as gone", async () => {
+    let releaseTurn!: () => void;
+    const turn = new Promise<void>((resolve) => (releaseTurn = resolve));
+    const script: Script = async function* () {
+      await turn;
+      yield { kind: "result", text: "late", stopReason: "end_turn" };
+    };
+    const { adapter, sessions } = makeAdapter(script);
+    let finishDiscard: (() => void) | undefined;
+    adapter.discardSession = () => new Promise<void>((resolve) => (finishDiscard = resolve));
+    const pool = new ProcessPool({ maxTurns: 1, maxProcesses: 2, closeWaitMs: 5_000 });
+    const running = run(createExecute(adapter, { home: HOME, pool }), sideCtx());
+    await until(() => sessions.length === 1);
+    let closed = false;
+    const closing = pool.closeAll().then(() => (closed = true));
+    await until(() => finishDiscard !== undefined);
+    // The process has exited; the member is still not gone while its chat directory is being removed.
+    expect(sessions[0]!.alive).toBe(false);
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    expect(closed).toBe(false);
+    finishDiscard!();
+    await closing;
+    releaseTurn();
+    await running;
+  });
+
+  it("ignores a discard that fails", async () => {
+    const { adapter } = makeAdapter();
+    adapter.discardSession = async () => {
+      throw new Error("disk");
+    };
+    const pool = new ProcessPool({ maxTurns: 1, maxProcesses: 2 });
+    const records = await run(createExecute(adapter, { home: HOME, pool }), sideCtx());
+    expect(parsed(records).at(-1)).toMatchObject({ kind: "result", text: "echo:hi" });
+    await expect(pool.closeAll()).resolves.toBeUndefined();
+  });
+
+  it("discards after a side question that was aborted or failed, too", async () => {
+    const script: Script = async function* () {
+      yield { kind: "error", error: { code: "server_error", message: "boom", retryable: false } };
+    };
+    const { adapter } = makeAdapter(script);
+    const ids: string[] = [];
+    adapter.discardSession = async (params) => void ids.push(params.sessionId);
+    await run(createExecute(adapter, { home: HOME }), sideCtx());
+    await until(() => ids.length > 0);
+    expect(ids).toEqual(["native-1"]);
+  });
+
+  it("keeps the directory of an agent chat, resumed or new", async () => {
+    const { adapter, sessions } = makeAdapter();
+    const ids: string[] = [];
+    adapter.discardSession = async (params) => void ids.push(params.sessionId);
+    const pool = new ProcessPool({ maxTurns: 1, maxProcesses: 2 });
+    const { live } = makeLive();
+    const execute = createExecute(adapter, { home: HOME, pool });
+    await run(execute, makeCtx({ liveSession: live, env: usableEnv }));
+    await run(execute, makeCtx({ env: usableEnv, useResume: true, sessionId: "user-chat" }));
+    await pool.closeAll();
+    expect(sessions.length).toBeGreaterThan(0);
+    expect(ids).toEqual([]);
+  });
+});
+
 describe("createExecute concurrency caps and operations (P17, P19)", () => {
   const gate = () => {
     let open!: () => void;
@@ -2023,7 +2111,7 @@ describe("createExecute concurrency caps and operations (P17, P19)", () => {
     afterAll(() => rmSync(homeDir, { recursive: true, force: true }));
 
     /** An adapter whose process is a real child, reported to the core the way the transport does. */
-    function adapterWithProcess() {
+    function adapterWithProcess(info?: ProcessStartInfo) {
       const harness = makeAdapter();
       let started: ChildProcess | undefined;
       harness.adapter.open = async (params) => {
@@ -2031,7 +2119,7 @@ describe("createExecute concurrency caps and operations (P17, P19)", () => {
         children.push(child);
         started = child;
         await new Promise((resolve) => child.once("spawn", resolve));
-        params.onProcessStart?.(child.pid!);
+        params.onProcessStart?.(child.pid!, info);
         const exited = new Promise<void>((resolve) => child.once("exit", () => resolve()));
         return {
           sessionId: "pid-session",
@@ -2066,6 +2154,25 @@ describe("createExecute concurrency caps and operations (P17, P19)", () => {
       await until(async () => locks(dir).length === 0);
       expect(locks(dir)).toEqual([]);
       expect((await inspectProcess(child().pid!)).kind).toBe("gone");
+    });
+
+    it("writes `group: true` into the lock when the transport reports a process group, and not otherwise", async () => {
+      const readLock = (dir: string, pid: number) => JSON.parse(readFileSync(join(dir, "pids", `${pid}.json`), "utf8")) as { group?: boolean };
+      const grouped = join(homeDir, "group-yes");
+      const withGroup = adapterWithProcess({ processGroup: true });
+      const liveA = makeLive();
+      await run(createExecute(withGroup.adapter, { home: { dir: grouped, env: {} }, idleMs: 60_000 }), makeCtx({ liveSession: liveA.live, env: usableEnv }));
+      await until(async () => locks(grouped).length === 1);
+      expect(readLock(grouped, withGroup.child().pid!).group).toBe(true);
+      liveA.current()?.close("abort");
+
+      const plain = join(homeDir, "group-no");
+      const withoutGroup = adapterWithProcess({ processGroup: false });
+      const liveB = makeLive();
+      await run(createExecute(withoutGroup.adapter, { home: { dir: plain, env: {} }, idleMs: 60_000 }), makeCtx({ liveSession: liveB.live, env: usableEnv }));
+      await until(async () => locks(plain).length === 1);
+      expect(readLock(plain, withoutGroup.child().pid!)).not.toHaveProperty("group");
+      liveB.current()?.close("abort");
     });
 
     it("removes the lock of a process whose open failed", async () => {

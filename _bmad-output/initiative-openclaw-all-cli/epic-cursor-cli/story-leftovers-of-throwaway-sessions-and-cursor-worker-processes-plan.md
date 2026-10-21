@@ -94,7 +94,17 @@ deferred: []
 
 ## Implementation Notes
 
+- Runtime: `Runtime.gone` (leader exited and group empty, or the group SIGKILL sent) backs `close()`, `waitForExit()`, and the failed-open path; `Runtime.exited` stays the leader's exit (the death race). `terminate` is idempotent through `Runtime.stopping`; the exit handler calls it in the same tick.
+- Reaper: `reapGroup` signals only after the caller proved leader alive, start time equal, `pgid == pid`; its KILL repeats that proof; once the leader is gone after the TERM it sends no KILL, removes the lock, and warns that part of the group still runs (bound: the worker's own 5 minutes). A lock with `group: true` whose leader is alive but not a group leader falls back to pid-only.
+- Listing registry lives in `src/core/listings.ts` (re-exported through `catalog.ts`); `lockDir` is the agent home (`recordProcess` appends `pids/`).
+- Tests: +40 offline (858 -> 898 passed). Mutation checks (each named test failed, then restored): group signal, exit-handler stop, pgid == pid, leader-alive, re-check before KILL, side-question mode check, registry abort, channel close request.
+- Live (cursor-agent 2026.10.19, `CURSOR_API_KEY`): see the final report of the build; the rows are in `test/live/operations.live.test.ts` and `test/live/session-resume.live.test.ts`.
+
 ## Plan Change Log
+
+- Listing registry across threads. The plan put the registry on `globalThis` for "separate module instances". The live probe showed OpenClaw 2026.10.3 runs the provider catalog (`catalog.run`) in a worker thread (`isMainThread` false, another `globalThis`), so a `globalThis` registry never saw the listing and an unload left its lock behind (AC 5 failed). The registry now also uses a `BroadcastChannel` (`close` / `closing` / `closed`, 150 ms answer window, bounded by the 3 s wait); the `globalThis` set stays for same-thread instances. Plan text otherwise unchanged.
+- Existing tests changed because the new behavior is the plan's: `catalog.test.ts` (the listing now gets its own signal and `onProcessStart`; the no-agentDir warning) and `backend.test.ts` (one failing-listing test now passes an `agentDir`).
+- Live listing row: the plugin's catalog caches for a minute and the host passes no refresh flag, so the row repeats `models.list` until a call starts a listing.
 
 ## Review Triage Log
 

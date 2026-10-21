@@ -2,8 +2,10 @@ import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import { CliError, type CliSession, type NormalizedEvent } from "../../core/ports.ts";
+import { inspectProcess } from "../../core/pid-locks.ts";
+import { CliError, type CliSession, type NormalizedEvent, type ProcessStartInfo } from "../../core/ports.ts";
 import { FAKE_CURSOR_AGENT, fakeEnv } from "../../../test/fixtures/paths.ts";
+import { KILL_GRACE_MS } from "./runtime.ts";
 import { AcpSession, type AcpPermissionRequest, type AcpSessionOptions } from "./session.ts";
 
 const open: CliSession[] = [];
@@ -1003,5 +1005,117 @@ describe("AcpSession process ID (AD-14)", () => {
       },
     });
     expect(session.alive).toBe(true);
+  });
+});
+
+describe("AcpSession process group (D22, AD-14)", () => {
+  const posix = process.platform !== "win32";
+  const killed: number[] = [];
+  afterEach(() => {
+    // A failed test must not leave a fake worker behind.
+    for (const pid of killed.splice(0)) {
+      try {
+        process.kill(pid, "SIGKILL");
+      } catch {
+        // Already gone.
+      }
+    }
+  });
+
+  /** The pids of the workers the fake started, from its log. */
+  function workers(file: string): number[] {
+    const pids = readFileSync(file, "utf8")
+      .trim()
+      .split("\n")
+      .map((line) => JSON.parse(line) as { event?: string; pid?: number })
+      .filter((entry) => entry.event === "worker")
+      .map((entry) => entry.pid!);
+    killed.push(...pids);
+    return pids;
+  }
+  const running = async (pid: number) => (await inspectProcess(pid)).kind === "alive";
+  const pgidOf = async (pid: number) => {
+    const state = await inspectProcess(pid);
+    return state.kind === "alive" ? state.pgid : undefined;
+  };
+
+  it.skipIf(!posix)("starts the process as the leader of its own group and says so", async () => {
+    const seen: Array<{ pid: number; info: ProcessStartInfo }> = [];
+    const session = await start({ onProcessStart: (pid, info) => seen.push({ pid, info }) });
+    expect(seen).toEqual([{ pid: session.pid!, info: { processGroup: true } }]);
+    expect(await pgidOf(session.pid!)).toBe(session.pid);
+  });
+
+  it.skipIf(!posix)("stops the worker with the process on close", async () => {
+    const file = logFile();
+    const session = await start({ env: { FAKE_CURSOR_LOG: file, FAKE_CURSOR_WORKER: "1" } });
+    const [worker] = workers(file);
+    expect(worker).toBeDefined();
+    // The worker shares the agent's group: that is what the group stop reaches.
+    expect(await pgidOf(worker!)).toBe(session.pid);
+    await session.close();
+    expect(await running(worker!)).toBe(false);
+  });
+
+  it.skipIf(!posix)("stops the worker when the process dies on its own, before waitForExit resolves", async () => {
+    const file = logFile();
+    const session = await start({ env: { FAKE_CURSOR_LOG: file, FAKE_CURSOR_WORKER: "1" } });
+    const [worker] = workers(file);
+    const events = await collect(session.prompt("[[crash]]"));
+    expect(events.at(-1)).toMatchObject({ kind: "error" });
+    await session.waitForExit();
+    expect(await running(worker!)).toBe(false);
+  });
+
+  it.skipIf(!posix)("kills a worker that ignores SIGTERM within the grace period plus a second", async () => {
+    const file = logFile();
+    const session = await start({
+      env: { FAKE_CURSOR_LOG: file, FAKE_CURSOR_WORKER: "1", FAKE_CURSOR_WORKER_IGNORE_TERM: "1" },
+    });
+    const [worker] = workers(file);
+    const startedAt = Date.now();
+    await session.close();
+    expect(Date.now() - startedAt).toBeLessThan(KILL_GRACE_MS + 1_000);
+    expect(await running(worker!)).toBe(false);
+  });
+
+  it.skipIf(!posix)("kills the group of a leader that ignores SIGTERM, worker included", async () => {
+    const file = logFile();
+    const session = await start({
+      env: { FAKE_CURSOR_LOG: file, FAKE_CURSOR_WORKER: "1", FAKE_CURSOR_IGNORE_TERM: "1", FAKE_CURSOR_WORKER_IGNORE_TERM: "1" },
+    });
+    const [worker] = workers(file);
+    await session.close();
+    expect(await running(worker!)).toBe(false);
+    expect(await running(session.pid!)).toBe(false);
+  });
+
+  it.skipIf(!posix)("stops the worker of an open that failed after the session was created", async () => {
+    const file = logFile();
+    const seen: number[] = [];
+    await expect(
+      AcpSession.open(
+        options({
+          // The agent has no such mode: the open fails after `session/new`, when the worker already runs.
+          requiredModeId: "no-such-mode",
+          onProcessStart: (pid) => seen.push(pid),
+          env: { FAKE_CURSOR_LOG: file, FAKE_CURSOR_WORKER: "1" },
+        }),
+      ),
+    ).rejects.toBeInstanceOf(CliError);
+    const [worker] = workers(file);
+    expect(worker).toBeDefined();
+    expect(await running(worker!)).toBe(false);
+  });
+
+  it.skipIf(!posix)("lets a second process of the same home finish its turn after the first one's group was stopped", async () => {
+    // Cursor's worker is shared by the processes of one home; stopping the first group may take it away,
+    // and the second process respawns it on its next request. The fake has no such sharing; this
+    // pins that closing one session leaves the other's turn alone.
+    const first = await start({ env: { FAKE_CURSOR_WORKER: "1" } });
+    const second = await start({ env: { FAKE_CURSOR_WORKER: "1" } });
+    await first.close();
+    const events = await collect(second.prompt("say:still here"));
+    expect(events.at(-1)).toMatchObject({ kind: "result", text: "still here" });
   });
 });

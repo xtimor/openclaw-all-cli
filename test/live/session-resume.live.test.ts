@@ -7,7 +7,7 @@ import { homeDirFor } from "../../src/core/home.ts";
 import { createExecute } from "../../src/core/execute.ts";
 import type { CliAdapter, CliSession, NormalizedEvent, OpenParams } from "../../src/core/ports.ts";
 import type { ExecuteContext } from "../../src/core/sdk-types.ts";
-import { ISOLATED_STATE_DIR, LIVE_TIMEOUT_MS, describeLive, liveHostEnv, makeLiveSession, openclaw, replyLines } from "./harness.ts";
+import { ISOLATED_STATE_DIR, LIVE_TIMEOUT_MS, describeLive, liveHostEnv, makeLiveSession, openclaw, replyLines, waitFor } from "./harness.ts";
 
 // Parity rows P4 (warm process), P5 (resume), and P18 (side questions). Real cursor-agent through
 // `createExecute`, the way the host drives it: one execute per run, a live-session handle per
@@ -167,6 +167,10 @@ describeLive("session resume, live-process reuse, and side questions (P4, P5, P1
       const execute = createExecute(adapter, { home });
       const chat = await turn(execute, { prompt: FACT });
       expect(chat.sessionId).toBeTruthy();
+      // The agent chat's directory and whatever else the home holds now: the side question may add nothing that stays.
+      const sessionsDir = join(home.dir, "acp-sessions");
+      const before = readdirSync(sessionsDir).sort();
+      expect(before).toContain(chat.sessionId);
 
       const side = await turn(execute, {
         executionMode: "side-question",
@@ -182,6 +186,12 @@ describeLive("session resume, live-process reuse, and side questions (P4, P5, P1
       expect(open.mcpServers).toBeUndefined();
       expect(open.resumeSessionId).toBeUndefined();
       expect(existsSync(join(workspace, "side-effect.txt"))).toBe(false);
+      // Throwaway chat: once its process has exited, its directory is gone; the agent chat's stays (D22/O2).
+      const sideSession = seen.sessions.at(-1)!;
+      await sideSession.waitForExit();
+      expect(sideSession.sessionId).not.toBe(chat.sessionId);
+      expect(await waitFor(() => readdirSync(sessionsDir).sort().join() === before.join(), 30_000)).toBe(true);
+      expect(existsSync(join(sessionsDir, chat.sessionId!))).toBe(true);
     },
     LIVE_TIMEOUT_MS * 2,
   );

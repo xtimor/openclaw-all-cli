@@ -308,3 +308,198 @@ describe("review hardening", () => {
     expect(readdirSync(join(home, "pids")).filter((name) => name.endsWith(".tmp"))).toEqual([]);
   });
 });
+
+describe("process groups (D22)", () => {
+  const posix = process.platform !== "win32";
+  const spawned: number[] = [];
+  afterEach(() => {
+    for (const pid of spawned.splice(0)) {
+      for (const target of [-pid, pid]) {
+        try {
+          process.kill(target, "SIGKILL");
+        } catch {
+          // Already gone.
+        }
+      }
+    }
+  });
+
+  /**
+   * A leader of its own group that starts a worker in that group (like `cursor-agent` and its
+   * `worker-server`). It prints the worker's pid. `leaderExits`: the leader is gone, the worker stays.
+   */
+  async function startGroup(
+    options: { ignoreTerm?: boolean; workerIgnoreTerm?: boolean; leaderExits?: boolean; detached?: boolean } = {},
+  ): Promise<{ leader: ChildProcess & { pid: number }; worker: number }> {
+    const workerCode = `${options.workerIgnoreTerm ? 'process.on("SIGTERM", () => {});' : ""} setTimeout(() => {}, 60000);`;
+    const script = `
+      const { spawn } = require("node:child_process");
+      ${options.ignoreTerm ? 'process.on("SIGTERM", () => {});' : ""}
+      const worker = spawn(process.execPath, ["-e", ${JSON.stringify(workerCode)}], { stdio: "ignore" });
+      worker.unref();
+      process.stdout.write(worker.pid + "\\n", () => { ${options.leaderExits ? "process.exit(0);" : "setTimeout(() => {}, 60000);"} });
+    `;
+    const leader = spawn(process.execPath, ["-e", script], {
+      detached: options.detached ?? true,
+      stdio: ["ignore", "pipe", "ignore"],
+    }) as ChildProcess & { pid: number };
+    spawned.push(leader.pid);
+    const worker = await new Promise<number>((resolve) => {
+      let text = "";
+      leader.stdout!.on("data", (chunk: Buffer) => {
+        text += chunk.toString();
+        if (text.includes("\n")) resolve(Number(text.trim()));
+      });
+    });
+    spawned.push(worker);
+    return { leader, worker };
+  }
+
+  /** A lock of a dead owner; `group` is written unless `"absent"` (an old lock). */
+  const groupLock = async (child: { pid: number }, group: boolean | "absent" = true) => ({
+    ...(await lockFor(child, await deadOwner())),
+    ...(group === "absent" ? {} : { group }),
+  });
+
+  it("reads the process group of a process", async () => {
+    const { leader, worker } = await startGroup();
+    const own = await inspectProcess(leader.pid);
+    const member = await inspectProcess(worker);
+    expect(own).toMatchObject({ kind: "alive", pgid: leader.pid });
+    expect(member).toMatchObject({ kind: "alive", pgid: leader.pid });
+  });
+
+  it("records `group: true` only for a group leader", async () => {
+    const home = newHome();
+    const child = await startAgent();
+    const lock = await recordProcess(home, child.pid, () => {}, { group: true });
+    expect((JSON.parse(readFileSync(lockFile(home, child.pid), "utf8")) as PidLockRecord).group).toBe(true);
+    await lock?.release();
+    await recordProcess(home, child.pid, () => {});
+    expect(JSON.parse(readFileSync(lockFile(home, child.pid), "utf8"))).not.toHaveProperty("group");
+  });
+
+  it("treats a lock whose group field is not a boolean as corrupt", async () => {
+    const home = newHome();
+    const child = await startAgent();
+    const file = write(home, { ...(await groupLock(child)), group: "yes" as unknown as boolean });
+    await reapStale(home, () => {});
+    expect(await isAlive(child.pid)).toBe(true);
+    expect(existsSync(file)).toBe(false);
+  });
+
+  it.skipIf(!posix)("stops a recorded leader's whole group: leader and worker, then the lock", async () => {
+    const home = newHome();
+    const { leader, worker } = await startGroup();
+    const file = write(home, await groupLock(leader));
+    const warnings: string[] = [];
+    await reapStale(home, (m) => warnings.push(m));
+    expect(await isAlive(leader.pid)).toBe(false);
+    expect(await isAlive(worker)).toBe(false);
+    expect(existsSync(file)).toBe(false);
+    expect(warnings.some((m) => m.startsWith("Stopped") && m.includes(String(leader.pid)))).toBe(true);
+  });
+
+  it.skipIf(!posix)("kills the group of a leader that ignores SIGTERM", async () => {
+    const home = newHome();
+    const { leader, worker } = await startGroup({ ignoreTerm: true, workerIgnoreTerm: true });
+    const file = write(home, await groupLock(leader));
+    await reapStale(home, () => {});
+    expect(await isAlive(leader.pid)).toBe(false);
+    expect(await isAlive(worker)).toBe(false);
+    expect(existsSync(file)).toBe(false);
+  }, 20_000);
+
+  it.skipIf(!posix)("sends no SIGKILL once the leader is gone: a member that ignores SIGTERM stays, and the lock is spent", async () => {
+    const home = newHome();
+    const { leader, worker } = await startGroup({ workerIgnoreTerm: true });
+    const file = write(home, await groupLock(leader));
+    const warnings: string[] = [];
+    await reapStale(home, (m) => warnings.push(m));
+    // The leader died on SIGTERM. Nothing proves the rest of the group is ours any more.
+    expect(await isAlive(leader.pid)).toBe(false);
+    expect(await isAlive(worker)).toBe(true);
+    expect(existsSync(file)).toBe(false);
+    expect(warnings.some((m) => m.includes("still running"))).toBe(true);
+  }, 20_000);
+
+  it.skipIf(!posix)("signals no group when the recorded leader is gone: the lock goes, the stray member stays", async () => {
+    const home = newHome();
+    const { leader, worker } = await startGroup({ leaderExits: true });
+    await new Promise((resolve) => leader.once("exit", resolve));
+    // The leader's pid is dead and its group still has a member: no proof the member is ours.
+    const file = write(home, {
+      pid: leader.pid,
+      startTime: "Mon Jan  1 00:00:00 2001",
+      ownerPid: (await deadOwner()).pid,
+      ownerStartTime: "y",
+      group: true,
+    });
+    await reapStale(home, () => {});
+    expect(await isAlive(worker)).toBe(true);
+    expect(existsSync(file)).toBe(false);
+  });
+
+  it.skipIf(!posix)("signals no group when the pid was reused: the start time differs", async () => {
+    const home = newHome();
+    const { leader, worker } = await startGroup();
+    const record = await groupLock(leader);
+    const file = write(home, { ...record, startTime: "Mon Jan  1 00:00:00 2001" });
+    await reapStale(home, () => {});
+    expect(await isAlive(leader.pid)).toBe(true);
+    expect(await isAlive(worker)).toBe(true);
+    expect(existsSync(file)).toBe(false);
+  });
+
+  it.skipIf(!posix)("stops only the process when it does not lead its group, though the lock says group", async () => {
+    const home = newHome();
+    // Not detached: the child is in the test's own group, so `pgid != pid`.
+    const { leader, worker } = await startGroup({ detached: false });
+    const file = write(home, await groupLock(leader));
+    await reapStale(home, () => {});
+    expect(await isAlive(leader.pid)).toBe(false);
+    expect(await isAlive(worker)).toBe(true);
+    expect(existsSync(file)).toBe(false);
+  });
+
+  it.skipIf(!posix)("stops only the process for an old lock without a group field", async () => {
+    const home = newHome();
+    const { leader, worker } = await startGroup();
+    const file = write(home, await groupLock(leader, "absent"));
+    await reapStale(home, () => {});
+    expect(await isAlive(leader.pid)).toBe(false);
+    // As before the group handling: the worker is not part of the lock.
+    expect(await isAlive(worker)).toBe(true);
+    expect(existsSync(file)).toBe(false);
+  });
+
+  it.skipIf(!posix)("leaves a group alone while its owner is alive", async () => {
+    const home = newHome();
+    const { leader, worker } = await startGroup();
+    const own = await inspectProcess(process.pid);
+    if (own.kind !== "alive") throw new Error("the test process is not alive");
+    const file = write(home, { ...(await lockFor(leader, { pid: process.pid, startTime: own.startTime })), group: true });
+    await reapStale(home, () => {});
+    expect(await isAlive(leader.pid)).toBe(true);
+    expect(await isAlive(worker)).toBe(true);
+    expect(existsSync(file)).toBe(true);
+  });
+
+  it.skipIf(!posix)("keeps the lock when the group cannot be signalled", async () => {
+    const home = newHome();
+    const { leader } = await startGroup();
+    const file = write(home, await groupLock(leader));
+    const kill = vi.spyOn(process, "kill").mockImplementation(() => {
+      throw Object.assign(new Error("not permitted"), { code: "EPERM" });
+    });
+    const warnings: string[] = [];
+    try {
+      await reapStale(home, (m) => warnings.push(m));
+    } finally {
+      kill.mockRestore();
+    }
+    expect(await isAlive(leader.pid)).toBe(true);
+    expect(existsSync(file)).toBe(true);
+    expect(warnings.some((m) => m.startsWith("Could not stop"))).toBe(true);
+  });
+});

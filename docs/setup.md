@@ -148,7 +148,17 @@ openclaw gateway run                                                  # stays in
 
 Wait for the log line `[gateway] ready` (the log has color codes, so `grep -a ready gateway.log` finds it where `grep 'gateway\] ready'` may not; `NO_COLOR=1` turns the colors off). Stop it with Ctrl-C or SIGTERM. A loopback Gateway needs no auth setup for local commands. Start it from a shell where `cursor-agent` is on `PATH` (or `cursor-cli.command` is set), and with `NODE_USE_ENV_PROXY=1` behind a proxy. To keep it running, background it (`nohup openclaw gateway run > gateway.log 2>&1 &`; `$!` is the wrapper's pid, so find the Gateway with `ps -eo pid,comm,args | grep '[o]penclaw-gateway'`; Linux truncates the process name to 15 characters, so `pgrep -x openclaw-gateway` finds nothing) or use your own process manager. Stop it by pid: `kill -TERM <pid>`.
 
-**After stopping, check for leftovers.** Cursor's `worker-server` process, and its `typescript-language-server` / `tsserver` children, can outlive the Gateway for a few minutes (the plugin does not track them). List them with `ps -eo pid,comm,args | grep -E '[c]ursor|[t]sserver|[t]ypescript-language'` and stop each by pid with `kill <pid>`. Do not use `pkill -f`: it matches your own shell's command line.
+**After stopping, check for leftovers.** A stop with SIGTERM or SIGINT (Ctrl-C) closes every `cursor-agent` the plugin started together with its whole process group, so Cursor's `worker-server` and its `typescript-language-server` / `tsserver` children go with it, and the agent home's `pids/` folder is empty. What can still remain, and for how long:
+
+- After a SIGKILL of the Gateway (or a crash), the processes stay until the next Gateway start, which stops them within 30 seconds.
+- A `cursor-agent` group whose leader died while no Gateway ran is not stopped by the next start (nothing proves it is the plugin's); its `worker-server` exits by itself about 5 minutes after its last request.
+- On Windows the plugin stops only the `cursor-agent` process, so its `worker-server` can stay for about 5 minutes.
+- Children Cursor puts in a process group of their own are not covered (Cursor's native shell does; the plugin's static home denies it).
+- A `worker-server` shared by two plugin processes (same agent and workspace, or Cursor's `/tmp/.cursor` fallback for long paths, where your own `cursor-agent` may share it) dies with the process that started it; the other one starts a new worker on its next request.
+- A new chat Cursor refuses after it was created (an unknown model, a missing mode) keeps its small folder under `acp-sessions/`.
+- A model listing for which OpenClaw gives no agent directory is not recorded; a Gateway killed in its few seconds can leave that process behind.
+
+To look: `ps -eo pid,pgid,comm,args | grep -E '[c]ursor|[w]orker-server|[t]sserver|[t]ypescript-language'`, and stop each leftover by pid with `kill <pid>`. Do not use `pkill -f`: it matches your own shell's command line.
 
 **You already run a Gateway** (for example `~/.openclaw`): restart it once, so it loads the plugin you just installed and the default model above (set the default only if you want `cursor-cli` as your default model; otherwise the plugin loads on the first `cursor-cli/...` turn and `/model` lists the Cursor rows after it). Its environment must provide `cursor-agent` on `PATH`; with option 2 above the key is in the config, so the Gateway needs no key variable.
 

@@ -2,6 +2,7 @@ import { nativeAuthMarkerFor, backendIdFor } from "./backend.ts";
 import { defaultCatalogRow, type CatalogRow, type ModelCatalog } from "./catalog.ts";
 import { readBackendConfig } from "./config.ts";
 import { withoutKeys } from "./env.ts";
+import { homeDirFor } from "./home.ts";
 import { deriveFlags } from "./manifest.ts";
 import type { CliAdapter } from "./ports.ts";
 
@@ -21,6 +22,8 @@ type CatalogContext = {
   config?: DiscoveryContext["config"];
   env?: Record<string, string | undefined>;
   signal?: AbortSignal;
+  /** The main agent's directory: the listing's process is recorded in its home. Absent: the listing is not recorded. */
+  agentDir?: string;
   /** Providers the host asks about; absent means all. */
   providerIds?: readonly string[];
 };
@@ -89,7 +92,12 @@ export function createSyntheticAuthProvider(adapter: CliAdapter, catalog?: Model
               const input: Array<"text" | "image"> = flags.images ? ["text", "image"] : ["text"];
               const rows =
                 status === "available"
-                  ? await catalog.list({ command, env, ...(context.signal ? { signal: context.signal } : {}) })
+                  ? await catalog.list({
+                      command,
+                      env,
+                      ...(context.signal ? { signal: context.signal } : {}),
+                      ...(context.agentDir?.trim() ? { lockDir: homeDirFor(context.agentDir, backendId) } : {}),
+                    })
                   : [defaultCatalogRow(adapter)];
               return {
                 provider: { baseUrl: CLI_BASE_URL, api: CLI_PLACEHOLDER_API, models: rows.map((row) => toModelDefinition(row, input)) },

@@ -249,11 +249,19 @@ export type OpenParams = {
   onPermissionRequest: (request: PermissionRequest) => Promise<PermissionDecision>;
   /**
    * Called once with the process ID as soon as the process exists, before any handshake, so the
-   * core can record it (AD-14). Not called when the process could not be started.
+   * core can record it (AD-14). Not called when the process could not be started. `info` says how
+   * the process is stopped; an adapter that does not pass it leaves the core with the pid alone.
    */
-  onProcessStart?: (pid: number) => void;
+  onProcessStart?: (pid: number, info?: ProcessStartInfo) => void;
   signal?: AbortSignal;
 };
+
+/**
+ * What a transport tells the core about a process it started. `processGroup`: the process leads
+ * its own process group (POSIX), and the transport stops the whole group wherever it stops the
+ * process, so children the CLI starts (a worker, language servers) go with it.
+ */
+export type ProcessStartInfo = { processGroup: boolean };
 
 /** One image for a prompt (parity row P13): its type from the file's first bytes, and its bytes in base64. Never logged. */
 export type PromptImage = { mimeType: string; data: string };
@@ -308,6 +316,8 @@ export type ListModelsParams = {
   env: Record<string, string>;
   /** Longest the listing may take. */
   timeoutMs?: number;
+  /** As `OpenParams.onProcessStart`: lets the core record the listing's process (AD-14). */
+  onProcessStart?: (pid: number, info?: ProcessStartInfo) => void;
   signal?: AbortSignal;
 };
 
@@ -385,6 +395,8 @@ export interface CliAdapter {
   /**
    * Lists the account's models from the CLI itself, without spending tokens or running a turn.
    * `name` is unique and stable; `open` accepts it as `OpenParams.modelId`. Throws `CliError` only.
+   * It settles only after the process it started has exited (the core releases the process's lock
+   * then), also when `signal` aborts.
    */
   listModels(params: ListModelsParams): Promise<readonly CliModel[]>;
   /**
@@ -395,9 +407,10 @@ export interface CliAdapter {
    */
   readUsage?(query: UsageQuery): Promise<UsageReport>;
   /**
-   * Optional. Removes what the CLI stored for a throwaway native session that was created and then
-   * refused (a capability mismatch the transport could not see earlier). The core calls it only
-   * for a session it opened as a new chat, never for a resumed one. Failures are ignored.
+   * Optional. Removes what the CLI stored for a throwaway native session: one that was created and
+   * then refused (a capability mismatch the transport could not see earlier), and a side
+   * question's, once its process has exited. The core calls it only for a session it opened as a
+   * new chat, never for a resumed one. Failures are ignored.
    */
   discardSession?(params: { env: Record<string, string>; sessionId: string }): Promise<void>;
 }

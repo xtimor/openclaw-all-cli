@@ -44,6 +44,48 @@ describeLive("operations: caps, version floor, orphans, unload, timers (P17, P19
       .split("\n")
       .filter((line) => line.includes(needle) && !line.includes("ps -eo"));
 
+  /** Every process: pid, process group, and command line. Zombies are not processes. */
+  const psRows = (): Array<{ pid: number; pgid: number; args: string }> =>
+    (spawnSync("ps", ["-eo", "pid=,pgid=,args="], { encoding: "utf8" }).stdout ?? "")
+      .split("\n")
+      .flatMap((line) => {
+        const match = /^\s*(\d+)\s+(\d+)\s+(.*)$/.exec(line);
+        return match && !match[3]!.includes("<defunct>") ? [{ pid: Number(match[1]), pgid: Number(match[2]), args: match[3]! }] : [];
+      });
+  const groupRows = (pgids: number[]) => psRows().filter((row) => pgids.includes(row.pgid));
+  const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+  /** Cursor's per-workspace folder under its data dir: its slug is the workspace path with runs of non-alphanumerics as `-`. */
+  const projectSlug = (workspace: string) => workspace.replace(/[^A-Za-z0-9]+/g, "-").replace(/^-+|-+$/g, "");
+
+  /**
+   * One real turn in `agent`, with Cursor's `worker-server` forced to start (it exits at once when its
+   * folder under the data dir is missing, so the folder is created first). Polls during the turn for the
+   * worker and returns it with the leaders (lock pids) whose group it joined. The processes stay up
+   * after the turn, as the callers' own checks show.
+   */
+  async function turnWithWorker(gateway: TestGateway | undefined, agent: string, session: string) {
+    mkdirSync(join(homeOf(agent), "data", "projects", projectSlug(join(root, `workspace-${agent}`))), { recursive: true });
+    const workers = new Set<number>();
+    const leaders = new Set<number>();
+    let done = false;
+    const poll = (async () => {
+      while (!done) {
+        const locks = lockPids(agent);
+        for (const row of psRows()) {
+          if (row.args.includes("worker-server") && locks.includes(row.pgid)) {
+            workers.add(row.pid);
+            leaders.add(row.pgid);
+          }
+        }
+        await sleep(200);
+      }
+    })();
+    const result = await ask(gateway, agent, session, "Reply with the single word ok.");
+    done = true;
+    await poll;
+    return { result, workers: [...workers], leaders: [...leaders] };
+  }
+
   const useCommand = (command: string | undefined) => {
     const result = command ? openclaw(["config", "set", CONFIG_COMMAND, command]) : openclaw(["config", "unset", CONFIG_COMMAND]);
     expect(result.status === 0 || command === undefined).toBe(true);
@@ -146,14 +188,18 @@ describeLive("operations: caps, version floor, orphans, unload, timers (P17, P19
     await gateway.stop();
   }, 400_000);
 
-  it("kills the orphans a SIGKILLed Gateway left, within 30 s of the restart and with no new turn (real Cursor)", async () => {
+  it("kills the orphans a SIGKILLed Gateway left, worker included, within 30 s of the restart and with no new turn (real Cursor)", async () => {
     useCommand(undefined);
     const agent = AGENTS[1]!;
     const first = await newGateway();
-    const result = await ask(first, agent, `live-ops-orphan-${stamp}`, "Reply with the single word ok.");
+    const { result, workers, leaders } = await turnWithWorker(first, agent, `live-ops-orphan-${stamp}`);
     expect(result.status).toBe(0);
     const recorded = lockPids(agent);
     expect(recorded.length).toBeGreaterThan(0);
+    // A worker-server joined the leader's group during the turn, and the lock says so.
+    expect(workers.length).toBeGreaterThan(0);
+    expect(leaders.every((pid) => recorded.includes(pid))).toBe(true);
+    expect(JSON.parse(readFileSync(join(homeOf(agent), "pids", `${leaders[0]}.json`), "utf8"))).toMatchObject({ group: true });
     for (const pid of recorded) expect(await isAlive(pid)).toBe(true);
 
     await first.kill();
@@ -162,21 +208,97 @@ describeLive("operations: caps, version floor, orphans, unload, timers (P17, P19
 
     await newGateway();
     expect(await waitFor(async () => (await allGone(recorded)) && lockPids(agent).length === 0, 30_000)).toBe(true);
+    // The whole group: the worker and its language servers went with the leader.
+    expect(await waitFor(() => groupRows(leaders).length === 0, 30_000)).toBe(true);
   }, 400_000);
 
-  it("has every process exited by the time a Gateway stop completes (real Cursor)", async () => {
-    useCommand(undefined);
-    const agent = AGENTS[0]!;
-    const gateway = await newGateway();
-    const result = await ask(gateway, agent, `live-ops-unload-${stamp}`, "Reply with the single word ok.");
-    expect(result.status).toBe(0);
-    const recorded = lockPids(agent);
-    expect(recorded.length).toBeGreaterThan(0);
-    for (const pid of recorded) expect(await isAlive(pid)).toBe(true);
+  for (const [name, stop] of [
+    ["SIGTERM", (gateway: TestGateway) => gateway.terminate()],
+    ["SIGINT", (gateway: TestGateway) => gateway.interrupt()],
+  ] as const) {
+    it(`has every process, and its whole process group, gone when a Gateway ${name} stop completes (real Cursor)`, async () => {
+      useCommand(undefined);
+      const agent = AGENTS[0]!;
+      const gateway = await newGateway();
+      const { result, workers, leaders } = await turnWithWorker(gateway, agent, `live-ops-unload-${name}-${stamp}`);
+      expect(result.status).toBe(0);
+      const recorded = lockPids(agent);
+      expect(recorded.length).toBeGreaterThan(0);
+      expect(workers.length).toBeGreaterThan(0);
+      for (const pid of recorded) expect(await isAlive(pid)).toBe(true);
 
-    await gateway.terminate();
-    expect(await allGone(recorded)).toBe(true);
-    expect(lockPids(agent)).toEqual([]);
+      await stop(gateway);
+      expect(await allGone(recorded)).toBe(true);
+      expect(groupRows(leaders)).toEqual([]);
+      expect(lockPids(agent)).toEqual([]);
+    }, 400_000);
+  }
+
+  const mainLocks = () => lockPids("main");
+  const refreshModels = (gateway: TestGateway) =>
+    openclawAsync(["gateway", "call", "models.list", "--params", '{"refresh":true}', "--port", String(gateway.port), "--json"], {
+      timeoutMs: 120_000,
+    });
+
+  it("locks the model listing's process in the main agent's home while it runs, and leaves no process or lock (real Cursor)", async () => {
+    useCommand(undefined);
+    const gateway = await newGateway();
+    // The plugin's catalog keeps a listing for a minute and the host passes no refresh flag, so ask
+    // again until a call really starts a listing; the lock shows while its process runs.
+    const before = new Set(mainLocks());
+    let seen: { pid: number; group?: boolean } | undefined;
+    let polling = true;
+    const watcher = (async () => {
+      while (polling && !seen) {
+        for (const pid of mainLocks().filter((candidate) => !before.has(candidate))) {
+          try {
+            seen = { pid, ...(JSON.parse(readFileSync(join(homeOf("main"), "pids", `${pid}.json`), "utf8")) as { group?: boolean }) };
+          } catch {
+            // The lock was just released: try the next poll.
+          }
+        }
+        await sleep(25);
+      }
+    })();
+    const deadline = Date.now() + 200_000;
+    while (!seen && Date.now() < deadline) {
+      const result = await refreshModels(gateway);
+      expect(result.status).toBe(0);
+      if (!seen) await sleep(5_000);
+    }
+    polling = false;
+    await watcher;
+    expect(seen).toBeDefined();
+    expect(seen).toMatchObject({ group: true });
+    const listed = seen!.pid;
+    expect(await waitFor(async () => (await allGone([listed])) && mainLocks().every((pid) => before.has(pid)), 20_000)).toBe(true);
+    expect(groupRows([listed])).toEqual([]);
+  }, 400_000);
+
+  it("stops a hung model listing, and releases its lock, by the time a Gateway SIGTERM completes (fake agent)", async () => {
+    const marker = `listing-${stamp}`;
+    useCommand(fakeShim("fake-listing", marker));
+    // The fake ignores a closed pipe, so when the Gateway dies only the plugin's unload can stop it.
+    const gateway = await newGateway({ FAKE_CURSOR_NO_INIT: "1", FAKE_CURSOR_IGNORE_STDIN_EOF: "1" });
+    try {
+      // The listing never gets an answer to `initialize` and would run for its full 30 s.
+      void refreshModels(gateway).catch(() => {});
+      expect(await waitFor(() => processesWith(`--oac-marker=${marker}`).length > 0 && mainLocks().length > 0, 90_000, 100)).toBe(true);
+      const pids = mainLocks();
+      await gateway.terminate();
+      expect(processesWith(`--oac-marker=${marker}`)).toEqual([]);
+      expect(await allGone(pids)).toBe(true);
+      expect(mainLocks()).toEqual([]);
+    } finally {
+      // A failed run must not leave the stubborn fake behind.
+      for (const line of processesWith(`--oac-marker=${marker}`)) {
+        try {
+          process.kill(Number(line.trim().split(/\s+/)[0]), "SIGKILL");
+        } catch {
+          // Already gone.
+        }
+      }
+    }
   }, 400_000);
 
   it("fails a turn with unsupported_version, and starts no ACP session, below the version floor (real Cursor)", async () => {

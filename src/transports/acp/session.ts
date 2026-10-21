@@ -8,6 +8,7 @@ import {
   type NormalizedEvent,
   type NormalizedUsage,
   type PermissionDecision,
+  type ProcessStartInfo,
   type PromptImage,
   type RequiredCapability,
 } from "../../core/ports.ts";
@@ -84,7 +85,7 @@ export type AcpSessionOptions = {
   /** Native session to resume with `session/load`. */
   resumeSessionId?: string;
   /** Called once with the process ID right after the spawn, before the handshake. */
-  onProcessStart?: (pid: number) => void;
+  onProcessStart?: (pid: number, info: ProcessStartInfo) => void;
   /** Answers a permission request. Throwing counts as `cancelled`. */
   onPermissionRequest: (request: AcpPermissionRequest) => Promise<PermissionDecision>;
   /**
@@ -244,16 +245,17 @@ export class AcpSession implements CliSession {
   }
 
   async close(): Promise<void> {
-    if (this.closed) return this.runtime.exited;
+    if (this.closed) return this.runtime.gone;
     this.closed = true;
     cancelPermissions(this.runtime);
     this.runtime.child.stdin?.end();
     terminate(this.runtime);
-    await this.runtime.exited;
+    await this.runtime.gone;
   }
 
+  /** Resolves when the process is gone: the leader exited and its process group is empty. */
   waitForExit(): Promise<void> {
-    return this.runtime.exited;
+    return this.runtime.gone;
   }
 }
 
@@ -268,7 +270,7 @@ async function failedOpen(runtime: Runtime, options: AcpSessionOptions, error: u
   }
   const diedOnItsOwn = runtime.hasExited;
   terminate(runtime);
-  await runtime.exited;
+  await runtime.gone;
   options.signal?.throwIfAborted();
   if (runtime.spawnError || (diedOnItsOwn && !deliberate)) throw deathError(runtime, options.command);
   throw toCliError(error, "server_error", "The CLI session failed to start");

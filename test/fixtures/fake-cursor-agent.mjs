@@ -30,6 +30,10 @@
 //   FAKE_CURSOR_LOAD_ERROR=<json> `session/load` fails with the JSON-RPC error {code, message, data?}
 //   FAKE_CURSOR_NEW_ERROR=<json> `session/new` fails with the JSON-RPC error {code, message, data?}
 //   FAKE_CURSOR_LOAD_CRASH=1    the process exits while `session/load` runs
+//   FAKE_CURSOR_WORKER=1        `session/new` starts a child process like Cursor's `worker-server`: not detached, so it shares the
+//                               agent's process group and outlives the agent when only the agent is stopped. It is logged as
+//                               `{event:"worker", pid}` in FAKE_CURSOR_LOG. It exits by itself after FAKE_CURSOR_WORKER_LIFETIME_MS (default 120000).
+//   FAKE_CURSOR_WORKER_IGNORE_TERM=1  the worker ignores SIGTERM (only SIGKILL stops it)
 //   FAKE_CURSOR_LOAD_RENAMES=1  `session/load` answers with `sessionId: "<id>-moved"`, the way an agent that moved the chat would
 //
 // Prompt text steers a turn: "[[ask-permission]]" requests a shell permission, "[[ask-json]]<json>"
@@ -50,6 +54,7 @@
 // "[[updates]]<json array>" sends each item as a `session/update` body, in order, a few ms apart, then ends the
 // turn. An item `{"$":"say","text":"..."}` sends a message chunk, `{"$":"crash"}` exits, `{"$":"ask","toolCall":{...}}` sends a permission request and waits for the answer, `{"$":"hang"}` waits for a
 // cancel and answers `cancelled`, `{"$":"end","stopReason":"..."}` answers at once with that stop reason, `{"$":"wait","ms":n}` pauses. Use it to script tool calls the way Cursor sends them.
+import { spawn } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
 import { appendFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
@@ -119,6 +124,19 @@ async function mcpCall(sessionId, call, signal) {
   } catch (error) {
     return signal.aborted ? "mcp-aborted" : `mcp-error:${error.message}`;
   }
+}
+
+// Like Cursor's `worker-server`: started at the first `session/new`, not detached (same process group), and it stays up
+// when the agent goes. Its stdio is closed, so nothing waits for it.
+let worker;
+function startWorker() {
+  if (worker) return;
+  const lifetime = Number(process.env.FAKE_CURSOR_WORKER_LIFETIME_MS ?? 120000);
+  const ignoreTerm = process.env.FAKE_CURSOR_WORKER_IGNORE_TERM === "1";
+  const code = `${ignoreTerm ? 'process.on("SIGTERM", () => {});' : ""} setTimeout(() => {}, ${lifetime});`;
+  worker = spawn(process.execPath, ["-e", code], { stdio: "ignore" });
+  worker.unref();
+  log({ event: "worker", pid: worker.pid });
 }
 
 const send = (message) => process.stdout.write(`${JSON.stringify({ jsonrpc: "2.0", ...message })}\n`);
@@ -361,6 +379,7 @@ rl.on("line", (line) => {
       sessions.set(sessionId, session);
       mcpServers.set(sessionId, params.mcpServers ?? []);
       saveSession(sessionId, session);
+      if (process.env.FAKE_CURSOR_WORKER === "1") startWorker();
       // Like real Cursor: every ACP session leaves a directory in the config dir.
       if (process.env.CURSOR_CONFIG_DIR) mkdirSync(join(process.env.CURSOR_CONFIG_DIR, "acp-sessions", sessionId), { recursive: true });
       return reply(id, { sessionId, modes: modes(), configOptions: configOptions(session), ...modelFields(session) });
