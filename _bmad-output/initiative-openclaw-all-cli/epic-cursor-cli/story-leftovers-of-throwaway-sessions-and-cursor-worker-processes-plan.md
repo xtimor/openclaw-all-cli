@@ -3,14 +3,14 @@ title: 'Leftovers of throwaway sessions and Cursor worker processes'
 type: 'bugfix'
 ticket: 21
 created: '2026-10-20'
-status: 'in-progress'
+status: 'in-review'
 baseline_revision: '17e9ea726f87e4c0009a5799c0762a3f7cd2c35c'
 route: 'full'
 route_source: 'auto'
 risk: 'high'
-review: ''
-review_source: ''
-lenses_ran: []
+review: 'thorough'
+review_source: 'pinned'
+lenses_ran: [blind-hunter, edge-case-hunter, verification-gap, intent-alignment]
 review_loop_iteration: 0
 followup_review_recommended: false
 context:
