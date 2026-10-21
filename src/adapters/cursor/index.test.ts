@@ -1,3 +1,4 @@
+import { inspectProcess } from "../../core/pid-locks.ts";
 import { mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -183,7 +184,7 @@ describe("cursor adapter", () => {
           .map((line) => JSON.parse(line) as { event?: string; pid?: number })
           .find((entry) => entry.event === "worker");
         expect(worker?.pid).toBeGreaterThan(0);
-        expect(() => process.kill(worker!.pid!, 0)).toThrow();
+        expect((await inspectProcess(worker!.pid!)).kind).toBe("gone");
       } finally {
         rmSync(dir, { recursive: true, force: true });
       }

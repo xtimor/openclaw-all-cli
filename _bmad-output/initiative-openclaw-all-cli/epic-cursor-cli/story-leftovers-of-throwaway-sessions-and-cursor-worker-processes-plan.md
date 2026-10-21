@@ -108,6 +108,36 @@ deferred: []
 
 ## Review Triage Log
 
+### 2026-10-21 — Review pass (thorough, 4 lenses)
+- verdicts: 26 findings — high 0, medium 5, low 21, false 0, maybe-false 0
+- findings:
+  - `[medium]` `patch` signalGroup comment overstates safety / may signal a group after pid reuse (blind, edge x2) — comment corrected to state the residual race (window until `gone`, one poll or the grace)
+  - `[low]` `reject` drainGroup has no own deadline (blind) — refuted: ESRCH/EPERM make groupHasMembers false so the loop ends; only a pid-reuse race could keep it alive, bounded by forceKill
+  - `[medium]` `patch` hang-up (SIGHUP) now leaves detached groups running, undocumented (blind) — added to the remainder list in both docs
+  - `[low]` `reject` closeListings aborts every listing process-wide, including a new instance's (blind, edge) — a reload overlap only costs one catalog read (falls back to the default row); owner ids would add surface for a rare overlap
+  - `[low]` `reject` no shutting-down gate for listings (blind, edge) — a late listing has a pid lock, so the next start's reaper stops it; a gate adds state for a stopping Gateway
+  - `[low]` `patch` fixed 150 ms answer window, late reply not waited (blind, edge) — documented as a remainder (design bound, no code change)
+  - `[medium]` `patch` docs say 30 s reap holds for all agents (blind) — both docs limited to configured agents; others at first use
+  - `[medium]` `patch` kill(pid,0) in the listing test sees zombies (blind, gap other, edge) — uses inspectProcess kind gone
+  - `[low]` `reject` shared-worker test only shows an unrelated session survives (blind) — the sharing itself was probed live in planning (second process kept working); the test name states what it pins
+  - `[low]` `patch` live tests create projects/<slug> by hand (blind) — docs say when a worker-server exists in a real install
+  - `[low]` `patch` aborted listing leaves its acp-sessions dir and rethrows a non-CliError (blind) — directory case added to the remainder list; the catalog catches any error
+  - `[low]` `reject` reused leader pid wastes 2 s and logs a false warning in the reaper (blind) — reapGroup is entered only with the leader alive, start time equal and pgid == pid; reuse mid-wait is not realistic
+  - `[medium]` `patch` no test for a crash with a SIGTERM-ignoring worker (blind) — test added
+  - `[low]` `patch` agentDir checked trimmed, used untrimmed (blind, edge) — trimmed value used
+  - `[low]` `reject` zombie group members delay each close up to the grace (edge, gap other) — bounded by the 2 s grace, then SIGKILL; documented as a remainder
+  - `[low]` `reject` SIGKILL timer could hit a reused pid group (edge) — same race as row 1; the timer is cleared as soon as the group is empty
+  - `[low]` `patch` leader that left its group: no signal, no SIGKILL, close waits (edge) — SIGTERM and armed SIGKILL fall back to the leader alone
+  - `[low]` `patch` groupHasMembers false on EPERM, pid-locks true (edge) — aligned to true
+  - `[low]` `patch` onProcessStart warning outside try/finally (edge) — moved inside the try
+  - `[low]` `reject` onProcessStart called more than once overwrites the lock (edge) — one listing spawns one process; no second spawn exists
+  - `[low]` `patch` host terminating a listing worker thread leaves process and lock (edge) — documented; the next start reaps it
+  - `[low]` `patch` claim comment on signalGroup (edge) — same as row 1
+  - `[low]` `patch` side-question dir stays after Gateway kill/crash/discard failure/3 s wait (intent-alignment) — added to the remainder list
+  - `[low]` `reject` composite scenario (side question, listing, Gateway stop) never run as one (intent-alignment) — reading A2 (separate checks) is defensible; each clause has an offline and a live check
+  - `[low]` `patch` lock released at SIGKILL sent, not at exit (intent-alignment) — added to the remainder list
+  - `[low]` `reject` Ctrl-C no longer reaches cursor-agent; shared worker may die (intent-alignment) — already documented (remainder 3, process-group paragraph); chosen approach per plan
+
 ## Design Notes
 
 **Probe evidence** (cursor-agent 2026.10.19-6bbf2c4, this host, 2026-10-20; scripts kept in the planning scratchpad, not committed).

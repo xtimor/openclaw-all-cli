@@ -150,12 +150,15 @@ Wait for the log line `[gateway] ready` (the log has color codes, so `grep -a re
 
 **After stopping, check for leftovers.** A stop with SIGTERM or SIGINT (Ctrl-C) closes every `cursor-agent` the plugin started together with its whole process group, so Cursor's `worker-server` and its `typescript-language-server` / `tsserver` children go with it, and the agent home's `pids/` folder is empty. What can still remain, and for how long:
 
-- After a SIGKILL of the Gateway (or a crash), the processes stay until the next Gateway start, which stops them within 30 seconds.
+- After a SIGKILL of the Gateway (or a crash), the processes stay until the next Gateway start, which stops them within 30 seconds for the agents the config names; any other agent's home is cleaned at its first use.
+- A Gateway ended by a signal that skips its stop (for example SIGHUP) leaves the groups until the next start. Groups are detached, so a closed terminal no longer reaches `cursor-agent`.
 - A `cursor-agent` group whose leader died while no Gateway ran is not stopped by the next start (nothing proves it is the plugin's); its `worker-server` exits by itself about 5 minutes after its last request.
 - On Windows the plugin stops only the `cursor-agent` process, so its `worker-server` can stay for about 5 minutes.
 - Children Cursor puts in a process group of their own are not covered (Cursor's native shell does; the plugin's static home denies it).
 - A `worker-server` shared by two plugin processes (same agent and workspace, or Cursor's `/tmp/.cursor` fallback for long paths, where your own `cursor-agent` may share it) dies with the process that started it; the other one starts a new worker on its next request.
-- A new chat Cursor refuses after it was created (an unknown model, a missing mode) keeps its small folder under `acp-sessions/`.
+- A new chat Cursor refuses after it was created (an unknown model, a missing mode) keeps its small folder under `acp-sessions/`. So does a side question running when the Gateway is killed or crashes (also when its cleanup fails or the 3 s unload wait ends first), and a model listing aborted after `session/new`.
+- A model listing in another host thread that answers the unload later than 150 ms, or whose thread the host ends, is not stopped until the next start's cleanup.
+- The lock is released when the SIGKILL has been sent, not when the members have exited. Under a PID 1 that never reaps (a container without an init), zombie group members delay each close by up to 2 seconds.
 - A model listing for which OpenClaw gives no agent directory is not recorded; a Gateway killed in its few seconds can leave that process behind.
 
 To look: `ps -eo pid,pgid,comm,args | grep -E '[c]ursor|[w]orker-server|[t]sserver|[t]ypescript-language'`, and stop each leftover by pid with `kill <pid>`. Do not use `pkill -f`: it matches your own shell's command line.

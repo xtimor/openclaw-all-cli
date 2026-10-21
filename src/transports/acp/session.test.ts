@@ -1067,6 +1067,20 @@ describe("AcpSession process group (D22, AD-14)", () => {
     expect(await running(worker!)).toBe(false);
   });
 
+  it.skipIf(!posix)("kills a worker that ignores SIGTERM after the leader crashed on its own, within the grace plus a second", async () => {
+    const file = logFile();
+    const session = await start({
+      env: { FAKE_CURSOR_LOG: file, FAKE_CURSOR_WORKER: "1", FAKE_CURSOR_WORKER_IGNORE_TERM: "1" },
+    });
+    const [worker] = workers(file);
+    const startedAt = Date.now();
+    const events = await collect(session.prompt("[[crash]]"));
+    expect(events.at(-1)).toMatchObject({ kind: "error" });
+    await session.waitForExit();
+    expect(Date.now() - startedAt).toBeLessThan(KILL_GRACE_MS + 1_000);
+    expect(await running(worker!)).toBe(false);
+  });
+
   it.skipIf(!posix)("kills a worker that ignores SIGTERM within the grace period plus a second", async () => {
     const file = logFile();
     const session = await start({

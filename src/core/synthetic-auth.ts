@@ -96,7 +96,7 @@ export function createSyntheticAuthProvider(adapter: CliAdapter, catalog?: Model
                       command,
                       env,
                       ...(context.signal ? { signal: context.signal } : {}),
-                      ...(context.agentDir?.trim() ? { lockDir: homeDirFor(context.agentDir, backendId) } : {}),
+                      ...(context.agentDir?.trim() ? { lockDir: homeDirFor(context.agentDir.trim(), backendId) } : {}),
                     })
                   : [defaultCatalogRow(adapter)];
               return {

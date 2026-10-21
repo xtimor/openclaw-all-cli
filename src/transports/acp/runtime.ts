@@ -97,7 +97,9 @@ export function deathError(runtime: Runtime, command: string, retryable = true):
 
 /**
  * Signals the leader's whole group. A group nobody is in (ESRCH) is not an error. True when the
- * signal went out. The pgid is the pid of a leader this process spawned, so it can name no other group.
+ * signal went out. The pgid is the pid of a leader this process spawned. Residual race: once the
+ * leader is reaped and the group is empty, the pid may be reused; the window lasts until `gone`
+ * resolves, at most one poll or the kill grace.
  */
 function signalGroup(runtime: Runtime, name: NodeJS.Signals): boolean {
   const pid = runtime.child.pid;
@@ -117,8 +119,9 @@ function groupHasMembers(runtime: Runtime): boolean {
   try {
     process.kill(-pid, 0);
     return true;
-  } catch {
-    return false;
+  } catch (error) {
+    // EPERM: members exist that this process cannot signal.
+    return (error as NodeJS.ErrnoException).code === "EPERM";
   }
 }
 
@@ -139,8 +142,19 @@ export function terminate(runtime: Runtime): void {
     return;
   }
   runtime.stopping = true;
-  // Nobody left (the leader exited and took everyone along): nothing to signal or wait for.
-  if (!signalGroup(runtime, "SIGTERM")) return;
+  if (!signalGroup(runtime, "SIGTERM")) {
+    // Nobody left (the leader exited and took everyone along): nothing to signal or wait for.
+    if (runtime.hasExited) return;
+    // The leader is alive but left its group: stop it alone, as without a group.
+    runtime.child.kill("SIGTERM");
+    const alone = setTimeout(() => {
+      runtime.forceKilled = true;
+      runtime.child.kill("SIGKILL");
+    }, KILL_GRACE_MS);
+    alone.unref();
+    void runtime.gone.then(() => clearTimeout(alone));
+    return;
+  }
   const forceKill = setTimeout(() => {
     runtime.forceKilled = true;
     if (groupHasMembers(runtime)) signalGroup(runtime, "SIGKILL");

@@ -104,11 +104,11 @@ export function createModelCatalog(adapter: CliAdapter, options: ModelCatalogOpt
     };
     const untrack = trackListing(listing);
     let lock: Promise<ProcessLock | undefined> | undefined;
-    if (!params.lockDir && !warnedUnlocked) {
-      warnedUnlocked = true;
-      warn(`A ${adapter.displayName} model listing ran without an agent directory, so its process is not recorded for cleanup after a crash.`);
-    }
     try {
+      if (!params.lockDir && !warnedUnlocked) {
+        warnedUnlocked = true;
+        warn(`A ${adapter.displayName} model listing ran without an agent directory, so its process is not recorded for cleanup after a crash.`);
+      }
       const env = Object.fromEntries(Object.entries(params.env).filter((entry): entry is [string, string] => entry[1] !== undefined));
       const lockDir = params.lockDir;
       const models = await adapter.listModels({
