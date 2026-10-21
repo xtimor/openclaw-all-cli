@@ -42,7 +42,20 @@ export type CursorUsageOptions = {
   skewMs?: number;
   /** A cached token is replaced this long before its expiry. */
   tokenMarginMs?: number;
+  /** Time source; tests inject a virtual one. Defaults to `systemClock`. */
+  clock?: UsageClock;
+  /** Ledger transport; tests inject an in-memory one. Defaults to the global `fetch`, looked up per call. */
+  fetch?: UsageFetch;
 };
+
+/** Every real-time use of the reader: the clock, the pause between polls, and the request timeout. */
+export type UsageClock = {
+  now(): number;
+  sleep(ms: number, signal?: AbortSignal): Promise<void>;
+  timeout(ms: number): AbortSignal;
+};
+
+export type UsageFetch = (url: string, init: RequestInit) => Promise<Response>;
 
 type LedgerEvent = {
   conversationId?: unknown;
@@ -139,6 +152,12 @@ function sleep(ms: number, signal?: AbortSignal): Promise<void> {
   });
 }
 
+export const systemClock: UsageClock = {
+  now: () => Date.now(),
+  sleep,
+  timeout: (ms) => AbortSignal.timeout(ms),
+};
+
 export function createCursorUsageReader(options: CursorUsageOptions = {}) {
   const firstPollMs = options.firstPollMs ?? 1000;
   const pollIntervalMs = options.pollIntervalMs ?? 1000;
@@ -149,6 +168,8 @@ export function createCursorUsageReader(options: CursorUsageOptions = {}) {
   const pageSize = options.pageSize ?? 50;
   const skewMs = options.skewMs ?? 5000;
   const tokenMarginMs = options.tokenMarginMs ?? TOKEN_MARGIN_MS;
+  const clock = options.clock ?? systemClock;
+  const send: UsageFetch = options.fetch ?? ((url, init) => fetch(url, init));
 
   const keys = new Map<string, KeyState>();
   /**
@@ -181,10 +202,10 @@ export function createCursorUsageReader(options: CursorUsageOptions = {}) {
   /** `budgetMs` caps the request; the shared exchange takes the budget of the turn that starts it. */
   async function post(url: string, path: string, bearer: string, body: string, extra: Record<string, string>, budgetMs: number, signal?: AbortSignal) {
     if (budgetMs <= 0) throw new LedgerError("transient", path);
-    const timeout = AbortSignal.timeout(Math.min(requestTimeoutMs, budgetMs));
+    const timeout = clock.timeout(Math.min(requestTimeoutMs, budgetMs));
     let response: Response;
     try {
-      response = await fetch(url + path, {
+      response = await send(url + path, {
         method: "POST",
         headers: { "Content-Type": "application/json", Authorization: `Bearer ${bearer}`, ...extra },
         body,
@@ -211,15 +232,15 @@ export function createCursorUsageReader(options: CursorUsageOptions = {}) {
 
   /** One exchange shared by concurrent turns of a key (it ignores a single turn's abort on purpose). */
   function accessToken(key: string, state: KeyState, url: string, fresh: boolean, deadline: number): Promise<string> {
-    const now = Date.now();
+    const now = clock.now();
     if (!fresh && state.token && state.token.expiresAt > now) return Promise.resolve(state.token.value);
     if (state.exchange) return state.exchange;
     const exchange = (async () => {
       try {
-        const body = await post(url, EXCHANGE_PATH, key, "{}", {}, deadline - Date.now());
+        const body = await post(url, EXCHANGE_PATH, key, "{}", {}, deadline - clock.now());
         const value = (body as { accessToken?: unknown } | null)?.accessToken;
         if (typeof value !== "string" || !value) throw new LedgerError("changed", EXCHANGE_PATH, 200);
-        state.token = { value, expiresAt: tokenExpiry(value, Date.now(), tokenMarginMs) };
+        state.token = { value, expiresAt: tokenExpiry(value, clock.now(), tokenMarginMs) };
         return value;
       } catch (error) {
         state.token = undefined;
@@ -240,7 +261,7 @@ export function createCursorUsageReader(options: CursorUsageOptions = {}) {
     for (let attempt = 0; ; attempt += 1) {
       const token = await accessToken(key, state, url, attempt > 0, deadline);
       try {
-        const json = (await post(url, EVENTS_PATH, token, body, headers, deadline - Date.now(), signal)) as { usageEventsDisplay?: unknown } | null;
+        const json = (await post(url, EVENTS_PATH, token, body, headers, deadline - clock.now(), signal)) as { usageEventsDisplay?: unknown } | null;
         if (!json || typeof json !== "object") throw new LedgerError("changed", EVENTS_PATH, 200);
         // Proto3 JSON drops an empty list: no field means no events yet.
         if (json.usageEventsDisplay === undefined) return [];
@@ -283,7 +304,7 @@ export function createCursorUsageReader(options: CursorUsageOptions = {}) {
 
   async function readWithKey(key: string, query: UsageQuery): Promise<UsageReport> {
     const state = stateFor(key);
-    if (state.cooldownUntil > Date.now()) return {};
+    if (state.cooldownUntil > clock.now()) return {};
     const url = (query.env[USAGE_URL_ENV]?.trim() || DEFAULT_BASE_URL).replace(/\/+$/, "");
     const { signal } = query;
     const seen = sessions.get(query.sessionId);
@@ -293,8 +314,8 @@ export function createCursorUsageReader(options: CursorUsageOptions = {}) {
     const deadline = query.endedAt + deadlineMs;
 
     const coolDown = (warning: string): UsageReport => {
-      const first = state.cooldownUntil <= Date.now();
-      state.cooldownUntil = Date.now() + cooldownMs;
+      const first = state.cooldownUntil <= clock.now();
+      state.cooldownUntil = clock.now() + cooldownMs;
       state.misses = 0;
       return first ? { warning: `${warning}; usage is off for ${Math.round(cooldownMs / 60_000)} min` } : {};
     };
@@ -304,10 +325,10 @@ export function createCursorUsageReader(options: CursorUsageOptions = {}) {
     try {
       for (;;) {
         // Never sleep past the deadline, and never poll after it.
-        if (deadline - Date.now() < wait) break;
-        await sleep(wait, signal);
+        if (deadline - clock.now() < wait) break;
+        await clock.sleep(wait, signal);
         if (signal?.aborted) return {};
-        if (Date.now() >= deadline) break;
+        if (clock.now() >= deadline) break;
         wait = pollIntervalMs;
         try {
           const match = await fetchEvents(key, state, url, window, deadline, signal);
