@@ -3,7 +3,7 @@ title: 'Parity live suite and success-signal demo'
 type: 'feature'
 ticket: 17
 created: '2026-10-21'
-status: 'ready-for-dev'
+status: 'in-progress'
 baseline_revision: '26d8970cc727d3f18858ef2f664d97764da81544'
 route: 'full'
 route_source: 'auto'
