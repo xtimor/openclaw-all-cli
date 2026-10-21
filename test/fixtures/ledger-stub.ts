@@ -120,9 +120,14 @@ export async function startLedgerStub() {
 }
 
 /**
- * The same ledger in memory, on a virtual clock: the same steering fields and answers as
+ * The same ledger in memory, on a virtual clock: the same steering fields and answer function as
  * `startLedgerStub`, plus `down` (the connection fails). `fetch` plugs into the reader's seam, so
  * no real I/O races a deadline; every delay is `clock.sleep`.
+ *
+ * Known difference: when a delayed request is aborted (timeout or signal), the fake stops inside
+ * `answer` at the delay, but the HTTP stub keeps running it. Steering consumed after the delay
+ * (`eventStatuses`, `events` calls) is therefore not consumed by an aborted delayed request here,
+ * and is there. No current test combines a delay or timeout with stateful steering.
  */
 export function createLedgerFake(clock: VirtualClock) {
   const stub = Object.assign(steering(() => clock.now()), {

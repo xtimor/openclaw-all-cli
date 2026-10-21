@@ -16,7 +16,8 @@ const FAST: CursorUsageOptions = {
   cooldownMs: 60_000,
 };
 
-// Time is virtual and the ledger is in memory: nothing here waits on real time or real I/O.
+// The reader tests run on a virtual clock and an in-memory ledger: they wait on no real time or I/O.
+// Two exceptions are marked: the redirect test (real HTTP) and the systemClock tests (real timers).
 let clock: VirtualClock;
 let stub: ReturnType<typeof createLedgerFake>;
 beforeEach(() => {
@@ -429,10 +430,11 @@ describe("cursor usage reader", () => {
       const watching = async (url: string, init: RequestInit) => {
         try {
           const response = await fetch(url, init);
-          exchange = "fulfilled";
+          if (url.endsWith(EXCHANGE)) exchange ??= "fulfilled";
           return response;
         } catch (error) {
-          exchange = "rejected";
+          // Only the exchange counts: a later request on the aborted signal rejects whatever happened before.
+          if (url.endsWith(EXCHANGE)) exchange ??= "rejected";
           throw error;
         } finally {
           controller.abort();

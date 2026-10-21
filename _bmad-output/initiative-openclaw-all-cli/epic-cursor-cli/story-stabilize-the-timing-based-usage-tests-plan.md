@@ -3,7 +3,7 @@ title: 'Stabilize the timing-based usage tests'
 type: 'bugfix'
 ticket: 22
 created: '2026-10-21'
-status: 'in-review'
+status: done
 baseline_revision: '98e0c2da617f83f01b23ae533992d4e8cebdbae6'
 route: 'full'
 route_source: 'auto'
@@ -89,6 +89,13 @@ deferred: []
 
 ## Review Triage Log
 
+### 2026-10-21 — Review pass
+- verdicts: 3 findings — high 0, medium 0, low 3, false 0, maybe-false 0
+- findings:
+  - `[low]` `patch` redirect test `exchange` is overwritten by later requests, so the assertion can pass under mutation 11 — records only the exchange request's first outcome; mutation 11 now fails on it first
+  - `[low]` `patch` fake ledger stops mid-`answer` on an aborted delay while the HTTP stub runs on, so "cannot drift" overstates — fixture comment and MEMORY say plainly where they differ; no behavior change
+  - `[low]` `patch` file comment says nothing waits on real time or I/O, but the redirect and `systemClock` tests do — comment scoped to the reader tests
+
 ## Design Notes
 
 **Why also `fetch`.** The baseline failures are deadline tests whose real HTTP round trip outlived a 120 ms real-time budget, not only the wall-clock bounds. A virtual clock alone cannot fix them: a timer must never fire while real I/O is in flight, and nothing can detect real-I/O idleness deterministically. With an in-memory `fetch` all work is microtasks, so `idle()` (setImmediate turns) is a true quiescence point. Real `fetch` stays covered by the redirect test (platform `redirect: "error"`), `index.test.ts` wiring, and the live test.
@@ -136,3 +143,11 @@ The after-sleep `now >= deadline` check guards a late timer, which the virtual c
 ## Auto Run Result
 
 Planning result: ready-for-dev, route full (auto), risk low (ticket's level kept), halted after planning as invoked. Baseline `98e0c2da617f83f01b23ae533992d4e8cebdbae6`: typecheck clean, 899 passed / 64 skipped. Flake reproduced at baseline: 3 of 3 runs of the two usage files failed under single-CPU load (8 parallel unloaded runs and 5 runs with unpinned busy loops all passed). No product code was written.
+
+Status: built. The usage reader takes an injected clock and `fetch` (defaults unchanged); 60 reader tests run on a virtual clock and an in-memory ledger with their names and assertions kept; the redirect test stays on real HTTP; the `src/core/usage.test.ts` abort timer is gone. Files: `src/adapters/cursor/usage.ts`, `src/adapters/cursor/usage.test.ts`, `src/core/usage.test.ts`, `test/fixtures/{virtual-clock,ledger-stub}.ts`, `MEMORY.md`.
+
+Review: quick, 3 low findings, all patched, 0 deferred. Follow-up review recommended: false.
+
+Verification: typecheck clean; `npm test` 901 passed, 64 skipped; under 8 busy loops pinned to one CPU the two usage files passed 50 of 50 runs (baseline 0 of 3) and 3 of 3 again on my side; 12 guard mutations each fail their named test (run in a scratch copy); `test/live/usage.live.test.ts` 2 of 2 on real cursor-agent.
+
+Residual risks: two guards stay unmutated by design (the after-sleep abort check and deadline check for a late timer), as at baseline.
