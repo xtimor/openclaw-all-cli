@@ -159,10 +159,10 @@ export const systemClock: UsageClock = {
 };
 
 export function createCursorUsageReader(options: CursorUsageOptions = {}) {
-  const firstPollMs = options.firstPollMs ?? 1000;
+  const firstPollMs = options.firstPollMs ?? 2000;
   const pollIntervalMs = options.pollIntervalMs ?? 1000;
-  const deadlineMs = options.deadlineMs ?? 6000;
-  const requestTimeoutMs = options.requestTimeoutMs ?? 3000;
+  const deadlineMs = options.deadlineMs ?? 15_000;
+  const requestTimeoutMs = options.requestTimeoutMs ?? 6000;
   const cooldownMs = options.cooldownMs ?? 600_000;
   const missStreak = options.missStreak ?? 3;
   const pageSize = options.pageSize ?? 50;
