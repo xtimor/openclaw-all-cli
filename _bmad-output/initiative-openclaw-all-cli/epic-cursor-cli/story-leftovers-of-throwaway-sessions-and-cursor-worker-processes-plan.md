@@ -97,6 +97,7 @@ deferred: []
 - Runtime: `Runtime.gone` (leader exited and group empty, or the group SIGKILL sent) backs `close()`, `waitForExit()`, and the failed-open path; `Runtime.exited` stays the leader's exit (the death race). `terminate` is idempotent through `Runtime.stopping`; the exit handler calls it in the same tick.
 - Reaper: `reapGroup` signals only after the caller proved leader alive, start time equal, `pgid == pid`; its KILL repeats that proof; once the leader is gone after the TERM it sends no KILL, removes the lock, and warns that part of the group still runs (bound: the worker's own 5 minutes). A lock with `group: true` whose leader is alive but not a group leader falls back to pid-only.
 - Listing registry lives in `src/core/listings.ts` (re-exported through `catalog.ts`); `lockDir` is the agent home (`recordProcess` appends `pids/`).
+- The leader-alone fallback in `terminate` (a leader that left its group) has no unit test: the fake cannot leave its group.
 - Tests: +40 offline (858 -> 898 passed). Mutation checks (each named test failed, then restored): group signal, exit-handler stop, pgid == pid, leader-alive, re-check before KILL, side-question mode check, registry abort, channel close request.
 - Live (cursor-agent 2026.10.19, `CURSOR_API_KEY`): see the final report of the build; the rows are in `test/live/operations.live.test.ts` and `test/live/session-resume.live.test.ts`.
 
@@ -138,6 +139,15 @@ deferred: []
   - `[low]` `patch` lock released at SIGKILL sent, not at exit (intent-alignment) — added to the remainder list
   - `[low]` `reject` Ctrl-C no longer reaches cursor-agent; shared worker may die (intent-alignment) — already documented (remainder 3, process-group paragraph); chosen approach per plan
 
+### 2026-10-21 — Review pass (follow-up, patch delta)
+- verdicts: 5 findings — high 0, medium 1, low 3, false 0, maybe-false 0 (one more low rejected)
+- findings:
+  - `[medium]` `patch` EPERM-as-member in runtime `groupHasMembers` can loop `drainGroup` forever (introduced by the pass-1 patch) — reverted to false on any error, with a comment
+  - `[low]` `patch` leader-alone fallback covers only an empty old group — the leader now also gets SIGTERM and, at the grace, SIGKILL whenever it has not exited
+  - `[low]` `patch` trimmed `agentDir` makes the listing lock dir differ from turns and the reaper (introduced by the pass-1 patch) — raw value restored, trim kept only as the emptiness guard
+  - `[low]` `patch` remainder items 9 and 11 give no bound; reaper zombie warning undocumented — bounds and the warning added to both docs
+  - `[low]` `reject` the new guards have no test — the EPERM guard is gone; the leader-alone fallback cannot be exercised by the fake (cannot leave its group), recorded in Implementation Notes
+
 ## Design Notes
 
 **Probe evidence** (cursor-agent 2026.10.19-6bbf2c4, this host, 2026-10-20; scripts kept in the planning scratchpad, not committed).
@@ -171,3 +181,13 @@ deferred: []
 ## Auto Run Result
 
 Planning result: ready-for-dev (halted after planning, as invoked). Route full (auto), risk high (from the ticket), review thorough recommended. No product code written. Probes ran real `cursor-agent` 2026.10.19 outside the sandbox with `CURSOR_API_KEY` (see Design Notes); their temporary homes under `.spike/` were removed and no probe process was left.
+
+Build and review result: status built. Every POSIX ACP `cursor-agent` leads its own process group and the whole group is stopped at close, on the leader's exit, and by the reaper (lock `group: true`); a side question's session directory is removed by id after exit; the model listing is tracked across host threads, pid-locked in the agent home, and aborted on unload. Seven plus five remainders are documented in `docs/providers/cursor.md` and `docs/setup.md`; AD-14 amended.
+
+Files changed: `src/transports/acp/{runtime,session}.ts`, `src/core/{ports,pid-locks,attach-session,live-entry,catalog,synthetic-auth,register,listings}.ts`, `src/adapters/cursor/index.ts`, fake agent and listing-worker fixtures, live harness, unit and live tests, docs, AD-14, `MEMORY.md`.
+
+Review: thorough (4 lenses): 26 findings, 5 medium and 21 low, none high; 13 patched, 13 rejected with reasons. Follow-up pass on the patch delta: 5 findings, 1 medium and 3 low patched (two of them corrected pass-1 patches), 1 rejected. Deferred: 0. Follow-up review recommended: false (no high patched; the one medium was a regression the follow-up pass itself caught).
+
+Verification: `npm run typecheck` clean; `npm test` 899 passed, 64 skipped; live `operations` and `session-resume` rows 14 of 14 passed against real cursor-agent 2026.10.19 with `CURSOR_API_KEY` in the isolated OpenClaw, no process or lock left; the `operations` rows re-run after the pass-2 `terminate` change (see run log).
+
+Residual risks: the leader-alone fallback in `terminate` has no unit test (the fake cannot leave its group); the cross-thread listing abort depends on the worker answering within 150 ms (documented).

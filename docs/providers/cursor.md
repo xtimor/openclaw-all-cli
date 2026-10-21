@@ -320,10 +320,10 @@ Live test: `test/live/usage.live.test.ts`.
   6. A new chat Cursor refuses after `session/new` (an unknown model, a missing mode) keeps its `acp-sessions` directory (a few kilobytes).
   7. A model listing for which OpenClaw gives no agent directory is not recorded (the log warns once); a Gateway killed in its few seconds can leave that process behind, and no later start reaps it.
   8. A Gateway ended by a signal that skips its stop (for example SIGHUP) leaves the groups until the next start; groups are detached, so a closed terminal no longer reaches `cursor-agent`.
-  9. A side question running when the Gateway is killed or crashes keeps its `acp-sessions/<id>` directory (also when the discard fails or the 3 s unload wait ends first); a listing aborted after `session/new` keeps its directory too.
+  9. A side question running when the Gateway is killed or crashes keeps its `acp-sessions/<id>` directory (also when the discard fails or the 3 s unload wait ends first); a listing aborted after `session/new` keeps its directory too. These directories stay until removed by hand; the reaper removes none.
   10. A listing in another host thread that answers the unload later than the 150 ms window, or whose worker thread the host ends, is not stopped until the next start's reap.
-  11. The lock is released when the SIGKILL has been sent, not when the members have exited.
-  12. Under a PID 1 that never reaps (a container without an init), zombie group members delay each close by up to the 2 s grace.
+  11. The lock is released when the SIGKILL has been sent, not when the members have exited. Members that remain after the SIGKILL, if any, have no lock and no later start reaps them; they exit by themselves within about 5 minutes.
+  12. Under a PID 1 that never reaps (a container without an init), zombie group members delay each close by up to the 2 s grace, and the start-up reaper waits the full grace per lock and logs "Part of the process group ... is still running" for zombie members.
 - **No separator around a tool call.** Cursor's message chunks carry no break between the text before and after a tool call, so a reply can read `...sentence.Next text`. The plugin passes the text through unchanged.
 - **Usage and a skewed clock.** A host clock more than 5 s off Cursor's makes usage 0 until the cooldown (see Usage).
 - **Usage needs an API key.** With a Cursor login only (no `CURSOR_API_KEY`), OpenClaw records 0 tokens for a turn. See Usage.

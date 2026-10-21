@@ -119,16 +119,17 @@ function groupHasMembers(runtime: Runtime): boolean {
   try {
     process.kill(-pid, 0);
     return true;
-  } catch (error) {
-    // EPERM: members exist that this process cannot signal.
-    return (error as NodeJS.ErrnoException).code === "EPERM";
+  } catch {
+    // EPERM counts as empty here: only the reaper has a deadline to wait on such members.
+    return false;
   }
 }
 
 /**
  * Stops the process: SIGTERM now, SIGKILL after the grace period if it (or, with a group, any
  * member of its group) is still there. Idempotent. With a group the whole group gets both signals,
- * also after the leader exited on its own, since its children may outlive it.
+ * also after the leader exited on its own, since its children may outlive it. A leader that has not
+ * exited gets both signals itself too, in case it left its group.
  */
 export function terminate(runtime: Runtime): void {
   if (runtime.stopping) return;
@@ -142,22 +143,15 @@ export function terminate(runtime: Runtime): void {
     return;
   }
   runtime.stopping = true;
-  if (!signalGroup(runtime, "SIGTERM")) {
-    // Nobody left (the leader exited and took everyone along): nothing to signal or wait for.
-    if (runtime.hasExited) return;
-    // The leader is alive but left its group: stop it alone, as without a group.
-    runtime.child.kill("SIGTERM");
-    const alone = setTimeout(() => {
-      runtime.forceKilled = true;
-      runtime.child.kill("SIGKILL");
-    }, KILL_GRACE_MS);
-    alone.unref();
-    void runtime.gone.then(() => clearTimeout(alone));
-    return;
-  }
+  const signalled = signalGroup(runtime, "SIGTERM");
+  // Nobody left (the leader exited and took everyone along): nothing to signal or wait for.
+  if (!signalled && runtime.hasExited) return;
+  // The leader may have left its group: it gets the signals itself as well.
+  if (!runtime.hasExited) runtime.child.kill("SIGTERM");
   const forceKill = setTimeout(() => {
     runtime.forceKilled = true;
     if (groupHasMembers(runtime)) signalGroup(runtime, "SIGKILL");
+    if (!runtime.hasExited) runtime.child.kill("SIGKILL");
   }, KILL_GRACE_MS);
   forceKill.unref();
   void runtime.gone.then(() => clearTimeout(forceKill));
