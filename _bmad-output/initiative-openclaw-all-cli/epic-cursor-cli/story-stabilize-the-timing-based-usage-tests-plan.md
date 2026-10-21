@@ -3,7 +3,7 @@ title: 'Stabilize the timing-based usage tests'
 type: 'bugfix'
 ticket: 22
 created: '2026-10-21'
-status: 'ready-for-dev'
+status: 'in-progress'
 baseline_revision: '98e0c2da617f83f01b23ae533992d4e8cebdbae6'
 route: 'full'
 route_source: 'auto'
