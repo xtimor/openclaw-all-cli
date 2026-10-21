@@ -3,14 +3,14 @@ title: 'Stabilize the timing-based usage tests'
 type: 'bugfix'
 ticket: 22
 created: '2026-10-21'
-status: 'in-progress'
+status: 'in-review'
 baseline_revision: '98e0c2da617f83f01b23ae533992d4e8cebdbae6'
 route: 'full'
 route_source: 'auto'
 risk: 'low'
-review: ''
-review_source: ''
-lenses_ran: []
+review: 'quick'
+review_source: 'pinned'
+lenses_ran: [quick]
 review_loop_iteration: 0
 followup_review_recommended: false
 context:
@@ -76,6 +76,14 @@ deferred: []
 - Given a host with `CURSOR_API_KEY`, when `npm run build && npm run dev:install` then the live usage file (`test/live/usage.live.test.ts`, command in Verification) run, then the live usage file passes (one re-run only for a transient Cursor `RetriableError`); without a key it is recorded as not run.
 
 ## Implementation Notes
+
+- `usage.ts`: `UsageClock`, `systemClock`, `UsageFetch`, options `clock`/`fetch`; every `Date.now()`, the `sleep` call, `AbortSignal.timeout`, and `fetch` in the reader now go through them (the default `fetch` wrapper looks up the global per call). Nothing else changed.
+- `test/fixtures/virtual-clock.ts`: `createVirtualClock`, `idle`. `timeout` signals are passive timers: they fire when time passes them, but alone do not keep `run` going (so a stuck promise throws `virtual clock: ... no timer left` at once).
+- `test/fixtures/ledger-stub.ts`: shared `steering` + `answer`; `startLedgerStub` unchanged in API and HTTP behavior; `createLedgerFake(clock)` added.
+- `usage.test.ts`: all 60 tests converted (names kept); the redirect test stays on real HTTP (two own stubs, watching `fetch`, aborts the query once the exchange settles); two new `systemClock` tests. `core/usage.test.ts`: abort at once, race against `idle()`. No `Date.now`/`setTimeout`/`performance.now` in either file.
+- Verification: `tsc --noEmit --noUnusedLocals --noUnusedParameters` clean; `npx vitest run` 31 files passed / 15 skipped, 901 passed / 64 skipped; `vitest list` of the two files: baseline names all present, only the 2 `systemClock` tests added; load loop (8 pinned busy loops, 50 runs of the two files): 50 of 50 passed (baseline: 3 of 3 failed); live `test/live/usage.live.test.ts` after `npm run build && npm run dev:install`: 2 passed (`CURSOR_API_KEY` present).
+- Mutations (scratch copy of the tree, each applied alone, named test failed fast, no vitest timeout; real tree untouched): 1 (both tests), 2, 3, 4 (both), 5, 6, 7 (both), 9, 10, 11, 12, 13 all failed as expected. 8 has no test by design.
+- `docs/`: no change (no setup, config, or behavior change). `MEMORY.md`: one entry added.
 
 ## Plan Change Log
 

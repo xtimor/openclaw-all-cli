@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { idle } from "../../test/fixtures/virtual-clock.ts";
 import { createManifest, type CliAdapter, type UsageQuery, type UsageReport } from "./ports.ts";
 import { readTurnUsage } from "./usage.ts";
 
@@ -75,7 +76,9 @@ describe("readTurnUsage", () => {
   it("stops waiting when the signal aborts", async () => {
     const controller = new AbortController();
     const pending = readTurnUsage(adapterWith(() => new Promise<UsageReport>(() => {})), query(controller.signal), () => {});
-    setTimeout(() => controller.abort(), 10);
+    controller.abort();
+    // The abort must settle the wait on its own; a wait that ignored it would still be pending after idle().
+    expect(await Promise.race([pending.then(() => "settled"), idle().then(() => "pending")])).toBe("settled");
     await expect(pending).resolves.toBeUndefined();
   });
 });
