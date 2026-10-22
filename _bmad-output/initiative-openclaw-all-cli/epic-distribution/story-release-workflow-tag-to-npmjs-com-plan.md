@@ -3,7 +3,7 @@ title: 'Release workflow: tag to npmjs.com'
 type: 'feature'
 ticket: '4'
 created: '2026-10-22'
-status: 'in-review'
+status: 'built'
 baseline_revision: '3ea03129ca1cfdc25baaf4d06cf31b70bcd28351'
 route: 'full'
 route_source: 'auto'
@@ -80,6 +80,14 @@ Implemented by a sonnet subagent. `scripts/release.sh`, `.github/workflows/relea
   - `[medium]` `[patch]` `GH_TOKEN` and the OIDC request token reach `ci-check.sh` (npm ci scripts, tests, plugin install) — the checks run under `env -u GH_TOKEN -u GITHUB_TOKEN -u ACTIONS_ID_TOKEN_REQUEST_TOKEN -u ACTIONS_ID_TOKEN_REQUEST_URL`; test added, removing it fails the test.
   - `[low]` `[reject]` AC2/AC3 status not recorded in the plan — the fix edits this build's plan (rule); recorded under Auto Run Result after the GitHub dry run.
   - `[low]` `[patch]` `workflow_dispatch` with `dry_run: false` fails unless started on the tag, undocumented — input description and `docs/release.md` now say so; docs also say `Run workflow` exists only once the file is on `main`.
+
+## Auto Run Result
+
+- Summary: a `vX.Y.Z` tag runs `.github/workflows/release.yml` → `scripts/release.sh`: tag and main checks, refuse an existing version, version from the tag, the CI checks without job credentials, one tarball with sha256, then stage (first release, npm 12.2.1, `NPM_TOKEN`), publish via OIDC with provenance (later releases), or `npm publish --dry-run`; GitHub release with the same `.tgz`. `docs/release.md` covers cutting, dry run, first release (approve, `npm trust`, delete token, manual fallback), rollback, rotation.
+- Review: 4 patched (1 high, 2 medium, 1 low), 2 rejected, 0 deferred.
+- Verification: 33 release-script tests (mutations on `--provenance`, `env -u`, and `--tag latest` each fail them); `npm run ci` green; a full local `RELEASE_TAG=v0.0.1-dryrun.1 DRY_RUN=true scripts/release.sh` ran the checks, packed, printed the sha256, ran `npm publish --dry-run`, restored `package.json`; CI green on PR #1.
+- Not run: AC2, the dry-run tag on GitHub: this session cannot push tags (the git proxy drops tag pushes), so the owner pushes `v0.0.1-dryrun.1` (or uses `Run workflow` after merge). AC3, the first real release and the owner's approval, follows the merge.
+- Residual risk: staging a package npm has never seen and OIDC publish are proven only by the first real run; docs/release.md has the manual fallback.
 
 ## Verification
 
