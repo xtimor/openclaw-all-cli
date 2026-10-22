@@ -56,5 +56,35 @@
       }
     },
     "additionalProperties": false
+  },
+  "uiHints": {
+    "cursor-cli": {
+      "label": "Cursor CLI",
+      "help": "Settings for the cursor-cli/<model> models, served by the local cursor-agent."
+    },
+    "cursor-cli.command": {
+      "label": "cursor-agent command",
+      "help": "Path or name of the Cursor CLI. Set it when the Gateway's PATH does not include cursor-agent.",
+      "placeholder": "cursor-agent"
+    },
+    "cursor-cli.env": {
+      "label": "Environment for cursor-agent",
+      "help": "Variables given to the cursor-agent process only, such as CURSOR_API_KEY. Values are treated as secrets."
+    },
+    "cursor-cli.env.*": {
+      "label": "Value",
+      "help": "Hidden as a secret in the form and in config output.",
+      "sensitive": true
+    },
+    "cursor-cli.maxConcurrentTurns": {
+      "label": "Max concurrent turns",
+      "help": "Turns that run at once (1 to 64, default 4). More wait in order for a free slot.",
+      "advanced": true
+    },
+    "cursor-cli.maxProcesses": {
+      "label": "Max cursor-agent processes",
+      "help": "cursor-agent processes alive at once, idle ones included (1 to 64, default 8, at least the concurrent turns). At the cap the least recently used idle process is closed.",
+      "advanced": true
+    }
   }
 }

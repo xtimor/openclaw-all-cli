@@ -8,3 +8,4 @@ node_modules/
 CLAUDE.local.md
 dist/
 *.tgz
+out/

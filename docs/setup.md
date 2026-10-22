@@ -2,7 +2,7 @@
 
 How to run `cursor-cli/<model>` in your OpenClaw.
 
-> **Status:** pre-release. There is no published package yet: you build the plugin from source and install the resulting `.tgz`. Only Cursor CLI is supported; see [Cursor provider](providers/cursor.md) for what works.
+> **Status:** pre-release. Until the first version is on npm (`openclaw-all-cli`), you build the plugin from source and install the resulting `.tgz`. Only Cursor CLI is supported; see [Cursor provider](providers/cursor.md) for what works.
 
 ## Requirements
 
@@ -126,6 +126,8 @@ All settings are optional. They live under `plugins.entries.openclaw-all-cli.con
 | `cursor-cli.maxConcurrentTurns` | `4` | Turns that run at once (1 to 64). More wait in order for a free slot. |
 | `cursor-cli.maxProcesses` | `8` | `cursor-agent` processes alive at once, idle ones included (1 to 64, at least `maxConcurrentTurns`). At the cap the least recently used idle process is closed. |
 
+The OpenClaw Control UI shows these settings as a form for the plugin, with a label and help for each field; `cursor-cli.env` values are hidden as secrets there and in `openclaw config get`, and the two limits sit under advanced.
+
 A value outside 1 to 64 (or not an integer) is rejected by OpenClaw's config validation before the plugin loads, so fix it in the config. A `maxProcesses` below `maxConcurrentTurns` passes that check: the plugin ignores both caps with a warning, keeps your other settings such as `command`, and uses the defaults. Keep both under OpenClaw's own limit of 16 live sessions.
 
 Compaction: Cursor's ACP mode has no compaction, so OpenClaw compacts its own transcript for `cursor-cli` agents (`/compact`, and before a turn when a chat grows past its budget). That needs an API model to write the summary. Set one, for example `openclaw config set agents.defaults.compaction.model <provider>/<model>`. Without it OpenClaw uses the agent's own model, which needs an API login; whether a Cursor API-key profile counts as one is unverified. If no usable model exists, `/compact` reports the host's reason (for example `No route-compatible authentication source is configured`); that a turn crossing the budget then fails is expected but untested. See [Compaction](providers/cursor.md#compaction).
@@ -240,3 +242,11 @@ npm run test:live      # real cursor-agent; needs a Cursor login and no sandbox
 ```
 
 `npm test` needs no Cursor login. The host-contract tests (`test/host-contract.test.ts`) load OpenClaw's own code from `.spike/openclaw/node_modules/openclaw/dist` (or the directory in `OPENCLAW_ALL_CLI_HOST_DIST`) and run it against the plugin's real backend, so they pin what the backend relies on in OpenClaw 2026.10.3 (host-served `exec`/`process`, the settings file, the live-session fingerprint); they are skipped when that directory is missing. The parity-suite test (`test/parity-suite.test.ts`) fails when the manifest, the parity matrix, the provider page (`docs/providers/cursor.md`), and the live tests disagree. `npm run test:live` runs one live test per decided parity row plus the success-signal scenario (`test/live/success-signal.live.test.ts`); the success-signal scenario is skipped without `CURSOR_API_KEY` (its usage check needs the key).
+
+### Versions
+
+The version in git is `0.0.0`. A release sets it from the tag `vX.Y.Z` (`scripts/release.sh`), so the tag is the single source. Do not bump it by hand. How to cut a release, run a dry run, and roll back: [Release](release.md).
+
+### Checks (CI)
+
+`npm run ci` runs every check a pull request must pass (`scripts/ci-check.sh`, fail-fast, no Cursor login): the isolated Node and OpenClaw in `.spike/`, `npm ci`, typecheck, `npm test`, build, the package allowlist test (`test/package-contents.test.ts`, with the real `dist/`), `npm pack --dry-run`, and an install smoke check that installs the packed `.tgz` into a throwaway OpenClaw state and requires the plugin to be `loaded` with the `cursor-cli` backend. The smoke check never touches `.spike/state` or `~/.openclaw`. GitHub Actions (`.github/workflows/ci.yml`) runs the same script on every pull request and every push to `main`, with no secrets. Live tests (`npm run test:live`) are not part of it.
