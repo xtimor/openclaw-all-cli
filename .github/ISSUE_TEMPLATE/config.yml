@@ -1,0 +1,5 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Report a security issue privately
+    url: https://github.com/xtimor/openclaw-all-cli/security/advisories/new
+    about: Vulnerabilities go through a private advisory, never a public issue. See SECURITY.md.

@@ -1,0 +1,62 @@
+# The label set of the issue flow (design: _bmad-output/.../epic-distribution/issue-flow.md; user doc: docs/issues.md).
+# Synced to GitHub by scripts/sync-labels.mjs (.github/workflows/labels.yml): creates missing labels,
+# updates color and description, never deletes.
+#
+# Format: a flat list of entries with exactly three keys, each value a double-quoted string
+# (JSON string syntax), so the script needs no YAML library:
+#   - name: "..."
+#     color: "rrggbb"
+#     description: "..."   (at most 100 characters, a GitHub limit)
+
+# One status label per open issue.
+- name: "status:new"
+  color: "ededed"
+  description: "Filed or reopened, not triaged yet"
+- name: "status:needs-info"
+  color: "fbca04"
+  description: "Waiting for details from the author"
+- name: "status:triaged"
+  color: "1d76db"
+  description: "Accepted by triage, waiting for the owner"
+- name: "status:approved"
+  color: "0e8a16"
+  description: "Approved by the owner for development"
+- name: "status:planned"
+  color: "5319e7"
+  description: "Course correction merged, tickets exist but are not built"
+- name: "status:in-progress"
+  color: "c5def5"
+  description: "An agent is working on it"
+- name: "status:in-review"
+  color: "bfd4f2"
+  description: "A pull request that fixes it is open"
+- name: "status:blocked"
+  color: "b60205"
+  description: "The run failed or the pull request was closed unmerged"
+
+# Type.
+- name: "type:bug"
+  color: "d73a4a"
+  description: "Something is broken or wrong"
+- name: "type:idea"
+  color: "a2eeef"
+  description: "A feature or improvement proposal"
+
+# Priority.
+- name: "priority:p0"
+  color: "b60205"
+  description: "Install or every turn broken, data loss, or a security hole"
+- name: "priority:p1"
+  color: "d93f0b"
+  description: "A core capability is broken or wrong, workaround hard"
+- name: "priority:p2"
+  color: "fbca04"
+  description: "A real defect with a workaround, or an idea that fits the spec"
+- name: "priority:p3"
+  color: "c2e0c6"
+  description: "Polish, docs, nice to have"
+
+# Origin.
+- name: "source:agent"
+  color: "ededed"
+  description: "Filed by an agent"

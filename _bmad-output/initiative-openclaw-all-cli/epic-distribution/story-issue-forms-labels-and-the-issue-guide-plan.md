@@ -3,14 +3,14 @@ title: 'Issue forms, labels, and the issue guide'
 type: 'feature'
 ticket: '6'
 created: '2026-10-22'
-status: 'in-progress'
+status: 'in-review'
 baseline_revision: '4622b2e18950392922f80fd6cfc22540ccfcc3da'
 route: 'full'
 route_source: 'auto'
 risk: 'low'
-review: ''
-review_source: ''
-lenses_ran: []
+review: 'quick'
+review_source: 'pinned'
+lenses_ran: [quick]
 review_loop_iteration: 0
 followup_review_recommended: false
 context: ['{project-root}/AGENTS.md', '{project-root}/MEMORY.md', '{project-root}/_bmad-output/initiative-openclaw-all-cli/epic-distribution/issue-flow.md']
@@ -70,6 +70,8 @@ deferred: []
 - Given an issue filed through the API with the documented headings and labels, then it reads like a form issue and carries its type label (orchestrator checks after merge).
 
 ## Implementation Notes
+
+Implemented by a sonnet subagent. Forms, `config.yml`, `SECURITY.md`, `.github/labels.yml` (15 labels, flat list of JSON-quoted strings), `scripts/sync-labels.mjs` (validate first, paginated list, create/patch only on difference, never delete, `--dry-run`, `--file`, `SYNC_LABELS_API`), `test/sync-labels.test.ts` (23 tests on a local stub, labels equal `issue-flow.md`), `.github/workflows/labels.yml`, `docs/issues.md`, README link, MEMORY entry. `npm run ci` exit 0. Not run: the sync against real GitHub (after merge).
 
 ## Plan Change Log
 

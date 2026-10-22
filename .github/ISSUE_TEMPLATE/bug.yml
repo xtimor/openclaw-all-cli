@@ -1,0 +1,68 @@
+name: Bug report
+description: Something does not work as documented
+title: "[Bug]: "
+labels: ["type:bug", "status:new"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for the report. Do not paste API keys, tokens, or private data into logs.
+        Security problems go through a private advisory, not an issue: see [SECURITY.md](https://github.com/xtimor/openclaw-all-cli/blob/main/SECURITY.md).
+  - type: input
+    id: plugin-version
+    attributes:
+      label: Plugin version
+      description: "`openclaw plugins inspect openclaw-all-cli` or the npm version."
+      placeholder: "0.1.1"
+    validations:
+      required: true
+  - type: input
+    id: openclaw-version
+    attributes:
+      label: OpenClaw version
+      description: "`openclaw --version`"
+      placeholder: "2026.10.3"
+    validations:
+      required: true
+  - type: input
+    id: cursor-agent-version
+    attributes:
+      label: cursor-agent version
+      description: "`cursor-agent --version`"
+      placeholder: "2026.10.19-abcdef0"
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      description: The exact commands or messages, in order.
+      placeholder: |
+        1. ...
+        2. ...
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behavior
+    validations:
+      required: true
+  - type: textarea
+    id: actual
+    attributes:
+      label: Actual behavior
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: Logs
+      description: Relevant Gateway or plugin log lines. Remove secrets first.
+      render: shell
+  - type: checkboxes
+    id: filed-by-agent
+    attributes:
+      label: Filed by an agent
+      options:
+        - label: An AI agent filed this issue

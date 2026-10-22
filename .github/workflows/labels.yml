@@ -1,0 +1,36 @@
+name: Labels
+
+# Syncs the repository's labels with .github/labels.yml (creates missing ones, updates color and description, never deletes).
+# All logic is in scripts/sync-labels.mjs; see docs/issues.md.
+on:
+  push:
+    branches: [main]
+    paths:
+      - .github/labels.yml
+      - scripts/sync-labels.mjs
+  workflow_dispatch:
+
+permissions:
+  issues: write
+
+concurrency:
+  group: labels
+  cancel-in-progress: false
+
+env:
+  # Same default as ci.yml and scripts/dev-openclaw.sh.
+  NODE_VERSION: 24.22.0
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+      - name: Sync labels
+        run: node scripts/sync-labels.mjs
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
