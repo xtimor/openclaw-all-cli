@@ -27,3 +27,7 @@ Unattended batch from `docs/agents/implement.md`. Build order: issue order (#8, 
 - backlog/2 review — built, followup false (opus, self-run lenses). Commit a21a027. Deferred 1: the Control UI dialog ends with "did not return a credential profile" after either method.
 - backlog/2 close — done.
 - backlog/3 build — start
+- backlog/3 build — built (sonnet, quick, oneshot). Commit 143f589. Live Cursor check not run.
+- backlog/3 review — built, followup false, no change (opus, self-run lenses). Commit 46f1150. Open: whether the per-turn compaction budget reads the published window (not traced).
+- backlog/3 close — done.
+- backlog/4 build — start

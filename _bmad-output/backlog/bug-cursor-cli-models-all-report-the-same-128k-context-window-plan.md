@@ -3,7 +3,7 @@ title: 'All cursor-cli models report the same 128k context window'
 type: 'bugfix'
 ticket: 'bug-cursor-cli-models-all-report-the-same-128k-context-window'
 created: '2026-10-22'
-status: built
+status: done
 baseline_revision: '3c130f34009aaf27c9723cf4bb54e57bf673cd2a'
 route: 'oneshot'
 route_source: 'auto'
