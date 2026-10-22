@@ -22,13 +22,15 @@ The same contract then carries over to other CLIs, Antigravity next. A new provi
 
 - OpenClaw 2026.10.3 or later.
 - Node.js 24.16 up to 25, or 26.1 and later.
-- Cursor CLI (`cursor-agent`) 2026.07.06 or later, signed in (`cursor-agent login`) or with `CURSOR_API_KEY` set.
+- Cursor CLI (`cursor-agent`) 2026.07.06 or later, signed in with `cursor-agent login`. An API key works too; give it to the plugin config (`cursor-cli.env`), not to the Gateway's environment, as [The API key](https://github.com/xtimor/openclaw-all-cli/blob/main/docs/setup.md#the-api-key) explains.
 
 ## Install
 
 ```sh
-openclaw plugins install openclaw-all-cli
+openclaw plugins install openclaw-all-cli --accept-capabilities
 ```
+
+OpenClaw warns that the package is outside ClawHub review and asks you to confirm; `--force` confirms without a prompt (and replaces an earlier install). Restart a running Gateway to load the plugin.
 
 Then pick a model, e.g. `cursor-cli/auto`:
 
@@ -40,7 +42,7 @@ All settings are optional and live under `plugins.entries.openclaw-all-cli.confi
 
 ## Status
 
-Early release. Cursor CLI only.
+Early release. Cursor CLI only. Until the first version is on npm, build from source as [Setup](https://github.com/xtimor/openclaw-all-cli/blob/main/docs/setup.md#2-install-the-plugin) describes.
 
 ## Docs
 

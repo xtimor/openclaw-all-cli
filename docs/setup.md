@@ -2,7 +2,7 @@
 
 How to run `cursor-cli/<model>` in your OpenClaw.
 
-> **Status:** pre-release. There is no published package yet: you build the plugin from source and install the resulting `.tgz`. Only Cursor CLI is supported; see [Cursor provider](providers/cursor.md) for what works.
+> **Status:** pre-release. Until the first version is on npm (`openclaw-all-cli`), you build the plugin from source and install the resulting `.tgz`. Only Cursor CLI is supported; see [Cursor provider](providers/cursor.md) for what works.
 
 ## Requirements
 

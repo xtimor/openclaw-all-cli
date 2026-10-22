@@ -3,7 +3,7 @@ title: 'A package that npm can publish'
 type: 'feature'
 ticket: '3'
 created: '2026-10-22'
-status: 'in-review'
+status: 'built'
 baseline_revision: '01cf1f67b862722f20241b43456ee4bada2b7c5c'
 route: 'full'
 route_source: 'auto'
@@ -72,6 +72,24 @@ Implemented by a sonnet subagent, read by the orchestrator. `package.json` (no `
 ## Plan Change Log
 
 ## Review Triage Log
+
+### 2026-10-22 — Review pass
+- verdicts: 5 findings — high 0, medium 3, low 2, false 0, maybe-false 0
+- findings:
+  - `[medium]` `[patch]` README tells readers to install from npm while `docs/setup.md` says no package exists, and no version is published yet — README Status now says to build from source until the first version is on npm; the setup banner says "until the first version is on npm".
+  - `[medium]` `[patch]` README install lacks `--accept-capabilities` and the ClawHub-review prompt every other path documents — added the flag and the `--force` / restart sentence.
+  - `[medium]` `[patch]` README Requirements steers to exporting `CURSOR_API_KEY`, which setup ranks last for exec exposure — now login first, key via `cursor-cli.env`, link to The API key.
+  - `[low]` `[patch]` `ci-check.sh` header omits the allowlist step — added.
+  - `[low]` `[patch]` allowlist accepts compiled tests (`*.test.js`) — excluded; a `dist/x.test.js` made the test fail naming it.
+
+## Auto Run Result
+
+- Summary: `openclaw-all-cli` is publishable: no `private`, repository/homepage/bugs/keywords, `publishConfig` public with provenance, tarball limited to `dist/**/*.js`, manifest, README, LICENSE, `package.json`; the tag is the version's single source (git keeps `0.0.0`); README written for the npm page.
+- Files: `package.json`, `test/package-contents.test.ts` (new), `scripts/ci-check.sh` (allowlist step), `README.md`, `docs/setup.md` (Versions note, status banner, CI checks).
+- Review: 5 patched (3 medium, 2 low), 0 deferred, 0 rejected.
+- Follow-up review recommended: false (all patches are doc wording and one test predicate; no high, and the three mediums are text-only fixes checked by reading).
+- Verification: `npm run ci` exit 0 after patches (923 unit tests, allowlist 3/3 with dist, smoke `loaded`/`cursor-cli`); extra-file mutations (`docs` in `files`, `dist/x.test.js`) fail the test; live turn from the packed tarball replied `ok` from Cursor.
+- Residual risk: `openclaw plugins install openclaw-all-cli` from npm is unproven until 3.4 publishes and 3.5 checks it.
 
 ## Verification
 

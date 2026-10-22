@@ -13,7 +13,8 @@ const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const FIXED = new Set(["package.json", "README.md", "LICENSE", "openclaw.plugin.json"]);
 const DIST_ENTRIES = ["dist/plugin.js", "dist/provider-discovery.js"];
 
-const allowed = (path: string) => FIXED.has(path) || /^dist\/.+\.js$/.test(path);
+// Compiled tests never ship, even if the build config stops excluding them.
+const allowed = (path: string) => FIXED.has(path) || (/^dist\/.+\.js$/.test(path) && !/\.test\.js$/.test(path));
 
 function packedPaths(): string[] {
   const run = spawnSync("npm", ["pack", "--dry-run", "--json", "--ignore-scripts"], {

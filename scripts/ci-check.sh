@@ -3,7 +3,7 @@
 # Agent-neutral and fail-fast. Needs no Cursor login; live tests (`npm run test:live`) are not part of it.
 #
 #   isolated Node 24 + OpenClaw in .spike/, npm ci, typecheck, unit tests, build,
-#   npm pack --dry-run, and an install smoke check of the packed tarball in a throwaway OpenClaw state.
+#   the package allowlist test (with dist/), npm pack --dry-run, and an install smoke check of the packed tarball in a throwaway OpenClaw state.
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
