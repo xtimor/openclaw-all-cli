@@ -3,14 +3,14 @@ title: 'Issue state automation without a model'
 type: 'feature'
 ticket: '7'
 created: '2026-10-22'
-status: 'in-progress'
+status: 'in-review'
 baseline_revision: '50c343288e48082b7c646cea4ece559c105a8fce'
 route: 'full'
 route_source: 'auto'
 risk: 'medium'
-review: ''
-review_source: ''
-lenses_ran: []
+review: 'quick'
+review_source: 'pinned'
+lenses_ran: [quick]
 review_loop_iteration: 0
 followup_review_recommended: false
 context: ['{project-root}/AGENTS.md', '{project-root}/MEMORY.md', '{project-root}/_bmad-output/initiative-openclaw-all-cli/epic-distribution/issue-flow.md', '{project-root}/docs/issues.md']
@@ -74,6 +74,8 @@ deferred: []
 - Given a dispatch with `dry_run`, then the stale job lists and changes nothing.
 
 ## Implementation Notes
+
+Implemented by a sonnet subagent. `scripts/issue-flow/transitions.mjs` (pure `decide`, `linkedIssues`, `staleIssues`, `STATUS_LABELS`), `scripts/issue-flow/apply.mjs` (`applyActions`, `runEvent` re-reads each issue through the API, `runStale`, `isDryRun`), `.github/workflows/issue-flow.yml`, `test/issue-flow.test.ts` (57 tests), `docs/issues.md` (State automation section), MEMORY entry. Link rules the plan left open: a same-repo `owner/repo#N` counts, `Fixes: #N` matches, `Fixes` wins over `Refs` for the same number. `npm run ci` exit 0 (1044 unit tests). Not run: GitHub-side checks (after merge), github-script v9 importing the ESM file on a real runner.
 
 ## Plan Change Log
 

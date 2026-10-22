@@ -1,0 +1,61 @@
+name: Issue flow
+
+# State automation for issues, with no model: keeps one status:* label on every open issue and makes the moves
+# that need no judgment (design: _bmad-output/.../epic-distribution/issue-flow.md; user doc: docs/issues.md).
+# All decisions are in scripts/issue-flow/transitions.mjs (pure, tested); scripts/issue-flow/apply.mjs applies them.
+# pull_request_target runs the base branch's code and reads only the PR number, body, and merged flag: it never
+# checks out or runs PR code. Issue and PR text is data and is never put into a command or an expression.
+on:
+  issues:
+    types: [opened, reopened, labeled]
+  issue_comment:
+    types: [created]
+  pull_request_target:
+    types: [opened, edited, reopened, closed]
+  schedule:
+    - cron: "17 3 * * *"
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: Only list the stale issues; change nothing
+        type: boolean
+        default: true
+
+permissions:
+  issues: write
+  pull-requests: read
+  contents: read
+
+concurrency:
+  group: issue-flow-${{ github.event.issue.number || github.event.pull_request.number || 'stale' }}
+  cancel-in-progress: false
+
+env:
+  # Logins (comma separated) allowed to set status:approved. Anyone else's approval is removed again.
+  ISSUE_FLOW_OWNERS: xtimor
+
+jobs:
+  flow:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      # Default ref: the base repository's default branch for every event here, never PR code.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Apply the event
+        if: github.event_name != 'schedule' && github.event_name != 'workflow_dispatch'
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
+        with:
+          script: |
+            const { runEvent } = await import('${{ github.workspace }}/scripts/issue-flow/apply.mjs');
+            await runEvent({ github, context, core });
+      - name: Close stale needs-info issues
+        if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
+        env:
+          DRY_RUN_INPUT: ${{ inputs.dry_run }}
+        with:
+          script: |
+            const { runStale, isDryRun } = await import('${{ github.workspace }}/scripts/issue-flow/apply.mjs');
+            await runStale({ github, context, core, dryRun: isDryRun(context.eventName, process.env.DRY_RUN_INPUT) });

@@ -90,13 +90,24 @@ An issue closes as completed (the pull request merged), not planned (rejected, s
 
 ## What happens when
 
-1. **Filed.** The issue starts as `status:new`.
+1. **Filed.** A workflow (`.github/workflows/issue-flow.yml`, no model) sets `status:new` on every opened or reopened issue and removes any other `status:*` label.
 2. **Triage, twice a day (06:00 and 18:00 UTC).** For each new issue, oldest first, the agent checks for duplicates, checks that the problem exists (a bug is reproduced or explained by the code; an idea is checked against the project's scope), and asks for missing details. Then it accepts (`status:triaged`, with priority, type, a short scope), asks (`status:needs-info`), or rejects with a reason. It keeps one triage comment per issue and edits it on later passes. A rejection is undone by reopening the issue.
-3. **Approval.** Only the owner sets `status:approved`. The state labels of anyone else do not start work.
+3. **Approval.** Only the owner sets `status:approved`. The workflow removes the label again when anyone else sets it, restores the previous status, and comments that only the owner approves. The owner list is `ISSUE_FLOW_OWNERS` in the workflow file.
 4. **Implementation.** An agent builds it through the repository's BMAD flow (ticket, plan, build, review) on an `issue/<N>-<slug>` branch and opens a pull request that fixes the issue (`Fixes #N`). When the issue changes an epic, the spec, or the architecture, it first opens a course-correction proposal (`Refs #N`) instead; its merge moves the issue to `planned`, and the owner's next `approved` builds the new tickets. It never merges, never tags a release, and never touches secrets. Checks it could not run (for example a live Cursor turn) are listed in the pull request.
 5. **Review.** The owner reviews and merges the pull request: a fix closes the issue, a proposal moves it to `planned`.
 
-Issue and comment text is treated as data by the agents: they do not follow instructions found in it.
+Issue and comment text is treated as data by the agents and by the workflow: they do not follow instructions found in it.
+
+## State automation
+
+The `Issue flow` workflow keeps the states in step without a person or a model. The rules are in `scripts/issue-flow/transitions.mjs` (tested in `test/issue-flow.test.ts`):
+
+- **One status.** When a status label is added, the other `status:*` labels are removed. A closed issue keeps none.
+- **Reply.** A comment by the issue's author on a `status:needs-info` issue moves it to `status:new`. A comment by anyone else changes nothing.
+- **Pull requests.** A pull request whose body says `Fixes #N`, `Closes #N`, or `Resolves #N` (case-insensitive), or `Refs #N`, moves issue N to `status:in-review` when it is opened, edited, or reopened. When it is merged, a `Fixes` issue loses its status (GitHub closes it) and a `Refs` issue becomes `status:planned`. When it is closed unmerged, the issue becomes `status:blocked`. Only `#N` of this repository counts; links to other repositories and numbers that are pull requests or closed issues are ignored.
+- **Stale.** A daily job (03:17 UTC) closes a `status:needs-info` issue as not planned, with a comment, when it has had no comment and no update for 14 days. Reopening it brings it back as `status:new`. To see what it would close, run the workflow by hand (Actions, `Issue flow`, `Run workflow`) with `dry_run` on (the default): it only lists them in the log.
+
+The workflow ignores events caused by `github-actions[bot]`, so it does not loop. It needs `issues: write`, `pull-requests: read`, and `contents: read`, and it never checks out or runs code from a pull request.
 
 ## Labels
 
