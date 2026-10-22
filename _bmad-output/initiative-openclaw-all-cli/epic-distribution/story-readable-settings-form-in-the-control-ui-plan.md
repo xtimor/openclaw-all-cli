@@ -3,7 +3,7 @@ title: 'Readable settings form in the Control UI'
 type: 'feature'
 ticket: '1'
 created: '2026-10-22'
-status: 'built'
+status: done
 baseline_revision: '7a65357e75d3074e7c2e896d6d2c26a9859948bb'
 route: 'oneshot'
 route_source: 'auto'
