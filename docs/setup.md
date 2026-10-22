@@ -77,7 +77,7 @@ Each agent runs Cursor with its own config and chat store under `<agentDir>/open
 With OpenClaw's `exec` enabled, any command the model runs inherits the Gateway's environment and can read every variable in it, a `CURSOR_API_KEY` exported to the Gateway included. The plugin does not strip it. In order of preference:
 
 1. **Use the login** (`cursor-agent login`). It keeps the credential out of the Gateway's environment and out of the OpenClaw config file, but not out of reach of `exec`: the tokens sit in `~/.config/cursor/auth.json`, readable by a same-user command just like a key. Usage then shows 0 (see [Usage](providers/cursor.md#usage)).
-2. **Give the key to the Cursor process only**, through the plugin config. `cursor-cli.env` is passed to `cursor-agent` and to the plugin's own probes and usage reads, and not put into the Gateway's environment or the environment `exec` starts commands with. That keeps the key out of `env` output only, not out of reach (the login has the same limit): `exec` runs as the same user (unsandboxed by default), so a command can still read the key from `/proc/<pid>/environ` of the `cursor-agent` process, from the OpenClaw config file that holds it, and from `~/.config/cursor/auth.json`, where `cursor-agent` itself writes the key and its tokens whenever it runs with a key. Against `exec`, exec approvals (`tools.exec.ask`) and a sandbox are the protection, for the login and the key alike. Set it from the shell variable of the check above, so the key text is never typed into a command:
+2. **Give the key to the Cursor process only**, through the plugin config. `cursor-cli.env` is passed to `cursor-agent` and to the plugin's own probes and usage reads, and not put into the Gateway's environment or the environment `exec` starts commands with. That keeps the key out of `env` output only, not out of reach (the login has the same limit): `exec` runs as the same user (unsandboxed by default), so a command can still read the key from `/proc/<pid>/environ` of the `cursor-agent` process, from the OpenClaw config file that holds it, and from `~/.config/cursor/auth.json`, where `cursor-agent` itself writes the key and its tokens whenever it runs with a key. Against `exec`, exec approvals (`tools.exec.ask`) and a sandbox are the protection, for the login and the key alike. Set it from the shell variable of the check above (in the same shell; in a new one `$CURSOR_KEY` is empty and the config gets an empty key), so the key text is never typed into a command. Run it after [step 2](#2-install-the-plugin) installs the plugin:
 
    ```sh
    openclaw config set plugins.entries.openclaw-all-cli.config.cursor-cli.env \
@@ -99,10 +99,10 @@ It prints `Auth profile: cursor-cli:manual (cursor-cli/api_key)`; remove it with
 ## 2. Install the plugin
 
 ```sh
-openclaw plugins install openclaw-all-cli --accept-capabilities
+openclaw plugins install openclaw-all-cli --accept-capabilities --force
 ```
 
-OpenClaw downloads the package from npm, warns that it is outside ClawHub review, and asks you to confirm; `--force` confirms without a prompt and also replaces an earlier install. It prints `Saved for the next Gateway start`: restart a running Gateway to load the plugin. Each release carries npm provenance (built by this repository's GitHub Actions); the tarball also hangs on the [GitHub release](https://github.com/xtimor/openclaw-all-cli/releases) with its sha256.
+OpenClaw downloads the package from npm and warns that it is outside ClawHub review. `--force` confirms that warning (without it a terminal asks, and a script or agent shell gets `Install cancelled; rerun with --force`) and also replaces an earlier install. It prints `Saved for the next Gateway start`: restart a running Gateway to load the plugin. Each release carries npm provenance (built by this repository's GitHub Actions); the tarball also hangs on the [GitHub release](https://github.com/xtimor/openclaw-all-cli/releases) with its sha256.
 
 To update to the latest release, then restart the Gateway:
 
@@ -147,7 +147,7 @@ openclaw config set agents.defaults.model.primary cursor-cli/auto    # makes the
 openclaw gateway run                                                  # stays in the foreground; use a second terminal
 ```
 
-Wait for the log line `[gateway] ready` (the log has color codes, so `grep -a ready gateway.log` finds it where `grep 'gateway\] ready'` may not; `NO_COLOR=1` turns the colors off). Stop it with Ctrl-C or SIGTERM. A loopback Gateway needs no auth setup for local commands. Start it from a shell where `cursor-agent` is on `PATH` (or `cursor-cli.command` is set), and with `NODE_USE_ENV_PROXY=1` behind a proxy. To keep it running, background it (`nohup openclaw gateway run > gateway.log 2>&1 &`; `$!` is the wrapper's pid, so find the Gateway with `ps -eo pid,comm,args | grep '[o]penclaw-gateway'`; Linux truncates the process name to 15 characters, so `pgrep -x openclaw-gateway` finds nothing) or use your own process manager. Stop it by pid: `kill -TERM <pid>`.
+Wait for the log line `[gateway] ready`, about 15 to 20 seconds on a first start (the log has color codes: start it with `NO_COLOR=1` and `grep '\[gateway\] ready' gateway.log` finds it; a plain `grep ready` also matches an earlier `spawn broker ready` line). Stop it with Ctrl-C or SIGTERM. A loopback Gateway needs no auth setup for local commands. Start it from a shell where `cursor-agent` is on `PATH` (or `cursor-cli.command` is set), and with `NODE_USE_ENV_PROXY=1` behind a proxy. To keep it running, background it (`nohup openclaw gateway run > gateway.log 2>&1 &`; `$!` is the wrapper's pid, so find the Gateway with `ps -eo pid,comm,args | grep '[o]penclaw-gateway'`; Linux truncates the process name to 15 characters, so `pgrep -x openclaw-gateway` finds nothing) or use your own process manager. Stop it by pid: `kill -TERM <pid>`.
 
 **After stopping, check for leftovers.** A stop with SIGTERM or SIGINT (Ctrl-C) closes every `cursor-agent` the plugin started together with its whole process group, so Cursor's `worker-server` and its `typescript-language-server` / `tsserver` children go with it, and the agent home's `pids/` folder is empty. What can still remain, and for how long:
 
@@ -174,7 +174,7 @@ openclaw models list --provider cursor-cli
 openclaw agent --model cursor-cli/auto --message "Say hi"
 ```
 
-The first command must report `"status": "loaded"` and `cursor-cli` under `cliBackendIds`. The second lists your account's Cursor models (more than `auto`) and needs a running Gateway that has loaded the plugin and a login or key. The third runs through your Gateway and prints Cursor's reply. Add `--json` to see the turn's usage at `result.meta.agentMeta.usage` (`input`, `output`, `cacheRead`, `cacheWrite`, `total`; non-zero with a key, 0 with a login only). In the isolated OpenClaw (see Develop) no Gateway runs by default: run the command with `--local`, or start one as shown there and drop `--local`.
+The first command must report `"status": "loaded"` and `cursor-cli` under `cliBackendIds`. The second lists your account's Cursor models (more than `auto`) and needs a running Gateway that has loaded the plugin and a login or key. The third runs through your Gateway and prints Cursor's reply; in a brand-new workspace that reply is OpenClaw's first-run greeting (it asks what to call it), which is normal. Add `--json` to see the turn's usage at `result.meta.agentMeta.usage` (`input`, `output`, `cacheRead`, `cacheWrite`, `total`; non-zero with a key, 0 with a login only). In the isolated OpenClaw (see Develop) no Gateway runs by default: run the command with `--local`, or start one as shown there and drop `--local`.
 
 ## Troubleshooting
 
@@ -186,7 +186,7 @@ The first command must report `"status": "loaded"` and `cursor-cli` under `cliBa
 | `Gateway start blocked: existing config is missing gateway.mode` | A fresh OpenClaw has no Gateway config | `openclaw config set gateway.mode local`, then start again |
 | `Another gateway (pid N) already owns this state directory` | A Gateway for the same OpenClaw state is running | Use it, or stop it by pid (`kill -TERM <pid>`; `openclaw gateway stop` stops only a service install, not a `gateway run` process) and start again, or give the new one its own state with `--profile <name>` |
 | The Gateway cannot bind port 18789 | Another program uses the port (wording unverified) | Stop that program, or start the Gateway with `--port <n>` and set `OPENCLAW_GATEWAY_PORT=<n>` for the other commands |
-| `plugin provenance-invalid` warning in the Gateway log ("OpenClaw can't verify where this plugin came from") | A plugin installed from a local `.tgz` has no registry provenance for OpenClaw to check | Harmless for your own build; the npm package carries provenance |
+| `plugin provenance-invalid` warning in the Gateway log ("OpenClaw can't verify where this plugin came from"; `plugins inspect` shows `trust.reason`) | OpenClaw's own trust check: it verifies ClawHub and official sources, not a third-party npm package or a local `.tgz` (seen for the npm install too). The npm package's provenance is checked by npm, not here | Harmless; ignore it |
 | `remote model catalog refresh failed` in the Gateway log at startup | Behind a proxy OpenClaw cannot refresh its remote model catalog | Harmless; ignore it |
 | `Couldn't connect to OpenClaw.` from `openclaw agent` | No Gateway is running; `agent` without `--local` needs one | Start it ([step 4](#4-start-the-gateway)), or add `--local` |
 | `curl`, `cursor-agent`, or the usage ledger time out or fail TLS behind a proxy | Cursor's hosts are blocked, or Node ignores the proxy | Allow `cursor.com` and `*.cursor.sh`; start the Gateway with `NODE_USE_ENV_PROXY=1` |
