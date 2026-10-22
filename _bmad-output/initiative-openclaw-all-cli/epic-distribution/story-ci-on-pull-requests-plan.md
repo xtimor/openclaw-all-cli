@@ -3,7 +3,7 @@ title: 'CI on pull requests'
 type: 'feature'
 ticket: '2'
 created: '2026-10-22'
-status: 'built'
+status: done
 baseline_revision: 'd5e8eec4fe1ceecf0587045e23c3ab272e9d4163'
 route: 'full'
 route_source: 'auto'
@@ -89,7 +89,8 @@ Implemented by a sonnet subagent, checked by the orchestrator. `scripts/ci-check
 - Review: 3 patched (1 medium, 2 low), 0 deferred, 1 rejected (plan edit).
 - Follow-up review recommended: false.
 - Verification: `npm run ci` exit 0 before and after the patches (920 unit tests, smoke `loaded` / `cursor-cli`); type error stops at Typecheck; workflow parses, SHAs match tags. Not run: the workflow on GitHub (needs a pull request; the ticket stays open until a PR shows it green and a type error red).
-- Residual risk: first run on GitHub runners not yet seen (cache paths, runner timing of unit tests).
+- GitHub (PR xtimor/openclaw-all-cli#1): run 39761055303 green in 74 s on d0c8b02; run 39761273380 on the deliberate type error 230b047 failed at Typecheck (`src/plugin.ts(14,7): error TS2322`, exit 1); the error was reverted in the next commit. `.spike` cache restored (~191 MB).
+- Residual risk: none known.
 
 ## Verification
 
