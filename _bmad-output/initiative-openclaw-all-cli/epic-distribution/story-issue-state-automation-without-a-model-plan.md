@@ -11,7 +11,7 @@ risk: 'medium'
 review: 'quick'
 review_source: 'pinned'
 lenses_ran: [quick]
-review_loop_iteration: 0
+review_loop_iteration: 1
 followup_review_recommended: false
 context: ['{project-root}/AGENTS.md', '{project-root}/MEMORY.md', '{project-root}/_bmad-output/initiative-openclaw-all-cli/epic-distribution/issue-flow.md', '{project-root}/docs/issues.md']
 warnings: []
@@ -78,6 +78,18 @@ deferred: []
 Implemented by a sonnet subagent. `scripts/issue-flow/transitions.mjs` (pure `decide`, `linkedIssues`, `staleIssues`, `STATUS_LABELS`), `scripts/issue-flow/apply.mjs` (`applyActions`, `runEvent` re-reads each issue through the API, `runStale`, `isDryRun`), `.github/workflows/issue-flow.yml`, `test/issue-flow.test.ts` (57 tests), `docs/issues.md` (State automation section), MEMORY entry. Link rules the plan left open: a same-repo `owner/repo#N` counts, `Fixes: #N` matches, `Fixes` wins over `Refs` for the same number. `npm run ci` exit 0 (1044 unit tests). Not run: GitHub-side checks (after merge), github-script v9 importing the ESM file on a real runner.
 
 ## Plan Change Log
+
+### 2026-10-22 — after review pass 1 (bad_plan)
+Triggering findings: closed issues keep their status; a removed status leaves an open issue with none; a merged `Fixes` into a non-default branch clears the status of an open issue; any fork PR moves any issue to `in-review`/`blocked`; the per-issue concurrency group drops pending runs and `labeled` decisions act only on the event label (a dropped run keeps a non-owner `approved`; the older label wins); `GITHUB_TOKEN` PRs start no workflow.
+Amended (Code Map, outside the intent contract):
+- Triggers add `issues: [closed, unlabeled]`. Closed → remove every `status:*`. Unlabeled leaving an open issue with no status → `status:new`.
+- Status reconciliation, order-independent and idempotent: on `labeled`/`unlabeled`/`opened`/`reopened` the module decides from the issue's current labels plus its label timeline (`GET /repos/{o}/{r}/issues/{n}/events`, `labeled` events with actor and time): every `status:approved` whose latest `labeled` event is by a non-owner is removed (with the comment, once per event id), and of the remaining status labels the most recently labeled one stays. No concurrency group on the workflow; parallel runs converge.
+- PR rules follow `issue-flow.md`: opened/edited/reopened moves a linked issue to `in-review` only from `in-progress` (or keeps `in-review`); merged `Fixes`: clear the status only when the issue is closed, otherwise leave it; merged `Refs` → `planned` only from `in-review`; closed unmerged → `blocked` only from `in-review`.
+- `GITHUB_TOKEN`-made events start no workflow: the `isBot` guard stays as defense only; docs say so, and MEMORY records that 3.9's run must set its own `in-progress`/`in-review` labels (or open PRs with an App token) because its PR will not trigger this workflow.
+- Checkout comment: `pull_request_target` checks out the PR's base branch.
+Known-bad states avoided: a closed issue with a status, an open issue with none, a status moved by an outsider PR, a lost non-owner approval revert.
+KEEP: module split (`transitions.mjs` pure, `apply.mjs` applies), link parsing rules and its linear-time test, pinned actions, permissions, owner list in env, stale job and dry run, the 57 tests that still match, docs structure.
+Re-derived in place by the implementer on top of the existing code (not reverted), since the KEEP list covers most of it.
 
 ## Review Triage Log
 
