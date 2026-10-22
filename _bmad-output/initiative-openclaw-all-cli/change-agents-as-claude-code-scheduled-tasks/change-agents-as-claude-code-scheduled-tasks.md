@@ -4,7 +4,7 @@ title: "Triage and implementation agents run as Claude Code scheduled tasks"
 parent: initiative-openclaw-all-cli
 date: 2026-10-22
 scope: minor
-status: proposed
+status: approved
 ---
 
 # Change: the issue agents run as Claude Code scheduled tasks
