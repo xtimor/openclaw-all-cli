@@ -120,6 +120,8 @@ Live test: `test/live/images-compaction.live.test.ts` (row e: a mock API compact
 
 Cursor's replies reach OpenClaw while the turn runs, not when it ends: every `agent_message_chunk` becomes a text delta and every `agent_thought_chunk` a thinking delta, in order, and the closing record carries the full reply, which is exactly the concatenation of the text deltas. Nothing waits for the end of the turn. Live run (real `cursor-agent`, 2026.10.16): 159 text and 4 thinking deltas, the first one 9.6 s before the closing record.
 
+The closing record's text is not a second block for the host (checked in OpenClaw 2026.10.3's CLI runner and with a Gateway, 2026-10-22): it only sets the turn's final text, which falls back to the streamed text when empty. The "completed block" path serves only the built-in Claude records. A webchat turn is the streamed deltas, then one `chat` `final` with the whole reply; the transcript holds one assistant row. The host also emits its own `assistant` snapshot with the final text after every CLI run.
+
 Cursor's tool activity (`tool_call` and `tool_call_update`) shows as tool progress in OpenClaw. Rules:
 
 - **Once per call.** However many updates Cursor sends for one call ID, OpenClaw gets one start and at most one result (at `completed` or `failed`; a failed call is marked as an error). An update for a call the plugin has not seen counts as its start.
@@ -368,6 +370,7 @@ Live test: `test/live/usage.live.test.ts`.
   10. A listing in another host thread that answers the unload later than the 150 ms window, or whose worker thread the host ends, is not stopped until the next start's reap.
   11. The lock is released when the SIGKILL has been sent, not when the members have exited. Members that remain after the SIGKILL, if any, have no lock and no later start reaps them; they exit by themselves within about 5 minutes.
   12. Under a PID 1 that never reaps (a container without an init), zombie group members delay each close by up to the 2 s grace, and the start-up reaper waits the full grace per lock and logs "Part of the process group ... is still running" for zombie members.
+- **A webchat may draw the reply twice.** Seen as a report, not reproduced here. The plugin sends the reply once as streamed text and once as the closing record's text, and the host turns the second into the turn's final text only, so the plugin cannot remove a duplicate bubble without dropping the reply. If it shows, it comes from how the Control UI joins the host's deltas, `final`, and `assistant` snapshot (openclaw/openclaw#180927). See Streaming and tool progress.
 - **No separator around a tool call.** Cursor's message chunks carry no break between the text before and after a tool call, so a reply can read `...sentence.Next text`. The plugin passes the text through unchanged.
 - **Usage and a skewed clock.** A host clock more than 5 s off Cursor's makes usage 0 until the cooldown (see Usage).
 - **Usage needs an API key.** With a Cursor login only (no `CURSOR_API_KEY`), OpenClaw records 0 tokens for a turn. See Usage.
