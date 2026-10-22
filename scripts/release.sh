@@ -11,6 +11,8 @@
 #   DRY_RUN           true (default) or false; a tag `v*-dryrun.*` is always a dry run
 #   NODE_AUTH_TOKEN   the stage-only npm token; used for `npm stage publish` and nothing else
 #   GH_TOKEN          for `gh release create`
+#   RELEASE_EVENT     github.event_name; a real `workflow_dispatch` run creates the tag itself (the owner
+#                     approves, the agent dispatches; see docs/release.md)
 # Test hooks: RELEASE_CI_CHECK (the check script), RELEASE_NODE_BIN (isolated Node dir; empty = none),
 #   RELEASE_OUT (the output dir), RELEASE_STAGE_NPM (the npm that runs `stage publish`).
 set -euo pipefail
@@ -24,6 +26,7 @@ CI_CHECK="${RELEASE_CI_CHECK:-$ROOT/scripts/ci-check.sh}"
 NODE_BIN="${RELEASE_NODE_BIN-$ROOT/.spike/node/bin}"
 TAG="${RELEASE_TAG:-}"
 DRY_RUN="${DRY_RUN:-true}"
+CREATE_TAG=false
 # npm 11 documents "package must exist" for `npm stage`; npm 12.2.1 documents that staging creates a
 # new package. The first release stages a package npm has never seen, so it uses npm 12.2.1.
 read -r -a STAGE_NPM <<<"${RELEASE_STAGE_NPM:-npm exec --yes --package=npm@12.2.1 -- npm}"
@@ -67,13 +70,25 @@ if [ "$DRY_RUN" = true ]; then MODE="dry run"; fi
 step "$MODE of $PACKAGE $VERSION (npm tag: $DIST_TAG)"
 
 if [ "$DRY_RUN" = false ]; then
-  step "Check the tag's commit is on origin/main"
-  git rev-parse --verify --quiet "refs/tags/$TAG^{commit}" >/dev/null ||
-    fail "tag $TAG does not exist in this checkout."
-  [ "$(git rev-parse "refs/tags/$TAG^{commit}")" = "$(git rev-parse HEAD)" ] ||
-    fail "the checkout is not at tag $TAG; a release publishes the tagged commit."
-  git merge-base --is-ancestor HEAD origin/main ||
-    fail "tag $TAG is not on origin/main: a real release must come from a commit on main."
+  if [ "${RELEASE_EVENT:-push}" = workflow_dispatch ]; then
+    # Dispatched release: no tag yet; the GitHub release creates it at HEAD once publish or stage worked.
+    CREATE_TAG=true
+    step "Check HEAD is on origin/main and tag $TAG is new"
+    ! git rev-parse --verify --quiet "refs/tags/$TAG" >/dev/null ||
+      fail "tag $TAG already exists; a dispatched release creates a new tag. Pick the next version."
+    [ -z "$(git ls-remote --tags origin "refs/tags/$TAG")" ] ||
+      fail "tag $TAG already exists on origin; a dispatched release creates a new tag. Pick the next version."
+    git merge-base --is-ancestor HEAD origin/main ||
+      fail "HEAD is not on origin/main: dispatch the release on main."
+  else
+    step "Check the tag's commit is on origin/main"
+    git rev-parse --verify --quiet "refs/tags/$TAG^{commit}" >/dev/null ||
+      fail "tag $TAG does not exist in this checkout."
+    [ "$(git rev-parse "refs/tags/$TAG^{commit}")" = "$(git rev-parse HEAD)" ] ||
+      fail "the checkout is not at tag $TAG; a release publishes the tagged commit."
+    git merge-base --is-ancestor HEAD origin/main ||
+      fail "tag $TAG is not on origin/main: a real release must come from a commit on main."
+  fi
 fi
 
 # The version in git stays 0.0.0; restore the files on exit so a local run leaves the tree clean.
@@ -158,7 +173,8 @@ fi
 
 if [ "$DRY_RUN" = false ]; then
   step "Create the GitHub release"
-  args=("$TAG" "$TARBALL" --verify-tag --title "$TAG" --generate-notes --notes "sha256: $SHA256 ($(basename "$TARBALL"))")
+  args=("$TAG" "$TARBALL" --title "$TAG" --generate-notes --notes "sha256: $SHA256 ($(basename "$TARBALL"))")
+  if [ "$CREATE_TAG" = true ]; then args+=(--target "$(git rev-parse HEAD)"); else args+=(--verify-tag); fi
   if [ "$PRERELEASE" = true ]; then args+=(--prerelease); fi
   gh release create "${args[@]}"
 fi

@@ -56,6 +56,7 @@ case "$1" in
       *HEAD*) echo "\${STUB_HEAD:-aaa}" ;;
     esac ;;
   merge-base) [ "\${STUB_ON_MAIN:-1}" = 1 ] ;;
+  ls-remote) [ "\${STUB_REMOTE_TAG:-0}" = 1 ] && echo "bbb	refs/tags/v9.9.9" ;;
 esac
 `,
   "ci-check.sh": `#!/usr/bin/env bash
@@ -270,6 +271,65 @@ describe("release.sh", () => {
       expect(o.status).not.toBe(0);
       expect(o.stderr).toContain("docs/release.md");
       expect(called(o, "gh ")).toEqual([]);
+    });
+  });
+
+  describe("DISPATCHED_RELEASE (the owner approves, the agent dispatches on main)", () => {
+    const base = {
+      RELEASE_TAG: "v1.0.1",
+      DRY_RUN: "false",
+      RELEASE_EVENT: "workflow_dispatch",
+      STUB_PACKAGE: "exists",
+      STUB_TAG_MISSING: "1",
+      STUB_HEAD: "ccc",
+    };
+
+    it("publishes, then the GitHub release creates the tag at HEAD", () => {
+      const o = release(base);
+      expect(o.status, o.stderr).toBe(0);
+      expect(published(o)[0]).toMatch(/^npm publish .*--provenance/);
+      const [gh] = called(o, "gh release create");
+      expect(gh).toContain("--target ccc");
+      expect(gh).not.toContain("--verify-tag");
+      expect(called(o, "git ls-remote --tags origin refs/tags/v1.0.1")).toHaveLength(1);
+    });
+
+    it("first release: stages, then the release creates the tag", () => {
+      const o = release({ ...base, STUB_PACKAGE: "missing", NODE_AUTH_TOKEN: SECRET });
+      expect(o.status, o.stderr).toBe(0);
+      expect(published(o)[0]).toMatch(/^npm stage publish /);
+      expect(called(o, "gh release create")[0]).toContain("--target ccc");
+    });
+
+    it("fails before checks when the tag exists locally", () => {
+      const o = release({ ...base, STUB_TAG_MISSING: "0" });
+      expect(o.status).not.toBe(0);
+      expect(o.stderr).toContain("already exists");
+      expect(called(o, "ci-check")).toEqual([]);
+      expect(published(o)).toEqual([]);
+    });
+
+    it("fails before checks when the tag exists on origin", () => {
+      const o = release({ ...base, STUB_REMOTE_TAG: "1" });
+      expect(o.status).not.toBe(0);
+      expect(o.stderr).toContain("already exists on origin");
+      expect(called(o, "ci-check")).toEqual([]);
+    });
+
+    it("fails before checks off main", () => {
+      const o = release({ ...base, STUB_ON_MAIN: "0" });
+      expect(o.status).not.toBe(0);
+      expect(o.stderr).toContain("origin/main");
+      expect(called(o, "ci-check")).toEqual([]);
+    });
+
+    it("a tag push still requires the tag and verifies it", () => {
+      const o = release({ ...base, RELEASE_EVENT: "push", STUB_TAG_MISSING: "0", STUB_HEAD: "aaa" });
+      expect(o.status, o.stderr).toBe(0);
+      const [gh] = called(o, "gh release create");
+      expect(gh).toContain("--verify-tag");
+      expect(gh).not.toContain("--target");
+      expect(called(o, "git ls-remote")).toEqual([]);
     });
   });
 

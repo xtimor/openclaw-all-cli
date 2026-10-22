@@ -12,7 +12,7 @@ on:
         required: true
         type: string
       dry_run:
-        description: 'Run everything except publish and the GitHub release. A real run (false) must be started on the tag (Use workflow from: the tag), since it publishes the checked-out commit'
+        description: 'Run everything except publish and the GitHub release. A real run (false) on main creates the new tag at the head of main'
         required: true
         type: boolean
         default: true
@@ -55,6 +55,7 @@ jobs:
         env:
           # Event data goes through env, never into the script text.
           RELEASE_TAG: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}
+          RELEASE_EVENT: ${{ github.event_name }}
           DRY_RUN: ${{ github.event_name == 'workflow_dispatch' && inputs.dry_run || 'false' }}
           # Stage-only npm token for the first release; delete it after the trust is set (docs/release.md).
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
