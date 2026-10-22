@@ -59,3 +59,52 @@ after = [4]
 hitl = false
 risk = "medium"
 references = ["epic-distribution.md"]
+
+[[entry]]
+id = 6
+type = "story"
+title = "Issue forms, labels, and the issue guide"
+description = "Lets a person or an agent file a bug or an idea. Adds GitHub issue forms `.github/ISSUE_TEMPLATE/bug.yml` (version of the plugin, OpenClaw, cursor-agent; steps; expected and actual; logs) and `idea.yml` (problem, proposal, who benefits), `config.yml` with blank issues off and a link to private security reports, and `SECURITY.md`. Both forms have a 'Filed by an agent' checkbox. Keeps the labels of `issue-flow.md` (`status:*`, `type:*`, `priority:*`, `source:agent`) as code in `.github/labels.yml` with a workflow that syncs them. Writes `docs/issues.md`: how to file (web form, or `gh issue create` / API with the same headings for agents), the states, what happens and when, and that only the owner approves work. Links it from `README.md`."
+verify = "Filing each form on GitHub gives an issue with its type label; an issue filed by API with the documented headings reads the same; the label sync workflow creates every label of `issue-flow.md` and is idempotent on a second run."
+covers = []
+after = []
+hitl = false
+risk = "low"
+references = ["epic-distribution.md", "issue-flow.md"]
+
+[[entry]]
+id = 7
+type = "story"
+title = "Issue state automation without a model"
+description = "Enforces the deterministic part of `issue-flow.md` in a GitHub Actions workflow with no model: on opened or reopened sets `status:new`; on an author comment in `needs-info` moves back to `new`; keeps exactly one `status:*` label; removes `status:approved` set by anyone but the owner (owner list in the workflow, not hardcoded in logic) and says so in a comment; on a PR with `Fixes #N` opened sets `in-review`, on merge leaves the close to GitHub and clears the status, on close unmerged sets `blocked`; a daily job closes `needs-info` issues silent for 14 days as not planned. The transition logic lives in a small tested module under `scripts/issue-flow/`, called from `actions/github-script`."
+verify = "Unit tests cover every transition of `issue-flow.md` that the automation owns; on GitHub, opening, reopening, an author reply, a non-owner `approved` label, and a linked PR each produce the expected label; the stale job closes a back-dated test issue in a dry run."
+covers = []
+after = [2, 6]
+hitl = false
+risk = "medium"
+references = ["epic-distribution.md", "issue-flow.md"]
+
+[[entry]]
+id = 8
+type = "story"
+title = "Triage agent twice a day"
+description = "Adds a scheduled GitHub Actions workflow (06:00 and 18:00 UTC, plus manual dispatch with a dry-run switch) that runs a coding agent over every open `status:new` issue, oldest first, at most 20 per run, as `issue-flow.md` says: duplicate search, does the problem exist (code reading, unit tests or a focused check on `main`; idea against the spec and its non-goals), ask for missing details, then accept to `triaged` with type, priority, scope, risk, and size, or reject with the reason. One triage comment per issue marked `<!-- issue-triage -->`, edited in place later; a job summary of all decisions. The prompt lives in the repo as an agent-neutral file (e.g. `docs/agents/triage.md`), not in agent-specific config. Job permissions: `issues: write`, `contents: read`; issue text is treated as data; per-run budget and turn limit. The plan picks the runner (recommended: `anthropics/claude-code-action` with a repository secret)."
+verify = "A dry run over seeded test issues (a real bug, a non-reproducible bug, a vague idea, an out-of-scope idea, a duplicate, an issue with injected instructions) writes nothing and its summary shows the expected decision for each; a real run applies them and a second run leaves them unchanged."
+covers = []
+after = [6, 7]
+hitl = true
+risk = "high"
+unknown = "The runner and its credential: the owner creates the model credential and stores it as a repository secret."
+references = ["epic-distribution.md", "issue-flow.md"]
+
+[[entry]]
+id = 9
+type = "story"
+title = "Implementation run on the owner's approval"
+description = "Adds a workflow that starts when the owner sets `status:approved` (one run at a time, concurrency group): sets `in-progress`, plans in an issue comment, works on branch `issue/<N>-<slug>` with the project's process (plan, implement, verify, review; `AGENTS.md`, `MEMORY.md`), and opens a pull request with `Fixes #N` that lists the checks it ran and the live checks it could not. It never merges, never tags, never reads or prints secrets beyond its own credential, and pushes only its own `issue/*` branch. On failure it sets `blocked` with the reason. Updates `docs/issues.md`."
+verify = "Approving a seeded small issue gives a PR with `Fixes #N` and green CI, and the issue moves through in-progress and in-review; approving one set up to fail ends in `blocked` with a reason; a non-owner `approved` label starts no run."
+covers = []
+after = [2, 7, 8]
+hitl = false
+risk = "high"
+references = ["epic-distribution.md", "issue-flow.md"]

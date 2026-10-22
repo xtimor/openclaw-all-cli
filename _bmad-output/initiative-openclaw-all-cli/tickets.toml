@@ -14,5 +14,5 @@ after = [{ epic = 1, needs = "epic-cursor-cli done (CAP-1..CAP-11 pass); the cor
 [[epic]]
 id = 3
 slug = "epic-distribution"
-title = "Install from npm, released by GitHub CI"
+title = "Install from npm, released by GitHub CI, and the GitHub issue loop"
 covers = []
