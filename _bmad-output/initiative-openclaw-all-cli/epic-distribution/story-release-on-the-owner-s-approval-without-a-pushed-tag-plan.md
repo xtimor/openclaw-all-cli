@@ -12,7 +12,7 @@ review: 'quick'
 review_source: 'pinned'
 lenses_ran: [quick]
 review_loop_iteration: 0
-followup_review_recommended: true
+followup_review_recommended: false
 context: []
 warnings: []
 deferred: []
@@ -45,12 +45,25 @@ Oneshot: about 40 lines in the script, one env line in the workflow, tests, a do
   - `[low]` `[patch]` stale comments in `release.yml` and the script header — updated.
   - `[low]` `[patch]` manual recovery after a failed GitHub release step lacked the commit and the tarball — the script prints `release commit: <sha>, tarball sha256: <sha256>` before `gh release create`; docs take the tarball from npm (`npm pack openclaw-all-cli@X.Y.Z`) and give the full command.
 
+### 2026-10-22 — Review pass (follow-up)
+- verdicts: 8 findings — high 0, medium 1, low 7, false 0, maybe-false 0
+- findings:
+  - `[low]` `[patch]` MEMORY.md quoted a Ukrainian word (project in English) — now "release?".
+  - `[low]` `[patch]` README still said "cut a release from a tag" — now names the approval flow.
+  - `[low]` `[patch]` recovery advice wrong for a failed tag-push run and for re-runs — split per path.
+  - `[medium]` `[patch]` first-release manual fallback assumed a GitHub release and tag that the dispatch path never created — now builds from the run's commit, publishes with 2FA, and creates the release and tag with `--target`.
+  - `[low]` `[reject]` tag pushed by hand between the check and `gh release create` — needs a person to push the same new tag during a run they approved; the fix is an extra guard.
+  - `[low]` `[patch]` duplicate "off main" test (dispatch never calls merge-base) — removed; the head-of-main test covers it.
+  - `[low]` `[patch]` no test for a dispatched dry run — added (no git calls, no tag or head requirements).
+  - `[low]` `[reject]` verification records in the plan — plan edit (rule); `npm run ci` after these patches: green; the GitHub dispatch dry run runs after merge.
+
 ## Auto Run Result
 
 - Summary: a real `workflow_dispatch` run on `main` releases `main`'s head and the GitHub release creates the new tag (`--target`); tag pushes are unchanged.
 - Review: 5 patched (1 high, 2 medium, 2 low), 0 deferred, 0 rejected.
 - Follow-up review recommended: true by the rule (a high was patched); the risk named: the dispatch path itself is proven only by stubs until a real dispatched release runs. Covered by the release run that follows, which the owner approves.
-- Verification: 41 release-script tests; `npm run ci` green (962 unit tests) before the review patches; dispatch dry run on GitHub (run 39814678405) green before this change.
+- Follow-up pass: no high; converged.
+- Verification: 41 release-script tests and `npm run ci` green after the follow-up patches; `npm run ci` green (962 unit tests) before the review patches; dispatch dry run on GitHub (run 39814678405) green before this change.
 
 ## Verification
 

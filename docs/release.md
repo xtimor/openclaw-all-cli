@@ -28,7 +28,7 @@ Then:
 1. Watch the `Release` run in GitHub Actions. The summary shows the version, the npm tag, and the sha256.
 2. Check: `npm view openclaw-all-cli@X.Y.Z dist.shasum` matches the `.tgz` attached to the GitHub release (`sha1sum` of the file), and the package page shows the provenance badge.
 
-A failed run before the publish step is safe to repeat: fix the cause, then dispatch a new run on `main` (a re-run keeps the old commit and is refused), or delete and re-push the tag if the tag itself was wrong. If the publish succeeded and only the GitHub release failed, do not publish again: the log line `release commit: <sha>, tarball sha256: <sha256>` before the failure gives both values; take the tarball from npm (`npm pack openclaw-all-cli@X.Y.Z`, after approval on a first release), check its sha256, then `gh release create vX.Y.Z openclaw-all-cli-X.Y.Z.tgz --target <sha> --generate-notes --notes "sha256: <sha256>"` (add `--prerelease` for a prerelease; `--target` also creates the tag).
+A failed run before the publish step is safe to repeat. A dispatched run: fix the cause, then dispatch a new run on `main` (a re-run keeps its old commit, so it is refused once `main` moved). A tag-push run: the tag stays on origin, so delete it (`git push origin :refs/tags/vX.Y.Z`), fix, and push the tag again, or dispatch the same version on `main` after deleting it. If the publish succeeded and only the GitHub release failed, do not publish again: the log line `release commit: <sha>, tarball sha256: <sha256>` before the failure gives both values; take the tarball from npm (`npm pack openclaw-all-cli@X.Y.Z`, after approval on a first release), check its sha256, then `gh release create vX.Y.Z openclaw-all-cli-X.Y.Z.tgz --target <sha> --generate-notes --notes "sha256: <sha256>"` (add `--prerelease` for a prerelease; `--target` also creates the tag).
 
 ## Dry run
 
@@ -58,7 +58,16 @@ npm can set a trust only on a package that exists, and `openclaw-all-cli` is not
 
 If `NPM_TOKEN` is missing on the first release, the run fails before staging and names the secret.
 
-If npm refuses to stage a package it has never seen, publish the first version yourself, with 2FA, from the tarball the run built: download the `.tgz` from the GitHub release (or re-run as a dry run and take it from the job), check its sha256 against the run summary, `npm publish openclaw-all-cli-X.Y.Z.tgz` (npm asks for the 2FA code), then continue at step 4. That version has no provenance; later ones do.
+If npm refuses to stage a package it has never seen, the run stops before the GitHub release, so no tag and no release exist. Publish the first version yourself, with 2FA, from the commit the run used (its head SHA in the Actions run):
+
+```sh
+git fetch origin && git switch --detach <sha>
+npm ci && npm version X.Y.Z --no-git-tag-version && npm run build && npm pack
+npm publish openclaw-all-cli-X.Y.Z.tgz          # asks for the 2FA code
+gh release create vX.Y.Z openclaw-all-cli-X.Y.Z.tgz --target <sha> --generate-notes --notes "sha256: $(sha256sum openclaw-all-cli-X.Y.Z.tgz | cut -d' ' -f1)"
+```
+
+Then continue at step 4. That version has no provenance; later ones do.
 
 `npm trust` and `npm stage` need npm 11.15 or later on your machine (`npm install -g npm@latest`).
 

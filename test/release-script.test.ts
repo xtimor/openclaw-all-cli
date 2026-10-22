@@ -334,11 +334,12 @@ describe("release.sh", () => {
       expect(called(o, "ci-check")).toEqual([]);
     });
 
-    it("fails before checks off main", () => {
-      const o = release({ ...base, STUB_MAIN_HEAD: "ddd", STUB_ON_MAIN: "0" });
-      expect(o.status).not.toBe(0);
-      expect(o.stderr).toContain("origin/main");
-      expect(called(o, "ci-check")).toEqual([]);
+    it("a dispatched dry run needs no new tag, no main head, and reads no remote", () => {
+      const o = release({ ...base, DRY_RUN: "true", STUB_TAG_MISSING: "0", STUB_REMOTE_TAG: "1", STUB_MAIN_HEAD: "ddd" });
+      expect(o.status, o.stderr).toBe(0);
+      expect(published(o)[0]).toContain("--dry-run");
+      expect(called(o, "git ")).toEqual([]);
+      expect(called(o, "gh ")).toEqual([]);
     });
 
     it("a tag push still requires the tag and verifies it", () => {
