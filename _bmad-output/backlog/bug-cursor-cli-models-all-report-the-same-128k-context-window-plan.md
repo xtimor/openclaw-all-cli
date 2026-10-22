@@ -72,6 +72,18 @@ Route: oneshot, about 60 lines of production code. This worker cannot launch sub
   - `[false]` `[reject]` An effort-variant swap could change the window: `idForEffort` requires equal non-effort parameters, `context` included (`fixedParams`), so a swap never crosses windows; a row without `context` cannot swap to one with it.
 - Note: the Quick lens is a subagent; this worker cannot launch one, so the pass is the worker's own read of the diff and the plan's criteria (`lenses_ran` empty). AC1 and AC2 checked against diff and tests: met. AC3 (no change needed) does not hold: the old rows carry no window.
 
+### 2026-10-22 — Review pass (follow-up, cross-family)
+- verdicts: 7 findings — high 0, medium 0, low 5, false 2, maybe-false 0
+- findings:
+  - `[low]` `[reject]` `k` read as 1 000 while Cursor may mean 1 024 — carried: `parseWindow` still multiplies by 1 000, the safe direction; the fix needs a live fact.
+  - `[low]` `[reject]` The family table can go stale if Cursor changes a family's default window — carried: `FAMILY_CONTEXT_WINDOWS` unchanged, an own `context=` still wins, AC1 asks for this fallback.
+  - `[false]` `[reject]` An effort-variant swap could change the window — carried: `idForEffort` still filters siblings on equal base and `fixedParams` (lowercased non-effort keys and values, `context` included), and the window lives on the catalog row, so a swap never crosses windows.
+  - `[low]` `[reject]` A family row with no `context=` whose real Cursor default is smaller than the table (for example a `fast` variant) gets the larger family window — no such row in the recorded 2026.10.16 listing (every `grok-4.7`, `claude-opus-5-5`, `claude-opus-5` row carries `context=`; the fixture dates from b53cfcd, before this change), AC1 mandates the family fallback, and a fix (min over the listing's own values) adds logic for a listing never seen.
+  - `[low]` `[reject]` An ID with two `context` keys takes the first parsable one, not the smaller — every Cursor ID seen carries one `context`; a branch for a state never observed is not worth it.
+  - `[low]` `[reject]` A unitless tiny value (`context=200`) is read as 200 tokens; OpenClaw's CLI prepare path (`prepare.runtime` `resolveContextWindowInfo`) has no hard-minimum block (only the embedded agent's `evaluateContextWindowGuard` has one), so compaction would fire every turn — it errs small, never large; Cursor lists only `k`/`m` values; a floor is an extra guard for unshown state.
+  - `[false]` `[reject]` AC1's "also in the published model definition" is untested for the family path — `toRow` and `toModelDefinition` copy `contextWindow` whatever its source (CLI-agnostic core); the published path is tested with an own value (`test/backend.test.ts`, `fake-slow` 1 000 000) and with absence, and the family path differs only inside the adapter, tested in `models.test.ts`.
+- Note: run by a worker that cannot launch subagents; per the dispatcher's instruction the Quick lens ran in-session, independently of the first pass (`lenses_ran` empty). Checked: diff since `3c130f34009aaf27c9723cf4bb54e57bf673cd2a`; AC1 and AC2 met (baseline `src` files restored temporarily: 6 new or changed tests failed, all pass on the fix); family values match the recorded listing fixture; `parseWindow` never reads a value larger than the stated one (`k` 1 000, `m` 1 000 000, other text ignored); effort sibling selection keeps `context`. AC3 does not hold.
+
 ## Verification
 
 **Commands:**
@@ -92,3 +104,5 @@ Route: oneshot, about 60 lines of production code. This worker cannot launch sub
 **Verification:** `npm run ci` passed. Isolated OpenClaw 2026.10.3 (copied state, packed plugin, fake agent as `command`, `gateway call models.list`): `fake-slow[context=1m,...]` showed `contextWindow` 1000000, rows with no window showed the host's 128000. Live Cursor check not run (no login): the owner compares `openclaw models list --all` on a gateway with a login.
 
 **Residual risks:** Cursor's `256k` may mean 262 144 (the smaller reading is used); the family table follows what Cursor's listing gave on 2026.10.16.
+
+**Follow-up review (2026-10-22, cross-family, quick):** patches applied 0 (high 0, medium 0, low 0); deferred 0; rejected 5 low (k=1000 reading, carried; family staleness, carried; family fallback larger than a smaller variant's real default; duplicate `context` keys; unitless tiny value) and 2 false (effort swap, carried; family path untested in the published definition), reasons in the triage log. No code reverted or re-derived. `npm run ci` passed. Follow-up review recommended: false (no `high` patched; the work has converged). Residual: whether OpenClaw's CLI turn budget reads the discovered window (the host's context cache has `applyDiscoveredContextWindows`) was not traced end to end; the live Cursor check is still not run (no login).
