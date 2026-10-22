@@ -17,7 +17,8 @@
     "dev:env": "scripts/dev-setup.sh",
     "dev:install": "scripts/dev-openclaw.sh install",
     "dev:openclaw": "scripts/dev-openclaw.sh run",
-    "package": "npm run build && npm pack"
+    "package": "npm run build && npm pack",
+    "ci": "scripts/ci-check.sh"
   },
   "openclaw": {
     "extensions": [

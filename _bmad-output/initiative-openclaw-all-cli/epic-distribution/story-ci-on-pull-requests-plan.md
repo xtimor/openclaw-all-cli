@@ -3,14 +3,14 @@ title: 'CI on pull requests'
 type: 'feature'
 ticket: '2'
 created: '2026-10-22'
-status: 'in-progress'
+status: 'in-review'
 baseline_revision: 'd5e8eec4fe1ceecf0587045e23c3ab272e9d4163'
 route: 'full'
 route_source: 'auto'
 risk: 'low'
-review: ''
-review_source: ''
-lenses_ran: []
+review: 'quick'
+review_source: 'pinned'
+lenses_ran: [quick]
 review_loop_iteration: 0
 followup_review_recommended: false
 context: ['{project-root}/AGENTS.md', '{project-root}/MEMORY.md']
@@ -67,6 +67,8 @@ deferred: []
 - Given a pull request on GitHub, when the workflow runs, then it is green (verified after a PR exists; record as not run if none).
 
 ## Implementation Notes
+
+Implemented by a sonnet subagent, checked by the orchestrator. `scripts/ci-check.sh`, `npm run ci`, `.github/workflows/ci.yml` (workflow-level `env` `NODE_VERSION`/`OPENCLAW_VERSION`, read by `dev-openclaw.sh`, equal to its defaults), `docs/setup.md` `### Checks (CI)`. Action SHAs from `git ls-remote` (lightweight tags, so commit SHAs). Local `npm run ci`: exit 0, 920 unit tests, smoke `status=loaded cliBackendIds=["cursor-cli"]`, `.spike/state` checksums unchanged, temp dir removed. A type error in `src/plugin.ts` stopped at Typecheck (exit 1, reverted). GitHub run: not run yet (no pull request).
 
 ## Plan Change Log
 
