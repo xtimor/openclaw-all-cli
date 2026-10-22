@@ -12,10 +12,17 @@ review: 'quick'
 review_source: 'pinned'
 lenses_ran: [quick]
 review_loop_iteration: 0
-followup_review_recommended: true
+followup_review_recommended: false
 context: ['{project-root}/AGENTS.md', '{project-root}/MEMORY.md', '{project-root}/_bmad-output/initiative-openclaw-all-cli/epic-distribution/issue-flow.md']
 warnings: []
-deferred: []
+deferred:
+  - summary: >-
+      Private vulnerability reporting is off, so the security link in the forms and SECURITY.md cannot take a report.
+    evidence: |-
+      gh api repos/xtimor/openclaw-all-cli/private-vulnerability-reporting returned {"enabled":false}; only the owner can enable it in Settings, Code security.
+    location: >-
+      .github/ISSUE_TEMPLATE/config.yml
+    severity: medium
 ---
 
 <intent-contract>
@@ -84,6 +91,13 @@ Implemented by a sonnet subagent. Forms, `config.yml`, `SECURITY.md`, `.github/l
   - `[medium]` `[patch]` the guide left out the course-correction PR (`Refs #N` → `planned`) — states row, step 4, step 5 fixed.
   - `[low]` `[patch]` `- [x]` vs the form's `- [X]` — example uses `- [X]`.
   - `[low]` `[reject]` unticked plan tasks — plan edit (rule).
+
+### 2026-10-22 — Review pass (follow-up)
+- verdicts: 3 findings — high 0, medium 1, low 2, false 0, maybe-false 0
+- findings:
+  - `[medium]` `[defer]` private vulnerability reporting is off on the repository (`{"enabled":false}`), so the security link cannot take a report — a repository setting only the owner can turn on (Settings → Code security → Private vulnerability reporting); asked of the owner, checked after.
+  - `[low]` `[patch]` API-filed ideas lacked the form's `[Idea]: ` title prefix — added to the guide.
+  - `[low]` `[patch]` the pagination test put the wanted label on page 1 — now at index 100 (page 2).
 
 ## Auto Run Result
 

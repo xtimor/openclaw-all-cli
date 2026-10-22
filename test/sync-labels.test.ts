@@ -266,11 +266,11 @@ describe("sync-labels.mjs", () => {
 
   it("reads every page of the repository's labels", async () => {
     // 150 other labels, the wanted label sits on page 2 and must not be created again.
-    for (let i = 0; i < 99; i += 1) labels.push({ name: `other-${i}`, color: "ffffff", description: null });
+    for (let i = 0; i < 100; i += 1) labels.push({ name: `other-${i}`, color: "ffffff", description: null });
     const wanted = fileLabels();
     const present = wanted[3] as { name: string; color: string; description: string };
     labels.push({ name: present.name, color: present.color, description: present.description });
-    for (let i = 99; i < 150; i += 1) labels.push({ name: `other-${i}`, color: "ffffff", description: null });
+    for (let i = 100; i < 150; i += 1) labels.push({ name: `other-${i}`, color: "ffffff", description: null });
     const result = await run();
     expect(result.code, result.stderr).toBe(0);
     expect(calls.filter((call) => call.method === "GET").length).toBeGreaterThanOrEqual(2);
