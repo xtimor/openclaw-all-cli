@@ -1,7 +1,7 @@
 ---
 run_id: run-2026-10-22-issue-batch
 scope: issue batch #8 #10 #12 #13
-status: running
+status: completed
 checkpoint: none
 branch: claude/nice-ritchie-0qbcbr
 models: build sonnet, review opus, plan opus (Claude Code map, effort high); fallbacks swapped
@@ -31,3 +31,5 @@ Unattended batch from `docs/agents/implement.md`. Build order: issue order (#8, 
 - backlog/3 review — built, followup false, no change (opus, self-run lenses). Commit 46f1150. Open: whether the per-turn compaction budget reads the published window (not traced).
 - backlog/3 close — done.
 - backlog/4 build — start
+- backlog/4 build — done, no plugin change (sonnet, criterion 4: the host emits one final assistant event itself and the plugin result only sets final text; one delta stream plus one final over the Gateway wire). Commit 26f4303. Control UI and real Cursor not checked. Review lenses ran inside the worker.
+- Closing: run completed. Issue #13 goes to the owner as blocked with the finding, because "no change needed" is not a fix.
