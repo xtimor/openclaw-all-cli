@@ -32,7 +32,6 @@ covers = []
 after = [2]
 hitl = false
 risk = "medium"
-unknown = "The npm package name and scope, and whether the name is free on npmjs.com."
 references = ["epic-distribution.md"]
 
 [[entry]]
@@ -45,7 +44,6 @@ covers = []
 after = [3]
 hitl = true
 risk = "high"
-unknown = "Who owns the npm account and scope, and whether trusted publishing or a token is used; the owner creates the credential and the repository secret."
 references = ["epic-distribution.md"]
 
 [[entry]]
