@@ -72,7 +72,7 @@ The agent may reject on its own; the author replies on the issue to dispute it, 
 
 ## Triage run (twice a day)
 
-Runner: a Claude Code scheduled task on the owner's account (05:46 and 17:46 UTC), each firing a fresh cloud session on this repository that follows `docs/agents/triage.md` and reaches GitHub through the owner's connector. A firing note `dry run` makes it report without writing.
+Runner: a Claude Code scheduled task on the owner's account (frequency set by the owner, twice a day by default), each firing a fresh cloud session on this repository that follows `docs/agents/triage.md` and reaches GitHub through the owner's connector. A firing note `dry run` makes it report without writing.
 
 Takes every open issue in `status:new`, oldest first, at most 20 per run. For each one:
 
@@ -85,9 +85,9 @@ It writes one triage comment per issue, marked `<!-- issue-triage -->`, and edit
 
 ## Implementation run
 
-Runner: a Claude Code scheduled task on the owner's account, every 3 hours and on demand, each firing a fresh cloud session that follows `docs/agents/implement.md`. It takes the oldest issue whose latest `labeled status:approved` event is by the owner (it checks the timeline itself; the state automation also removes other actors' approvals). One issue per firing.
+Runner: the same Claude Code scheduled task as triage; after the triage report the session follows `docs/agents/implement.md` (the owner sets the routine's frequency and can run it now). It takes the issues whose latest `labeled status:approved` event is by the owner (it checks the timeline itself; the state automation also removes other actors' approvals), oldest first, as a batch of at most 6 or about 3 hours per firing, and opens one PR per batch with a `Fixes #N` line per issue.
 
-It follows [BMAD flow per state](#bmad-flow-per-state): ticket by `bmad-ticket`, build by `bmad-build-auto` (or `dev-orchestrator`), course corrections by `bmad-correct-course`, on the branch its session is given, and opens a pull request with `Fixes #N` (or `Refs #N` for a proposal). CI must be green. It never merges, never tags a release, and never touches secrets. Checks it could not run (live Cursor) are listed in the PR. On failure the issue goes to `blocked` with the reason.
+It follows [BMAD flow per state](#bmad-flow-per-state): ticket by `bmad-ticket`, build by `dev-orchestrator` (`bmad-build-auto` per ticket), course corrections by `bmad-correct-course`, on the branch its session is given, and opens a pull request with `Fixes #N` (or `Refs #N` for a proposal). CI must be green. It never merges, never tags a release, and never touches secrets. Checks it could not run (live Cursor) are listed in the PR. On failure the issue goes to `blocked` with the reason.
 
 ## BMAD flow per state
 
@@ -98,15 +98,15 @@ Skills are the ones in `.claude/skills/` (mirrored in `.agents/skills/`); the ti
 | `new` (triage) | triage agent | Reads the spec, architecture, `MEMORY.md`, and the ticket store (`tickets.py status`) for duplicates and scope. Bug: the single-ticket check of `bmad-ticket` (the "Ticket" section of `references/validate-checks.md`) to judge whether it is a real, buildable bug. Idea: checked against the spec's capabilities and non-goals; the lenses of `bmad-forge-idea` frame the questions. Sizes the work into a path: **standalone** (one bug or story), **epic entry** (fits an existing epic), **course correction** (changes an epic, the spec, or the architecture), or **existing ticket** (an open BMAD ticket already covers it). | Triage comment: verdict, evidence, priority, path, draft ticket text. Nothing is written to the repo. |
 | `needs-info` | author, then triage agent | None; the questions come from the triage step above. | Questions in the triage comment. |
 | `triaged` | owner | None. The owner reads the triage comment and may change priority or path. | `approved`, reject, or a question. |
-| `approved`, path standalone or epic entry | implementation agent | 1. `bmad-ticket`: create the ticket (a bug or story in `backlog/`, or an entry in the named epic) and refine it to full acceptance criteria. 2. `bmad-build-auto` (route `auto`, review `thorough` for p0 and p1, `auto` otherwise): plan (`draft` → `ready-for-dev`), implement (`in-progress`), review with `bmad-code-review` lenses (`in-review` → `built`). Several tickets: `dev-orchestrator` over them. | The session's branch with the ticket, its plan, and the code; PR `Fixes #N`. |
-| `approved`, path existing ticket | implementation agent | `bmad-build-auto` (or `dev-orchestrator`) on the named ticket, as above. | PR `Fixes #N` from the session's branch. |
-| `approved`, path course correction | implementation agent | `bmad-correct-course` in batch mode: change proposal, edited epic, spec, or architecture, and new tickets via `bmad-ticket`. No code. | Proposal PR `Refs #N`; the owner's merge is the approval. Then `planned`. |
-| `planned` → `approved` | implementation agent | `dev-orchestrator` over the tickets the proposal created, each through `bmad-build-auto` as above. | One PR per ticket, the last with `Fixes #N`. |
+| `approved`, path standalone or epic entry | implementation agent | 1. `bmad-ticket`: create the ticket (a bug or story in `backlog/`, or an entry in the named epic) and refine it to full acceptance criteria. 2. `dev-orchestrator` over the batch's tickets, in the agent's own session (`blocked_policy = "continue"`): per ticket `bmad-build-auto` (review `thorough` for p0 and p1, the default otherwise) plans (`draft` → `ready-for-dev`), implements (`in-progress`), and reviews with `bmad-code-review` lenses (`in-review` → `built`). | The session's branch with the ticket, its plan, and the code; PR `Fixes #N`. |
+| `approved`, path existing ticket | implementation agent | `dev-orchestrator` on the named ticket, as above. | PR `Fixes #N` from the session's branch. |
+| `approved`, path course correction | implementation agent | `bmad-correct-course` in batch mode (its approval prompts deferred to the owner's merge), then new tickets via `bmad-ticket`. No code. | A `Refs #N` line in the batch PR; the owner's merge is the approval. Then `planned`. |
+| `planned` → `approved` | implementation agent | The tickets the proposal created (notes `Issue: #N`), built by `dev-orchestrator` as above. | `Fixes #N` in the next batch PR. |
 | `in-progress` | implementation agent | The build's plan status is the source of truth: `draft`, `ready-for-dev`, `in-progress`. | Progress line in the issue comment. |
 | `in-review` | owner | Owner review comments on the PR: the agent resumes the same plan with `bmad-build-auto` (it re-enters at review), pushes, and replies. | Updated PR. |
 | `blocked` | owner | The plan's `blocked_reason` (from `bmad-build-auto` halting) is quoted in the issue. | Owner decides: `approved` to retry, or reject. |
-| closed completed | automation | `tickets.py mark <ref> done` in the merged branch's last commit; at the end of an epic, `bmad-retrospective` as usual. | Ticket `done`. |
-| closed not planned (after approval) | automation | `tickets.py mark <ref> dropped`. | Ticket `dropped`. |
+| closed completed | implementation agent (next run) | `tickets.py mark <ref> done` (housekeeping); at the end of an epic, `bmad-retrospective` as usual. | Ticket `done`. |
+| closed not planned (after approval) | implementation agent (next run) | `tickets.py mark <ref> dropped` (housekeeping). | Ticket `dropped`. |
 
 Plan status and issue state agree: `draft`, `ready-for-dev`, `in-progress` are `in-progress`; `in-review`, `built` with an open PR are `in-review`; `blocked` is `blocked`; `done` closes the issue.
 

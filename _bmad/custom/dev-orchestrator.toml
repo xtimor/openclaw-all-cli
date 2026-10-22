@@ -1,0 +1,3 @@
+[agent]
+# Unattended batches (docs/agents/implement.md): a blocked ticket must not stop the rest of the batch.
+blocked_policy = "continue"
