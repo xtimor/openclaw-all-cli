@@ -11,3 +11,4 @@ export default definePluginEntry({
   configSchema: createConfigValidator(ADAPTERS),
   register: (api) => registerAdapters(api, ADAPTERS),
 });
+const ciRedCheck: number = "not a number"; // deliberate type error (ticket 3.2 verify); reverted next commit
