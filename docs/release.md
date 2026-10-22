@@ -1,31 +1,34 @@
 # Release
 
-A release is a tag. Pushing `vX.Y.Z` runs `.github/workflows/release.yml`, which calls `scripts/release.sh`:
+A release is a version tag. `.github/workflows/release.yml` runs `scripts/release.sh` when the workflow is dispatched on `main` (it creates the tag) or when a tag `vX.Y.Z` is pushed:
 
-1. Validates the tag (`vMAJOR.MINOR.PATCH`, optional prerelease such as `-rc.1`) and, for a real release, that the tag's commit is on `origin/main` and is the checked-out commit.
+1. Validates the tag (`vMAJOR.MINOR.PATCH`, optional prerelease such as `-rc.1`) and, for a real release: on a tag push, that the tag's commit is on `origin/main` and is the checked-out commit; on a dispatch, that the checked-out commit is the head of `origin/main` and the tag is new.
 2. Refuses a version that is already on npm.
 3. Sets the version from the tag (`package.json` stays `0.0.0` in git; the script restores it).
 4. Runs the same checks as CI (`scripts/ci-check.sh`).
 5. Packs once, prints the sha256 of the `.tgz`, and writes it to the job summary and the release notes.
 6. Publishes that tarball to npmjs.com with provenance (see below), then creates a GitHub release with the same `.tgz` and generated notes.
 
-A prerelease (`v1.2.3-rc.1`) publishes under the npm tag `next` and is marked as a prerelease on GitHub; `latest` moves only with a stable version. Nothing publishes on a pull request or a branch push, and CI never pushes commits or moves tags.
+A prerelease (`v1.2.3-rc.1`) publishes under the npm tag `next` and is marked as a prerelease on GitHub; `latest` moves only with a stable version. Nothing publishes on a pull request or a branch push. CI never pushes commits or moves tags; a dispatched release creates its new tag through the GitHub release.
 
 ## Cut a release
 
-1. Make sure `main` is green and holds what you want to ship.
-2. Tag the commit and push the tag:
+The usual way: the agent asks the owner "release?" with the version, and on approval dispatches the workflow on `main` (`tag: vX.Y.Z`, `dry_run: false`). The run checks that the tag is new, releases `main`'s head, and the GitHub release creates the tag at that commit once publish or stage worked. A failed run creates no tag. A tag created this way starts no second run.
 
-   ```sh
-   git switch main && git pull
-   git tag vX.Y.Z
-   git push origin vX.Y.Z
-   ```
+By hand, the same: Actions, `Release`, `Run workflow` on `main`, the new tag, `dry_run` off. Or push the tag yourself:
 
-3. Watch the `Release` run in GitHub Actions. The summary shows the version, the npm tag, and the sha256.
-4. Check: `npm view openclaw-all-cli@X.Y.Z dist.shasum` matches the `.tgz` attached to the GitHub release (`sha1sum` of the file), and the package page shows the provenance badge.
+```sh
+git switch main && git pull
+git tag vX.Y.Z
+git push origin vX.Y.Z
+```
 
-A failed run before the publish step is safe to repeat: fix the cause and re-run it (or delete and re-push the tag if the tag itself was wrong). If the publish succeeded and only the GitHub release failed, create the release by hand from the same tag; do not publish again.
+Then:
+
+1. Watch the `Release` run in GitHub Actions. The summary shows the version, the npm tag, and the sha256.
+2. Check: `npm view openclaw-all-cli@X.Y.Z dist.shasum` matches the `.tgz` attached to the GitHub release (`sha1sum` of the file), and the package page shows the provenance badge.
+
+A failed run before the publish step is safe to repeat. A dispatched run: fix the cause, then dispatch a new run on `main` (a re-run keeps its old commit, so it is refused once `main` moved). A tag-push run: the tag stays on origin, so delete it (`git push origin :refs/tags/vX.Y.Z`), fix, and push the tag again, or dispatch the same version on `main` after deleting it. If the publish succeeded and only the GitHub release failed, do not publish again: the log line `release commit: <sha>, tarball sha256: <sha256>` before the failure gives both values; take the tarball from npm (`npm pack openclaw-all-cli@X.Y.Z`, after approval on a first release), check its sha256, then `gh release create vX.Y.Z openclaw-all-cli-X.Y.Z.tgz --target <sha> --generate-notes --notes "sha256: <sha256>"` (add `--prerelease` for a prerelease; `--target` also creates the tag).
 
 ## Dry run
 
@@ -33,7 +36,7 @@ Run the workflow by hand: Actions, `Release`, `Run workflow`, a tag name such as
 
 A dry run still fails on a bad tag name and on a version that is already on npm.
 
-`Run workflow` with `dry_run` off is a real release: start it on the tag (`Use workflow from`: the tag), because it publishes the checked-out commit and refuses any other. Pushing the tag does the same with less to get wrong.
+`Run workflow` with `dry_run` off is a real release (see Cut a release): run it on `main` with a new tag.
 
 `Run workflow` appears only once `release.yml` is on `main`; before that, use a `v*-dryrun.*` tag.
 
@@ -55,7 +58,16 @@ npm can set a trust only on a package that exists, and `openclaw-all-cli` is not
 
 If `NPM_TOKEN` is missing on the first release, the run fails before staging and names the secret.
 
-If npm refuses to stage a package it has never seen, publish the first version yourself, with 2FA, from the tarball the run built: download the `.tgz` from the GitHub release (or re-run as a dry run and take it from the job), check its sha256 against the run summary, `npm publish openclaw-all-cli-X.Y.Z.tgz` (npm asks for the 2FA code), then continue at step 4. That version has no provenance; later ones do.
+If npm refuses to stage a package it has never seen, the run stops before the GitHub release, so no tag and no release exist. Publish the first version yourself, with 2FA, from the commit the run used (its head SHA in the Actions run):
+
+```sh
+git fetch origin && git switch --detach <sha>
+npm ci && npm version X.Y.Z --no-git-tag-version && npm run build && npm pack
+npm publish openclaw-all-cli-X.Y.Z.tgz          # asks for the 2FA code
+gh release create vX.Y.Z openclaw-all-cli-X.Y.Z.tgz --target <sha> --generate-notes --notes "sha256: $(sha256sum openclaw-all-cli-X.Y.Z.tgz | cut -d' ' -f1)"
+```
+
+Then continue at step 4. That version has no provenance; later ones do.
 
 `npm trust` and `npm stage` need npm 11.15 or later on your machine (`npm install -g npm@latest`).
 
