@@ -85,7 +85,7 @@ It writes one triage comment per issue, marked `<!-- issue-triage -->`, and edit
 
 ## Implementation run
 
-Runner: a Claude Code scheduled task on the owner's account, every 3 hours and on demand, each firing a fresh cloud session that follows `docs/agents/implement.md`. It takes the oldest issue whose latest `labeled status:approved` event is by the owner (it checks the timeline itself; the state automation also removes other actors' approvals). One issue per firing.
+Runner: the same Claude Code scheduled task as triage; after the triage report the session follows `docs/agents/implement.md` (the owner sets the routine's frequency and can run it now). It takes the issues whose latest `labeled status:approved` event is by the owner (it checks the timeline itself; the state automation also removes other actors' approvals), oldest first, as a batch of at most 6 or about 3 hours per firing, and opens one PR per batch with a `Fixes #N` line per issue.
 
 It follows [BMAD flow per state](#bmad-flow-per-state): ticket by `bmad-ticket`, build by `bmad-build-auto` (or `dev-orchestrator`), course corrections by `bmad-correct-course`, on the branch its session is given, and opens a pull request with `Fixes #N` (or `Refs #N` for a proposal). CI must be green. It never merges, never tags a release, and never touches secrets. Checks it could not run (live Cursor) are listed in the PR. On failure the issue goes to `blocked` with the reason.
 
