@@ -3,7 +3,7 @@ title: 'A package that npm can publish'
 type: 'feature'
 ticket: '3'
 created: '2026-10-22'
-status: 'built'
+status: done
 baseline_revision: '01cf1f67b862722f20241b43456ee4bada2b7c5c'
 route: 'full'
 route_source: 'auto'
