@@ -229,8 +229,10 @@ export type OpenParams = {
   env: Record<string, string>;
   modelId: string;
   /**
-   * OpenClaw's thinking level for the turn (`off`, `low`, `medium`, `high`, ...), absent when the user
-   * set none. An adapter whose model has an effort setting picks the matching variant at open.
+   * OpenClaw's thinking level for the turn (`off`, `low`, `medium`, `high`, ...). With no level set,
+   * OpenClaw 2026.10.3 sends its own default (`medium` for a reasoning row, `off` otherwise), so it is
+   * absent only when the host gives none. An adapter whose model has an effort setting picks the
+   * matching variant at open.
    */
   thinkingLevel?: string;
   /** Defaults to `agent`. A side question has no `resumeSessionId` and no `mcpServers`. */

@@ -12,7 +12,7 @@ review: 'quick'
 review_source: 'pinned'
 lenses_ran: []
 review_loop_iteration: 0
-followup_review_recommended: true
+followup_review_recommended: false
 context: ['{project-root}/MEMORY.md']
 warnings: []
 deferred:
@@ -92,6 +92,15 @@ Route: oneshot. Production code is about 75 lines (tests and docs come on top), 
   - `[maybe-false]` `[defer]` The host's default thinking level may reach `prepareExecution` when the user set none, moving a reasoning row off its listed default - the trace into the caller of `params.thinkLevel` was not done; a live turn with no level set would settle it. Recorded in `deferred`.
 - Note: the Quick lens is a subagent; this worker cannot launch one, so the pass is the worker's own read of the diff (no independent reviewer, `lenses_ran` empty). All three acceptance criteria were checked against the diff and tests; no patch needed.
 
+### 2026-10-22 — Review pass
+- verdicts: 4 findings — high 0, medium 1, low 2, false 0, maybe-false 1
+- findings:
+  - `[maybe-false]` `[defer]` The host's default thinking level may reach `prepareExecution` when the user set none, moving a reasoning row off its listed default — carried: same location (`src/core/backend.ts:166`) and claim, code unchanged; kept deferred. This pass's host trace (below) answers the host half: OpenClaw 2026.10.3 does send `medium`; whether the plugin should publish a thinking profile with the row's own effort as `defaultLevel` stays the deferred design question.
+  - `[medium]` `[patch]` `docs/providers/cursor.md` Effort table ("no level set: the model you chose keeps its own effort"), the parity P1 row, and the `OpenParams.thinkingLevel` comment ("absent when the user set none") state a host fact that is false: OpenClaw 2026.10.3 resolves an unset level to `profile.defaultLevel ?? (reasoning ? "medium" : "off")` (`thinking-*.mjs` `resolveThinkingSelectionForModel`, used by `agent-command` `primaryThinking.requestedLevel`, `get-reply`, and `/btw`; probed with the host function: a `reasoning: true` cursor-cli row gives `medium`), so a row with a listed `medium` sibling runs on it — fixed the docs, the P1 row, and the comment to say so; MEMORY.md records the fact.
+  - `[low]` `[patch]` `docs/providers/cursor.md` said to set `xhigh`/`max` with `/think` "where OpenClaw accepts them"; the host's profile for a row without a plugin thinking profile is `off`..`high`, and `/think xhigh`, `max`, `adaptive` are refused as not supported (probed) — the bullet now says so and points to the variant's own model row; the P1 row too.
+  - `[low]` `[patch]` The change adds the thinking level to the reuse key, but AD-13's rule, the docs' warm-process paragraph, and both P4 rows still list the key without it — added the thinking level to all four (direct correction).
+- Note: the Quick lens is a subagent; this worker cannot launch one, so the pass is the worker's own adversarial read of the diff, with the host code in `.spike/openclaw` read for the deferred item (`lenses_ran` empty). AC1–AC3 rechecked against diff and tests: met.
+
 ## Design Notes
 
 Host facts (OpenClaw 2026.10.3): `CliBackendPrepareExecutionContext.thinkingLevel` is the user's level (undefined when unset); `execute`'s context has none, so `prepareExecutionFor` forwards it, as it does `authProfileId`. Real Cursor ids seen: `grok-4.7[context=256k,reasoning_effort=high,fast=true]`, `claude-opus-5-5[context=300k,effort=medium,fast=false]`. Live check not run (no login).
@@ -117,3 +126,20 @@ Host facts (OpenClaw 2026.10.3): `CliBackendPrepareExecutionContext.thinkingLeve
 **Verification:** `npm run ci` passed (typecheck, unit tests, build, package test, pack, install smoke). Live Cursor check not run (no login): effort per level, and the default-level question, wait for the owner's live turn.
 
 **Residual risks:** Cursor's ACP listing may hold one variant per model, so the level then changes nothing (documented). Level change restarts the process for non-reasoning rows too (about 3 s, resume).
+
+### Follow-up review pass (2026-10-22)
+
+**Summary:** Follow-up Quick review of the built change (no code behavior change). The host trace showed OpenClaw 2026.10.3 always passes a level: with none set it sends `medium` for a reasoning row, and it refuses `xhigh`/`max`/`adaptive` for these rows. The docs, the parity P1/P4 rows, AD-13, and one port comment now match the host and the reuse key.
+
+**Files changed:**
+- `docs/providers/cursor.md` - Effort: the unset level is OpenClaw's `medium`; `xhigh`/`max`/`adaptive` refused by `/think`; warm-process paragraph and P4 row name the thinking level.
+- `_bmad-output/initiative-openclaw-all-cli/spec-cursor-cli-provider/claude-cli-parity.md` - P1 (host default and refused levels), P4 (thinking level in the reuse key).
+- `_bmad-output/initiative-openclaw-all-cli/architecture-openclaw-all-cli/architecture-openclaw-all-cli.md` - AD-13 rule names the thinking level.
+- `src/core/ports.ts` - `OpenParams.thinkingLevel` comment states the host default.
+- `MEMORY.md` - host thinking-level facts.
+
+**Review:** patches applied 3 (medium 1, low 2); deferred 0 new (1 carried); rejected 0. Follow-up review recommended: false (no `high` patched on this follow-up pass).
+
+**Verification:** `npm run ci` passed (typecheck, unit tests, build, package test, pack, install smoke). Host functions probed with `.spike/node` against OpenClaw 2026.10.3 `thinking-*.mjs`. Live Cursor check not run (no login on this host).
+
+**Residual risks:** The carried deferred item: a reasoning row with a listed `medium` sibling runs on it when no level is set (now documented); a provider thinking profile with the row's effort as default would change that and is not built. The live per-level owner check is still open.
