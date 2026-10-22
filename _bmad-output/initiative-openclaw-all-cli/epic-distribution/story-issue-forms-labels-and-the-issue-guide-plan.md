@@ -3,7 +3,7 @@ title: 'Issue forms, labels, and the issue guide'
 type: 'feature'
 ticket: '6'
 created: '2026-10-22'
-status: 'built'
+status: done
 baseline_revision: '4622b2e18950392922f80fd6cfc22540ccfcc3da'
 route: 'full'
 route_source: 'auto'
@@ -103,7 +103,7 @@ Implemented by a sonnet subagent. Forms, `config.yml`, `SECURITY.md`, `.github/l
 
 - Summary: issue forms (bug, idea, config with private security link), `SECURITY.md`, 15 labels as code with an idempotent sync script and workflow, `docs/issues.md` linked from README.
 - Review: 3 patched (2 medium, 1 low), 1 rejected, 0 deferred. Follow-up review recommended: true by the rule (two mediums patched); both are doc wording, checked by reading; the remaining risk is the GitHub-side checks after merge.
-- Verification: `npm run ci` exit 0; 23 sync tests. After merge (orchestrator): label workflow twice (create, then no writes), an API-filed issue.
+- Verification: `npm run ci` exit 0; 23 sync tests. On GitHub after merge (2026-10-22): the push-triggered sync created all 15 labels; the dispatched second run printed `0 to create, 0 to update, 15 unchanged` (run 39830959264); API-filed issue #6 with the documented headings and `[Idea]: ` title read like a form issue. Private vulnerability reporting: waiting on the owner.
 
 ## Verification
 
