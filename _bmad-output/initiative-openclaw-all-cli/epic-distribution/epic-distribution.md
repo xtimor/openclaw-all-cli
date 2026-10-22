@@ -27,7 +27,8 @@ A person installs the plugin with one command from npmjs.com, and every release 
 5. `docs/setup.md` starts with the short npm install and keeps the build-from-source path for contributors; a release section in `docs/` says how to cut one.
 6. A person or an agent files a bug or an idea through a form or as `docs/issues.md` says, and it gets `status:new`.
 7. Twice a day the triage agent leaves every `status:new` issue in `needs-info`, `triaged` (with priority), or closed with a reason; a dry run writes nothing.
-8. Only the owner's `status:approved` starts an implementation run, which ends in a PR with `Fixes #N` or in `status:blocked` with a reason; merging the PR closes the issue.
+8. Only the owner's `status:approved` starts an implementation run, which ends in a PR with `Fixes #N` (or a course-correction proposal PR) or in `status:blocked` with a reason; merging the PR closes the issue.
+9. Every change an issue leads to is a BMAD ticket with a build plan and a review in the ticket store (`bmad-ticket`, `bmad-build-auto`, `bmad-correct-course`); no agent changes code outside that flow.
 
 ## Boundaries
 
@@ -49,3 +50,4 @@ A person installs the plugin with one command from npmjs.com, and every release 
 - Decision: issues are the intake for bugs and ideas from people and agents; a triage agent runs twice a day, may reject on its own, and hands accepted issues to the owner; only the owner approves development (user, 2026-10-22).
 - Decision: states are `status:*` labels with the flow in `issue-flow.md`; triage at 06:00 and 18:00 UTC; the agents run in GitHub Actions; issue text is untrusted input (agent, 2026-10-22).
 - Unknown: the model credential for the agents in CI; the owner creates it (hitl, entry 8).
+- Requirement: every development, bug fix, and course correction goes through the BMAD flow in this repo; the per-state mapping of skills is in `issue-flow.md` (user, 2026-10-22).

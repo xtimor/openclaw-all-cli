@@ -13,4 +13,5 @@ OpenClaw plugin that exposes local coding CLIs as models. Chat, the agent, and `
 - In chat, answer in the user's language. If the user writes in russian, answer in Ukrainian.
 - User docs live in `docs/` and are linked from `README.md`. Update them in the same change that alters setup, config, or behavior.
 - Make all tactical and technical decisions yourself. Ask the user only about high-level and strategic ones.
+- Every development, bug fix, and course correction goes through the BMAD flow in this repo: a ticket (`bmad-ticket`), a build with plan and review (`bmad-build`, `bmad-build-auto`, `dev-orchestrator`), and `bmad-correct-course` for changes of plan.
 - Run development under strict self-control: set up the process and enforce it yourself (plan, verify, review) for every change.

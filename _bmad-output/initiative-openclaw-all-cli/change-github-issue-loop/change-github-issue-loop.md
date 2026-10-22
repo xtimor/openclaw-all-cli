@@ -4,14 +4,14 @@ title: "GitHub issue loop: intake, twice-daily triage agent, owner approval, imp
 parent: initiative-openclaw-all-cli
 date: 2026-10-22
 scope: moderate
-status: proposed
+status: approved
 ---
 
 # Change: the GitHub issue loop
 
 ## Issue summary
 
-The project has no intake for bugs and ideas from outside the planning sessions. The user asked (2026-10-22) that people and agents can file issues and ideas on GitHub, that an agent processes all open issues twice a day (confirm the problem, set a priority, ask for details, reject or hand to the owner for approval), that the owner's approval starts development, and that the ticket state flow be designed. All of it goes into epic-distribution. Type: new requirement from the stakeholder.
+The project has no intake for bugs and ideas from outside the planning sessions. The user asked (2026-10-22) that people and agents can file issues and ideas on GitHub, that an agent processes all open issues twice a day (confirm the problem, set a priority, ask for details, reject or hand to the owner for approval), that the owner's approval starts development, and that the ticket state flow be designed. All of it goes into epic-distribution. Type: new requirement from the stakeholder. Added the same day: every development, bug fix, and course correction goes through the BMAD flow in this repo, and the agent tickets must define which BMAD skills and agents run in each issue state.
 
 ## Impact analysis
 
@@ -43,7 +43,9 @@ The issue loop does not depend on the npm entries 3.3 to 3.5, only on CI (3.2). 
 4. `tickets.toml` (initiative): epic 3 title.
 5. `initiative-openclaw-all-cli.md`, Notes: decision line.
 6. `architecture-openclaw-all-cli.md`, Deferred: Distribution entry extended.
-7. `MEMORY.md`: decision line.
+7. `MEMORY.md`: decision lines (issue loop, BMAD only).
+8. `issue-flow.md`: the BMAD requirement, the `planned` state, and a 'BMAD flow per state' table; entries 8 and 9 refer to it; epic Done when 9.
+9. `AGENTS.md`: one rule line for the BMAD-only requirement (user asked to record it as a requirement).
 
 ## Handoff
 

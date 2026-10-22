@@ -15,6 +15,7 @@
 - A host without a Cursor login still develops. It installs Node 24 and OpenClaw 2026.10.3 into `.spike` when they are missing. The live `cursor-agent` check waits for a machine that has the login, and that wait is not a question (user, 2026-10-16).
 - Cursor API key optional. Public release (user, 2026-10-22): publish to npmjs.com from GitHub Actions (epic-distribution, tickets 3.1 to 3.5); ClawHub stays out; the earlier "no public release" decision is superseded.
 - GitHub issue loop (user, 2026-10-22): people and agents file bugs and ideas as issues; a triage agent runs twice a day (confirm, prioritize, ask, reject or hand to the owner); only the owner approves development; an agent then opens the PR. States and rules: `epic-distribution/issue-flow.md`, tickets 3.6 to 3.9.
+- BMAD only (user, 2026-10-22): every development, bug fix, and course correction goes through the BMAD flow (`bmad-ticket` → `bmad-build`/`bmad-build-auto`/`dev-orchestrator` → review; `bmad-correct-course` for changes of plan), in sessions and in CI agents. Per-state mapping: `issue-flow.md`.
 - Cursor usage must be found; shipping without it is a last resort.
 
 ## Facts learned the hard way
