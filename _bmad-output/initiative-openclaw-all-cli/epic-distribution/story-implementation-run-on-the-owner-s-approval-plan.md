@@ -34,6 +34,8 @@ Oneshot: two prompt files and docs. Owner decisions 2026-10-22: one routine for 
 
 ## Plan Change Log
 
+- 2026-10-22, user: build the batch with `dev-orchestrator` instead of calling `bmad-build-auto` per ticket. `docs/agents/implement.md` creates the tickets first, then runs `dev-orchestrator` over them in the session; `_bmad/custom/dev-orchestrator.toml` sets `blocked_policy = "continue"` so a blocked ticket does not stop the batch.
+
 ## Review Triage Log
 
 ### 2026-10-22 — Review pass 1
