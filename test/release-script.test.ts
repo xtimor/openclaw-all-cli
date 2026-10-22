@@ -59,7 +59,7 @@ case "$1" in
 esac
 `,
   "ci-check.sh": `#!/usr/bin/env bash
-echo "ci-check | token=\${NODE_AUTH_TOKEN:-}" >>"$STUB_LOG"
+echo "ci-check | token=\${NODE_AUTH_TOKEN:-} gh=\${GH_TOKEN:-} oidc=\${ACTIONS_ID_TOKEN_REQUEST_TOKEN:-}" >>"$STUB_LOG"
 [ "\${STUB_CI_FAIL:-0}" = 1 ] && { echo "ci-check failed" >&2; exit 1; }
 exit 0
 `,
@@ -114,6 +114,9 @@ function release(env: Record<string, string>): Outcome {
       GITHUB_STEP_SUMMARY: summaryFile,
       RELEASE_CI_CHECK: join(work, "ci-check.sh"),
       RELEASE_NODE_BIN: "",
+      RELEASE_STAGE_NPM: "npm",
+      GH_TOKEN: "gh_JOB_TOKEN",
+      ACTIONS_ID_TOKEN_REQUEST_TOKEN: "oidc_REQUEST_TOKEN",
       ...env,
     },
   });
@@ -185,7 +188,7 @@ describe("release.sh", () => {
       expect(o.status, o.stderr).toBe(0);
       const publishes = published(o);
       expect(publishes).toHaveLength(1);
-      expect(publishes[0]).toMatch(/^npm stage publish .*openclaw-all-cli-stub\.tgz --provenance --tag latest \| token=npm_STAGE_SECRET/);
+      expect(publishes[0]).toMatch(/^npm stage publish .*openclaw-all-cli-stub\.tgz --provenance \| token=npm_STAGE_SECRET/);
       expect(called(o, "npm publish ")).toEqual([]);
       const [gh] = called(o, "gh release create");
       expect(gh).toContain("v1.0.0");
@@ -230,11 +233,23 @@ describe("release.sh", () => {
       expect(o.status, o.stderr).toBe(0);
       const publishes = published(o);
       expect(publishes).toHaveLength(1);
-      expect(publishes[0]).toMatch(/^npm publish .*\.tgz --provenance --tag latest \| token=XXXXX-XXXXX-XXXXX-XXXXX$/);
+      expect(publishes[0]).toMatch(/^npm publish .*\.tgz --provenance \| token=XXXXX-XXXXX-XXXXX-XXXXX$/);
       expect(o.calls.join("\n")).not.toContain(SECRET);
       expect(called(o, "npm stage")).toEqual([]);
       expect(called(o, "gh release create")).toHaveLength(1);
       expect(o.summary).toContain("Published openclaw-all-cli@1.0.1");
+    });
+
+    it("a stable version passes no --tag, so npm keeps its guard against moving latest backwards", () => {
+      const o = release(base);
+      expect(o.status, o.stderr).toBe(0);
+      expect(published(o)[0]).not.toContain("--tag");
+    });
+
+    it("the checks get no job credential (GitHub token, OIDC request token, npm token)", () => {
+      const o = release({ ...base, NODE_AUTH_TOKEN: SECRET });
+      expect(o.status, o.stderr).toBe(0);
+      expect(called(o, "ci-check")).toEqual(["ci-check | token=XXXXX-XXXXX-XXXXX-XXXXX gh= oidc="]);
     });
 
     it("works without any token set", () => {

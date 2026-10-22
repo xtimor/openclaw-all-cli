@@ -12,7 +12,7 @@ on:
         required: true
         type: string
       dry_run:
-        description: 'Run everything except publish and the GitHub release'
+        description: 'Run everything except publish and the GitHub release. A real run (false) must be started on the tag (Use workflow from: the tag), since it publishes the checked-out commit'
         required: true
         type: boolean
         default: true

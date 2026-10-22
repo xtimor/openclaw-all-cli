@@ -12,7 +12,7 @@
 #   NODE_AUTH_TOKEN   the stage-only npm token; used for `npm stage publish` and nothing else
 #   GH_TOKEN          for `gh release create`
 # Test hooks: RELEASE_CI_CHECK (the check script), RELEASE_NODE_BIN (isolated Node dir; empty = none),
-#   RELEASE_OUT (the output dir).
+#   RELEASE_OUT (the output dir), RELEASE_STAGE_NPM (the npm that runs `stage publish`).
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -24,6 +24,9 @@ CI_CHECK="${RELEASE_CI_CHECK:-$ROOT/scripts/ci-check.sh}"
 NODE_BIN="${RELEASE_NODE_BIN-$ROOT/.spike/node/bin}"
 TAG="${RELEASE_TAG:-}"
 DRY_RUN="${DRY_RUN:-true}"
+# npm 11 documents "package must exist" for `npm stage`; npm 12.2.1 documents that staging creates a
+# new package. The first release stages a package npm has never seen, so it uses npm 12.2.1.
+read -r -a STAGE_NPM <<<"${RELEASE_STAGE_NPM:-npm exec --yes --package=npm@12.2.1 -- npm}"
 
 step() { printf '\n==> %s\n' "$1"; }
 fail() { printf 'release: %s\n' "$1" >&2; exit 1; }
@@ -52,9 +55,11 @@ if [[ "$TAG" == *-dryrun.* ]]; then DRY_RUN=true; fi
 
 PRERELEASE=false
 DIST_TAG=latest
+TAG_ARGS=() # a stable version takes npm's default: it refuses to move `latest` below a higher version
 if [[ "$VERSION" == *-* ]]; then
   PRERELEASE=true
   DIST_TAG=next
+  TAG_ARGS=(--tag next)
 fi
 
 MODE="release"
@@ -113,7 +118,9 @@ step "Set the version from the tag"
 npm version "$VERSION" --no-git-tag-version --allow-same-version
 
 step "Checks (same as CI)"
-"$CI_CHECK"
+# The checks run dependency scripts and tests: they get no job credential (the npm token is already
+# hidden above; the GitHub token and the OIDC request token could write the repo or publish).
+env -u GH_TOKEN -u GITHUB_TOKEN -u ACTIONS_ID_TOKEN_REQUEST_TOKEN -u ACTIONS_ID_TOKEN_REQUEST_URL "$CI_CHECK"
 use_isolated_node # ci-check installs the isolated Node when it was missing
 
 step "Pack"
@@ -134,15 +141,15 @@ echo "sha256:  $SHA256"
 RESULT=""
 if [ "$DRY_RUN" = true ]; then
   step "Dry run: npm publish --dry-run (nothing is published, no release is created)"
-  npm publish "$TARBALL" --dry-run --tag "$DIST_TAG"
+  npm publish "$TARBALL" --dry-run "${TAG_ARGS[@]}"
   RESULT="Dry run only: nothing was published and no GitHub release was created."
 elif [ "$FIRST_RELEASE" = true ]; then
   step "First release: stage the tarball (the owner approves it with 2FA)"
-  NODE_AUTH_TOKEN="$STAGE_TOKEN" npm stage publish "$TARBALL" --provenance --tag "$DIST_TAG"
+  NODE_AUTH_TOKEN="$STAGE_TOKEN" "${STAGE_NPM[@]}" stage publish "$TARBALL" --provenance "${TAG_ARGS[@]}"
   RESULT="Staged, not published. Approve it with 2FA on npmjs.com (package $PACKAGE, staged versions) or with \`npm stage approve <id>\`; then set the trust and delete the token. Steps: docs/release.md, \"First release\"."
 else
   step "Publish with trusted publishing (OIDC, no token)"
-  npm publish "$TARBALL" --provenance --tag "$DIST_TAG" ||
+  npm publish "$TARBALL" --provenance "${TAG_ARGS[@]}" ||
     fail "npm publish failed. If npm rejected the OIDC login, the trust is not set: see docs/release.md, \"First release\"."
   RESULT="Published $PACKAGE@$VERSION to npm (tag $DIST_TAG) with provenance."
 fi

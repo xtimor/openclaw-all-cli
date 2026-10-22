@@ -71,6 +71,16 @@ Implemented by a sonnet subagent. `scripts/release.sh`, `.github/workflows/relea
 
 ## Review Triage Log
 
+### 2026-10-22 — Review pass
+- verdicts: 6 findings — high 1, medium 2, low 3, false 0, maybe-false 0
+- findings:
+  - `[low]` `[reject]` a staged-but-unapproved version is not caught before publish (matrix "or staged") — the registry's unique-version rule rejects the repeat stage/publish, so nothing wrong ships; catching it earlier needs an authenticated `npm stage list` call (new branch and credential use), more than a direct fix.
+  - `[high]` `[patch]` first release stages with npm 11.19.1, whose `npm-stage.md` lists "package must exist", so the only first-release path could fail — confirmed the two docs disagree (npm 12.2.1: "will allow you to create a new package"); staging now runs `npm exec --package=npm@12.2.1 -- npm stage publish`, and `docs/release.md` adds a manual 2FA fallback.
+  - `[medium]` `[patch]` an explicit `--tag latest` disables npm's guard against moving `latest` backwards (`publish.js` `isDefaultTag`) — stable versions now pass no `--tag`; test added, a mutation back to `--tag latest` fails 3 tests.
+  - `[medium]` `[patch]` `GH_TOKEN` and the OIDC request token reach `ci-check.sh` (npm ci scripts, tests, plugin install) — the checks run under `env -u GH_TOKEN -u GITHUB_TOKEN -u ACTIONS_ID_TOKEN_REQUEST_TOKEN -u ACTIONS_ID_TOKEN_REQUEST_URL`; test added, removing it fails the test.
+  - `[low]` `[reject]` AC2/AC3 status not recorded in the plan — the fix edits this build's plan (rule); recorded under Auto Run Result after the GitHub dry run.
+  - `[low]` `[patch]` `workflow_dispatch` with `dry_run: false` fails unless started on the tag, undocumented — input description and `docs/release.md` now say so; docs also say `Run workflow` exists only once the file is on `main`.
+
 ## Verification
 
 **Commands:**

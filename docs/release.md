@@ -33,12 +33,16 @@ Run the workflow by hand: Actions, `Release`, `Run workflow`, a tag name such as
 
 A dry run still fails on a bad tag name and on a version that is already on npm.
 
+`Run workflow` with `dry_run` off is a real release: start it on the tag (`Use workflow from`: the tag), because it publishes the checked-out commit and refuses any other. Pushing the tag does the same with less to get wrong.
+
+`Run workflow` appears only once `release.yml` is on `main`; before that, use a `v*-dryrun.*` tag.
+
 ## First release
 
 npm can set a trust only on a package that exists, and `openclaw-all-cli` is not on npm yet. So the first release is staged by CI with a stage-only token, and you approve it once:
 
 1. On npmjs.com create a granular access token that can write `openclaw-all-cli` and does **not** bypass 2FA (it can only stage). Store it as the repository secret `NPM_TOKEN` (Settings, Secrets and variables, Actions). If the package does not exist yet and npm will not issue a token for it, create the token with the narrowest scope npm allows.
-2. Cut the release as above. The workflow runs `npm stage publish <tgz> --provenance`; the run summary says the version is staged, not published. The GitHub release is created at this point.
+2. Cut the release as above. The workflow runs `npm stage publish <tgz> --provenance` with npm 12.2.1 (npm 11's docs say staging needs an existing package; npm 12's say it creates one); the run summary says the version is staged, not published. The GitHub release is created at this point.
 3. Approve the staged version with 2FA: on npmjs.com (the package, staged versions), or `npm stage list openclaw-all-cli` then `npm stage approve <id>`.
 4. Set the trust, so later releases need no token:
 
@@ -50,6 +54,10 @@ npm can set a trust only on a package that exists, and `openclaw-all-cli` is not
 6. Check that `npm view openclaw-all-cli dist.shasum` matches the attached tarball.
 
 If `NPM_TOKEN` is missing on the first release, the run fails before staging and names the secret.
+
+If npm refuses to stage a package it has never seen, publish the first version yourself, with 2FA, from the tarball the run built: download the `.tgz` from the GitHub release (or re-run as a dry run and take it from the job), check its sha256 against the run summary, `npm publish openclaw-all-cli-X.Y.Z.tgz` (npm asks for the 2FA code), then continue at step 4. That version has no provenance; later ones do.
+
+`npm trust` and `npm stage` need npm 11.15 or later on your machine (`npm install -g npm@latest`).
 
 Later releases (the package is on npm) run `npm publish <tgz> --provenance` through trusted publishing: the job asks GitHub for an OIDC token and npm accepts it because of the trust above. No token is used. If npm rejects the login, the trust is missing or points at another repository or workflow file: run `npm trust list openclaw-all-cli` and compare with step 4.
 
