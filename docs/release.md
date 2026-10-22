@@ -1,15 +1,15 @@
 # Release
 
-A release is a tag. Pushing `vX.Y.Z` runs `.github/workflows/release.yml`, which calls `scripts/release.sh`:
+A release is a version tag. `.github/workflows/release.yml` runs `scripts/release.sh` when the workflow is dispatched on `main` (it creates the tag) or when a tag `vX.Y.Z` is pushed:
 
-1. Validates the tag (`vMAJOR.MINOR.PATCH`, optional prerelease such as `-rc.1`) and, for a real release, that the tag's commit is on `origin/main` and is the checked-out commit.
+1. Validates the tag (`vMAJOR.MINOR.PATCH`, optional prerelease such as `-rc.1`) and, for a real release: on a tag push, that the tag's commit is on `origin/main` and is the checked-out commit; on a dispatch, that the checked-out commit is the head of `origin/main` and the tag is new.
 2. Refuses a version that is already on npm.
 3. Sets the version from the tag (`package.json` stays `0.0.0` in git; the script restores it).
 4. Runs the same checks as CI (`scripts/ci-check.sh`).
 5. Packs once, prints the sha256 of the `.tgz`, and writes it to the job summary and the release notes.
 6. Publishes that tarball to npmjs.com with provenance (see below), then creates a GitHub release with the same `.tgz` and generated notes.
 
-A prerelease (`v1.2.3-rc.1`) publishes under the npm tag `next` and is marked as a prerelease on GitHub; `latest` moves only with a stable version. Nothing publishes on a pull request or a branch push, and CI never pushes commits or moves tags.
+A prerelease (`v1.2.3-rc.1`) publishes under the npm tag `next` and is marked as a prerelease on GitHub; `latest` moves only with a stable version. Nothing publishes on a pull request or a branch push. CI never pushes commits or moves tags; a dispatched release creates its new tag through the GitHub release.
 
 ## Cut a release
 
@@ -28,7 +28,7 @@ Then:
 1. Watch the `Release` run in GitHub Actions. The summary shows the version, the npm tag, and the sha256.
 2. Check: `npm view openclaw-all-cli@X.Y.Z dist.shasum` matches the `.tgz` attached to the GitHub release (`sha1sum` of the file), and the package page shows the provenance badge.
 
-A failed run before the publish step is safe to repeat: fix the cause and re-run it (or delete and re-push the tag if the tag itself was wrong). If the publish succeeded and only the GitHub release failed, create the release by hand (`gh release create vX.Y.Z <tgz> --target <commit>`, which also creates the tag when the run was dispatched); do not publish again.
+A failed run before the publish step is safe to repeat: fix the cause, then dispatch a new run on `main` (a re-run keeps the old commit and is refused), or delete and re-push the tag if the tag itself was wrong. If the publish succeeded and only the GitHub release failed, do not publish again: the log line `release commit: <sha>, tarball sha256: <sha256>` before the failure gives both values; take the tarball from npm (`npm pack openclaw-all-cli@X.Y.Z`, after approval on a first release), check its sha256, then `gh release create vX.Y.Z openclaw-all-cli-X.Y.Z.tgz --target <sha> --generate-notes --notes "sha256: <sha256>"` (add `--prerelease` for a prerelease; `--target` also creates the tag).
 
 ## Dry run
 

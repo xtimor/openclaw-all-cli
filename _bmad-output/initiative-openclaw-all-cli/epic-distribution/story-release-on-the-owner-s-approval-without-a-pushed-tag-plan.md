@@ -3,7 +3,7 @@ title: 'Release on the owner''s approval, without a pushed tag'
 type: 'feature'
 ticket: '10'
 created: '2026-10-22'
-status: 'in-review'
+status: 'built'
 baseline_revision: '65cd12e82f8b12f947059670d3013f52e6ad9dbb'
 route: 'oneshot'
 route_source: 'auto'
@@ -12,7 +12,7 @@ review: 'quick'
 review_source: 'pinned'
 lenses_ran: [quick]
 review_loop_iteration: 0
-followup_review_recommended: false
+followup_review_recommended: true
 context: []
 warnings: []
 deferred: []
@@ -35,6 +35,22 @@ Oneshot: about 40 lines in the script, one env line in the workflow, tests, a do
 ## Plan Change Log
 
 ## Review Triage Log
+
+### 2026-10-22 — Review pass
+- verdicts: 5 findings — high 1, medium 2, low 2, false 0, maybe-false 0
+- findings:
+  - `[high]` `[patch]` a failing `git ls-remote` read as "tag is new" (and the stub exited 1 on no tag) — output captured with `|| fail`; stub exits 0; test for an unreadable origin added.
+  - `[medium]` `[patch]` dispatch accepted any ancestor of `origin/main` (stale ref, re-run after a fix) — dispatch now requires HEAD == `origin/main`; test added; docs say to dispatch a new run, not re-run.
+  - `[medium]` `[patch]` `docs/release.md` intro, step 1, and "CI never moves tags" described only the tag push — rewritten for both paths.
+  - `[low]` `[patch]` stale comments in `release.yml` and the script header — updated.
+  - `[low]` `[patch]` manual recovery after a failed GitHub release step lacked the commit and the tarball — the script prints `release commit: <sha>, tarball sha256: <sha256>` before `gh release create`; docs take the tarball from npm (`npm pack openclaw-all-cli@X.Y.Z`) and give the full command.
+
+## Auto Run Result
+
+- Summary: a real `workflow_dispatch` run on `main` releases `main`'s head and the GitHub release creates the new tag (`--target`); tag pushes are unchanged.
+- Review: 5 patched (1 high, 2 medium, 2 low), 0 deferred, 0 rejected.
+- Follow-up review recommended: true by the rule (a high was patched); the risk named: the dispatch path itself is proven only by stubs until a real dispatched release runs. Covered by the release run that follows, which the owner approves.
+- Verification: 41 release-script tests; `npm run ci` green (962 unit tests) before the review patches; dispatch dry run on GitHub (run 39814678405) green before this change.
 
 ## Verification
 

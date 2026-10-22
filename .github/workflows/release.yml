@@ -1,6 +1,6 @@
 name: Release
 
-# Push a tag vX.Y.Z (on main) to release. All logic is in scripts/release.sh; see docs/release.md.
+# Release vX.Y.Z: dispatch on main with dry_run off (creates the tag), or push the tag. All logic is in scripts/release.sh; see docs/release.md.
 # workflow_dispatch with dry_run (default) runs every step except publish and the GitHub release.
 on:
   push:
@@ -39,7 +39,7 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          fetch-depth: 0 # the script checks the tag's commit against origin/main
+          fetch-depth: 0 # the script checks the commit against origin/main
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: ${{ env.NODE_VERSION }}

@@ -54,9 +54,13 @@ case "$1" in
     case "$*" in
       *refs/tags/*) [ "\${STUB_TAG_MISSING:-0}" = 1 ] && exit 1; echo "\${STUB_TAG_COMMIT:-aaa}" ;;
       *HEAD*) echo "\${STUB_HEAD:-aaa}" ;;
+      *origin/main*) echo "\${STUB_MAIN_HEAD:-\${STUB_HEAD:-aaa}}" ;;
     esac ;;
   merge-base) [ "\${STUB_ON_MAIN:-1}" = 1 ] ;;
-  ls-remote) [ "\${STUB_REMOTE_TAG:-0}" = 1 ] && echo "bbb	refs/tags/v9.9.9" ;;
+  ls-remote)
+    [ "\${STUB_LS_REMOTE_FAIL:-0}" = 1 ] && exit 128
+    [ "\${STUB_REMOTE_TAG:-0}" = 1 ] && echo "bbb	refs/tags/v9.9.9"
+    exit 0 ;;
 esac
 `,
   "ci-check.sh": `#!/usr/bin/env bash
@@ -316,8 +320,22 @@ describe("release.sh", () => {
       expect(called(o, "ci-check")).toEqual([]);
     });
 
+    it("fails before checks when origin cannot be read", () => {
+      const o = release({ ...base, STUB_LS_REMOTE_FAIL: "1" });
+      expect(o.status).not.toBe(0);
+      expect(o.stderr).toContain("could not read tags from origin");
+      expect(called(o, "ci-check")).toEqual([]);
+    });
+
+    it("fails before checks when HEAD is behind main's head (stale ref or re-run)", () => {
+      const o = release({ ...base, STUB_MAIN_HEAD: "ddd" });
+      expect(o.status).not.toBe(0);
+      expect(o.stderr).toContain("head of origin/main");
+      expect(called(o, "ci-check")).toEqual([]);
+    });
+
     it("fails before checks off main", () => {
-      const o = release({ ...base, STUB_ON_MAIN: "0" });
+      const o = release({ ...base, STUB_MAIN_HEAD: "ddd", STUB_ON_MAIN: "0" });
       expect(o.status).not.toBe(0);
       expect(o.stderr).toContain("origin/main");
       expect(called(o, "ci-check")).toEqual([]);

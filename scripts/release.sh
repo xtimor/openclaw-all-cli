@@ -1,8 +1,10 @@
 #!/usr/bin/env bash
-# Release the package from a tag `vX.Y.Z` (GitHub Actions: .github/workflows/release.yml; docs/release.md).
+# Release the package as `vX.Y.Z` (GitHub Actions: .github/workflows/release.yml; docs/release.md), from a
+# pushed tag or from a dispatch on main that creates the tag.
 # Agent-neutral. All logic is here; the workflow only wires triggers, permissions, and secrets.
 #
-#   validate the tag -> (real release) tag commit on origin/main -> refuse a version already on npm ->
+#   validate the tag -> (real release) tag push: tag is HEAD and on origin/main; dispatch: HEAD is
+#   origin/main's head and the tag is new -> refuse a version already on npm ->
 #   set the version from the tag -> scripts/ci-check.sh -> pack once -> sha256 ->
 #   publish | stage | dry-run -> GitHub release with the same .tgz.
 #
@@ -76,10 +78,13 @@ if [ "$DRY_RUN" = false ]; then
     step "Check HEAD is on origin/main and tag $TAG is new"
     ! git rev-parse --verify --quiet "refs/tags/$TAG" >/dev/null ||
       fail "tag $TAG already exists; a dispatched release creates a new tag. Pick the next version."
-    [ -z "$(git ls-remote --tags origin "refs/tags/$TAG")" ] ||
+    remote_tag="$(git ls-remote --tags origin "refs/tags/$TAG")" ||
+      fail "could not read tags from origin; nothing was released."
+    [ -z "$remote_tag" ] ||
       fail "tag $TAG already exists on origin; a dispatched release creates a new tag. Pick the next version."
-    git merge-base --is-ancestor HEAD origin/main ||
-      fail "HEAD is not on origin/main: dispatch the release on main."
+    # main's head, not any ancestor: a stale ref or a re-run of an old run must not release old code.
+    [ "$(git rev-parse HEAD)" = "$(git rev-parse origin/main)" ] ||
+      fail "HEAD is not the head of origin/main: dispatch a new run on main (a re-run keeps the old commit)."
   else
     step "Check the tag's commit is on origin/main"
     git rev-parse --verify --quiet "refs/tags/$TAG^{commit}" >/dev/null ||
@@ -173,6 +178,8 @@ fi
 
 if [ "$DRY_RUN" = false ]; then
   step "Create the GitHub release"
+  # Printed first, so a failed release step still leaves what a manual `gh release create` needs.
+  echo "release commit: $(git rev-parse HEAD), tarball sha256: $SHA256"
   args=("$TAG" "$TARBALL" --title "$TAG" --generate-notes --notes "sha256: $SHA256 ($(basename "$TARBALL"))")
   if [ "$CREATE_TAG" = true ]; then args+=(--target "$(git rev-parse HEAD)"); else args+=(--verify-tag); fi
   if [ "$PRERELEASE" = true ]; then args+=(--prerelease); fi
