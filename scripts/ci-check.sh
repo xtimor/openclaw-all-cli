@@ -46,7 +46,8 @@ step "Install smoke check (packed plugin in a throwaway OpenClaw state)"
 export OPENCLAW_STATE_DIR="$TMP/state"
 export OPENCLAW_CONFIG_PATH="$TMP/openclaw.json"
 "$OPENCLAW_BIN" plugins install --force --accept-capabilities "$TARBALL"
-"$OPENCLAW_BIN" plugins inspect openclaw-all-cli --runtime --json > "$TMP/inspect.json"
+# A failed inspect still goes to the check below, which prints the report.
+"$OPENCLAW_BIN" plugins inspect openclaw-all-cli --runtime --json > "$TMP/inspect.json" || true
 node -e '
   const fs = require("node:fs");
   const raw = fs.readFileSync(process.argv[1], "utf8");

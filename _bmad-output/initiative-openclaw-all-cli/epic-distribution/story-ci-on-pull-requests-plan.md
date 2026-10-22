@@ -3,7 +3,7 @@ title: 'CI on pull requests'
 type: 'feature'
 ticket: '2'
 created: '2026-10-22'
-status: 'in-review'
+status: 'built'
 baseline_revision: 'd5e8eec4fe1ceecf0587045e23c3ab272e9d4163'
 route: 'full'
 route_source: 'auto'
@@ -73,6 +73,23 @@ Implemented by a sonnet subagent, checked by the orchestrator. `scripts/ci-check
 ## Plan Change Log
 
 ## Review Triage Log
+
+### 2026-10-22 — Review pass
+- verdicts: 4 findings — high 0, medium 1, low 3, false 0, maybe-false 0
+- findings:
+  - `[low]` `[patch]` a non-zero `plugins inspect` stops the script before the report is printed — confirmed: inspect exits 1 when the plugin is missing; now `|| true`, the node check prints the report and fails.
+  - `[low]` `[patch]` workflow comment says ci-check.sh reads the version variables — reworded: dev-openclaw.sh reads them.
+  - `[medium]` `[patch]` `cancel-in-progress: true` lets a second push to `main` cancel the first run, so a main commit can go without a result — now cancels only for `pull_request` events.
+  - `[low]` `[reject]` Execution checkboxes unticked — the fix edits this build's plan (rule: reject).
+
+## Auto Run Result
+
+- Summary: `scripts/ci-check.sh` (`npm run ci`) runs every PR check (isolated Node 24 and OpenClaw 2026.10.3, `npm ci`, typecheck, unit tests, build, `npm pack --dry-run`, install smoke into a throwaway state); `.github/workflows/ci.yml` runs it on pull requests, pushes to `main`, and by hand, pinned actions, no secrets.
+- Files: `scripts/ci-check.sh` (new), `.github/workflows/ci.yml` (new), `package.json` (`ci` script), `docs/setup.md` (Checks (CI)).
+- Review: 3 patched (1 medium, 2 low), 0 deferred, 1 rejected (plan edit).
+- Follow-up review recommended: false.
+- Verification: `npm run ci` exit 0 before and after the patches (920 unit tests, smoke `loaded` / `cursor-cli`); type error stops at Typecheck; workflow parses, SHAs match tags. Not run: the workflow on GitHub (needs a pull request; the ticket stays open until a PR shows it green and a type error red).
+- Residual risk: first run on GitHub runners not yet seen (cache paths, runner timing of unit tests).
 
 ## Verification
 

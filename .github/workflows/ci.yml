@@ -11,10 +11,11 @@ permissions:
 
 concurrency:
   group: ci-${{ github.ref }}
-  cancel-in-progress: true
+  # A newer push cancels an older run of the same pull request; every push to main gets its own result.
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 env:
-  # Same defaults as scripts/dev-openclaw.sh; the script reads these two variables.
+  # Same defaults as scripts/dev-openclaw.sh, which reads these two variables (through ci-check.sh).
   NODE_VERSION: 24.22.0
   OPENCLAW_VERSION: 2026.10.3
 
