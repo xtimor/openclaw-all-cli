@@ -1,6 +1,6 @@
 # Triage agent
 
-Agent-neutral instructions for the issue triage run of `xtimor/openclaw-all-cli`. Today a Claude Code scheduled task on the owner's account starts a fresh cloud session at 05:46 and 17:46 UTC with "Follow docs/agents/triage.md"; any agent with a checkout and GitHub access can run it the same way. The design is `_bmad-output/initiative-openclaw-all-cli/epic-distribution/issue-flow.md` (states, labels, the `new` row of "BMAD flow per state"); the public guide is `docs/issues.md`.
+Agent-neutral instructions for the issue triage run of `xtimor/openclaw-all-cli`. Today one Claude Code scheduled task on the owner's account ("Triage issues", its frequency set by the owner) starts a fresh cloud session with "Follow docs/agents/triage.md"; after triage the same session builds the approved issues (see the end of this file); any agent with a checkout and GitHub access can run it the same way. The design is `_bmad-output/initiative-openclaw-all-cli/epic-distribution/issue-flow.md` (states, labels, the `new` row of "BMAD flow per state"); the public guide is `docs/issues.md`.
 
 ## Rules
 
@@ -55,3 +55,7 @@ Agent-neutral instructions for the issue triage run of `xtimor/openclaw-all-cli`
 ## Report
 
 End the run with a summary table: issue, decision, priority, path, what you wrote (or would write in a dry run), skipped issues and why, and anything you could not check. Do not post the summary to GitHub.
+
+## Then: implementation
+
+After the triage report, in the same session and under the same `dry run` setting, follow `docs/agents/implement.md` to build the issues the owner approved. Triage decisions of this run are not approvals: the implementation step takes only issues that already carry the owner's `status:approved`.
