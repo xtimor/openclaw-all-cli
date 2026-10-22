@@ -3,7 +3,7 @@ title: 'Publish reasoning support and an effort choice for cursor-cli models'
 type: 'feature'
 ticket: 'story-publish-reasoning-support-and-an-effort-choice-for-cursor-cli-models'
 created: '2026-10-22'
-status: 'built'
+status: done
 baseline_revision: '36019877396d80975447182c8f1b9c3d4d04f8e6'
 route: 'oneshot'
 route_source: 'auto'

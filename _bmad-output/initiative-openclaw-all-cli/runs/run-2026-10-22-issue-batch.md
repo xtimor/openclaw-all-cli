@@ -19,3 +19,7 @@ Unattended batch from `docs/agents/implement.md`. Build order: issue order (#8, 
 ## Journal
 
 - backlog/1 build — start
+- backlog/1 build — built (sonnet, quick; no subagent tool, oneshot). Commit 02c7927. Live Cursor effort check not run.
+- backlog/1 review — built, followup false (opus, self-run lenses). Commit b72ba00. Deferred 1: host sends `medium` when no level is set; design choice left open.
+- backlog/1 close — done. Decision: lenses ran in the worker itself because workers have no subagent tool.
+- backlog/2 build — start
