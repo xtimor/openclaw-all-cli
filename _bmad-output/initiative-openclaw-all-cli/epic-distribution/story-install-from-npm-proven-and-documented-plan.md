@@ -3,7 +3,7 @@ title: 'Install from npm proven and documented'
 type: 'feature'
 ticket: '5'
 created: '2026-10-22'
-status: 'in-review'
+status: done
 baseline_revision: '34b38f4c4a16892100acb9bab61376b94d0e1d44'
 route: 'oneshot'
 route_source: 'auto'
@@ -51,6 +51,12 @@ Fresh-agent pass (sonnet, only `docs/setup.md`, clean state, 2026-10-22): reache
   - `[low]` `[patch]` Build from source blamed the missing registry provenance — aligned with the Troubleshooting row.
   - `[low]` `[patch]` the Develop intro claimed `dev:env` sets up everything below — now says Build from source uses the global OpenClaw.
   - `[low]` `[patch]` live findings not in MEMORY.md — recorded.
+
+## Auto Run Result
+
+- Summary: `docs/setup.md` installs from npm in one line, updates with `plugins update`, and keeps build-from-source under Develop; README and the provider page say the same.
+- Review: 9 patched, 1 deferred to the release check (now settled), 0 rejected.
+- Verification: fresh state install from npm → `loaded` 0.1.0 and a live turn with `mcp__openclaw__session_status`; a fresh agent reading only `docs/setup.md` got a working turn; after the owner approved v0.1.1 (run via dispatch, trusted publishing), `openclaw plugins update openclaw-all-cli` printed `Updated openclaw-all-cli: 0.1.0 -> 0.1.1`, the plugin loaded 0.1.1, and a live turn replied `ok`; the v0.1.1 npm tarball equals the GitHub release asset (sha256 4cae4d97…).
 
 ## Verification
 
