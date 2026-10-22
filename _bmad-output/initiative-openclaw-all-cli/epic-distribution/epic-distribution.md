@@ -44,7 +44,8 @@ A person installs the plugin with one command from npmjs.com, and every release 
 
 ## Notes
 
-- Unknown: the npm package name and scope (`openclaw-all-cli` unscoped, or `@<scope>/openclaw-all-cli`) and who owns the npm account; the person who owns it creates the publishing credential (hitl, entry 4).
+- Decision: package `openclaw-all-cli`, unscoped; the owner (xtimor) holds the npm account (user, 2026-10-22).
+- Decision: full automation: a tag publishes with no human step, via npm trusted publishing (OIDC, `--allow-publish`). npm needs the package to exist before a trust can be set, so only the first release is staged (`npm stage publish`) with a granular token without 2FA bypass, "Read and write (stage only)", as secret `NPM_TOKEN`; the owner approves it once with 2FA, then runs `npm trust github ... --allow-publish` and deletes the token. Bypass-2FA tokens are not used (npm removes direct token publish in January 2027) (user, 2026-10-22).
 - Decision: npm only; ClawHub is a later choice (user, 2026-10-22).
 - Does not wait on epic-cursor-cli entry 18: the install path it exercises is the same plugin, and 18 stays a person's task.
 - Decision: issues are the intake for bugs and ideas from people and agents; a triage agent runs twice a day, may reject on its own, and hands accepted issues to the owner; only the owner approves development (user, 2026-10-22).
