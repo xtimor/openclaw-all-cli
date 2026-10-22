@@ -23,3 +23,7 @@ Unattended batch from `docs/agents/implement.md`. Build order: issue order (#8, 
 - backlog/1 review — built, followup false (opus, self-run lenses). Commit b72ba00. Deferred 1: host sends `medium` when no level is set; design choice left open.
 - backlog/1 close — done. Decision: lenses ran in the worker itself because workers have no subagent tool.
 - backlog/2 build — start
+- backlog/2 build — built (sonnet, quick, full route by size). Commit c3005bc. Live Cursor check and real Control UI not run.
+- backlog/2 review — built, followup false (opus, self-run lenses). Commit a21a027. Deferred 1: the Control UI dialog ends with "did not return a credential profile" after either method.
+- backlog/2 close — done.
+- backlog/3 build — start

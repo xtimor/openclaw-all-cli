@@ -3,7 +3,7 @@ title: 'Cursor provider in the Control UI provider list'
 type: 'feature'
 ticket: '2'
 created: '2026-10-22'
-status: built
+status: done
 baseline_revision: '1e2a9e3848a8f34118b23f94ec101191c69b493a'
 route: 'full'
 route_source: 'auto'
