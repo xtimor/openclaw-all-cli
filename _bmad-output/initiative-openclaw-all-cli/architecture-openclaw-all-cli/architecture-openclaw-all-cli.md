@@ -286,6 +286,6 @@ sequenceDiagram
 - **Approval for native edits.** Cursor ACP edits don't ask, so AD-9 denies them. Revisit if Cursor adds an asking mode.
 - **`@cursor/sdk` transport.** Not used. Revisit if ACP blocks a parity row the SDK covers.
 - **Antigravity adapter.** Its transport, flags, and manifest wait for research. AD-1, AD-2, AD-4, and AD-10 fix how it plugs in.
-- **Distribution.** npm package versus ClawHub, and release automation; not in this initiative (user decision, 2026-10-16).
+- **Distribution.** npm release from GitHub Actions is epic-distribution (user decision, 2026-10-22; it supersedes the 2026-10-16 deferral). ClawHub stays deferred.
 - **Observability beyond logs.** Metrics or traces, if the host exposes a channel for them.
 - **Windows support.** Not in stage 1.

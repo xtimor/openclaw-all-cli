@@ -10,3 +10,9 @@ slug = "epic-antigravity-cli"
 title = "Antigravity as a second adapter on the shared core"
 covers = ["CAP-12"]
 after = [{ epic = 1, needs = "epic-cursor-cli done (CAP-1..CAP-11 pass); the core seam, ports, and live harness" }]
+
+[[epic]]
+id = 3
+slug = "epic-distribution"
+title = "Install from npm, released by GitHub CI"
+covers = []

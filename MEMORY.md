@@ -13,7 +13,7 @@
 - The agent decides design; the user decides strategy only.
 - Work only against the isolated OpenClaw; the user's own Node and OpenClaw (`~/.openclaw`, 2026.2.22) are upgraded at the end (epic entry 18).
 - A host without a Cursor login still develops. It installs Node 24 and OpenClaw 2026.10.3 into `.spike` when they are missing. The live `cursor-agent` check waits for a machine that has the login, and that wait is not a question (user, 2026-10-16).
-- Cursor API key optional. No public release in this initiative.
+- Cursor API key optional. Public release (user, 2026-10-22): publish to npmjs.com from GitHub Actions (epic-distribution, tickets 3.1 to 3.5); ClawHub stays out; the earlier "no public release" decision is superseded.
 - Cursor usage must be found; shipping without it is a last resort.
 
 ## Facts learned the hard way

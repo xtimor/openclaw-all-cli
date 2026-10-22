@@ -44,7 +44,8 @@ Capability boundary: one epic per CLI provider; the shared core is built inside 
 - Decision: work only against an isolated OpenClaw (`.spike/`, Node 24); the user's own OpenClaw and Node are upgraded at the end (user, 2026-10-16).
 - Decision: a Cursor API key is optional, not required (user, 2026-10-16).
 - Decision: the agent makes design decisions; the user decides strategy only (user, 2026-10-15).
-- Decision: no public release (npm or ClawHub) in this initiative; the plugin is for the user's own OpenClaw, release is a later initiative (user, 2026-10-16).
+- ~~Decision: no public release (npm or ClawHub) in this initiative (user, 2026-10-16).~~ Superseded 2026-10-22 by the next line.
+- Decision: publish to npmjs.com from GitHub Actions, as epic-distribution; ClawHub stays out (user, 2026-10-22).
 - Decision: Cursor usage must be found; shipping without usage is a last resort (user, 2026-10-16).
 - Decision: the platform baseline (repo scaffold, dev OpenClaw, test harness) is epic-cursor-cli entry 1; CI waits until the repo has a remote (agent, 2026-10-16).
 - Waits on epic-cursor-cli because: epic-antigravity-cli consumes the shared core and the adapter seam it delivers.

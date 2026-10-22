@@ -1,0 +1,61 @@
+[[entry]]
+id = 1
+type = "story"
+title = "Readable settings form in the Control UI"
+description = "Adds `uiHints` to `openclaw.plugin.json` so the Control UI form for `plugins.entries.openclaw-all-cli.config` has a label and help text for `cursor-cli.command`, `cursor-cli.env`, `cursor-cli.maxConcurrentTurns`, and `cursor-cli.maxProcesses`; marks the API key sensitive (the `env` map holds `CURSOR_API_KEY`, so decide in the plan how a map value can be marked, or give the key its own field if the schema allows it without breaking the existing config); puts the two limits under advanced; checks that `config.schema` of a running isolated Gateway returns the hints. Keeps every existing config key valid."
+verify = "In the isolated OpenClaw, `config.schema` returns `uiHints` with a label and help for each field, the API key is marked sensitive, and an existing config with the old keys still loads; a short note in `docs/setup.md` names the form."
+covers = []
+after = []
+hitl = false
+risk = "low"
+references = ["epic-distribution.md"]
+
+[[entry]]
+id = 2
+type = "story"
+title = "CI on pull requests"
+description = "Adds a GitHub Actions workflow for pull requests and pushes to main: Node 24, npm install, link OpenClaw 2026.10.3 types, typecheck, `npm test`, build, `npm pack --dry-run`, and an install smoke check of the packed tarball into a throwaway OpenClaw state. Live tests (real Cursor) stay out of CI. Caches npm. Pins action versions. Records the commands in `docs/` so a contributor can run the same locally."
+verify = "A pull request with the change shows the workflow green on GitHub; a deliberate type error turns it red; the workflow needs no secret."
+covers = []
+after = []
+hitl = false
+risk = "low"
+references = ["epic-distribution.md"]
+
+[[entry]]
+id = 3
+type = "story"
+title = "A package that npm can publish"
+description = "Makes the package publishable: drops `private`, settles name and scope, adds `repository`, `homepage`, `bugs`, `keywords`, a `files` list that ships only `dist/`, `openclaw.plugin.json`, `README.md`, and `LICENSE`, the `openclaw` compat block, and `publishConfig` (public access, provenance). Gives the version a single source (the git tag drives it in CI). Checks `npm pack` contents against an allowlist test, and that the tarball installs with `openclaw plugins install` in the isolated OpenClaw. Rewrites `README.md` for the npm page."
+verify = "`npm pack --dry-run` lists exactly the allowlisted files; a test fails when a file outside the list would ship; the packed tarball installs and runs a turn in the isolated OpenClaw."
+covers = []
+after = [2]
+hitl = false
+risk = "medium"
+unknown = "The npm package name and scope, and whether the name is free on npmjs.com."
+references = ["epic-distribution.md"]
+
+[[entry]]
+id = 4
+type = "story"
+title = "Release workflow: tag to npmjs.com"
+description = "Adds a GitHub Actions release workflow triggered by a tag `vX.Y.Z`: verifies the tag matches the version, runs the same checks as entry 2, builds, publishes to npmjs.com with provenance (npm trusted publishing over OIDC if the account allows it, else an `NPM_TOKEN` secret), creates a GitHub release with the `.tgz` attached and generated notes. Has a manual dry-run mode that stops before publish. Writes `docs/release.md`: cut a release, roll back (deprecate, not unpublish), rotate the credential."
+verify = "A dry run on a throwaway tag shows every step green and publishes nothing; the first real tag publishes the package and the GitHub release shows the same tarball hash."
+covers = []
+after = [3]
+hitl = true
+risk = "high"
+unknown = "Who owns the npm account and scope, and whether trusted publishing or a token is used; the owner creates the credential and the repository secret."
+references = ["epic-distribution.md"]
+
+[[entry]]
+id = 5
+type = "story"
+title = "Install from npm proven and documented"
+description = "After the first release: in an isolated OpenClaw, `openclaw plugins install` of the published package (npm spec) gives a working `cursor-cli` turn with an OpenClaw tool call, then `openclaw plugins update` takes a newer version. Rewrites `docs/setup.md` so step 2 is the one-line npm install (build-from-source moves to a contributor section), updates `README.md`, and replaces the manual tarball steps given to the user."
+verify = "On a clean isolated OpenClaw an agent following only `docs/setup.md` installs from npm and gets a working turn; `plugins update` moves to the next published version."
+covers = []
+after = [4]
+hitl = false
+risk = "medium"
+references = ["epic-distribution.md"]
