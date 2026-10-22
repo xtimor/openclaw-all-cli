@@ -5,7 +5,7 @@ import { recordProcess, type ProcessLock } from "./pid-locks.ts";
 import type { CliAdapter, CliModel } from "./ports.ts";
 
 /** A model as `/model` and `openclaw models list` show it: `<backendId>/<id>`. */
-export type CatalogRow = { id: string; name: string };
+export type CatalogRow = { id: string; name: string; reasoning?: boolean };
 
 export type CatalogParams = {
   command: string;
@@ -60,7 +60,7 @@ export function defaultCatalogRow(adapter: CliAdapter): CatalogRow {
 }
 
 function toRow(model: CliModel): CatalogRow {
-  return { id: model.name, name: model.label };
+  return { id: model.name, name: model.label, ...(model.reasoning ? { reasoning: true } : {}) };
 }
 
 /**

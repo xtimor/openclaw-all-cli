@@ -9,6 +9,13 @@ const CURSOR_AUTO_BASE = "default";
 
 type ParsedId = { base: string; params: Array<[key: string, value: string]> };
 
+/** Cursor's parameter names for a model's reasoning effort (`grok-4.7[reasoning_effort=high]`, `claude-opus-5-5[effort=medium]`). */
+const EFFORT_KEYS: ReadonlySet<string> = new Set(["reasoning_effort", "effort"]);
+
+function isEffortKey(key: string): boolean {
+  return EFFORT_KEYS.has(key.toLowerCase());
+}
+
 /** Splits `grok-4.7[context=256k,fast=true]` into the base model and its parameters. */
 function parseId(id: string): ParsedId {
   const match = /^([^[]*)\[(.*)\]$/s.exec(id);
@@ -41,7 +48,8 @@ function slug(text: string): string {
  * first leaves every name alone, but a variant added ahead of the first, a reorder, or the removal
  * of the first moves the bare name (and the suffixed names that follow it) to another variant. The
  * exact ID stays the source of truth. Every variant of a shared base is labelled with its
- * parameters, the bare-named one included, so `/model` tells them apart.
+ * parameters, the bare-named one included, so `/model` tells them apart. A model whose ID carries
+ * an effort parameter is `reasoning`: Cursor shows it has an effort setting.
  */
 export function buildCursorCatalog(entries: readonly CursorModelEntry[]): CliModel[] {
   const parsed = entries.map((entry) => {
@@ -78,7 +86,8 @@ export function buildCursorCatalog(entries: readonly CursorModelEntry[]): CliMod
     }
     const shared = (variants.get(item.base) ?? 0) > 1 && item.params.length > 0;
     const suffix = shared ? ` (${item.params.map(([key, value]) => (key ? `${key}=${value}` : value)).join(", ")})` : "";
-    catalog.push({ name, label: `${item.entry.name || item.base}${suffix}`, id: item.entry.id });
+    const reasoning = item.params.some(([key]) => isEffortKey(key));
+    catalog.push({ name, label: `${item.entry.name || item.base}${suffix}`, id: item.entry.id, ...(reasoning ? { reasoning } : {}) });
   });
   return catalog;
 }
@@ -100,8 +109,46 @@ export function resolveCursorModel(requested: string, catalog: readonly CliModel
 }
 
 /**
+ * Cursor's effort values for an OpenClaw thinking level, most specific first. `adaptive` (and
+ * anything else without a Cursor counterpart) has none, so the row keeps its own effort.
+ */
+function effortValuesFor(level: string): readonly string[] {
+  const lower = level.trim().toLowerCase();
+  if (lower === "off") return ["none", "off"];
+  if (lower === "adaptive" || lower === "") return [];
+  return [lower];
+}
+
+/** A model's parameters other than its effort, in a form that compares equal for siblings. */
+function fixedParams(id: ParsedId): string {
+  return JSON.stringify(id.params.filter(([key]) => !isEffortKey(key)).map(([key, value]) => [key.toLowerCase(), value.toLowerCase()]));
+}
+
+/**
+ * The ID to run for a row at an OpenClaw thinking level: the listed variant of the same base and the
+ * same other parameters whose effort matches the level. Without a level, a row with no effort, no
+ * such variant, or a level Cursor has no value for, the row's own ID stays. Only IDs Cursor listed
+ * are ever returned: ACP refuses a value it did not offer.
+ */
+function idForEffort(row: CliModel, offered: readonly CursorModelEntry[], level: string | undefined): string {
+  if (!row.reasoning || !level) return row.id;
+  const wanted = effortValuesFor(level);
+  const own = parseId(row.id);
+  const fixed = fixedParams(own);
+  const siblings = offered
+    .map((entry) => ({ entry, id: parseId(entry.id) }))
+    .filter((item) => item.id.base === own.base && fixedParams(item.id) === fixed);
+  for (const value of wanted) {
+    const match = siblings.find((item) => item.id.params.some(([key, v]) => isEffortKey(key) && v.toLowerCase() === value));
+    if (match) return match.entry.id;
+  }
+  return row.id;
+}
+
+/**
  * The model choice for an ACP session (the transport's `selectModel`): the exact ID to switch to,
- * `null` to keep the session's model, `undefined` for a model the account lacks.
+ * `null` to keep the session's model, `undefined` for a model the account lacks. `level` is
+ * OpenClaw's thinking level for the turn; it picks the effort variant of a `reasoning` model.
  *
  * Cursor remembers the last model in the config directory, so a session can start on another
  * model than Auto. `auto` therefore switches back unless the session is already on Auto.
@@ -109,10 +156,11 @@ export function resolveCursorModel(requested: string, catalog: readonly CliModel
 export function selectCursorModel(
   requested: string,
   offered: readonly CursorModelEntry[],
+  level?: string,
 ): string | null | undefined {
   const catalog = buildCursorCatalog(offered);
   const found = resolveCursorModel(requested, catalog);
-  if (found) return found.id;
+  if (found) return idForEffort(found, offered, level);
   // An agent whose list has no Auto entry cannot be switched to it: keep what it runs.
   return requested.trim().toLowerCase() === AUTO_MODEL ? null : undefined;
 }

@@ -18,6 +18,8 @@ export type AttachDeps = {
   continuity: boolean;
   required: ReturnType<typeof requiredCapabilities>;
   abortGraceMs: number;
+  /** OpenClaw's thinking level for the run; the adapter picks the model's effort variant from it. */
+  thinkingLevel?: string;
 };
 
 const closedError = () =>
@@ -49,7 +51,7 @@ export async function attachSession(
 
 /** Starts the CLI process and records it in the agent home from its spawn. */
 async function openProcess(
-  { adapter, home, warn, approvals, required }: AttachDeps,
+  { adapter, home, warn, approvals, required, thinkingLevel }: AttachDeps,
   entry: LiveEntry,
   ctx: ExecuteContext,
   mode: ExecutionMode,
@@ -69,6 +71,7 @@ async function openProcess(
       cwd: ctx.cwd,
       env: { ...ctx.env, ...home.env },
       modelId: ctx.modelId,
+      ...(thinkingLevel ? { thinkingLevel } : {}),
       executionMode: mode,
       hostShell,
       // The transport can fail right after the handshake, before it creates or loads a chat.

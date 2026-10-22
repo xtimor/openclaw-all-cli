@@ -1502,6 +1502,29 @@ describe("createExecute reuse key and resume (AD-5, AD-13)", () => {
     expect(sessions[0]?.closed).toBe(1);
   });
 
+  it("hands the run's thinking level to the adapter and opens a new process when it changes", async () => {
+    const { adapter, opens } = makeAdapter();
+    const { live } = makeLive();
+    const h = home("thinking");
+    await run(createExecute(adapter, { home: h, thinkingLevel: "low" }), makeCtx({ liveSession: live, env: usableEnv }));
+    await run(
+      createExecute(adapter, { home: h, thinkingLevel: "low" }),
+      makeCtx({ liveSession: live, env: usableEnv, useResume: true, sessionId: "native-1" }),
+    );
+    expect(opens).toHaveLength(1);
+    expect(opens[0]?.thinkingLevel).toBe("low");
+    await run(
+      createExecute(adapter, { home: h, thinkingLevel: "high" }),
+      makeCtx({ liveSession: live, env: usableEnv, useResume: true, sessionId: "native-1" }),
+    );
+    expect(opens).toHaveLength(2);
+    expect(opens[1]?.thinkingLevel).toBe("high");
+    // No level set by the user: none is passed.
+    await run(createExecute(adapter, { home: h }), makeCtx({ liveSession: live, env: usableEnv, useResume: true, sessionId: "native-1" }));
+    expect(opens).toHaveLength(3);
+    expect(opens[2]).not.toHaveProperty("thinkingLevel");
+  });
+
   it("opens a new process when a profile appears or goes away", async () => {
     const { adapter, opens } = makeAdapter();
     const { live } = makeLive();

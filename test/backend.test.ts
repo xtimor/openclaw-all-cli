@@ -1037,6 +1037,14 @@ describe("provider catalog entry", () => {
     const result = await catalog.run({ config, env: fakeEnv(), providerIds: ["cursor-cli"] });
     expect(ids(result)).toEqual(["auto", "fake-fast", "fake-slow", "twin", "twin-high"]);
     expect(result?.provider.models[0]).toMatchObject({ id: "auto", name: "Auto", reasoning: false, input: ["text", "image"] });
+    // A model whose Cursor ID carries an effort parameter is published as a reasoning model.
+    expect(result?.provider.models.map((model) => [model.id, model.reasoning])).toEqual([
+      ["auto", false],
+      ["fake-fast", false],
+      ["fake-slow", true],
+      ["twin", true],
+      ["twin-high", true],
+    ]);
     // OpenClaw drops a provider with no base URL or api; no request goes to either.
     expect(result?.provider.baseUrl).toBeTruthy();
     expect(result?.provider.api).toBeTruthy();
@@ -1155,13 +1163,14 @@ describe("session resume and side questions (P4, P5, P18)", () => {
   async function turn(
     agentDir: string,
     prompt: string,
-    extra: { env?: Record<string, string>; sessionId?: string; useResume?: boolean; executionMode?: "agent" | "side-question"; authProfileId?: string } = {},
+    extra: { env?: Record<string, string>; sessionId?: string; useResume?: boolean; executionMode?: "agent" | "side-question"; authProfileId?: string; modelId?: string; thinkingLevel?: string } = {},
   ) {
-    const { env, sessionId, useResume, executionMode, authProfileId } = extra;
+    const { env, sessionId, useResume, executionMode, authProfileId, modelId, thinkingLevel } = extra;
     const prepared = await backend.prepareExecution!({
       agentDir,
       ...(executionMode ? { executionMode } : {}),
       ...(authProfileId ? { authProfileId } : {}),
+      ...(thinkingLevel ? { thinkingLevel } : {}),
     } as never);
     const records: Record<string, unknown>[] = [];
     for await (const record of prepared!.execute!({
@@ -1170,7 +1179,7 @@ describe("session resume and side questions (P4, P5, P18)", () => {
       cwd: workspace,
       env: fakeEnv(env),
       prompt,
-      modelId: "auto",
+      modelId: modelId ?? "auto",
       systemPrompt: "",
       useResume: useResume ?? false,
       ...(sessionId ? { sessionId } : {}),
@@ -1185,6 +1194,16 @@ describe("session resume and side questions (P4, P5, P18)", () => {
     const last = events.at(-1) as { text?: string; errorText?: string; sessionId?: string } | null;
     return { records, events, last };
   }
+
+  it("runs a turn on the effort variant that matches the thinking level the host prepared the run with", async () => {
+    const agentDir = join(scratch, "effort-agent");
+    const high = await turn(agentDir, "hello", { modelId: "twin", thinkingLevel: "high" });
+    expect(high.last?.text).toContain("model twin[effort=high]");
+    const unset = await turn(agentDir, "hello", { modelId: "twin" });
+    expect(unset.last?.text).toContain("model twin[effort=low]");
+    const plain = await turn(agentDir, "hello", { modelId: "fake-fast", thinkingLevel: "high" });
+    expect(plain.last?.text).toContain("model fake-fast[speed=fast,fast=true]");
+  });
 
   it("keeps the chat across a restart, answers the fact, and sends only the new prompt", async () => {
     const chats = mkdtempSync(join(scratch, "chats-"));

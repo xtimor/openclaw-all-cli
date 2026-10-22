@@ -235,7 +235,7 @@ function open(params: OpenParams): Promise<CliSession> {
     ...(params.requiredCapabilities?.length ? { requiredCapabilities: params.requiredCapabilities } : {}),
     // The turn's model name maps onto the exact ID Cursor reports (brackets and commas included).
     selectModel: (offered) => {
-      const id = selectCursorModel(params.modelId, offered);
+      const id = selectCursorModel(params.modelId, offered, params.thinkingLevel);
       // Name the model in the error: the transport only knows the agent's IDs.
       if (id === undefined && offered.length > 0) {
         throw new CliError({

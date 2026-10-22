@@ -228,6 +228,27 @@ OpenClaw loads the plugin before the first turn only when your config names a `c
 
 Every model is declared to OpenClaw with `text` and `image` input, because the plugin sends images as ACP image blocks (P13, see Images), so OpenClaw routes image attachments to Cursor models.
 
+### Effort
+
+OpenClaw's Effort control (`/think`, the composer's effort picker) works for the models whose Cursor ID carries an effort setting: a `reasoning_effort=` or `effort=` parameter, as in `grok-4.7[context=256k,reasoning_effort=high,fast=true]`. Such a model is published as a reasoning model; every other model is published without reasoning, so the control does nothing there.
+
+Cursor has no per-turn effort switch over ACP. The effort is part of the model ID, so the plugin maps the level onto an ID Cursor listed. When a turn opens its session, the plugin looks in Cursor's list for a model with the same base and the same other parameters (`context`, `fast`, and so on) whose effort value matches the level, and runs the turn on it:
+
+| OpenClaw level | Cursor effort value |
+| --- | --- |
+| `off` | `none` or `off` |
+| `minimal`, `low`, `medium`, `high`, `xhigh`, `max` | the same word |
+| `adaptive`, no level set | none: the model you chose keeps its own effort |
+
+A level with no matching variant also runs the model you chose, with its own effort. The plugin never invents an ID; Cursor refuses a model it did not list.
+
+What Cursor does not offer:
+
+- Effort can only be chosen among the variants Cursor lists. When the list holds one variant per model (the usual case in a plain account listing), the level cannot change anything, and the model keeps the effort in its ID. The Effort control still shows for that model.
+- The picker offers OpenClaw's standard levels. The plugin does not add `xhigh` or `max` to a model's picker; set them with `/think xhigh` (or `max`) where OpenClaw accepts them, and they apply when Cursor lists such a variant.
+- The level applies when the session opens. Changing it in a running chat starts a new Cursor process that resumes the same chat (the same restart as a model change, about 3 seconds).
+- A side question runs with the level of the chat's run like any other turn.
+
 ## Operations
 
 Limits, version floor, and cleanup for the `cursor-agent` processes the plugin starts.
@@ -287,7 +308,7 @@ Live test: `test/live/usage.live.test.ts`.
 
 | # | Feature | Status | Notes |
 | --- | --- | --- | --- |
-| P1 | Provider in `/model`, model aliases | approx | The account's models are listed in `/model` and `openclaw models list` as `cursor-cli/<name>`, read from Cursor itself and cached; the name is mapped to Cursor's exact ID; aliases are Cursor's own spellings of Auto, not `claude-cli`'s short names. Live test: `test/live/model-catalog.live.test.ts` |
+| P1 | Provider in `/model`, model aliases | approx | The account's models are listed in `/model` and `openclaw models list` as `cursor-cli/<name>`, read from Cursor itself and cached; the name is mapped to Cursor's exact ID; aliases are Cursor's own spellings of Auto, not `claude-cli`'s short names; a model whose ID carries an effort parameter is published as a reasoning model, and OpenClaw's effort level selects the listed variant with that effort (see Effort). Live test: `test/live/model-catalog.live.test.ts` |
 | P2 | Subscription login counts as auth | match | `cursor-agent status` (live: `Logged in as <email>`; the logged-out wording is unconfirmed) or `CURSOR_API_KEY`. The models are available with either, and unavailable without. Live test: `test/live/model-catalog.live.test.ts` |
 | P3 | Streaming text, thinking, and tool progress | approx | Text and thinking deltas as they arrive; Cursor's native tool calls and OpenClaw tools called through the MCP proxy as display-only start and result events, one pair per call. The host does not treat them as tool execution, unlike `claude-cli`'s. Live test: `test/live/streaming.live.test.ts` |
 | P4 | Warm process per conversation | approx | The plugin keeps one `cursor-agent acp` process per conversation, but OpenClaw 2026.10.3 puts the per-turn MCP settings path into its live-session fingerprint, so it restarts the process every turn and the next turn resumes with `session/load`. A process is reused only when model, mode, cwd, home, auth profile, and session ID all match, and one chat never has two processes. Live evidence: `test/live/session-resume.live.test.ts` (warm follow-up with only the new prompt, restart, one process per chat) and `test/live/mcp-proxy.live.test.ts` (warm session with a stand-in host) and the real-host run in the ticket notes |

@@ -33,7 +33,8 @@ function toModelDefinition(row: CatalogRow, input: Array<"text" | "image">) {
   return {
     id: row.id,
     name: row.name,
-    reasoning: false,
+    // A model whose CLI shows an effort setting lets OpenClaw's Effort control through.
+    reasoning: row.reasoning === true,
     input,
     // A CLI login bills the user's own plan, not OpenClaw.
     cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },

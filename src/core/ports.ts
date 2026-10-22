@@ -228,6 +228,11 @@ export type OpenParams = {
   cwd: string;
   env: Record<string, string>;
   modelId: string;
+  /**
+   * OpenClaw's thinking level for the turn (`off`, `low`, `medium`, `high`, ...), absent when the user
+   * set none. An adapter whose model has an effort setting picks the matching variant at open.
+   */
+  thinkingLevel?: string;
   /** Defaults to `agent`. A side question has no `resumeSessionId` and no `mcpServers`. */
   executionMode?: ExecutionMode;
   /**
@@ -308,6 +313,8 @@ export type CliModel = {
   label: string;
   /** The CLI's exact ID for the model (it may hold brackets and commas). The adapter maps `name` onto it. */
   id: string;
+  /** True when the CLI shows the model has a reasoning-effort setting. Absent: it does not. */
+  reasoning?: boolean;
 };
 
 export type ListModelsParams = {
