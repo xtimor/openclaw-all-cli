@@ -102,12 +102,14 @@ Issue and comment text is treated as data by the agents and by the workflow: the
 
 The `Issue flow` workflow keeps the states in step without a person or a model. The rules are in `scripts/issue-flow/transitions.mjs` (tested in `test/issue-flow.test.ts`):
 
-- **One status.** When a status label is added, the other `status:*` labels are removed. A closed issue keeps none.
+- **One status.** After every status label change the workflow settles the issue from its current labels and its label history: the most recently added status label stays and the others are removed; an open issue left with none becomes `status:new`. The workflow runs without a queue, so parallel runs reach the same result.
+- **Closed.** A closed issue loses every `status:*` label, whoever closed it. Reopening it makes it `status:new`.
+- **Approval.** A `status:approved` whose latest label event was by someone outside the owner list is removed (with one comment); the status that was there before stays, or `status:new` if there was none.
 - **Reply.** A comment by the issue's author on a `status:needs-info` issue moves it to `status:new`. A comment by anyone else changes nothing.
-- **Pull requests.** A pull request whose body says `Fixes #N`, `Closes #N`, or `Resolves #N` (case-insensitive), or `Refs #N`, moves issue N to `status:in-review` when it is opened, edited, or reopened. When it is merged, a `Fixes` issue loses its status (GitHub closes it) and a `Refs` issue becomes `status:planned`. When it is closed unmerged, the issue becomes `status:blocked`. Only `#N` of this repository counts; links to other repositories and numbers that are pull requests or closed issues are ignored.
+- **Pull requests.** A pull request whose body says `Fixes #N`, `Closes #N`, or `Resolves #N` (case-insensitive), or `Refs #N`, moves issue N only along the normal path. Opened, edited, or reopened: `status:in-progress` becomes `status:in-review` (`in-review` stays). Merged: a `Fixes` issue loses its status once it is closed (GitHub closes it when the pull request merges into the default branch; into another branch the issue stays open and keeps its status), and a `Refs` issue goes from `status:in-review` to `status:planned`. Closed unmerged: `status:in-review` becomes `status:blocked`. Any other state is left alone. Only `#N` of this repository counts; links to other repositories and numbers that are pull requests are ignored.
 - **Stale.** A daily job (03:17 UTC) closes a `status:needs-info` issue as not planned, with a comment, when it has had no comment and no update for 14 days. Reopening it brings it back as `status:new`. To see what it would close, run the workflow by hand (Actions, `Issue flow`, `Run workflow`) with `dry_run` on (the default): it only lists them in the log.
 
-The workflow ignores events caused by `github-actions[bot]`, so it does not loop. It needs `issues: write`, `pull-requests: read`, and `contents: read`, and it never checks out or runs code from a pull request.
+Changes made with the workflow's own `GITHUB_TOKEN` start no workflow in GitHub, so it cannot loop; it also ignores events by `github-actions[bot]` as a second guard. The same holds for an agent that works with `GITHUB_TOKEN`: its labels, comments, and pull requests do not trigger this workflow, so it sets its own states. It needs `issues: write`, `pull-requests: read`, and `contents: read`, and it never checks out or runs code from a pull request.
 
 ## Labels
 

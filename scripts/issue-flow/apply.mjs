@@ -1,13 +1,14 @@
 // Applies the decisions of transitions.mjs to GitHub. Entry points for .github/workflows/issue-flow.yml, which
 // calls them from actions/github-script (`github` is its octokit, `context` the event, `core` the logger).
 // No model, no text from an issue is evaluated; the owner list comes from the workflow's ISSUE_FLOW_OWNERS.
-import { STALE_DAYS, decide, isBot, linkedIssues, parseOwners, staleIssues } from "./transitions.mjs";
+import { STALE_DAYS, decide, isBot, linkedIssues, needsTimeline, parseOwners, staleIssues } from "./transitions.mjs";
 
 /** Sending the label requests one by one keeps their order: the new status first, then the old ones go. */
 export async function applyActions(github, context, issueNumber, actions) {
   const { owner, repo } = context.repo;
   const issues = github.rest.issues;
   const applied = [];
+  let existing = null; // comment bodies, read once and only when a comment carries a `once` key
   for (const action of actions) {
     switch (action.op) {
       case "addLabel":
@@ -22,6 +23,11 @@ export async function applyActions(github, context, issueNumber, actions) {
         }
         break;
       case "comment":
+        if (action.once) {
+          existing ??= (await github.paginate(issues.listComments, { owner, repo, issue_number: issueNumber, per_page: 100 })).map((c) => c.body ?? "");
+          // A run that raced this one (or an earlier pass) already said it for this event.
+          if (existing.some((body) => body.includes(action.once))) break;
+        }
         await issues.createComment({ owner, repo, issue_number: issueNumber, body: action.body });
         break;
       case "close":
@@ -33,6 +39,12 @@ export async function applyActions(github, context, issueNumber, actions) {
     applied.push(action);
   }
   return applied;
+}
+
+/** The issue's label events, oldest first, as the REST API returns them (the module keeps the `labeled` ones). */
+async function readTimeline(github, context, issueNumber) {
+  const { owner, repo } = context.repo;
+  return github.paginate(github.rest.issues.listEvents, { owner, repo, issue_number: issueNumber, per_page: 100 });
 }
 
 async function readIssue(github, context, issueNumber) {
@@ -77,7 +89,8 @@ export async function runEvent({ github, context, core, env = process.env }) {
       core.info(`issue-flow: #${number} not found, skipped`);
       return;
     }
-    const actions = decide(event, issue, { owners });
+    const timeline = event.name === "issues" && needsTimeline(issue) ? await readTimeline(github, context, number) : [];
+    const actions = decide(event, issue, { owners, timeline });
     if (actions.length === 0) {
       core.info(`issue-flow: #${number} nothing to do (${event.name} ${event.action})`);
       return;

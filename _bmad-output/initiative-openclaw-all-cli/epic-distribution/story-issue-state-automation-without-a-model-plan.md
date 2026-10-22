@@ -93,6 +93,19 @@ Re-derived in place by the implementer on top of the existing code (not reverted
 
 ## Review Triage Log
 
+### 2026-10-22 — Review pass 1
+- verdicts: 9 findings — high 2, medium 4, low 3, false 0, maybe-false 0
+- findings:
+  - `[high]` `[bad_plan]` closed issues kept their status (no `closed` trigger) — plan amended; `closed` clears every status.
+  - `[medium]` `[bad_plan]` merged `Fixes` into a non-default branch cleared an open issue's status — plan amended; cleared only when the issue is closed.
+  - `[high]` `[bad_plan]` any fork PR moved any issue to `in-review`/`blocked` — plan amended; PR moves gated by `issue-flow.md` states.
+  - `[medium]` `[bad_plan]` per-issue concurrency dropped pending runs; `labeled` acted only on the event label — plan amended; reconciliation from the label timeline, no concurrency group.
+  - `[medium]` `[bad_plan]` `unlabeled` not handled — plan amended; an open issue left with none gets `status:new`.
+  - `[low]` `[patch]` checkout comment wrong for `pull_request_target` — fixed.
+  - `[medium]` `[patch]` `GITHUB_TOKEN` PRs start no workflow (3.9 impact) — documented in docs and MEMORY.
+  - `[low]` `[patch]` docs said closed issues are ignored for PRs — rewritten to the gates.
+  - `[low]` `[reject]` unticked plan tasks — plan edit (rule).
+
 ## Verification
 
 **Commands:**

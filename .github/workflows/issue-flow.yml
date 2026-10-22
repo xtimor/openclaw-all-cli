@@ -5,9 +5,12 @@ name: Issue flow
 # All decisions are in scripts/issue-flow/transitions.mjs (pure, tested); scripts/issue-flow/apply.mjs applies them.
 # pull_request_target runs the base branch's code and reads only the PR number, body, and merged flag: it never
 # checks out or runs PR code. Issue and PR text is data and is never put into a command or an expression.
+# No concurrency group: GitHub keeps only one pending run per group and would drop events. Runs may overlap; the
+# status is always settled from the issue's current labels and label timeline, so parallel runs converge.
+# Events made with GITHUB_TOKEN (this workflow's own, or an agent's) start no workflow; the bot guard is defense only.
 on:
   issues:
-    types: [opened, reopened, labeled]
+    types: [opened, reopened, closed, labeled, unlabeled]
   issue_comment:
     types: [created]
   pull_request_target:
@@ -26,10 +29,6 @@ permissions:
   pull-requests: read
   contents: read
 
-concurrency:
-  group: issue-flow-${{ github.event.issue.number || github.event.pull_request.number || 'stale' }}
-  cancel-in-progress: false
-
 env:
   # Logins (comma separated) allowed to set status:approved. Anyone else's approval is removed again.
   ISSUE_FLOW_OWNERS: xtimor
@@ -39,7 +38,8 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
-      # Default ref: the base repository's default branch for every event here, never PR code.
+      # Default ref: the repository's default branch for issues, schedule, and dispatch, and the PR's base branch
+      # for pull_request_target; never the PR's own code.
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
