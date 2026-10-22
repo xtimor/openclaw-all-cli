@@ -386,6 +386,13 @@ export interface CliAdapter {
    */
   readonly clearEnv: readonly string[];
   /**
+   * Optional. Name of the env var that carries the CLI's API key, for example `ACME_API_KEY`.
+   * When set, the provider offers a method that saves a key into the plugin config `env`.
+   */
+  readonly apiKeyEnvVar?: string;
+  /** Optional. The command line that logs the CLI in, shown when the login is missing. Default `<command> login`. */
+  readonly loginCommand?: string;
+  /**
    * Checks the installed CLI against `manifest.minVersion` (AD-14). Resolves `"ok"`, or a
    * warning when the version cannot be read (the turn still runs). Throws `CliError`:
    * `unsupported_version` for a version below the floor, `cli_not_found` for a missing binary.

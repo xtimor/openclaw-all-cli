@@ -347,6 +347,7 @@ describe("operations wiring (P17, P19)", () => {
     registerAdapters(
       {
         pluginConfig: {},
+        registerProvider: () => {},
         logger: { warn: (m: string) => warnings.push(m) },
         registerCliBackend: (b: Backend) => backends.push(b),
         lifecycle: { onDispose: (fn: () => unknown) => (hooks.dispose.push(fn), () => {}) },
@@ -375,6 +376,7 @@ describe("operations wiring (P17, P19)", () => {
     registerAdapters(
       {
         pluginConfig: {},
+        registerProvider: () => {},
         logger: { warn: () => {} },
         registerCliBackend: (b: Backend) => backends.push(b),
         registerService: (service: { stop: () => Promise<void> }) => services.push(service),
@@ -407,6 +409,7 @@ describe("operations wiring (P17, P19)", () => {
     registerAdapters(
       {
         pluginConfig: {},
+        registerProvider: () => {},
         logger: { warn: () => {} },
         registerCliBackend: () => {},
         registerService: (service: { stop: () => Promise<void> }) => services.push(service),
@@ -455,6 +458,7 @@ describe("operations wiring (P17, P19)", () => {
         runtime: { agent: { resolveAgentDir: (_cfg: unknown, id: string) => agentDirOf(id) } },
         logger: { warn: () => {} },
         registerCliBackend: () => {},
+        registerProvider: () => {},
       }) as never;
     const discovery = [lock("main-d"), lock("work-d")];
     registerAdapters(api("discovery"), ADAPTERS);
@@ -798,9 +802,11 @@ describe("row gates reach execute through the backend (P9, P16)", () => {
 describe("plugin registration", () => {
   it("registers one backend per adapter", () => {
     const registered: string[] = [];
+    const providers: string[] = [];
     registerAdapters(
       {
         pluginConfig: { "cursor-cli": { command: "/x/cursor-agent" } },
+        registerProvider: (provider: { id: string }) => providers.push(provider.id),
         logger: { warn: () => {} },
         registerCliBackend: (b: { id: string; config: { command: string } }) => {
           registered.push(`${b.id}:${b.config.command}`);
@@ -809,6 +815,8 @@ describe("plugin registration", () => {
       ADAPTERS,
     );
     expect(registered).toEqual(["cursor-cli:/x/cursor-agent"]);
+    // The provider carries the auth methods that OpenClaw's login flows read.
+    expect(providers).toEqual(["cursor-cli"]);
   });
 });
 
@@ -862,6 +870,7 @@ describe("MCP proxy wiring", () => {
     registerAdapters(
       {
         pluginConfig: {},
+        registerProvider: () => {},
         logger: { warn: (message: string) => warnings.push(message) },
         registerCliBackend: (backend: Backend) => backends.push(backend),
       } as never,

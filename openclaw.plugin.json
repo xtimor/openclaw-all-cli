@@ -20,6 +20,34 @@
   "nonSecretAuthMarkers": [
     "openclaw:cursor-cli-native-auth"
   ],
+  "providerAuthChoices": [
+    {
+      "provider": "cursor-cli",
+      "method": "login",
+      "choiceId": "cursor-cli-login",
+      "choiceLabel": "Use the cursor-agent login",
+      "choiceHint": "Reuse the login of the local Cursor CLI",
+      "credentialOnly": true,
+      "appGuidedAuth": "oauth",
+      "assistantPriority": -10,
+      "groupId": "cursor-cli",
+      "groupLabel": "Cursor CLI",
+      "groupHint": "cursor-agent login or API key"
+    },
+    {
+      "provider": "cursor-cli",
+      "method": "api-key-env",
+      "choiceId": "cursor-cli-api-key",
+      "choiceLabel": "Cursor CLI API key (CURSOR_API_KEY)",
+      "choiceHint": "Keep a key in the plugin config; only cursor-agent sees it",
+      "credentialOnly": true,
+      "appGuidedSecret": true,
+      "assistantPriority": 10,
+      "groupId": "cursor-cli",
+      "groupLabel": "Cursor CLI",
+      "groupHint": "cursor-agent login or API key"
+    }
+  ],
   "providerCatalogEntry": "./dist/provider-discovery.js",
   "configSchema": {
     "type": "object",

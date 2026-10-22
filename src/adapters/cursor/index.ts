@@ -335,6 +335,8 @@ export const cursorAdapter: CliAdapter = {
   // Cursor's MCP client gives up on a tool call after 60 s and never hangs up (live probe).
   mcpCallTimeoutMs: 60_000,
   clearEnv: CURSOR_CLEAR_ENV,
+  apiKeyEnvVar: "CURSOR_API_KEY",
+  loginCommand: "cursor-agent login",
   checkVersion,
   probeAuth,
   prepareHome,
