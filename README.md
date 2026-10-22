@@ -18,14 +18,34 @@ The same contract then carries over to other CLIs, Antigravity next. A new provi
 - **Isolation on request.** An agent can get its own CLI workspace: its own resume, its own state directory, its own cwd.
 - **Agents don't interfere.** Two agents never share one resume, one lock, or one write to per-agent CLI state. A shared CLI login is allowed.
 
+## Requirements
+
+- OpenClaw 2026.10.3 or later.
+- Node.js 24.16 up to 25, or 26.1 and later.
+- Cursor CLI (`cursor-agent`) 2026.07.06 or later, signed in (`cursor-agent login`) or with `CURSOR_API_KEY` set.
+
+## Install
+
+```sh
+openclaw plugins install openclaw-all-cli
+```
+
+Then pick a model, e.g. `cursor-cli/auto`:
+
+```sh
+openclaw agent --local --model cursor-cli/auto --message "Reply with the word ok"
+```
+
+All settings are optional and live under `plugins.entries.openclaw-all-cli.config`. See [Setup](https://github.com/xtimor/openclaw-all-cli/blob/main/docs/setup.md#3-configure) for the keys, the Gateway start, and troubleshooting.
+
 ## Status
 
-Pre-release. Not published; you build it from source and install the `.tgz` ([Setup](docs/setup.md)). Cursor CLI only.
+Early release. Cursor CLI only.
 
 ## Docs
 
-- [Setup](docs/setup.md): requirements, install, configuration, verification, troubleshooting.
-- [Cursor provider](docs/providers/cursor.md): how `cursor-cli/<model>` runs and how it compares with `claude-cli`.
+- [Setup](https://github.com/xtimor/openclaw-all-cli/blob/main/docs/setup.md): requirements, install, configuration, verification, troubleshooting.
+- [Cursor provider](https://github.com/xtimor/openclaw-all-cli/blob/main/docs/providers/cursor.md): how `cursor-cli/<model>` runs and how it compares with `claude-cli`.
 
 ## References
 
@@ -39,4 +59,4 @@ Pre-release. Not published; you build it from source and install the `.tgz` ([Se
 
 ## License
 
-MIT
+[MIT](https://github.com/xtimor/openclaw-all-cli/blob/main/LICENSE)

@@ -3,14 +3,14 @@ title: 'A package that npm can publish'
 type: 'feature'
 ticket: '3'
 created: '2026-10-22'
-status: 'in-progress'
+status: 'in-review'
 baseline_revision: '01cf1f67b862722f20241b43456ee4bada2b7c5c'
 route: 'full'
 route_source: 'auto'
 risk: 'medium'
-review: ''
-review_source: ''
-lenses_ran: []
+review: 'quick'
+review_source: 'pinned'
+lenses_ran: [quick]
 review_loop_iteration: 0
 followup_review_recommended: false
 context: ['{project-root}/AGENTS.md', '{project-root}/MEMORY.md']
@@ -66,6 +66,8 @@ deferred: []
 - Given `npm run ci`, then it exits 0.
 
 ## Implementation Notes
+
+Implemented by a sonnet subagent, read by the orchestrator. `package.json` (no `private`, metadata, `files: ["dist", "openclaw.plugin.json"]`, `publishConfig`), `test/package-contents.test.ts`, `scripts/ci-check.sh` allowlist step after build, `README.md` for npm, `docs/setup.md` `### Versions` (also the allowlist step named in Checks (CI)). Packed: 47 files, `dist/**/*.js` plus the four fixed files. `docs` in `files` made the test fail naming `docs/providers/cursor.md, docs/setup.md` (reverted). `npm run ci` exit 0. Live: `dev:install` then `agent --local --model cursor-cli/auto` replied `ok` from Cursor (25.8 s). `openclaw.extensions` names `./src/plugin.ts`, not in the tarball; the host loads `runtimeExtensions` (smoke and live turn).
 
 ## Plan Change Log
 

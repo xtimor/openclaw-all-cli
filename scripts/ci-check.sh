@@ -30,6 +30,9 @@ npm test
 step "Build"
 npm run build
 
+step "Package allowlist (with dist)"
+npx vitest run test/package-contents.test.ts
+
 step "Package contents (npm pack --dry-run)"
 npm pack --dry-run
 

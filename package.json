@@ -1,9 +1,25 @@
 {
   "name": "openclaw-all-cli",
   "version": "0.0.0",
-  "private": true,
   "description": "OpenClaw plugin that exposes local coding CLIs (Cursor first) as models",
   "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/xtimor/openclaw-all-cli.git"
+  },
+  "homepage": "https://github.com/xtimor/openclaw-all-cli#readme",
+  "bugs": {
+    "url": "https://github.com/xtimor/openclaw-all-cli/issues"
+  },
+  "keywords": [
+    "openclaw",
+    "openclaw-plugin",
+    "cursor",
+    "cursor-agent",
+    "acp",
+    "cli",
+    "llm"
+  ],
   "type": "module",
   "engines": {
     "node": ">=24.16 <25 || >=26.1"
@@ -51,11 +67,10 @@
   },
   "files": [
     "dist",
-    "src",
-    "!src/**/*.test.ts",
-    "openclaw.plugin.json",
-    "docs",
-    "README.md",
-    "LICENSE"
-  ]
+    "openclaw.plugin.json"
+  ],
+  "publishConfig": {
+    "access": "public",
+    "provenance": true
+  }
 }
