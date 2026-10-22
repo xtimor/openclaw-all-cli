@@ -2,7 +2,7 @@
 
 What `cursor-cli/<model>` does in OpenClaw and how it compares with `claude-cli`. Setup is in [Setup](../setup.md); this page is reference and you do not need it to install. Sections: [How it runs](#how-it-runs), [Sessions](#sessions-resume-and-side-questions), [Chat continuity](#chat-continuity-across-a-model-switch), [OpenClaw tools](#openclaw-tools), [System prompt and skills](#system-prompt-and-skills), [Images](#images), [Compaction](#compaction), [Streaming](#streaming-and-tool-progress), [Permissions](#permissions-and-tool-availability), [Shell commands](#shell-commands-openclaw-exec), [Models](#models), [Operations](#operations), [Usage](#usage), [Parity with `claude-cli`](#parity-with-claude-cli), [Known limits](#known-limits), [Check it works](#check-it-works).
 
-> **Status:** pre-release, installed from source ([Setup](../setup.md)). Rows marked *spike* or *planned* in the parity table change as the plugin grows; each change to a row updates this page and that row's live test together.
+> **Status:** early release, installed from npm ([Setup](../setup.md)). Rows marked *spike* or *planned* in the parity table change as the plugin grows; each change to a row updates this page and that row's live test together.
 
 ## How it runs
 

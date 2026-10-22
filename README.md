@@ -27,10 +27,10 @@ The same contract then carries over to other CLIs, Antigravity next. A new provi
 ## Install
 
 ```sh
-openclaw plugins install openclaw-all-cli --accept-capabilities
+openclaw plugins install openclaw-all-cli --accept-capabilities --force
 ```
 
-OpenClaw warns that the package is outside ClawHub review and asks you to confirm; `--force` confirms without a prompt (and replaces an earlier install). Restart a running Gateway to load the plugin.
+OpenClaw warns that the package is outside ClawHub review; `--force` confirms it (without it a terminal asks, and a script gets `Install cancelled`) and replaces an earlier install. A running local Gateway picks the plugin up; otherwise it loads at the next Gateway start.
 
 Then pick a model, e.g. `cursor-cli/auto`:
 
@@ -42,7 +42,7 @@ All settings are optional and live under `plugins.entries.openclaw-all-cli.confi
 
 ## Status
 
-Early release. Cursor CLI only. Until the first version is on npm, build from source as [Setup](https://github.com/xtimor/openclaw-all-cli/blob/main/docs/setup.md#2-install-the-plugin) describes.
+Early release. Cursor CLI only. Update with `openclaw plugins update openclaw-all-cli`; to build from source, see [Build from source](https://github.com/xtimor/openclaw-all-cli/blob/main/docs/setup.md#build-from-source).
 
 ## Docs
 

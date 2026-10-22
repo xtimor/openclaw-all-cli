@@ -3,7 +3,7 @@ title: 'Release workflow: tag to npmjs.com'
 type: 'feature'
 ticket: '4'
 created: '2026-10-22'
-status: 'built'
+status: done
 baseline_revision: '3ea03129ca1cfdc25baaf4d06cf31b70bcd28351'
 route: 'full'
 route_source: 'auto'
@@ -87,6 +87,7 @@ Implemented by a sonnet subagent. `scripts/release.sh`, `.github/workflows/relea
 - Review: 4 patched (1 high, 2 medium, 1 low), 2 rejected, 0 deferred.
 - Verification: 33 release-script tests (mutations on `--provenance`, `env -u`, and `--tag latest` each fail them); `npm run ci` green; a full local `RELEASE_TAG=v0.0.1-dryrun.1 DRY_RUN=true scripts/release.sh` ran the checks, packed, printed the sha256, ran `npm publish --dry-run`, restored `package.json`; CI green on PR #1.
 - Not run: AC2, the dry-run tag on GitHub: this session cannot push tags (the git proxy drops tag pushes), so the owner pushes `v0.0.1-dryrun.1` (or uses `Run workflow` after merge). AC3, the first real release and the owner's approval, follows the merge.
+- Verified live 2026-10-22: dispatch dry runs green (runs 39814678405, 39818671894); the first release (run 39819686134, via ticket 3.10's dispatch path) staged `openclaw-all-cli@0.1.0` with provenance, the owner approved it with 2FA, and the npm tarball equals the GitHub release asset (sha256 e62bcabb3de0d98b23858e3d8e666466b3c819cc2295010e49ca859034c3bcc6, shasum 8856c14e…815b, attestations present). npm keeps the stage placeholder version `0.0.0-stage`.
 - Residual risk: staging a package npm has never seen and OIDC publish are proven only by the first real run; docs/release.md has the manual fallback.
 
 ## Verification
