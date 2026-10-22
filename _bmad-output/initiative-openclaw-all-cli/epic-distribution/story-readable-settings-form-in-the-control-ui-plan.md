@@ -3,7 +3,7 @@ title: 'Readable settings form in the Control UI'
 type: 'feature'
 ticket: '1'
 created: '2026-10-22'
-status: 'in-review'
+status: 'built'
 baseline_revision: '7a65357e75d3074e7c2e896d6d2c26a9859948bb'
 route: 'oneshot'
 route_source: 'auto'
@@ -48,6 +48,24 @@ Done: `openclaw.plugin.json` (`uiHints`, also a `placeholder` for `command`), `t
 ## Plan Change Log
 
 ## Review Triage Log
+
+### 2026-10-22 — Review pass
+- verdicts: 5 findings — high 0, medium 1, low 3, false 0, maybe-false 0 (one rejected by rule)
+- findings:
+  - `[low]` `[patch]` test never asserts label and help of `cursor-cli.env.*` — added the path to the label/help loop; a mutation removing its label fails the test.
+  - `[medium]` `[patch]` hints and test hardcode `cursor-cli` while the schema is built per backend (`buildConfigJsonSchema(cliBackends)`), so a second backend would get no hints and no sensitive env silently — the test now runs `describe.each(manifest.cliBackends)`, so a backend without hints fails.
+  - `[low]` `[patch]` path check ignores segments after the third and accepts inherited names (`constructor`) — extra segments must be empty and lookups use `Object.hasOwn`; a mutation adding `cursor-cli.constructor` fails.
+  - `[low]` `[reject]` Execution checkboxes unticked in the plan — the fix edits this build's plan (rule: reject).
+  - `[low]` `[reject]` acceptance criteria backed by a recorded manual Gateway check, not an automated one — `openclaw config schema` offline carries no `uiHints`, so an automated check needs a running Gateway in a test; that is a new live harness for a host-side regression, more than a direct fix. The host code paths (`redactValue`, `config-cli` hints) were confirmed by the reviewer.
+
+## Auto Run Result
+
+- Summary: `uiHints` in `openclaw.plugin.json` give the Control UI form a label and help for every `cursor-cli` field, mark every `env` value sensitive (`cursor-cli.env.*`), and put the two limits under advanced; `configSchema` unchanged.
+- Files: `openclaw.plugin.json` (hints), `test/manifest-ui-hints.test.ts` (hints per backend, paths valid), `docs/setup.md` (form note).
+- Review: 3 patched (1 medium, 2 low), 0 deferred, 2 rejected (plan edit; Gateway test cost).
+- Follow-up review recommended: false (one medium patched, no high).
+- Verification: typecheck; `npm test` 920 passed, 65 skipped; mutation checks on the test; isolated Gateway `config.schema` and `config get` redaction (see Implementation Notes).
+- Residual risk: a host change in how plugin `uiHints` reach `config.schema` is caught only by a manual check.
 
 ## Verification
 
