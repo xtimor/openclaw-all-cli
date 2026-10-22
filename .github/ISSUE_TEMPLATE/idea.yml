@@ -1,0 +1,36 @@
+name: Idea
+description: Propose a feature or an improvement
+title: "[Idea]: "
+labels: ["type:idea", "status:new"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Describe the problem first; the solution can follow. Ideas are checked against the project's scope before the owner decides.
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem
+      description: What is hard or impossible today?
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposal
+      description: What should change?
+    validations:
+      required: true
+  - type: textarea
+    id: who-benefits
+    attributes:
+      label: Who benefits
+      description: Who needs this, and how often?
+    validations:
+      required: true
+  - type: checkboxes
+    id: filed-by-agent
+    attributes:
+      label: Filed by an agent
+      options:
+        - label: An AI agent filed this issue
