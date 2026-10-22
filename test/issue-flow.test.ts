@@ -33,10 +33,12 @@ interface Event {
   repo?: string;
   headRepo?: string | null;
   author?: string | null;
+  triage?: boolean;
 }
 interface Transitions {
   STATUS_LABELS: string[];
   STALE_DAYS: number;
+  TRIAGE_MARKER_RE: RegExp;
   NON_OWNER_APPROVAL_COMMENT: string;
   STALE_COMMENT: string;
   decide(event: Event, issue: IssueIn, options?: { owners?: string[]; timeline?: unknown[] }): Action[];
@@ -359,6 +361,14 @@ describe("decide: issue_comment", () => {
   it("AUTHOR_REPLY: the author's comment on needs-info moves it to new", () => {
     expect(t.decide(comment("alice"), issue(["status:needs-info", "type:bug"]))).toEqual([add("status:new"), remove("status:needs-info")]);
     expect(t.decide(comment("ALICE"), issue(["status:needs-info"]))).toEqual([add("status:new"), remove("status:needs-info")]);
+  });
+
+  it("AUTHOR_REPLY: the triage agent's comment (marker) is not a reply, even under the author's account", () => {
+    expect(t.decide({ ...comment("alice"), triage: true }, issue(["status:needs-info"]), { owners: ["alice"] })).toEqual([]);
+    // A reporter who is not an owner and starts a reply with the marker still counts as replying.
+    expect(t.decide({ ...comment("alice"), triage: true }, issue(["status:needs-info"]), { owners: ["owner"] })).toEqual([add("status:new"), remove("status:needs-info")]);
+    expect(t.TRIAGE_MARKER_RE.test("<!-- issue-triage -->\n**Triage:** needs info")).toBe(true);
+    expect(t.TRIAGE_MARKER_RE.test("I quote <!-- issue-triage --> here")).toBe(false);
   });
 
   it("AUTHOR_REPLY: a comment by someone else does nothing", () => {

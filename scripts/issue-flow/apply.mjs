@@ -1,7 +1,7 @@
 // Applies the decisions of transitions.mjs to GitHub. Entry points for .github/workflows/issue-flow.yml, which
 // calls them from actions/github-script (`github` is its octokit, `context` the event, `core` the logger).
 // No model, no text from an issue is evaluated; the owner list comes from the workflow's ISSUE_FLOW_OWNERS.
-import { STALE_DAYS, decide, isBot, linkedIssues, needsTimeline, parseOwners, staleIssues } from "./transitions.mjs";
+import { STALE_DAYS, decide, isBot, linkedIssues, needsTimeline, parseOwners, staleIssues, TRIAGE_MARKER_RE } from "./transitions.mjs";
 
 /** Sending the label requests one by one keeps their order: the new status first, then the old ones go. */
 export async function applyActions(github, context, issueNumber, actions) {
@@ -112,7 +112,7 @@ export async function runEvent({ github, context, core, env = process.env }) {
     const actor = isComment ? (payload.comment?.user?.login ?? sender) : sender;
     // The time of an opened/reopened event: the issue's creation, or its last update (the reopen) as the event carried it.
     const at = payload.action === "opened" ? payload.issue.created_at : payload.issue.updated_at;
-    await handle(payload.issue.number, { name: context.eventName, action: payload.action, actor, label: payload.label?.name, at });
+    await handle(payload.issue.number, { name: context.eventName, action: payload.action, actor, label: payload.label?.name, at, triage: isComment && TRIAGE_MARKER_RE.test(payload.comment?.body ?? "") });
     return results;
   }
 
