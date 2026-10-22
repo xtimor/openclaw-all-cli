@@ -126,6 +126,8 @@ All settings are optional. They live under `plugins.entries.openclaw-all-cli.con
 | `cursor-cli.maxConcurrentTurns` | `4` | Turns that run at once (1 to 64). More wait in order for a free slot. |
 | `cursor-cli.maxProcesses` | `8` | `cursor-agent` processes alive at once, idle ones included (1 to 64, at least `maxConcurrentTurns`). At the cap the least recently used idle process is closed. |
 
+The OpenClaw Control UI shows these settings as a form for the plugin, with a label and help for each field; `cursor-cli.env` values are hidden as secrets there and in `openclaw config get`, and the two limits sit under advanced.
+
 A value outside 1 to 64 (or not an integer) is rejected by OpenClaw's config validation before the plugin loads, so fix it in the config. A `maxProcesses` below `maxConcurrentTurns` passes that check: the plugin ignores both caps with a warning, keeps your other settings such as `command`, and uses the defaults. Keep both under OpenClaw's own limit of 16 live sessions.
 
 Compaction: Cursor's ACP mode has no compaction, so OpenClaw compacts its own transcript for `cursor-cli` agents (`/compact`, and before a turn when a chat grows past its budget). That needs an API model to write the summary. Set one, for example `openclaw config set agents.defaults.compaction.model <provider>/<model>`. Without it OpenClaw uses the agent's own model, which needs an API login; whether a Cursor API-key profile counts as one is unverified. If no usable model exists, `/compact` reports the host's reason (for example `No route-compatible authentication source is configured`); that a turn crossing the budget then fails is expected but untested. See [Compaction](providers/cursor.md#compaction).
