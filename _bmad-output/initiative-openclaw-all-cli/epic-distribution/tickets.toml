@@ -47,6 +47,18 @@ risk = "high"
 references = ["epic-distribution.md"]
 
 [[entry]]
+id = 10
+type = "story"
+title = "Release on the owner's approval, without a pushed tag"
+description = "The owner's release flow (user, 2026-10-22): the agent asks 'release?', and on approval starts everything itself; the owner pushes no tag. The agent's session cannot push tags, so `workflow_dispatch` of `release.yml` with `dry_run: false` on `main` creates the release itself: `scripts/release.sh` checks that HEAD is on `origin/main` and that the tag does not exist yet (locally or on the remote), runs the same steps as a tag push, and `gh release create` creates the tag at HEAD (`--target`). A tag push keeps working as before. The tag is created only after publish or stage succeeded, so a failed run leaves nothing to clean up. Updates `docs/release.md` (cut a release: the agent asks, the owner approves) and the tests."
+verify = "Stub tests cover dispatch on main (tag created by the release at HEAD), dispatch with an existing tag (fails before checks), dispatch off main (fails), and the tag-push path unchanged; a dispatch dry run on GitHub stays green."
+covers = []
+after = [4]
+hitl = false
+risk = "medium"
+references = ["epic-distribution.md"]
+
+[[entry]]
 id = 5
 type = "story"
 title = "Install from npm proven and documented"
