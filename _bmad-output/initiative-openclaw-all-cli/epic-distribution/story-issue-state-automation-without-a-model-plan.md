@@ -3,7 +3,7 @@ title: 'Issue state automation without a model'
 type: 'feature'
 ticket: '7'
 created: '2026-10-22'
-status: 'built'
+status: done
 baseline_revision: '50c343288e48082b7c646cea4ece559c105a8fce'
 route: 'full'
 route_source: 'auto'
@@ -129,7 +129,7 @@ Re-derived in place by the implementer on top of the existing code (not reverted
 
 - Summary: a no-model workflow keeps one `status:*` per open issue and none on a closed one, settling labels from the issue's label timeline (latest status wins, non-owner approvals reverted with the replaced status restored), moves linked issues on same-repo or owner PRs per `issue-flow.md`, and closes `needs-info` issues silent for 14 days (dry-run by hand).
 - Review: 2 passes; pass 1 led to a plan change and re-derivation (5 bad_plan), pass 2 patched 6, 1 deferred into 3.9.
-- Verification: 81 issue-flow tests; `npm run ci` green. After merge (orchestrator): opening, reopening, an author reply, a PR link, and a dry-run stale dispatch on GitHub. A non-owner approval cannot be produced here (the session acts as the owner).
+- Verification: 81 issue-flow tests; `npm run ci` green. On GitHub after merge (2026-10-22, test issue #6): opened without a status → `status:new`; `new` + `needs-info` → `needs-info` (latest wins); author comment → `new`; closed → no status; dispatched stale job dry run: `0 stale issue(s) of 0 in needs-info (dry run, nothing changed)`; github-script v9 imported the ESM module. Not run on GitHub: a non-owner approval (this session acts as the owner) and a PR link; both covered by unit tests. After merge (orchestrator): opening, reopening, an author reply, a PR link, and a dry-run stale dispatch on GitHub. A non-owner approval cannot be produced here (the session acts as the owner).
 
 ## Verification
 
