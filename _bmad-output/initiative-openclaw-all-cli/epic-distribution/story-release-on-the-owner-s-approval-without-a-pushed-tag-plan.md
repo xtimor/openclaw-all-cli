@@ -3,7 +3,7 @@ title: 'Release on the owner''s approval, without a pushed tag'
 type: 'feature'
 ticket: '10'
 created: '2026-10-22'
-status: 'built'
+status: done
 baseline_revision: '65cd12e82f8b12f947059670d3013f52e6ad9dbb'
 route: 'oneshot'
 route_source: 'auto'
