@@ -1,0 +1,61 @@
+name: Release
+
+# Push a tag vX.Y.Z (on main) to release. All logic is in scripts/release.sh; see docs/release.md.
+# workflow_dispatch with dry_run (default) runs every step except publish and the GitHub release.
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Tag to release, e.g. v1.2.3 (a dry run only uses it as the version)'
+        required: true
+        type: string
+      dry_run:
+        description: 'Run everything except publish and the GitHub release'
+        required: true
+        type: boolean
+        default: true
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+env:
+  # Same defaults as scripts/dev-openclaw.sh and ci.yml.
+  NODE_VERSION: 24.22.0
+  OPENCLAW_VERSION: 2026.10.3
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    permissions:
+      contents: write # create the GitHub release
+      id-token: write # npm trusted publishing (OIDC) and provenance
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0 # the script checks the tag's commit against origin/main
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          registry-url: https://registry.npmjs.org
+      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            .spike/node
+            .spike/openclaw
+          key: spike-${{ runner.os }}-node${{ env.NODE_VERSION }}-openclaw${{ env.OPENCLAW_VERSION }}
+      - name: Release
+        run: scripts/release.sh
+        env:
+          # Event data goes through env, never into the script text.
+          RELEASE_TAG: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}
+          DRY_RUN: ${{ github.event_name == 'workflow_dispatch' && inputs.dry_run || 'false' }}
+          # Stage-only npm token for the first release; delete it after the trust is set (docs/release.md).
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+          GH_TOKEN: ${{ github.token }}

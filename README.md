@@ -47,6 +47,7 @@ Early release. Cursor CLI only. Until the first version is on npm, build from so
 ## Docs
 
 - [Setup](https://github.com/xtimor/openclaw-all-cli/blob/main/docs/setup.md): requirements, install, configuration, verification, troubleshooting.
+- [Release](https://github.com/xtimor/openclaw-all-cli/blob/main/docs/release.md): cut a release from a tag, dry run, first release, rollback, rotating the credential.
 - [Cursor provider](https://github.com/xtimor/openclaw-all-cli/blob/main/docs/providers/cursor.md): how `cursor-cli/<model>` runs and how it compares with `claude-cli`.
 
 ## References

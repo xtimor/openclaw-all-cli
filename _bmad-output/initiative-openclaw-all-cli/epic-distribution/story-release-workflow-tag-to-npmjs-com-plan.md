@@ -3,14 +3,14 @@ title: 'Release workflow: tag to npmjs.com'
 type: 'feature'
 ticket: '4'
 created: '2026-10-22'
-status: 'in-progress'
+status: 'in-review'
 baseline_revision: '3ea03129ca1cfdc25baaf4d06cf31b70bcd28351'
 route: 'full'
 route_source: 'auto'
 risk: 'high'
-review: ''
-review_source: ''
-lenses_ran: []
+review: 'quick'
+review_source: 'pinned'
+lenses_ran: [quick]
 review_loop_iteration: 0
 context: ['{project-root}/AGENTS.md', '{project-root}/MEMORY.md']
 ---
@@ -64,6 +64,8 @@ context: ['{project-root}/AGENTS.md', '{project-root}/MEMORY.md']
 - Given the first real tag on main, when the workflow runs, then the version is staged, and after the owner's approval `npm view openclaw-all-cli dist.shasum` matches the attached tarball (owner step; recorded after it happens).
 
 ## Implementation Notes
+
+Implemented by a sonnet subagent. `scripts/release.sh`, `.github/workflows/release.yml`, `test/release-script.test.ts` (31 tests, stub npm/gh/git/check), `docs/release.md`, links from `README.md` and `docs/setup.md`, `MEMORY.md`, `.gitignore` (`out/`). Beyond the plan: a real release also requires HEAD to be the tag's commit; only a 404 from `npm view` counts as "free". The real token is visible only to `npm stage publish`; other commands see setup-node's placeholder. A staged-but-unapproved version is not visible to `npm view`; the registry's unique-version rule rejects a repeat stage. npm docs (`npm-stage.md`): "Staged publishing will allow you to create a new package if it does not exist." Local: `npm run ci` 954 tests; `RELEASE_TAG=v0.0.1-dryrun.1 DRY_RUN=true scripts/release.sh` end to end with real `npm publish --dry-run`; removing `--provenance` failed 3 tests.
 
 ## Plan Change Log
 

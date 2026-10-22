@@ -245,7 +245,7 @@ npm run test:live      # real cursor-agent; needs a Cursor login and no sandbox
 
 ### Versions
 
-The version in git is `0.0.0`. A release sets it from the tag `vX.Y.Z` (see the release ticket), so the tag is the single source. Do not bump it by hand.
+The version in git is `0.0.0`. A release sets it from the tag `vX.Y.Z` (`scripts/release.sh`), so the tag is the single source. Do not bump it by hand. How to cut a release, run a dry run, and roll back: [Release](release.md).
 
 ### Checks (CI)
 
