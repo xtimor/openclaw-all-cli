@@ -99,19 +99,22 @@ function clearStatus(issue) {
 }
 
 /**
- * The label timeline: `labeled` events as `{id, label, actor, createdAt}`, oldest first. Accepts the REST events of
- * `GET /repos/{o}/{r}/issues/{n}/events` (other event kinds are dropped) or already normalized entries.
+ * The label timeline: `labeled` and `unlabeled` events as `{id, kind, label, actor, createdAt, time}`, oldest first.
+ * Accepts the REST events of `GET /repos/{o}/{r}/issues/{n}/events` (other event kinds are dropped) or already
+ * normalized entries (`kind` defaults to `labeled`).
  */
 export function normalizeTimeline(raw) {
   if (!Array.isArray(raw)) return [];
   const entries = [];
   for (const item of raw) {
-    if (!item || (item.event !== undefined && item.event !== "labeled")) continue;
+    const kind = item?.event ?? item?.kind ?? "labeled";
+    if (!item || (kind !== "labeled" && kind !== "unlabeled")) continue;
     const label = typeof item.label === "string" ? item.label : item.label?.name;
     if (typeof label !== "string") continue;
     const time = Date.parse(item.createdAt ?? item.created_at ?? "");
     entries.push({
       id: item.id ?? null,
+      kind,
       label,
       actor: (typeof item.actor === "string" ? item.actor : item.actor?.login) ?? null,
       createdAt: item.createdAt ?? item.created_at ?? null,
@@ -123,37 +126,55 @@ export function normalizeTimeline(raw) {
   return entries.sort((a, b) => a.time - b.time || a.index - b.index);
 }
 
-/** True when the labels alone cannot settle the status: several status labels, or an approval whose author matters. */
-export function needsTimeline(rawIssue) {
+/**
+ * True when the labels alone cannot settle the status: several status labels, an approval whose author matters, or an
+ * opened/reopened event that must not override a status labeled after it.
+ */
+export function needsTimeline(rawIssue, event) {
   const issue = normalizeIssue(rawIssue);
   if (issue.state !== "open") return false;
   const statuses = issue.labels.filter(isStatus);
-  return statuses.length > 1 || statuses.includes(APPROVED);
+  const opening = event?.action === "opened" || event?.action === "reopened";
+  return statuses.length > 1 || statuses.includes(APPROVED) || (opening && statuses.length > 0);
 }
 
-/** Status label to `{rank, actor, id}` of its latest `labeled` event; a later rank was labeled later. */
+/**
+ * Reads the timeline: `latest` maps a status label to `{rank, actor, id, time}` of its latest `labeled` event (a later
+ * rank was labeled later), `entries` is the sorted timeline.
+ */
 function latestLabeled(timeline, event) {
   const latest = new Map();
-  normalizeTimeline(timeline).forEach((entry, rank) => {
-    if (isStatus(entry.label)) latest.set(entry.label, { rank, actor: entry.actor, id: entry.id });
+  const entries = normalizeTimeline(timeline);
+  entries.forEach((entry, rank) => {
+    if (entry.kind === "labeled" && isStatus(entry.label)) latest.set(entry.label, { rank, actor: entry.actor, id: entry.id, time: entry.time });
   });
   // The event being handled counts as the newest one when the timeline does not show it (not read, or lagging).
   if (event?.action === "labeled" && isStatus(event.label) && !latest.has(event.label)) {
-    latest.set(event.label, { rank: Number.POSITIVE_INFINITY, actor: event.actor ?? null, id: "event" });
+    latest.set(event.label, { rank: Number.POSITIVE_INFINITY, actor: event.actor ?? null, id: "event", time: Number.POSITIVE_INFINITY });
   }
-  return latest;
+  return { latest, entries };
+}
+
+/** The status label (not approved) most recently unlabeled before `rank`, or null. */
+function replacedBefore(entries, rank) {
+  for (let i = Math.min(rank, entries.length) - 1; i >= 0; i -= 1) {
+    const entry = entries[i];
+    if (entry.kind === "unlabeled" && isStatus(entry.label) && entry.label !== APPROVED) return entry.label;
+  }
+  return null;
 }
 
 /**
  * The status an issue should have, from its current labels and its label timeline. Order-independent and idempotent,
  * so parallel runs for one issue converge: a closed issue has no status; every `status:approved` whose latest
  * `labeled` event is by a non-owner is dropped (one comment per event); of the status labels left, the most recently
- * labeled one stays (labels with no event rank below those with one, then by lifecycle order); none left means `new`.
+ * labeled one stays (labels with no event rank below those with one, then by lifecycle order); none left means the
+ * status the foreign approval replaced (the last one unlabeled before it), else `new`.
  */
 function reconcile(issue, { timeline, owners, event }) {
   if (issue.state === "closed") return clearStatus(issue);
   const statuses = issue.labels.filter(isStatus);
-  const latest = latestLabeled(timeline, event);
+  const { latest, entries } = latestLabeled(timeline, event);
   let kept = statuses;
   let reverted = null;
   if (statuses.includes(APPROVED)) {
@@ -165,8 +186,9 @@ function reconcile(issue, { timeline, owners, event }) {
   }
   const order = (label) => STATUS_LABELS.indexOf(label);
   const rank = (label) => latest.get(label)?.rank ?? Number.NEGATIVE_INFINITY;
+  const restored = kept.length === 0 && reverted ? replacedBefore(entries, reverted.rank) : null;
   const target =
-    kept.length === 0 ? NEW : kept.reduce((best, label) => (rank(label) > rank(best) || (rank(label) === rank(best) && order(label) > order(best)) ? label : best));
+    kept.length === 0 ? (restored ?? NEW) : kept.reduce((best, label) => (rank(label) > rank(best) || (rank(label) === rank(best) && order(label) > order(best)) ? label : best));
   const actions = setStatus(issue, target);
   if (reverted) actions.push(approvalComment(reverted.id ?? "event"));
   return actions;
@@ -175,7 +197,12 @@ function reconcile(issue, { timeline, owners, event }) {
 function onIssues(event, issue, owners, timeline) {
   if (isBot(event.actor)) return [];
   if (event.action === "opened" || event.action === "reopened") {
-    return issue.state === "open" ? setStatus(issue, NEW) : clearStatus(issue);
+    if (issue.state !== "open") return clearStatus(issue);
+    // `new` unless a current status was labeled after this event (that run's label wins, whichever run is first).
+    const at = Date.parse(event.at ?? "");
+    const { latest } = latestLabeled(timeline, null);
+    const later = Number.isFinite(at) && issue.labels.some((label) => isStatus(label) && (latest.get(label)?.time ?? Number.NEGATIVE_INFINITY) > at);
+    return later ? reconcile(issue, { timeline, owners, event }) : setStatus(issue, NEW);
   }
   // closed, labeled, unlabeled: settle the status from the issue as it is now, whatever the event was.
   if (event.action === "closed" || event.action === "labeled" || event.action === "unlabeled") return reconcile(issue, { timeline, owners, event });
@@ -189,7 +216,10 @@ function onComment(event, issue) {
   return setStatus(issue, NEW);
 }
 
-function onPullRequest(event, issue) {
+function onPullRequest(event, issue, owners) {
+  // Only a pull request from this repository, or by an owner, moves states; a fork or outsider PR changes nothing.
+  const sameRepo = lower(event.repo) !== "" && lower(event.headRepo) === lower(event.repo);
+  if (!sameRepo && !isOwner(event.author, owners)) return [];
   const kind = event.link === "fixes" ? "fixes" : event.link === "refs" ? "refs" : null;
   if (kind === null) return [];
   const has = (label) => issue.labels.includes(label);
@@ -220,7 +250,9 @@ function onStale(issue) {
  *   - `issues`: `action` opened | reopened | closed | labeled | unlabeled; `label` is the added label.
  *   - `issue_comment`: `action` created; `actor` is the commenter.
  *   - `pull_request`: `action` opened | edited | reopened | closed; `link` is `fixes` or `refs` (how its body links this
- *     issue); `merged`, `prState` open | closed.
+ *     issue); `merged`, `prState` open | closed; `repo` (this repository, `owner/repo`), `headRepo` (the PR's head
+ *     repository), `author`: it counts only when `headRepo` is `repo` or `author` is an owner.
+ *   - opened | reopened also carry `at`, the event time (ISO).
  *   - `stale`: the daily job found the issue.
  * issue: a REST issue or a normalized one (`normalizeIssue`), as read now.
  * options: `owners` (logins that may approve) and `timeline` (the issue's label events, see `normalizeTimeline`; read it
@@ -236,7 +268,7 @@ export function decide(event, issue, { owners = [], timeline = [] } = {}) {
     case "issue_comment":
       return onComment(event, current);
     case "pull_request":
-      return onPullRequest(event, current);
+      return onPullRequest(event, current, owners);
     case "stale":
       return onStale(current);
     default:

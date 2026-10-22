@@ -24,7 +24,9 @@ export async function applyActions(github, context, issueNumber, actions) {
         break;
       case "comment":
         if (action.once) {
-          existing ??= (await github.paginate(issues.listComments, { owner, repo, issue_number: issueNumber, per_page: 100 })).map((c) => c.body ?? "");
+          existing ??= (await github.paginate(issues.listComments, { owner, repo, issue_number: issueNumber, per_page: 100 }))
+            .filter((c) => isBot(c.user?.login)) // only our own comments count; anyone else can quote the key
+            .map((c) => c.body ?? "");
           // A run that raced this one (or an earlier pass) already said it for this event.
           if (existing.some((body) => body.includes(action.once))) break;
         }
@@ -89,7 +91,7 @@ export async function runEvent({ github, context, core, env = process.env }) {
       core.info(`issue-flow: #${number} not found, skipped`);
       return;
     }
-    const timeline = event.name === "issues" && needsTimeline(issue) ? await readTimeline(github, context, number) : [];
+    const timeline = event.name === "issues" && needsTimeline(issue, event) ? await readTimeline(github, context, number) : [];
     const actions = decide(event, issue, { owners, timeline });
     if (actions.length === 0) {
       core.info(`issue-flow: #${number} nothing to do (${event.name} ${event.action})`);
@@ -108,7 +110,9 @@ export async function runEvent({ github, context, core, env = process.env }) {
     }
     if (!payload.issue || (isComment && payload.issue.pull_request)) return results;
     const actor = isComment ? (payload.comment?.user?.login ?? sender) : sender;
-    await handle(payload.issue.number, { name: context.eventName, action: payload.action, actor, label: payload.label?.name });
+    // The time of an opened/reopened event: the issue's creation, or its last update (the reopen) as the event carried it.
+    const at = payload.action === "opened" ? payload.issue.created_at : payload.issue.updated_at;
+    await handle(payload.issue.number, { name: context.eventName, action: payload.action, actor, label: payload.label?.name, at });
     return results;
   }
 
@@ -125,6 +129,9 @@ export async function runEvent({ github, context, core, env = process.env }) {
           name: "pull_request",
           action: payload.action,
           actor: sender,
+          repo: `${owner}/${repo}`,
+          headRepo: pr.head?.repo?.full_name ?? null,
+          author: pr.user?.login ?? null,
           link: link.kind,
           merged: pr.merged === true,
           prState: pr.state,

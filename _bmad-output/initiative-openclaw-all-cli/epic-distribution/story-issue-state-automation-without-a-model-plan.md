@@ -3,7 +3,7 @@ title: 'Issue state automation without a model'
 type: 'feature'
 ticket: '7'
 created: '2026-10-22'
-status: 'in-review'
+status: 'built'
 baseline_revision: '50c343288e48082b7c646cea4ece559c105a8fce'
 route: 'full'
 route_source: 'auto'
@@ -15,7 +15,14 @@ review_loop_iteration: 1
 followup_review_recommended: false
 context: ['{project-root}/AGENTS.md', '{project-root}/MEMORY.md', '{project-root}/_bmad-output/initiative-openclaw-all-cli/epic-distribution/issue-flow.md', '{project-root}/docs/issues.md']
 warnings: []
-deferred: []
+deferred:
+  - summary: >-
+      A lagging issue events API can keep a non-owner approval that replaces an older owner approval.
+    evidence: |-
+      latestLabeled falls back to the payload only when no earlier labeled event exists; the implementation run (3.9) must check the latest labeled status:approved actor itself.
+    location: >-
+      scripts/issue-flow/transitions.mjs
+    severity: medium
 ---
 
 <intent-contract>
@@ -105,6 +112,24 @@ Re-derived in place by the implementer on top of the existing code (not reverted
   - `[medium]` `[patch]` `GITHUB_TOKEN` PRs start no workflow (3.9 impact) — documented in docs and MEMORY.
   - `[low]` `[patch]` docs said closed issues are ignored for PRs — rewritten to the gates.
   - `[low]` `[reject]` unticked plan tasks — plan edit (rule).
+
+### 2026-10-22 — Review pass 2
+- verdicts: 7 findings — high 0, medium 3, low 4, false 0, maybe-false 0
+- findings:
+  - `[medium]` `[patch]` an outsider (fork) PR still moved states — PRs act only from this repository's branches or an owner; tests added.
+  - `[low]` `[patch]` opened/reopened forced `new` without the timeline (runs did not converge) — `new` only when no status was labeled after the event; both orders tested.
+  - `[low]` `[patch]` once-comment dedup counted any author's comment — bot comments only; the parallel duplicate stays a documented risk (no locking).
+  - `[medium]` `[patch]` a replaced status was not restored after a foreign approval — `unlabeled` events kept; the replaced status is restored; tested.
+  - `[medium]` `[defer]` a lagging events API can keep a non-owner approval that replaces an old owner approval — mitigated where it matters: the implementation run (3.9) must verify that the latest `labeled status:approved` event is by an owner before building (MEMORY, carried into 3.9's plan).
+  - `[low]` `[patch]` Closed bullet ignored GITHUB_TOKEN closes — rewritten.
+  - `[low]` `[patch]` MEMORY trigger list stale — fixed.
+- Review limit (2 passes) reached. The orchestrator stops review here and does not escalate: the second pass found no high finding and its scope shrank to edge cases, all patched or carried into 3.9; `npm run ci` green after the patches.
+
+## Auto Run Result
+
+- Summary: a no-model workflow keeps one `status:*` per open issue and none on a closed one, settling labels from the issue's label timeline (latest status wins, non-owner approvals reverted with the replaced status restored), moves linked issues on same-repo or owner PRs per `issue-flow.md`, and closes `needs-info` issues silent for 14 days (dry-run by hand).
+- Review: 2 passes; pass 1 led to a plan change and re-derivation (5 bad_plan), pass 2 patched 6, 1 deferred into 3.9.
+- Verification: 81 issue-flow tests; `npm run ci` green. After merge (orchestrator): opening, reopening, an author reply, a PR link, and a dry-run stale dispatch on GitHub. A non-owner approval cannot be produced here (the session acts as the owner).
 
 ## Verification
 

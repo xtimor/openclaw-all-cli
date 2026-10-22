@@ -29,6 +29,10 @@ interface Event {
   merged?: boolean;
   prState?: string;
   link?: string;
+  at?: string;
+  repo?: string;
+  headRepo?: string | null;
+  author?: string | null;
 }
 interface Transitions {
   STATUS_LABELS: string[];
@@ -37,7 +41,7 @@ interface Transitions {
   STALE_COMMENT: string;
   decide(event: Event, issue: IssueIn, options?: { owners?: string[]; timeline?: unknown[] }): Action[];
   approvalComment(eventId: unknown): Action;
-  needsTimeline(issue: IssueIn): boolean;
+  needsTimeline(issue: IssueIn, event?: Event): boolean;
   normalizeTimeline(raw: unknown): Array<{ id: unknown; label: string; actor: string | null }>;
   linkedIssues(body: unknown, repo?: string): Array<{ number: number; kind: "fixes" | "refs" }>;
   staleIssues(issues: IssueIn[], now: Date | number, days?: number): IssueIn[];
@@ -230,6 +234,62 @@ describe("decide: issues", () => {
     }
   });
 
+  it("OPENED / REOPENED: a status labeled after the event is kept; one labeled at or before it is reset to new", () => {
+    const at = "2026-10-20T10:00:00Z";
+    for (const action of ["opened", "reopened"]) {
+      const event = { name: "issues", action, actor: "alice", at };
+      const later = [labeledAt("status:new", "alice", 0, 1), labeledAt("status:triaged", "bob", 5, 2)];
+      expect(t.decide(event, issue(["status:new", "status:triaged"]), { owners: OWNERS, timeline: later })).toEqual([remove("status:new")]);
+      expect(t.decide(event, issue(["status:triaged"]), { owners: OWNERS, timeline: later })).toEqual([]);
+      const before = [labeledAt("status:triaged", "bob", -5, 1)];
+      expect(t.decide(event, issue(["status:triaged"]), { owners: OWNERS, timeline: before })).toEqual([add("status:new"), remove("status:triaged")]);
+      // Same second counts as not later; no time or no timeline keeps the old rule.
+      expect(t.decide(event, issue(["status:triaged"]), { owners: OWNERS, timeline: [labeledAt("status:triaged", "bob", 0, 1)] })).toEqual([add("status:new"), remove("status:triaged")]);
+      expect(t.decide({ ...event, at: undefined }, issue(["status:triaged"]), { timeline: later })).toEqual([add("status:new"), remove("status:triaged")]);
+      expect(t.decide(event, issue(["status:triaged"]))).toEqual([add("status:new"), remove("status:triaged")]);
+      // A foreign approval labeled after the event is still reverted.
+      const approved = [labeledAt("status:approved", "mallory", 5, 3)];
+      expect(t.decide(event, issue(["status:approved"]), { owners: OWNERS, timeline: approved })).toEqual([add("status:new"), remove("status:approved"), revert(3)]);
+    }
+    expect(t.needsTimeline(issue(["status:triaged"]), { name: "issues", action: "opened" } as Event)).toBe(true);
+    expect(t.needsTimeline(issue(["type:bug"]), { name: "issues", action: "opened" } as Event)).toBe(false);
+    expect(t.needsTimeline(issue(["status:triaged"]))).toBe(false);
+  });
+
+  it("NON_OWNER_APPROVED: a replaced status comes back (unlabeled X, then labeled approved)", () => {
+    const timeline = [
+      labeledAt("status:triaged", "xtimor", 0, 1),
+      { ...labeledAt("status:triaged", "mallory", 5, 2), event: "unlabeled" },
+      labeledAt("status:approved", "mallory", 5, 3),
+    ];
+    for (const event of [
+      { name: "issues", action: "labeled", actor: "mallory", label: "status:approved" },
+      { name: "issues", action: "unlabeled", actor: "mallory", label: "status:triaged" },
+    ]) {
+      expect(t.decide(event, issue(["status:approved"]), { owners: OWNERS, timeline })).toEqual([add("status:triaged"), remove("status:approved"), revert(3)]);
+    }
+    // Only an unlabeled event before the approval counts, and never the approval itself.
+    const after = [labeledAt("status:approved", "mallory", 5, 3), { ...labeledAt("status:triaged", "mallory", 6, 4), event: "unlabeled" }];
+    expect(t.decide({ name: "issues", action: "unlabeled", actor: "mallory" }, issue(["status:approved"]), { owners: OWNERS, timeline: after })).toEqual([
+      add("status:new"),
+      remove("status:approved"),
+      revert(3),
+    ]);
+    const self = [labeledAt("status:approved", "xtimor", 0, 1), { ...labeledAt("status:approved", "mallory", 1, 2), event: "unlabeled" }, labeledAt("status:approved", "mallory", 2, 3)];
+    expect(t.decide({ name: "issues", action: "unlabeled", actor: "mallory" }, issue(["status:approved"]), { owners: OWNERS, timeline: self })).toEqual([
+      add("status:new"),
+      remove("status:approved"),
+      revert(3),
+    ]);
+    // The synthetic event of this run (timeline lagging) restores the last unlabeled status too.
+    const lagging = [labeledAt("status:blocked", "bob", 0, 1), { ...labeledAt("status:blocked", "mallory", 5, 2), event: "unlabeled" }];
+    expect(t.decide({ name: "issues", action: "labeled", actor: "mallory", label: "status:approved" }, issue(["status:approved"]), { owners: OWNERS, timeline: lagging })).toEqual([
+      add("status:blocked"),
+      remove("status:approved"),
+      revert("event"),
+    ]);
+  });
+
   it("an approval whose author cannot be told (no timeline entry, not this event) stays", () => {
     expect(t.decide({ name: "issues", action: "unlabeled", actor: "bob" }, issue(["status:approved"]), { owners: OWNERS })).toEqual([]);
   });
@@ -242,9 +302,9 @@ describe("decide: issues", () => {
     expect(t.needsTimeline(issue(["status:new", "status:triaged"], { state: "closed" }))).toBe(false);
   });
 
-  it("normalizeTimeline keeps labeled events, oldest first, from REST or normalized entries", () => {
+  it("normalizeTimeline keeps labeled and unlabeled events, oldest first, from REST or normalized entries", () => {
     const raw = [
-      { id: 9, event: "unlabeled", label: { name: "status:new" } },
+      { id: 9, event: "unlabeled", label: { name: "status:new" }, created_at: "2026-10-22T10:00:00Z" },
       { id: 8, event: "commented" },
       labeledAt("status:triaged", "bob", 5, 2),
       labeledAt("status:new", "alice", 0, 1),
@@ -255,6 +315,7 @@ describe("decide: issues", () => {
       [1, "status:new", "alice"],
       [2, "status:triaged", "bob"],
       [3, "status:blocked", "carol"],
+      [9, "status:new", null],
     ]);
     expect(t.normalizeTimeline(undefined)).toEqual([]);
   });
@@ -360,7 +421,17 @@ describe("linkedIssues", () => {
 });
 
 describe("decide: pull_request", () => {
-  const pr = (action: string, link: string, extra: Partial<Event> = {}): Event => ({ name: "pull_request", action, actor: "carol", link, prState: action === "closed" ? "closed" : "open", ...extra });
+  const pr = (action: string, link: string, extra: Partial<Event> = {}): Event => ({
+    name: "pull_request",
+    action,
+    actor: "carol",
+    link,
+    prState: action === "closed" ? "closed" : "open",
+    repo: REPO,
+    headRepo: REPO,
+    author: "carol",
+    ...extra,
+  });
 
   it("PR_OPENED: opened, edited, and reopened move an in-progress issue to in-review; in-review stays", () => {
     for (const action of ["opened", "edited", "reopened"]) {
@@ -368,6 +439,22 @@ describe("decide: pull_request", () => {
       expect(t.decide(pr(action, "refs"), issue(["status:in-progress"]))).toEqual([add("status:in-review"), remove("status:in-progress")]);
       expect(t.decide(pr(action, "fixes"), issue(["status:in-review"]))).toEqual([]);
     }
+  });
+
+  it("a fork or outsider PR changes nothing; the owner's PR from a fork still counts", () => {
+    const states = [issue(["status:in-progress"]), issue(["status:in-review"], { state: "open" })];
+    const fork = { headRepo: "mallory/openclaw-all-cli", author: "mallory" };
+    for (const action of ["opened", "edited", "reopened"]) expect(t.decide(pr(action, "fixes", fork), states[0]!, { owners: OWNERS })).toEqual([]);
+    expect(t.decide(pr("closed", "refs", { ...fork, merged: true }), states[1]!, { owners: OWNERS })).toEqual([]);
+    expect(t.decide(pr("closed", "fixes", { ...fork, merged: false }), states[1]!, { owners: OWNERS })).toEqual([]);
+    expect(t.decide(pr("closed", "fixes", { ...fork, merged: true }), issue(["status:in-review"], { state: "closed" }), { owners: OWNERS })).toEqual([]);
+    // No head repository (a deleted fork) and no repo given are untrusted too.
+    expect(t.decide(pr("opened", "fixes", { headRepo: null }), states[0]!, { owners: OWNERS })).toEqual([]);
+    expect(t.decide(pr("opened", "fixes", { repo: undefined, headRepo: undefined }), states[0]!, { owners: OWNERS })).toEqual([]);
+    // Same repository: counts, whatever the case of the name; an owner's fork PR counts.
+    expect(t.decide(pr("opened", "fixes", { headRepo: REPO.toUpperCase() }), states[0]!, { owners: OWNERS })).toEqual([add("status:in-review"), remove("status:in-progress")]);
+    expect(t.decide(pr("opened", "fixes", { ...fork, author: "XTimor" }), states[0]!, { owners: OWNERS })).toEqual([add("status:in-review"), remove("status:in-progress")]);
+    expect(t.decide(pr("opened", "fixes", fork), states[0]!)).toEqual([]);
   });
 
   it("PR_OPENED: any other state is left alone (an outsider's PR moves nothing)", () => {
@@ -484,7 +571,7 @@ interface FakeIssue extends IssueIn {
 }
 function fakeGithub(
   issues: FakeIssue[],
-  options: { missingLabels?: Set<string>; failOn?: (call: string) => Error | undefined; events?: Record<number, unknown[]>; comments?: Record<number, string[]> } = {},
+  options: { missingLabels?: Set<string>; failOn?: (call: string) => Error | undefined; events?: Record<number, unknown[]>; comments?: Record<number, Array<string | { body: string; login: string }>> } = {},
 ) {
   const calls: string[] = [];
   const byNumber = new Map(issues.map((i) => [i.number, structuredClone(i)]));
@@ -516,7 +603,7 @@ function fakeGithub(
         }),
       createComment: ({ issue_number, body }: { issue_number: number; body: string }) =>
         record(`comment ${issue_number} ${body.split("\n")[1]?.slice(0, 20)}`, () => {
-          (options.comments ??= {})[issue_number] = [...(options.comments[issue_number] ?? []), body];
+          (options.comments ??= {})[issue_number] = [...(options.comments[issue_number] ?? []), body]; // written by the workflow (the bot)
         }),
       listEvents: Symbol("listEvents"),
       listComments: Symbol("listComments"),
@@ -536,7 +623,7 @@ function fakeGithub(
       }
       if (method === rest.issues.listComments) {
         calls.push(`comments ${params.issue_number}`);
-        return (options.comments?.[params.issue_number] ?? []).map((body) => ({ body }));
+        return (options.comments?.[params.issue_number] ?? []).map((c) => (typeof c === "string" ? { body: c, user: { login: "github-actions[bot]" } } : { body: c.body, user: { login: c.login } }));
       }
       calls.push(`paginate ${params.state} ${params.labels}`);
       expect(method).toBe(rest.issues.listForRepo);
@@ -546,7 +633,7 @@ function fakeGithub(
     },
   };
   const labelsOf = (number: number) => (byNumber.get(number)?.labels ?? []).map((l) => (typeof l === "string" ? l : l.name));
-  return { github, calls, labelsOf, comments: (number: number) => options.comments?.[number] ?? [], state: (number: number) => byNumber.get(number)?.state };
+  return { github, calls, labelsOf, comments: (number: number) => (options.comments?.[number] ?? []).map((c) => (typeof c === "string" ? c : c.body)), state: (number: number) => byNumber.get(number)?.state };
 }
 
 const ctx = (eventName: string, payload: object) => ({ eventName, payload, repo: { owner: "xtimor", repo: "openclaw-all-cli" } });
@@ -566,6 +653,9 @@ describe("applyActions", () => {
 
   it("a comment with a once key is skipped when that key is already in a comment", async () => {
     const key = "<!-- issue-flow:approval:7 -->";
+    const stranger = fakeGithub([{ number: 12, state: "open", labels: [] }], { comments: { 12: [{ body: `quote ${key}`, login: "mallory" }] } });
+    await apply.applyActions(stranger.github, ctx("issues", {}), 12, [{ op: "comment", body: `text\n${key}`, once: key }]);
+    expect(stranger.calls).toEqual(["comments 12", "comment 12 <!-- issue-flow:appr"]);
     const posted = fakeGithub([{ number: 12, state: "open", labels: [] }], { comments: { 12: [`earlier\n${key}`] } });
     await apply.applyActions(posted.github, ctx("issues", {}), 12, [{ op: "comment", body: `text\n${key}`, once: key }]);
     expect(posted.calls).toEqual(["comments 12"]);
@@ -596,6 +686,7 @@ describe("applyActions", () => {
 
 describe("runEvent", () => {
   const env = { ISSUE_FLOW_OWNERS: "xtimor" };
+  const HEAD = { head: { repo: { full_name: REPO } }, user: { login: "carol" } };
 
   it("OPENED: sets status:new on the issue as it is now", async () => {
     const fake = fakeGithub([{ number: 12, state: "open", labels: ["status:triaged", "type:bug"], user: { login: "alice" } }]);
@@ -652,7 +743,7 @@ describe("runEvent", () => {
       { number: 17, state: "open", labels: ["status:approved"] },
     ]);
     const body = "Fixes #12\nrefs #13\nFixes #14\nFixes #15\nFixes #99\nFixes other/repo#16\nFixes #17";
-    const payload = { action: "opened", sender: { login: "carol" }, pull_request: { number: 20, body, state: "open", merged: false } };
+    const payload = { action: "opened", sender: { login: "carol" }, pull_request: { number: 20, body, state: "open", merged: false, ...HEAD } };
     const core = fakeCore();
     const result = await apply.runEvent({ github: fake.github, context: ctx("pull_request_target", payload), core, env });
     expect(result.map((r) => r.issue)).toEqual([12, 13]);
@@ -670,7 +761,7 @@ describe("runEvent", () => {
         { number: 12, state: "closed", labels: ["status:in-review"] },
         { number: 13, state: "open", labels: ["status:in-review"] },
       ]);
-    const closed = (merged: boolean, body: string) => ({ action: "closed", sender: { login: "xtimor" }, pull_request: { number: 20, body, state: "closed", merged } });
+    const closed = (merged: boolean, body: string) => ({ action: "closed", sender: { login: "xtimor" }, pull_request: { number: 20, body, state: "closed", merged, ...HEAD } });
 
     const fixed = make();
     await apply.runEvent({ github: fixed.github, context: ctx("pull_request_target", closed(true, "Fixes #12")), core: fakeCore(), env });
@@ -685,9 +776,42 @@ describe("runEvent", () => {
     expect(blocked.labelsOf(13)).toEqual(["status:blocked"]);
   });
 
+  it("a fork PR or a PR without a head repository changes nothing; an owner's fork PR does", async () => {
+    const make = () => fakeGithub([{ number: 12, state: "open", labels: ["status:in-progress"] }]);
+    const payload = (head: object, user: string) => ({ action: "opened", sender: { login: user }, pull_request: { number: 20, body: "Fixes #12", state: "open", head, user: { login: user } } });
+    const fork = make();
+    await apply.runEvent({ github: fork.github, context: ctx("pull_request_target", payload({ repo: { full_name: "mallory/openclaw-all-cli" } }, "mallory")), core: fakeCore(), env });
+    await apply.runEvent({ github: fork.github, context: ctx("pull_request_target", payload({ repo: null }, "mallory")), core: fakeCore(), env });
+    expect(fork.labelsOf(12)).toEqual(["status:in-progress"]);
+    const owner = make();
+    await apply.runEvent({ github: owner.github, context: ctx("pull_request_target", payload({ repo: { full_name: "xtimor/fork" } }, "xtimor")), core: fakeCore(), env });
+    expect(owner.labelsOf(12)).toEqual(["status:in-review"]);
+    const same = make();
+    await apply.runEvent({ github: same.github, context: ctx("pull_request_target", payload({ repo: { full_name: REPO } }, "carol")), core: fakeCore(), env });
+    expect(same.labelsOf(12)).toEqual(["status:in-review"]);
+  });
+
+  it("OPENED and a status labeled after it converge in either order (timeline read)", async () => {
+    const events = { 12: [labeledAt("status:new", "alice", 0, 1), labeledAt("status:triaged", "bob", 5, 2)] };
+    const openedAt = new Date(Date.parse("2026-10-20T10:00:00Z")).toISOString();
+    const opened = { action: "opened", sender: { login: "alice" }, issue: { number: 12, created_at: openedAt } };
+    const labeled = { action: "labeled", label: { name: "status:triaged" }, sender: { login: "bob" }, issue: { number: 12 } };
+    const labels = ["status:new", "status:triaged"];
+    for (const order of [[opened, labeled], [labeled, opened]]) {
+      const fake = fakeGithub([{ number: 12, state: "open", labels }], { events });
+      for (const payload of order) await apply.runEvent({ github: fake.github, context: ctx("issues", payload), core: fakeCore(), env });
+      expect(fake.labelsOf(12)).toEqual(["status:triaged"]);
+    }
+    // The triaged label already there, the late opened run alone: it must not reset it.
+    const only = fakeGithub([{ number: 12, state: "open", labels: ["status:triaged"] }], { events });
+    await apply.runEvent({ github: only.github, context: ctx("issues", opened), core: fakeCore(), env });
+    expect(only.labelsOf(12)).toEqual(["status:triaged"]);
+    expect(only.calls).toEqual(["get 12", "events 12"]);
+  });
+
   it("PR_MERGED_FIX into a non-default branch leaves the open issue's status; the close event clears it later", async () => {
     const fake = fakeGithub([{ number: 12, state: "open", labels: ["status:in-review"] }]);
-    const merged = { action: "closed", sender: { login: "xtimor" }, pull_request: { number: 20, body: "Fixes #12", state: "closed", merged: true } };
+    const merged = { action: "closed", sender: { login: "xtimor" }, pull_request: { number: 20, body: "Fixes #12", state: "closed", merged: true, ...HEAD } };
     await apply.runEvent({ github: fake.github, context: ctx("pull_request_target", merged), core: fakeCore(), env });
     expect(fake.labelsOf(12)).toEqual(["status:in-review"]);
   });
@@ -745,7 +869,7 @@ describe("runEvent", () => {
       ],
       { failOn: (call) => (call === "add 12 status:in-review" ? Object.assign(new Error("Server Error"), { status: 500 }) : undefined) },
     );
-    const payload = { action: "opened", sender: { login: "carol" }, pull_request: { number: 20, body: "Fixes #12\nFixes #13", state: "open" } };
+    const payload = { action: "opened", sender: { login: "carol" }, pull_request: { number: 20, body: "Fixes #12\nFixes #13", state: "open", ...HEAD } };
     await expect(apply.runEvent({ github: fake.github, context: ctx("pull_request_target", payload), core: fakeCore(), env })).rejects.toThrow(/1 of 2 failed: #12: Server Error/);
     expect(fake.labelsOf(13)).toEqual(["status:in-review"]);
   });
