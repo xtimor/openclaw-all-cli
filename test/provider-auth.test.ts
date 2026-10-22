@@ -89,7 +89,11 @@ describe("login method (criterion 1)", () => {
 
   it("says so when the probe cannot tell", async () => {
     const unsure: CliAdapter = { ...cursorAdapter, probeAuth: async () => "unreadable" };
-    await expect(run(fakeEnv(), FAKE_CURSOR_AGENT, unsure)).rejects.toThrow(/could not tell whether cursor cli is logged in/i);
+    await expect(run(fakeEnv(), FAKE_CURSOR_AGENT, unsure)).rejects.toThrow(/could not tell whether cursor cli is logged in.*`cursor-agent login`/i);
+    // The core names no subcommand of its own: the fix comes from the adapter.
+    const acme: CliAdapter = { ...unsure, command: "acme-agent", displayName: "Acme CLI", loginCommand: "acme-agent auth" };
+    await expect(run(fakeEnv(), FAKE_CURSOR_AGENT, acme)).rejects.toThrow(/`acme-agent auth`/);
+    await expect(run(fakeEnv(), FAKE_CURSOR_AGENT, acme)).rejects.not.toThrow(/status/);
   });
 
   it("probes the CLI's own login: an API key in the env or the config does not count, and is named in a note", async () => {

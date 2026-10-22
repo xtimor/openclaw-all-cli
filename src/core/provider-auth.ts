@@ -89,14 +89,15 @@ export function createAuthMethods(adapter: CliAdapter, pluginId: string): AuthMe
           ...(context.signal ? { signal: context.signal } : {}),
         });
         context.signal?.throwIfAborted();
+        const loginCommand = adapter.loginCommand ?? `${adapter.command} login`;
         if (status === "missing") {
           throw new Error(
-            `${adapter.displayName} is not logged in. Run \`${adapter.loginCommand ?? `${adapter.command} login`}\` on the machine that runs OpenClaw, then connect again.`,
+            `${adapter.displayName} is not logged in. Run \`${loginCommand}\` on the machine that runs OpenClaw, then connect again.`,
           );
         }
         if (status === "unreadable") {
           throw new Error(
-            `Could not tell whether ${adapter.displayName} is logged in (\`${settings.command ?? adapter.command}\` gave no clear answer). Check \`${adapter.command} status\` on the machine that runs OpenClaw.`,
+            `Could not tell whether ${adapter.displayName} is logged in (\`${settings.command ?? adapter.command}\` gave no clear answer). Check its login on the machine that runs OpenClaw, or run \`${loginCommand}\` there.`,
           );
         }
         const notes = [`${adapter.displayName} is logged in. OpenClaw uses that login; nothing is stored.`];
