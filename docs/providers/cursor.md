@@ -239,6 +239,18 @@ OpenClaw loads the plugin before the first turn only when your config names a `c
 
 Every model is declared to OpenClaw with `text` and `image` input, because the plugin sends images as ACP image blocks (P13, see Images), so OpenClaw routes image attachments to Cursor models.
 
+### Context window
+
+`openclaw models list --all` and the `/model` picker show a context window per model, and OpenClaw sizes its compaction by it. The plugin publishes the window it can ground, per model, and leaves the field out otherwise, so OpenClaw shows its own default (128k) only for those models:
+
+| Model | Window shown |
+| --- | --- |
+| The Cursor ID has a `context=` value (`context=256k`, `context=1m`) | That value: `k` is 1,000 and `m` is 1,000,000 (`256k` is 256,000), so the smaller reading is used and compaction never comes late |
+| No `context=` value, and the base model is `grok-4.7` (256k), `claude-opus-5-5` or `claude-opus-5` (300k) | That family's window, the one Cursor's listing gave for it |
+| Anything else (Auto, `composer-*`, `gemini-*`, other models) | None published: OpenClaw's default applies. The plugin does not guess a window Cursor did not state |
+
+A value that is not a number (`context=max`) is ignored. Effort variants of one model share their other parameters, so choosing an effort never changes the window. The window comes from the model list, so it follows Cursor's changes after the listing's one-minute cache (see above) and needs no setting. Live check (the numbers match the owner's Cursor account) not run: it needs a login.
+
 ### Effort
 
 OpenClaw's Effort control (`/think`, the composer's effort picker) works for the models whose Cursor ID carries an effort setting: a `reasoning_effort=` or `effort=` parameter, as in `grok-4.7[context=256k,reasoning_effort=high,fast=true]`. Such a model is published as a reasoning model; every other model is published without reasoning, so the control does nothing there.
@@ -319,7 +331,7 @@ Live test: `test/live/usage.live.test.ts`.
 
 | # | Feature | Status | Notes |
 | --- | --- | --- | --- |
-| P1 | Provider in `/model`, model aliases | approx | The account's models are listed in `/model` and `openclaw models list` as `cursor-cli/<name>`, read from Cursor itself and cached; the name is mapped to Cursor's exact ID; aliases are Cursor's own spellings of Auto, not `claude-cli`'s short names; a model whose ID carries an effort parameter is published as a reasoning model, and OpenClaw's effort level selects the listed variant with that effort (see Effort). Live test: `test/live/model-catalog.live.test.ts` |
+| P1 | Provider in `/model`, model aliases | approx | The account's models are listed in `/model` and `openclaw models list` as `cursor-cli/<name>`, read from Cursor itself and cached; the name is mapped to Cursor's exact ID; aliases are Cursor's own spellings of Auto, not `claude-cli`'s short names; a model whose ID carries an effort parameter is published as a reasoning model, and OpenClaw's effort level selects the listed variant with that effort (see Effort); each model carries its context window when its ID states one (`context=256k`) or its family is known, else none (see Context window). Live test: `test/live/model-catalog.live.test.ts` |
 | P2 | Subscription login counts as auth | match | `cursor-agent status` (live: `Logged in as <email>`; the logged-out wording is unconfirmed) or `CURSOR_API_KEY`. The models are available with either, and unavailable without. Live test: `test/live/model-catalog.live.test.ts` |
 | P3 | Streaming text, thinking, and tool progress | approx | Text and thinking deltas as they arrive; Cursor's native tool calls and OpenClaw tools called through the MCP proxy as display-only start and result events, one pair per call. The host does not treat them as tool execution, unlike `claude-cli`'s. Live test: `test/live/streaming.live.test.ts` |
 | P4 | Warm process per conversation | approx | The plugin keeps one `cursor-agent acp` process per conversation, but OpenClaw 2026.10.3 puts the per-turn MCP settings path into its live-session fingerprint, so it restarts the process every turn and the next turn resumes with `session/load`. A process is reused only when model, mode, cwd, home, auth profile, thinking level, and session ID all match, and one chat never has two processes. Live evidence: `test/live/session-resume.live.test.ts` (warm follow-up with only the new prompt, restart, one process per chat) and `test/live/mcp-proxy.live.test.ts` (warm session with a stand-in host) and the real-host run in the ticket notes |

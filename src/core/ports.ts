@@ -317,6 +317,8 @@ export type CliModel = {
   id: string;
   /** True when the CLI shows the model has a reasoning-effort setting. Absent: it does not. */
   reasoning?: boolean;
+  /** The model's context window in tokens, when the CLI states it or the adapter knows it. Absent: unknown, the host's default applies. */
+  contextWindow?: number;
 };
 
 export type ListModelsParams = {

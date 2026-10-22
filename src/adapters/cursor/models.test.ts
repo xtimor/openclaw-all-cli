@@ -30,7 +30,41 @@ describe("buildCursorCatalog", () => {
       label: "grok-4.7",
       id: "grok-4.7[context=256k,reasoning_effort=high,fast=true]",
       reasoning: true,
+      contextWindow: 256_000,
     });
+  });
+
+  it("gives a row its own context window, else its family's, else none", () => {
+    const windows = Object.fromEntries(buildCursorCatalog(REAL).map((model) => [model.name, model.contextWindow]));
+    expect(windows).toEqual({
+      auto: undefined,
+      "grok-4.7": 256_000,
+      "composer-2.5": undefined,
+      "claude-opus-5-5": 300_000,
+      "claude-opus-5": 300_000,
+      "gemini-3.1-pro": undefined,
+      "gemini-3-flash": undefined,
+    });
+    // A row without the parameter takes its family's window, a row with it keeps its own.
+    const rows = buildCursorCatalog([
+      { id: "grok-4.7[reasoning_effort=high]", name: "grok-4.7" },
+      { id: "grok-4.7[Context=1m,fast=true]", name: "grok-4.7" },
+      { id: "claude-opus-5-5[effort=low]", name: "claude-opus-5-5" },
+      { id: "mystery[context=64k]", name: "mystery" },
+      { id: "mystery-2[fast=true]", name: "mystery-2" },
+    ]);
+    expect(rows.map((model) => model.contextWindow)).toEqual([256_000, 1_000_000, 300_000, 64_000, undefined]);
+    // The row object holds no window key at all when unknown, so nothing undefined is published.
+    expect("contextWindow" in rows[4]!).toBe(false);
+  });
+
+  it("reads k and m as 1 000 and 1 000 000, and ignores a value that is not a window", () => {
+    const of = (value: string, base = "mystery") => buildCursorCatalog([{ id: `${base}[context=${value}]`, name: base }])[0]?.contextWindow;
+    expect([of("256k"), of("1m"), of("1M"), of("1.5m"), of("200000")]).toEqual([256_000, 1_000_000, 1_000_000, 1_500_000, 200_000]);
+    expect([of("max"), of("0"), of("0k"), of(""), of("-5k"), of("1e3")]).toEqual([undefined, undefined, undefined, undefined, undefined, undefined]);
+    // A bad value falls back to the family, never throws.
+    expect(of("max", "grok-4.7")).toBe(256_000);
+    expect(buildCursorCatalog([{ id: "constructor[]", name: "constructor" }])[0]?.contextWindow).toBeUndefined();
   });
 
   it("marks a model reasoning when its ID carries an effort parameter, and no other", () => {

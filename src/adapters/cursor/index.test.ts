@@ -210,7 +210,7 @@ describe("cursor adapter", () => {
         expect(models).toEqual([
           { name: "auto", label: "Auto", id: "default[]" },
           { name: "fake-fast", label: "fake-fast", id: "fake-fast[speed=fast,fast=true]" },
-          { name: "fake-slow", label: "fake-slow", id: "fake-slow[context=1m,effort=high]", reasoning: true },
+          { name: "fake-slow", label: "fake-slow", id: "fake-slow[context=1m,effort=high]", reasoning: true, contextWindow: 1_000_000 },
           { name: "twin", label: "twin (effort=low)", id: "twin[effort=low]", reasoning: true },
           { name: "twin-high", label: "twin (effort=high)", id: "twin[effort=high]", reasoning: true },
         ]);

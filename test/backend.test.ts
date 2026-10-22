@@ -1028,7 +1028,7 @@ describe("provider entry by parity row (P1, P2, P17)", () => {
 });
 
 describe("provider catalog entry", () => {
-  type Row = { id: string; name: string; cost: unknown; input: unknown; reasoning: boolean };
+  type Row = { id: string; name: string; cost: unknown; input: unknown; reasoning: boolean; contextWindow?: number };
   type Result = { provider: { baseUrl: string; api: string; models: Row[] } } | null;
   const quickList = { ...cursorAdapter, listModels: (p: Parameters<typeof cursorAdapter.listModels>[0]) => cursorAdapter.listModels({ ...p, timeoutMs: 400 }) };
   const config = { plugins: { entries: { "openclaw-all-cli": { config: { "cursor-cli": { command: FAKE_CURSOR_AGENT } } } } } };
@@ -1054,6 +1054,15 @@ describe("provider catalog entry", () => {
       ["twin", true],
       ["twin-high", true],
     ]);
+    // A window is published only for a model whose Cursor ID states one; the others get none, not a guess.
+    expect(result?.provider.models.map((model) => [model.id, model.contextWindow])).toEqual([
+      ["auto", undefined],
+      ["fake-fast", undefined],
+      ["fake-slow", 1_000_000],
+      ["twin", undefined],
+      ["twin-high", undefined],
+    ]);
+    expect(result?.provider.models.map((model) => "contextWindow" in model)).toEqual([false, false, true, false, false]);
     // OpenClaw drops a provider with no base URL or api; no request goes to either.
     expect(result?.provider.baseUrl).toBeTruthy();
     expect(result?.provider.api).toBeTruthy();

@@ -16,6 +16,37 @@ function isEffortKey(key: string): boolean {
   return EFFORT_KEYS.has(key.toLowerCase());
 }
 
+/**
+ * Context windows of model families, for rows whose ID carries no `context` parameter. Only values
+ * seen in a Cursor listing (cursor-agent 2026.10.16: `grok-4.7[context=256k,...]`,
+ * `claude-opus-5-5[context=300k,...]`, `claude-opus-5[...context=300k...]`) are here. A family that
+ * Cursor's listing never gave a window for (Auto, `composer-*`, `gemini-*`) stays out: no guess.
+ */
+const FAMILY_CONTEXT_WINDOWS: Readonly<Record<string, number>> = {
+  "grok-4.7": 256_000,
+  "claude-opus-5-5": 300_000,
+  "claude-opus-5": 300_000,
+};
+
+/** `256k` is 256 000 and `1m` is 1 000 000 (the smaller reading, so compaction never comes late). Anything else is not a window. */
+function parseWindow(text: string): number | undefined {
+  const match = /^(\d+(?:\.\d+)?)([km]?)$/i.exec(text.trim());
+  if (!match) return undefined;
+  const unit = (match[2] ?? "").toLowerCase();
+  const value = Math.round(Number(match[1]) * (unit === "m" ? 1_000_000 : unit === "k" ? 1_000 : 1));
+  return Number.isSafeInteger(value) && value > 0 ? value : undefined;
+}
+
+/** The context window of a row: its own `context` parameter, else its family's, else none. */
+function contextWindowOf(base: string, params: ParsedId["params"]): number | undefined {
+  for (const [key, value] of params) {
+    if (key.toLowerCase() !== "context") continue;
+    const own = parseWindow(value);
+    if (own !== undefined) return own;
+  }
+  return Object.hasOwn(FAMILY_CONTEXT_WINDOWS, base) ? FAMILY_CONTEXT_WINDOWS[base] : undefined;
+}
+
 /** Splits `grok-4.7[context=256k,fast=true]` into the base model and its parameters. */
 function parseId(id: string): ParsedId {
   const match = /^([^[]*)\[(.*)\]$/s.exec(id);
@@ -49,12 +80,13 @@ function slug(text: string): string {
  * of the first moves the bare name (and the suffixed names that follow it) to another variant. The
  * exact ID stays the source of truth. Every variant of a shared base is labelled with its
  * parameters, the bare-named one included, so `/model` tells them apart. A model whose ID carries
- * an effort parameter is `reasoning`: Cursor shows it has an effort setting.
+ * an effort parameter is `reasoning`: Cursor shows it has an effort setting. A model's
+ * `contextWindow` is its ID's `context` value, else its family's known window, else absent.
  */
 export function buildCursorCatalog(entries: readonly CursorModelEntry[]): CliModel[] {
   const parsed = entries.map((entry) => {
     const id = parseId(entry.id);
-    return { entry, params: id.params, base: id.base === CURSOR_AUTO_BASE ? AUTO_MODEL : slug(id.base || entry.name) };
+    return { entry, params: id.params, rawBase: id.base, base: id.base === CURSOR_AUTO_BASE ? AUTO_MODEL : slug(id.base || entry.name) };
   });
 
   // Bare names first, so a suffixed name can never take one.
@@ -87,7 +119,14 @@ export function buildCursorCatalog(entries: readonly CursorModelEntry[]): CliMod
     const shared = (variants.get(item.base) ?? 0) > 1 && item.params.length > 0;
     const suffix = shared ? ` (${item.params.map(([key, value]) => (key ? `${key}=${value}` : value)).join(", ")})` : "";
     const reasoning = item.params.some(([key]) => isEffortKey(key));
-    catalog.push({ name, label: `${item.entry.name || item.base}${suffix}`, id: item.entry.id, ...(reasoning ? { reasoning } : {}) });
+    const contextWindow = contextWindowOf(item.rawBase, item.params);
+    catalog.push({
+      name,
+      label: `${item.entry.name || item.base}${suffix}`,
+      id: item.entry.id,
+      ...(reasoning ? { reasoning } : {}),
+      ...(contextWindow !== undefined ? { contextWindow } : {}),
+    });
   });
   return catalog;
 }
