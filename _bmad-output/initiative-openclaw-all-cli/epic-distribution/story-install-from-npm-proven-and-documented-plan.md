@@ -38,6 +38,20 @@ Fresh-agent pass (sonnet, only `docs/setup.md`, clean state, 2026-10-22): reache
 
 ## Review Triage Log
 
+### 2026-10-22 — Review pass
+- verdicts: 10 findings — high 0, medium 4, low 5, false 0, maybe-false 1
+- findings:
+  - `[maybe-false]` `[defer]` `plugins update` is documented before it is proven — settled by the update check after the next release (0.1.1), before this ticket closes; the ticket stays open until then.
+  - `[medium]` `[patch]` README install lacked `--force` and said OpenClaw asks — now `--force`, with the non-TTY note.
+  - `[medium]` `[patch]` `docs/providers/cursor.md` still said "installed from source" — now "installed from npm".
+  - `[low]` `[patch]` a pinned install never moves on `plugins update` — documented, with the command back to the latest.
+  - `[medium]` `[patch]` install/update with a running Gateway apply through it (OpenClaw `install.md`, `uninstall-and-update.md`) — wording fixed.
+  - `[low]` `[patch]` the ready grep needs `NO_COLOR=1`, which the commands lacked — added to both Gateway commands; the fallback note kept.
+  - `[medium]` `[patch]` "provenance is checked by npm" was unsupported — replaced with `npm audit signatures` as the way to check.
+  - `[low]` `[patch]` Build from source blamed the missing registry provenance — aligned with the Troubleshooting row.
+  - `[low]` `[patch]` the Develop intro claimed `dev:env` sets up everything below — now says Build from source uses the global OpenClaw.
+  - `[low]` `[patch]` live findings not in MEMORY.md — recorded.
+
 ## Verification
 
 **Commands:**
