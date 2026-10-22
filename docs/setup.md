@@ -2,13 +2,13 @@
 
 How to run `cursor-cli/<model>` in your OpenClaw.
 
-> **Status:** pre-release. Until the first version is on npm (`openclaw-all-cli`), you build the plugin from source and install the resulting `.tgz`. Only Cursor CLI is supported; see [Cursor provider](providers/cursor.md) for what works.
+> **Status:** early release, on npm as [`openclaw-all-cli`](https://www.npmjs.com/package/openclaw-all-cli). Only Cursor CLI is supported; see [Cursor provider](providers/cursor.md) for what works.
 
 ## Requirements
 
 | Component | Version | Check |
 | --- | --- | --- |
-| Node.js (for OpenClaw and the build) | 24.16 up to 25, or 26.1 and later | `node --version` |
+| Node.js (for OpenClaw) | 24.16 up to 25, or 26.1 and later | `node --version` |
 | OpenClaw | 2026.10.3 or later | `openclaw --version` |
 | Cursor CLI (`cursor-agent`) | 2026.07.06 or later | `cursor-agent --version` |
 | Cursor plan | Headless CLI allowed (admins can disable it) | see [step 1](#1-sign-in-to-cursor) |
@@ -39,7 +39,7 @@ Skip what `node --version`, `openclaw --version`, and `cursor-agent --version` a
    openclaw --version
    ```
 
-   The build in [step 2](#2-install-the-plugin) takes OpenClaw's types from this global install, so install OpenClaw with npm. Make sure the `bin` directory of `npm prefix -g` is on your `PATH`.
+   Make sure the `bin` directory of `npm prefix -g` is on your `PATH`.
 3. **Cursor CLI.**
 
    ```sh
@@ -98,20 +98,19 @@ It prints `Auth profile: cursor-cli:manual (cursor-cli/api_key)`; remove it with
 
 ## 2. Install the plugin
 
-OpenClaw installs a plugin from built JavaScript, so build and pack it first. The build needs only Node, npm, and the global OpenClaw from above:
-
 ```sh
-git clone https://github.com/xtimor/openclaw-all-cli.git
-cd openclaw-all-cli
-npm install
-npm link openclaw        # after npm install: it points the build at the global OpenClaw's types
-npm run package          # builds dist/ and writes openclaw-all-cli-<version>.tgz
-openclaw plugins install ./openclaw-all-cli-$(node -p "require('./package.json').version").tgz --accept-capabilities
+openclaw plugins install openclaw-all-cli --accept-capabilities
 ```
 
-Run `npm link openclaw` after every `npm install`, which removes the link. Without it the build fails with `Cannot find module 'openclaw/plugin-sdk/...'`.
+OpenClaw downloads the package from npm, warns that it is outside ClawHub review, and asks you to confirm; `--force` confirms without a prompt and also replaces an earlier install. It prints `Saved for the next Gateway start`: restart a running Gateway to load the plugin. Each release carries npm provenance (built by this repository's GitHub Actions); the tarball also hangs on the [GitHub release](https://github.com/xtimor/openclaw-all-cli/releases) with its sha256.
 
-OpenClaw warns that the source is outside ClawHub review and asks you to confirm; pass `--force` to confirm without a prompt. `--force` also replaces an earlier install. After `git pull`, run `npm run package` again and reinstall the same way: the plugin runs from `dist/`, which is not rebuilt for you. Do not install the checkout directory with `--link`: OpenClaw scans the whole directory, and a checkout that also holds a development toolchain fails to load. The command prints `Saved for the next Gateway start`: restart a running Gateway to load the new build.
+To update to the latest release, then restart the Gateway:
+
+```sh
+openclaw plugins update openclaw-all-cli
+```
+
+To install a fixed version: `openclaw plugins install openclaw-all-cli@X.Y.Z --accept-capabilities --force`. To run your own build instead, see [Build from source](#build-from-source).
 
 The plugin loads the first time a turn selects `cursor-cli/<model>`. It also loads at Gateway start when your config names a `cursor-cli/...` model; the account's models appear in `/model` only once it is loaded, so name one as the default model (see [Start the Gateway](#4-start-the-gateway)).
 
@@ -183,11 +182,11 @@ The first command must report `"status": "loaded"` and `cursor-cli` under `cliBa
 | --- | --- | --- |
 | `Running on an unsupported Node (22.x)`, or `EBADENGINE` for `openclaw` | OpenClaw needs Node `>=24.16 <25 \|\| >=26.1` | Install Node 24.16+ (see [Install the requirements](#install-the-requirements)) and reinstall OpenClaw with it |
 | `plugin "openclaw-all-cli" requires plugin API >=2026.10.3, but this OpenClaw runtime exposes 2026.10.2` | OpenClaw is older than 2026.10.3 | `npm install -g openclaw@2026.10.3` |
-| `Cannot find module 'openclaw/plugin-sdk/...'` (or `TS2307`) during `npm run package` | The build cannot see OpenClaw's types: no global OpenClaw, or `npm install` removed the link | `npm link openclaw` after `npm install` (see [step 2](#2-install-the-plugin)) |
+| `Cannot find module 'openclaw/plugin-sdk/...'` (or `TS2307`) during `npm run package` | The build cannot see OpenClaw's types: no global OpenClaw, or `npm install` removed the link | `npm link openclaw` after `npm install` (see [Build from source](#build-from-source)) |
 | `Gateway start blocked: existing config is missing gateway.mode` | A fresh OpenClaw has no Gateway config | `openclaw config set gateway.mode local`, then start again |
 | `Another gateway (pid N) already owns this state directory` | A Gateway for the same OpenClaw state is running | Use it, or stop it by pid (`kill -TERM <pid>`; `openclaw gateway stop` stops only a service install, not a `gateway run` process) and start again, or give the new one its own state with `--profile <name>` |
 | The Gateway cannot bind port 18789 | Another program uses the port (wording unverified) | Stop that program, or start the Gateway with `--port <n>` and set `OPENCLAW_GATEWAY_PORT=<n>` for the other commands |
-| `plugin provenance-invalid` warning in the Gateway log ("OpenClaw can't verify where this plugin came from") | A plugin installed from a local `.tgz` has no registry provenance for OpenClaw to check | Harmless for your own build; ignore it |
+| `plugin provenance-invalid` warning in the Gateway log ("OpenClaw can't verify where this plugin came from") | A plugin installed from a local `.tgz` has no registry provenance for OpenClaw to check | Harmless for your own build; the npm package carries provenance |
 | `remote model catalog refresh failed` in the Gateway log at startup | Behind a proxy OpenClaw cannot refresh its remote model catalog | Harmless; ignore it |
 | `Couldn't connect to OpenClaw.` from `openclaw agent` | No Gateway is running; `agent` without `--local` needs one | Start it ([step 4](#4-start-the-gateway)), or add `--local` |
 | `curl`, `cursor-agent`, or the usage ledger time out or fail TLS behind a proxy | Cursor's hosts are blocked, or Node ignores the proxy | Allow `cursor.com` and `*.cursor.sh`; start the Gateway with `NODE_USE_ENV_PROXY=1` |
@@ -224,7 +223,7 @@ The first command must report `"status": "loaded"` and `cursor-cli` under `cliBa
 | `The CLI refused the request` | Cursor declined the prompt | Rephrase the prompt, or check the plan's content rules |
 | `The working directory "<dir>" does not exist` | The agent's workspace was removed | Recreate the directory or change the agent's workspace |
 | A turn hangs with no output | Known `cursor-agent` transport stalls | Update `cursor-agent`; the OpenClaw watchdog ends the turn |
-| `package install requires compiled runtime output` | The plugin was installed without a build (for example with `--link`) | Run `npm run package` and install the `.tgz` |
+| `package install requires compiled runtime output` | The plugin was installed without a build (for example with `--link`) | Install from npm ([step 2](#2-install-the-plugin)), or run `npm run package` and install the `.tgz` |
 
 ## Develop
 
@@ -242,6 +241,21 @@ npm run test:live      # real cursor-agent; needs a Cursor login and no sandbox
 ```
 
 `npm test` needs no Cursor login. The host-contract tests (`test/host-contract.test.ts`) load OpenClaw's own code from `.spike/openclaw/node_modules/openclaw/dist` (or the directory in `OPENCLAW_ALL_CLI_HOST_DIST`) and run it against the plugin's real backend, so they pin what the backend relies on in OpenClaw 2026.10.3 (host-served `exec`/`process`, the settings file, the live-session fingerprint); they are skipped when that directory is missing. The parity-suite test (`test/parity-suite.test.ts`) fails when the manifest, the parity matrix, the provider page (`docs/providers/cursor.md`), and the live tests disagree. `npm run test:live` runs one live test per decided parity row plus the success-signal scenario (`test/live/success-signal.live.test.ts`); the success-signal scenario is skipped without `CURSOR_API_KEY` (its usage check needs the key).
+
+### Build from source
+
+For a change of your own, or a commit that is not released yet. The build needs Node, npm, and a global OpenClaw installed with npm (it takes OpenClaw's types from there):
+
+```sh
+git clone https://github.com/xtimor/openclaw-all-cli.git
+cd openclaw-all-cli
+npm install
+npm link openclaw        # after npm install: it points the build at the global OpenClaw's types
+npm run package          # builds dist/ and writes openclaw-all-cli-<version>.tgz
+openclaw plugins install ./openclaw-all-cli-$(node -p "require('./package.json').version").tgz --accept-capabilities --force
+```
+
+Run `npm link openclaw` after every `npm install`, which removes the link. Without it the build fails with `Cannot find module 'openclaw/plugin-sdk/...'`. After `git pull`, run `npm run package` again and reinstall the same way: the plugin runs from `dist/`, which is not rebuilt for you. Do not install the checkout directory with `--link`: OpenClaw scans the whole directory, and a checkout that also holds a development toolchain fails to load. A local `.tgz` has no registry provenance, so the Gateway log warns `plugin provenance-invalid`; that is harmless for your own build. To go back to the release: `openclaw plugins install openclaw-all-cli --accept-capabilities --force`.
 
 ### Versions
 

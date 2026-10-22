@@ -42,7 +42,7 @@ All settings are optional and live under `plugins.entries.openclaw-all-cli.confi
 
 ## Status
 
-Early release. Cursor CLI only. Until the first version is on npm, build from source as [Setup](https://github.com/xtimor/openclaw-all-cli/blob/main/docs/setup.md#2-install-the-plugin) describes.
+Early release. Cursor CLI only. Update with `openclaw plugins update openclaw-all-cli`; to build from source, see [Build from source](https://github.com/xtimor/openclaw-all-cli/blob/main/docs/setup.md#build-from-source).
 
 ## Docs
 
