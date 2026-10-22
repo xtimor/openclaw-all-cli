@@ -209,8 +209,11 @@ function onIssues(event, issue, owners, timeline) {
   return [];
 }
 
+/** A comment that starts with this marker is the triage agent's; it never counts as the author's reply. */
+export const TRIAGE_MARKER_RE = /^\s*<!--\s*issue-triage\s*-->/;
+
 function onComment(event, issue) {
-  if (event.action !== "created" || isBot(event.actor)) return [];
+  if (event.action !== "created" || isBot(event.actor) || event.triage === true) return [];
   if (issue.state !== "open" || !issue.labels.includes(NEEDS_INFO)) return [];
   if (lower(event.actor) === "" || lower(event.actor) !== lower(issue.author)) return [];
   return setStatus(issue, NEW);
