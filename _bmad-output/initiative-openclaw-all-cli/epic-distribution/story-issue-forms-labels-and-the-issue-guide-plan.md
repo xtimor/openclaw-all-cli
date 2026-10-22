@@ -3,7 +3,7 @@ title: 'Issue forms, labels, and the issue guide'
 type: 'feature'
 ticket: '6'
 created: '2026-10-22'
-status: 'in-review'
+status: 'built'
 baseline_revision: '4622b2e18950392922f80fd6cfc22540ccfcc3da'
 route: 'full'
 route_source: 'auto'
@@ -12,7 +12,7 @@ review: 'quick'
 review_source: 'pinned'
 lenses_ran: [quick]
 review_loop_iteration: 0
-followup_review_recommended: false
+followup_review_recommended: true
 context: ['{project-root}/AGENTS.md', '{project-root}/MEMORY.md', '{project-root}/_bmad-output/initiative-openclaw-all-cli/epic-distribution/issue-flow.md']
 warnings: []
 deferred: []
@@ -76,6 +76,20 @@ Implemented by a sonnet subagent. Forms, `config.yml`, `SECURITY.md`, `.github/l
 ## Plan Change Log
 
 ## Review Triage Log
+
+### 2026-10-22 — Review pass
+- verdicts: 4 findings — high 0, medium 2, low 2, false 0, maybe-false 0
+- findings:
+  - `[medium]` `[patch]` agents without push access were told to use the web form, and API labels are dropped silently — the guide now says to file anyway; the state automation (3.7, same run, same PR) sets `status:new` on open, triage sets type and `source:agent`.
+  - `[medium]` `[patch]` the guide left out the course-correction PR (`Refs #N` → `planned`) — states row, step 4, step 5 fixed.
+  - `[low]` `[patch]` `- [x]` vs the form's `- [X]` — example uses `- [X]`.
+  - `[low]` `[reject]` unticked plan tasks — plan edit (rule).
+
+## Auto Run Result
+
+- Summary: issue forms (bug, idea, config with private security link), `SECURITY.md`, 15 labels as code with an idempotent sync script and workflow, `docs/issues.md` linked from README.
+- Review: 3 patched (2 medium, 1 low), 1 rejected, 0 deferred. Follow-up review recommended: true by the rule (two mediums patched); both are doc wording, checked by reading; the remaining risk is the GitHub-side checks after merge.
+- Verification: `npm run ci` exit 0; 23 sync tests. After merge (orchestrator): label workflow twice (create, then no writes), an API-filed issue.
 
 ## Verification
 
