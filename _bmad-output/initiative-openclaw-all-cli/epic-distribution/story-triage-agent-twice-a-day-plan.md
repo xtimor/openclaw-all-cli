@@ -55,6 +55,22 @@ Oneshot: one prompt file, docs, one scheduled task. Scheduler: `create_trigger` 
   - `[medium]` `[defer]` task id not in MEMORY — recorded when the task is created (after merge, since the fired session reads `main`).
   - `[low]` `[reject]` verification not shown — runs after merge (the prompt must be on `main`); recorded then.
 
+### 2026-10-22 — Review pass 2
+- verdicts: 11 findings — high 0, medium 6, low 5, false 0, maybe-false 0
+- findings:
+  - `[medium]` `[patch]` step 0 could skip an issue forever after a failed label write — no timeline needed: if the agent's main comment exists with no later comment by others, the run finishes the label step from it.
+  - `[medium]` `[patch]` a regression of a fixed issue was closed as duplicate — exception added (accept, standalone, link).
+  - `[medium]` `[patch]` new outcomes (existing ticket path, closed completed by a done ticket) missing from `issue-flow.md` and `docs/issues.md` — transitions, triage step 4, BMAD table row, and the completed meaning added.
+  - `[medium]` `[patch]` step 0 needed the issue timeline with no named tool — step 0 no longer reads the timeline.
+  - `[medium]` `[patch]` an edited comment sends no notification — a re-triage with new questions also posts a short marker comment mentioning the author.
+  - `[low]` `[patch]` scratch test outside the repo cannot run — a temporary `test/triage-scratch.test.ts`, deleted after, never committed.
+  - `[low]` `[patch]` wrong type label not replaced — remove the other type label.
+  - `[medium]` `[patch]` outside reporters cannot reopen an issue the agent closed — "reply here; the owner reopens" in the comment, guide, and design.
+  - `[low]` `[patch]` schedule 06:00/18:00 vs 05:46/17:46 — design, ticket, epic note aligned.
+  - `[low]` `[patch]` design still said "try to reproduce from the steps" — aligned with the prompt.
+  - `[low]` `[patch]` marker exemption applied to any commenter — only owners; test added.
+- Review limit (2 passes) reached; no escalation: pass 2 found no high, all patched; `npm run ci` green. The live firings (dry run, real, second) are the remaining proof.
+
 ## Verification
 
 **Commands:**

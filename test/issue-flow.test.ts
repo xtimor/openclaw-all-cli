@@ -364,7 +364,9 @@ describe("decide: issue_comment", () => {
   });
 
   it("AUTHOR_REPLY: the triage agent's comment (marker) is not a reply, even under the author's account", () => {
-    expect(t.decide({ ...comment("alice"), triage: true }, issue(["status:needs-info"]))).toEqual([]);
+    expect(t.decide({ ...comment("alice"), triage: true }, issue(["status:needs-info"]), { owners: ["alice"] })).toEqual([]);
+    // A reporter who is not an owner and starts a reply with the marker still counts as replying.
+    expect(t.decide({ ...comment("alice"), triage: true }, issue(["status:needs-info"]), { owners: ["owner"] })).toEqual([add("status:new"), remove("status:needs-info")]);
     expect(t.TRIAGE_MARKER_RE.test("<!-- issue-triage -->\n**Triage:** needs info")).toBe(true);
     expect(t.TRIAGE_MARKER_RE.test("I quote <!-- issue-triage --> here")).toBe(false);
   });

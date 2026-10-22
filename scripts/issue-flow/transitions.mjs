@@ -212,8 +212,9 @@ function onIssues(event, issue, owners, timeline) {
 /** A comment that starts with this marker is the triage agent's; it never counts as the author's reply. */
 export const TRIAGE_MARKER_RE = /^\s*<!--\s*issue-triage\s*-->/;
 
-function onComment(event, issue) {
-  if (event.action !== "created" || isBot(event.actor) || event.triage === true) return [];
+function onComment(event, issue, owners) {
+  // The triage agent writes as an owner; its marker comment is never the author's reply. Anyone else's is.
+  if (event.action !== "created" || isBot(event.actor) || (event.triage === true && isOwner(event.actor, owners))) return [];
   if (issue.state !== "open" || !issue.labels.includes(NEEDS_INFO)) return [];
   if (lower(event.actor) === "" || lower(event.actor) !== lower(issue.author)) return [];
   return setStatus(issue, NEW);
@@ -269,7 +270,7 @@ export function decide(event, issue, { owners = [], timeline = [] } = {}) {
     case "issues":
       return onIssues(event, current, owners, timeline);
     case "issue_comment":
-      return onComment(event, current);
+      return onComment(event, current, owners);
     case "pull_request":
       return onPullRequest(event, current, owners);
     case "stale":

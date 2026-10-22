@@ -37,6 +37,7 @@ new ──triage: confirmed, accepted──► triaged          (+ priority, + t
 new ──triage: details missing──────► needs-info       (questions in the triage comment)
 new ──triage: rejected─────────────► closed not planned (reason in the triage comment)
 new ──triage: duplicate────────────► closed duplicate (link to the original)
+new ──triage: fixed by a done ticket► closed completed (ticket and commit named)
 
 needs-info ──author comments───────► new
 needs-info ──14 days silent────────► closed not planned (stale; reopening brings it back)
@@ -57,7 +58,7 @@ blocked ──owner sets approved──────► approved (retry)
 blocked ──owner rejects────────────► closed not planned
 ```
 
-The agent may reject on its own; a rejection is undone by reopening. Only the owner moves an issue to `approved`.
+The agent may reject on its own; the author replies on the issue to dispute it, and the owner reopens (a reporter without write access cannot reopen an issue the agent closed). Only the owner moves an issue to `approved`.
 
 ## Other labels
 
@@ -71,14 +72,14 @@ The agent may reject on its own; a rejection is undone by reopening. Only the ow
 
 ## Triage run (twice a day)
 
-Runner: a Claude Code scheduled task on the owner's account (06:00 and 18:00 UTC), each firing a fresh cloud session on this repository that follows `docs/agents/triage.md` and reaches GitHub through the owner's connector. A firing note `dry run` makes it report without writing.
+Runner: a Claude Code scheduled task on the owner's account (05:46 and 17:46 UTC), each firing a fresh cloud session on this repository that follows `docs/agents/triage.md` and reaches GitHub through the owner's connector. A firing note `dry run` makes it report without writing.
 
 Takes every open issue in `status:new`, oldest first, at most 20 per run. For each one:
 
 1. **Duplicate.** Search open and closed issues; a clear duplicate is closed with a link.
-2. **Problem exists.** Bug: read the code on `main`, run the unit tests or a focused check, try to reproduce from the steps; record reproduced, explained by code, or not reproduced. Idea: check it against the spec's capabilities and non-goals and the architecture invariants. Live Cursor checks do not run in CI; say so when they would be needed.
+2. **Problem exists.** Bug: read the code on `main`, run the unit tests or a focused test of the agent's own, reason from the reported steps without executing anything taken from the issue; record reproduced, explained by code, or not reproduced. Idea: check it against the spec's capabilities and non-goals and the architecture invariants. Live Cursor checks do not run in CI; say so when they would be needed.
 3. **Details.** Missing version, steps, logs, or a fuzzy idea: ask concrete questions, move to `needs-info`.
-4. **Decide.** Accept (`triaged`, with priority, type, a short scope, risk, and rough size) or reject (`not planned`, with the reason, e.g. the non-goal it hits).
+4. **Decide.** Accept (`triaged`, with priority, type, a short scope, risk, rough size, and a path: standalone, epic entry, course correction, or an existing open BMAD ticket), reject (`not planned`, with the reason, e.g. the non-goal it hits), or close as completed when a done BMAD ticket already fixed it. The full procedure is `docs/agents/triage.md`.
 
 It writes one triage comment per issue, marked `<!-- issue-triage -->`, and edits that same comment on a later pass. The run summary lists every decision.
 
@@ -94,10 +95,11 @@ Skills are the ones in `.claude/skills/` (mirrored in `.agents/skills/`); the ti
 
 | Issue state | Who | BMAD skills and agents | Output |
 | --- | --- | --- | --- |
-| `new` (triage) | triage agent | Reads the spec, architecture, `MEMORY.md`, and the ticket store (`tickets.py status`) for duplicates and scope. Bug: the single-ticket check of `bmad-ticket` (the "Ticket" section of `references/validate-checks.md`) to judge whether it is a real, buildable bug. Idea: checked against the spec's capabilities and non-goals; the lenses of `bmad-forge-idea` frame the questions. Sizes the work into one of three paths: **standalone** (one bug or story), **epic entry** (fits an existing epic), **course correction** (changes an epic, the spec, or the architecture). | Triage comment: verdict, evidence, priority, path, draft ticket text. Nothing is written to the repo. |
+| `new` (triage) | triage agent | Reads the spec, architecture, `MEMORY.md`, and the ticket store (`tickets.py status`) for duplicates and scope. Bug: the single-ticket check of `bmad-ticket` (the "Ticket" section of `references/validate-checks.md`) to judge whether it is a real, buildable bug. Idea: checked against the spec's capabilities and non-goals; the lenses of `bmad-forge-idea` frame the questions. Sizes the work into a path: **standalone** (one bug or story), **epic entry** (fits an existing epic), **course correction** (changes an epic, the spec, or the architecture), or **existing ticket** (an open BMAD ticket already covers it). | Triage comment: verdict, evidence, priority, path, draft ticket text. Nothing is written to the repo. |
 | `needs-info` | author, then triage agent | None; the questions come from the triage step above. | Questions in the triage comment. |
 | `triaged` | owner | None. The owner reads the triage comment and may change priority or path. | `approved`, reject, or a question. |
 | `approved`, path standalone or epic entry | implementation agent | 1. `bmad-ticket`: create the ticket (a bug or story in `backlog/`, or an entry in the named epic) and refine it to full acceptance criteria. 2. `bmad-build-auto` (route `auto`, review `thorough` for p0 and p1, `auto` otherwise): plan (`draft` → `ready-for-dev`), implement (`in-progress`), review with `bmad-code-review` lenses (`in-review` → `built`). Several tickets: `dev-orchestrator` over them. | The session's branch with the ticket, its plan, and the code; PR `Fixes #N`. |
+| `approved`, path existing ticket | implementation agent | `bmad-build-auto` (or `dev-orchestrator`) on the named ticket, as above. | PR `Fixes #N` from the session's branch. |
 | `approved`, path course correction | implementation agent | `bmad-correct-course` in batch mode: change proposal, edited epic, spec, or architecture, and new tickets via `bmad-ticket`. No code. | Proposal PR `Refs #N`; the owner's merge is the approval. Then `planned`. |
 | `planned` → `approved` | implementation agent | `dev-orchestrator` over the tickets the proposal created, each through `bmad-build-auto` as above. | One PR per ticket, the last with `Fixes #N`. |
 | `in-progress` | implementation agent | The build's plan status is the source of truth: `draft`, `ready-for-dev`, `in-progress`. | Progress line in the issue comment. |
