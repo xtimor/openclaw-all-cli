@@ -17,13 +17,13 @@ One `status:*` label per open issue, always exactly one. A closed issue has none
 | State | Meaning | Who moves it out |
 | --- | --- | --- |
 | `status:new` | Filed or reopened, not yet triaged, or the author answered a question | triage agent |
-| `status:needs-info` | The agent (or the owner) asked the author for details | author's reply (back to `new`), or the stale timer |
-| `status:triaged` | The agent accepts it: problem confirmed, priority set, scope written. Waits for the owner | owner |
+| `status:needs-info` | Either agent (or the owner) asked the author for details or a check only the author can do | author's reply (back to `new`), or the stale timer |
+| `status:triaged` | The agent accepts it: problem confirmed, priority set, scope written. Waits for the owner, unless triage carried an earlier approval over a `needs-info` round | owner, or the implementation run (carried approval) |
 | `status:approved` | The owner approved it for development | implementation run |
 | `status:planned` | A course correction for it is merged; its BMAD tickets exist but are not built yet | implementation run (the owner's earlier approval covers it) |
-| `status:in-progress` | The implementation agent is working on it | implementation run, PR events |
+| `status:in-progress` | The implementation agent is working on it | implementation run (stops with `needs-info` for the author or `blocked` for the owner), PR events |
 | `status:in-review` | A pull request that fixes it is open | implementation agent (merges it on green), or the owner (closes the PR) |
-| `status:blocked` | The implementation run failed or the PR was closed unmerged; the comment says why | owner |
+| `status:blocked` | The owner must decide (scope beyond the approval, protected files, product direction, repeated failure), or the PR was closed unmerged; the comment mentions the owner and says why | owner |
 
 Closed reasons: `completed` (PR merged), `not planned` (rejected, stale, out of scope), `duplicate` (with a link).
 
@@ -39,7 +39,7 @@ new ──triage: rejected─────────────► closed not 
 new ──triage: duplicate────────────► closed duplicate (link to the original)
 new ──triage: fixed by a done ticket► closed completed (ticket and commit named)
 
-needs-info ──author comments───────► new
+needs-info ──author comments───────► new   (also after an implementation question)
 needs-info ──14 days silent────────► closed not planned (stale; reopening brings it back)
 
 triaged ──owner sets approved──────► approved
@@ -51,7 +51,11 @@ in-progress ──PR "Fixes #N" opened─► in-review
 in-progress ──proposal PR "Refs #N"─► in-review          (course correction, see below)
 in-review ──proposal PR merged─────► planned
 planned ──run starts, no new approval─► in-progress (build the new tickets)
-in-progress ──run fails────────────► blocked
+in-progress ──run needs the author's answer─► needs-info  (comment mentions the author; ticket stays blocked)
+in-progress ──run needs an owner decision──► blocked      (comment mentions the owner)
+new ──triage: approved before, owner approval newer than last close/reopen, answer settles the impl question, scope unchanged─► triaged ("Approval: carried over", short comment)
+new ──triage: approved before, but scope or path changed─► triaged ("a new approval is needed")
+triaged (approval carried over) ──run starts, no new approval─► in-progress
 in-review ──PR merged──────────────► closed completed
 in-review ──PR closed unmerged─────► blocked
 blocked ──owner sets approved──────► approved (retry)
@@ -83,11 +87,13 @@ Takes every open issue in `status:new`, oldest first, at most 20 per run. For ea
 
 It writes one triage comment per issue, marked `<!-- issue-triage -->`, and edits that same comment on a later pass. The run summary lists every decision.
 
+**Comment shape (both agents).** Every agent comment starts with its marker (`<!-- issue-triage -->` or `<!-- issue-impl -->`) and then states the status label, who is awaited (`@login`) and for what, and what happens next (`docs/agents/comments.md`). The state automation never counts an owner's marker comment as the author's reply. **Carried approval:** only when the owner's latest `labeled status:approved` is later than the issue's last close and reopen, the implementation agent then set `needs-info` with a question, and the author's reply answers it; triage then posts a short `<!-- issue-triage -->` comment with `**Approval:** carried over (owner approved <date>; scope unchanged)` (it does not edit the main comment) and sets `triaged`. If the answer changes the draft ticket or the path, it re-triages normally and writes "a new approval is needed". The implementation run takes such an issue when the latest triage comment has the carried line and the same two event conditions hold, and the owner's `labeled status:approved` event is in the history. A second `needs-info` stop on one ticket, or a bot or deleted author, goes to `blocked`. The automation does not check the carried line: it rests on the agents following the prompts. No new label, and triage still never sets `approved`.
+
 ## Implementation run
 
-Runner: the same Claude Code scheduled task as triage; after the triage report the session follows `docs/agents/implement.md` (the owner sets the routine's frequency and can run it now). It takes the issues in `approved`, and in `planned` (no second approval), whose latest `labeled status:approved` event is by the owner (it checks the timeline itself; the state automation also removes other actors' approvals), oldest first, as a batch of at most 6 or about 3 hours per firing, and opens one PR per batch with a `Fixes #N` line per issue.
+Runner: the same Claude Code scheduled task as triage; after the triage report the session follows `docs/agents/implement.md` (the owner sets the routine's frequency and can run it now). It takes the issues in `approved`, in `planned` (no second approval), and in `triaged` with a carried-over approval line (no second approval), whose latest `labeled status:approved` event is by the owner (it checks the timeline itself; the state automation also removes other actors' approvals), oldest first, as a batch of at most 6 or about 3 hours per firing, and opens one PR per batch with a `Fixes #N` line per issue.
 
-It follows [BMAD flow per state](#bmad-flow-per-state): ticket by `bmad-ticket`, build by `dev-orchestrator` (`bmad-build-auto` per ticket), course corrections by `bmad-correct-course`, on the branch its session is given, and opens a pull request with `Fixes #N` (or `Refs #N` for a proposal). It waits up to about 30 minutes for the checks and merges its own `Issue batch` PR when every check passed and GitHub reports it clean (merge method `merge`, expected head sha); one fix attempt on red, else it leaves the PR open for the next run, which merges a green open batch PR first. It merges nothing else, never tags a release, and never touches secrets. Checks it could not run (live Cursor) are listed in the PR. On failure the issue goes to `blocked` with the reason.
+It follows [BMAD flow per state](#bmad-flow-per-state): ticket by `bmad-ticket`, build by `dev-orchestrator` (`bmad-build-auto` per ticket), course corrections by `bmad-correct-course`, on the branch its session is given, and opens a pull request with `Fixes #N` (or `Refs #N` for a proposal). It waits up to about 30 minutes for the checks and merges its own `Issue batch` PR when every check passed and GitHub reports it clean (merge method `merge`, expected head sha); one fix attempt on red, else it leaves the PR open for the next run, which merges a green open batch PR first. It merges nothing else, never tags a release, and never touches secrets. Checks it could not run (live Cursor) are listed in the PR. On failure the issue goes to `needs-info` (only the author can answer, author mentioned; the ticket stays `blocked`) or to `blocked` (the owner decides, owner mentioned), with the reason.
 
 ## BMAD flow per state
 
@@ -96,7 +102,7 @@ Skills are the ones in `.claude/skills/` (mirrored in `.agents/skills/`); the ti
 | Issue state | Who | BMAD skills and agents | Output |
 | --- | --- | --- | --- |
 | `new` (triage) | triage agent | Reads the spec, architecture, `MEMORY.md`, and the ticket store (`tickets.py status`) for duplicates and scope. Bug: the single-ticket check of `bmad-ticket` (the "Ticket" section of `references/validate-checks.md`) to judge whether it is a real, buildable bug. Idea: checked against the spec's capabilities and non-goals; the lenses of `bmad-forge-idea` frame the questions. Sizes the work into a path: **standalone** (one bug or story), **epic entry** (fits an existing epic), **course correction** (changes an epic, the spec, or the architecture), or **existing ticket** (an open BMAD ticket already covers it). | Triage comment: verdict, evidence, priority, path, draft ticket text. Nothing is written to the repo. |
-| `needs-info` | author, then triage agent | None; the questions come from the triage step above. | Questions in the triage comment. |
+| `needs-info` | author, then triage agent | None; the questions come from the triage step above, or from the implementation agent when a build stops on something only the author can answer (its ticket stays `blocked`; after the reply triage re-checks the scope and carries the approval over, and the Retry path builds it). | Questions in the agent comment, with the author mentioned. |
 | `triaged` | owner | None. The owner reads the triage comment and may change priority or path. | `approved`, reject, or a question. |
 | `approved`, path standalone or epic entry | implementation agent | 1. `bmad-ticket`: create the ticket (a bug or story in `backlog/`, or an entry in the named epic) and refine it to full acceptance criteria. 2. `dev-orchestrator` over the batch's tickets, in the agent's own session (`blocked_policy = "continue"`): per ticket `bmad-build-auto` (review `thorough` for p0 and p1, the default otherwise) plans (`draft` → `ready-for-dev`), implements (`in-progress`), and reviews with `bmad-code-review` lenses (`in-review` → `built`). | The session's branch with the ticket, its plan, and the code; PR `Fixes #N`. |
 | `approved`, path existing ticket | implementation agent | `dev-orchestrator` on the named ticket, as above. | PR `Fixes #N` from the session's branch. |
@@ -104,7 +110,7 @@ Skills are the ones in `.claude/skills/` (mirrored in `.agents/skills/`); the ti
 | `planned` | implementation agent | The tickets the proposal created (notes `Issue: #N`), built by `dev-orchestrator` as above. | `Fixes #N` in the next batch PR. |
 | `in-progress` | implementation agent | The build's plan status is the source of truth: `draft`, `ready-for-dev`, `in-progress`. | Progress line in the issue comment. |
 | `in-review` | implementation agent (merges a green batch PR); owner may pause, close, or revert | The agent merges the green batch PR (not a draft). The owner can convert it to draft to hold the merge, close it (issues go `blocked`; re-approve to retry), or revert after the merge; an interrupted draft batch PR (over 6 h) is reported and needs the owner to close it and re-approve. Owner review comments on the PR: the agent resumes the same plan with `bmad-build-auto` (it re-enters at review), pushes, and replies. | Merged or updated PR. |
-| `blocked` | owner | The plan's `blocked_reason` (from `bmad-build-auto` halting) is quoted in the issue. | Owner decides: `approved` to retry, or reject. |
+| `blocked` | owner | The plan's `blocked_reason` (from `bmad-build-auto` halting) is quoted in the issue, with the owner mentioned. Only owner decisions land here; questions for the author are `needs-info`. | Owner decides: `approved` to retry, or reject. |
 | closed completed | implementation agent (next run) | `tickets.py mark <ref> done` (housekeeping); at the end of an epic, `bmad-retrospective` as usual. | Ticket `done`. |
 | closed not planned (after approval) | implementation agent (next run) | `tickets.py mark <ref> dropped` (housekeeping). | Ticket `dropped`. |
 

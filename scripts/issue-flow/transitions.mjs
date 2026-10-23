@@ -209,12 +209,12 @@ function onIssues(event, issue, owners, timeline) {
   return [];
 }
 
-/** A comment that starts with this marker is the triage agent's; it never counts as the author's reply. */
-export const TRIAGE_MARKER_RE = /^\s*<!--\s*issue-triage\s*-->/;
+/** A comment that starts with one of these markers is an issue agent's (triage or implementation); it never counts as the author's reply. */
+export const AGENT_MARKER_RE = /^\s*<!--\s*issue-(?:triage|impl)\s*-->/;
 
 function onComment(event, issue, owners) {
-  // The triage agent writes as an owner; its marker comment is never the author's reply. Anyone else's is.
-  if (event.action !== "created" || isBot(event.actor) || (event.triage === true && isOwner(event.actor, owners))) return [];
+  // The issue agents write as an owner; their marker comment is never the author's reply. Anyone else's is.
+  if (event.action !== "created" || isBot(event.actor) || (event.agent === true && isOwner(event.actor, owners))) return [];
   if (issue.state !== "open" || !issue.labels.includes(NEEDS_INFO)) return [];
   if (lower(event.actor) === "" || lower(event.actor) !== lower(issue.author)) return [];
   return setStatus(issue, NEW);
