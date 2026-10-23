@@ -364,7 +364,7 @@ describe("release.sh", () => {
     it("next patch: prints v0.1.2 and releases it as if it was given", () => {
       const o = release({ ...real, RELEASE_BUMP: "patch" });
       expect(o.status, o.stderr).toBe(0);
-      expect(o.stdout).toContain("v0.1.2");
+      expect(o.stdout).toContain("release: no tag given; patch bump of v0.1.1 gives v0.1.2");
       expect(called(o, "npm version 0.1.2 --no-git-tag-version")).toHaveLength(1);
       expect(called(o, "git ls-remote --tags --refs origin refs/tags/v*")).toHaveLength(1);
       expect(published(o)[0]).toMatch(/^npm publish .*--provenance/);
@@ -387,6 +387,12 @@ describe("release.sh", () => {
       const o = release({ ...dispatch, STUB_REMOTE_TAGS: "v0.1.9 v0.1.10 v0.1.2" });
       expect(o.status, o.stderr).toBe(0);
       expect(o.stdout).toContain("v0.1.11");
+    });
+
+    it("ignores tags with leading zeros and non-semver tags", () => {
+      const o = release({ ...dispatch, STUB_REMOTE_TAGS: "v0.1.1 v01.5.0 v0.08.0 v1.2.3.4", RELEASE_BUMP: "patch" });
+      expect(o.status, o.stderr).toBe(0);
+      expect(called(o, "npm version 0.1.2 --no-git-tag-version")).toHaveLength(1);
     });
 
     it("no stable tag (none, or only prereleases and -dryrun.): base 0.0.0, patch gives v0.0.1", () => {

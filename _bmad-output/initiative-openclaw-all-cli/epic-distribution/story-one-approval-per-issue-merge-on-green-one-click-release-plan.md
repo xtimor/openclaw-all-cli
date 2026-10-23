@@ -3,19 +3,33 @@ title: 'One approval per issue, merge on green, one-click release'
 type: 'feature'
 ticket: 11
 created: '2026-10-23'
-status: 'in-progress'
+status: 'built'
 baseline_revision: 'a8c2509a842c1d9a332d2af70e36d9cd473161fb'
 route: 'full'
 route_source: 'auto'
 risk: 'high'
-review: ''
-review_source: ''
-lenses_ran: []
+review: 'thorough'
+review_source: 'pinned'
+lenses_ran: ['blind-hunter', 'edge-case-hunter', 'verification-gap', 'intent-alignment']
 review_loop_iteration: 0
 followup_review_recommended: false
 context: ['{project-root}/AGENTS.md', '{project-root}/MEMORY.md']
 warnings: []
-deferred: []
+deferred:
+  - summary: >-
+      release.yml wiring of an empty dispatch tag and RELEASE_BUMP is not exercised by any test.
+    evidence: |-
+      No workflow harness in the repo; settle with one dispatched dry run, tag empty, after merge.
+    location: >-
+      .github/workflows/release.yml
+    severity: medium
+  - summary: >-
+      Merge on green and the start-of-run merge are agent instructions, not run yet.
+    evidence: |-
+      Settle with the next routine run over an approved issue.
+    location: >-
+      docs/agents/implement.md
+    severity: medium (unverified)
 ---
 
 <intent-contract>
@@ -77,9 +91,39 @@ deferred: []
 
 ## Implementation Notes
 
+- Implemented by the full-route subagent; strict semver (no leading zeros) for stable tags; a dispatched dry run with an empty tag also computes the version; `""` left the BAD_TAG list (empty tag is valid on a dispatch; refused on a push by its own test). The orchestrator ran this build in its own session after a nested worker had no subagents (run log).
+
 ## Plan Change Log
 
 ## Review Triage Log
+
+### 2026-10-23 — Review pass
+- verdicts: 34 findings — high 1, medium 9, low 14, false 2, maybe-false 0, plus 8 descriptive intent-alignment notes (no verdict: 3 aligned, 3 live-only surfaces deferred, 2 stricter-than-intent accepted)
+- findings:
+  - `[high]` `[patch]` merge rules never checked the PR author (edge) — added: author `ME`, head branch `claude/...` in this repo.
+  - `[medium]` `[patch]` green could pass before the CI run exists; legacy statuses ignored (blind) — require the `check` run present and success, combined status not failure/pending; merge call named.
+  - `[medium]` `[patch]` no branch for zero checks / `unknown` / `blocked`/`unstable` (edge ×2) — four outcomes Green/Wait/Red/Hold, unknown and zero checks are Wait.
+  - `[low]` `[patch]` retitled draft never marked ready stalls (edge) — any `Issue batch` draft >6 h is interrupted.
+  - `[medium]` `[patch]` interrupted draft stalls the flow with no owner action in docs (blind) — docs/issues.md and issue-flow.md name it.
+  - `[medium]` `[patch]` no way for the owner to hold a merge; in-review row stale (blind) — convert to draft pauses; row updated.
+  - `[low]` `[patch]` Refs/Fixes state lags after a step-2 merge (edge, blind) — wait a minute and re-read.
+  - `[medium]` `[patch]` a reverted non-owner approval blocks a planned issue forever (edge) — latest owner approval counts.
+  - `[low]` `[patch]` planned issue with nothing to build (edge) — block it.
+  - `[low]` `[patch]` "ticket is reopened" undefined (blind) — new fix ticket via bmad-ticket, one attempt, outside the 6-issue limit.
+  - `[low]` `[patch]` waits vs the 3-hour limit (blind) — waits are outside it; mid-wait end leaves the PR open.
+  - `[medium]` `[patch]` "tell an agent 'release'" had no agent instructions, version unseen (blind) — "For agents" in docs/release.md.
+  - `[low]` `[patch]` partial failure recomputes a version already on npm (blind) — named in docs/release.md.
+  - `[low]` `[patch]` duplicate dry-run sentence (blind) — dropped.
+  - `[low]` `[patch]` RELEASE_TAG expression hard to read (blind) — `push && ref_name || inputs.tag || ''`.
+  - `[medium]` `[patch]` leading-zero/non-semver filter not pinned (verification-gap, blind) — test with `v01.5.0 v0.08.0 v1.2.3.4`.
+  - `[low]` `[patch]` exact log line not asserted (blind) — asserted.
+  - `[medium]` `[defer]` workflow wiring of empty tag and RELEASE_BUMP untested (verification-gap, blind, intent) — no workflow harness; settled by one dispatched dry run with an empty tag after merge.
+  - `[medium]` `[defer]` merge-on-green and start-of-run merge are prompt text, not run (intent ×2) — settled by the next routine run.
+  - `[low]` `[reject]` stub's literal `*` match fragile (blind) — test-only, works, fix adds nothing.
+  - `[low]` `[reject]` merged head branch not deleted (blind) — repository setting, not this change.
+  - `[false]` `[reject]` plan not updated (blind) — the diff was taken mid-review; the plan is updated in this pass.
+  - `[false]` `[reject]` no evidence `npm run ci` passed (intent) — it passed before and after the patches (Verification).
+  - remaining low rows: 7 duplicates of the rows above across lenses, same routes.
 
 ## Design Notes
 
@@ -91,3 +135,13 @@ Decision: a draft batch PR blocks a run (it may be another run in progress); old
 **Commands:**
 - `npx vitest run test/release-script.test.ts` -- expected: all pass
 - `npm run ci` -- expected: "All checks passed."
+
+## Auto Run Result
+
+- Status: built. The agent merges its own green batch PR (in the run or at the next run's start), `planned` issues build without a second approval, and the release dispatch computes the next version when no tag is given; docs of record updated.
+- Files: `scripts/release.sh` (computed tag), `.github/workflows/release.yml` (optional tag, bump), `test/release-script.test.ts` (COMPUTED_TAG block), `docs/agents/implement.md`, `docs/agents/triage.md`, `docs/issues.md`, `docs/release.md`, `issue-flow.md`, `epic-distribution.md`, `MEMORY.md`.
+- Review: 17 patches applied (1 high, 7 medium, 9 low), 2 deferred (live checks), 4 rejected with reasons above.
+- Follow-up review recommended: false (the one high patch is a single added condition, verified by reading).
+- Verification: `npx vitest run test/release-script.test.ts` 51 passed; `npm run ci` "All checks passed." before and after the patches.
+- Residual risk: the workflow expression and the agent's merge behavior run only live: a dispatched dry run with an empty tag, and the next routine run.
+

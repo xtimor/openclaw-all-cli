@@ -61,8 +61,8 @@ jobs:
         run: scripts/release.sh
         env:
           # Event data goes through env, never into the script text.
-          # An empty dispatch tag is on purpose: the script computes the next version. `&& ||` would fall through to ref_name, so branch on the event.
-          RELEASE_TAG: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || (github.event_name != 'workflow_dispatch' && github.ref_name || '') }}
+          # Empty on a dispatch without a tag: the script computes the next version.
+          RELEASE_TAG: ${{ github.event_name == 'push' && github.ref_name || inputs.tag || '' }}
           RELEASE_BUMP: ${{ github.event_name == 'workflow_dispatch' && inputs.bump || '' }}
           RELEASE_EVENT: ${{ github.event_name }}
           DRY_RUN: ${{ github.event_name == 'workflow_dispatch' && inputs.dry_run || 'false' }}

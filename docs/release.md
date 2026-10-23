@@ -13,7 +13,9 @@ A prerelease (`v1.2.3-rc.1`) publishes under the npm tag `next` and is marked as
 
 ## Cut a release
 
-One action, whenever you like: tell an agent "release" (optionally "minor" or "major"; the default is a patch), or run it yourself: Actions, `Release`, `Run workflow` on `main`, `tag` empty, `bump` (`patch`, `minor`, or `major`), `dry_run` off. The agent dispatches the same workflow. With the tag empty the script reads the stable `vX.Y.Z` tags on origin, takes the highest (none: `0.0.0`), raises it by `bump`, and prints the result (`release: no tag given; patch bump of v0.1.1 gives v0.1.2`). The run checks that the tag is new, releases `main`'s head, and the GitHub release creates the tag at that commit once publish or stage worked. A failed run creates no tag. A tag created this way starts no second run.
+One action, whenever you like: tell an agent "release" (optionally "minor" or "major"; the default is a patch), or run it yourself: Actions, `Release`, `Run workflow` on `main`, `tag` empty, `bump` (`patch`, `minor`, or `major`), `dry_run` off. With the tag empty the script reads the stable `vX.Y.Z` tags on origin, takes the highest (none: `0.0.0`), raises it by `bump`, and prints the result (`release: no tag given; patch bump of v0.1.1 gives v0.1.2`). The run checks that the tag is new, releases `main`'s head, and the GitHub release creates the tag at that commit once publish or stage worked. A failed run creates no tag. A tag created this way starts no second run.
+
+**For agents.** Only on the owner's explicit "release" in chat (optionally "minor" or "major"; the issue agents never release): compute the next version the way the script does (the highest stable `vX.Y.Z` tag on origin, raised by the bump; none means `0.0.0`), tell the owner the version, dispatch `Release` on `main` with that explicit `tag` and `dry_run: false`, watch the run, and report the npm version and the release link.
 
 To pick the version yourself, fill `tag` (`vX.Y.Z`); `bump` is then ignored. Or push the tag:
 
@@ -28,7 +30,7 @@ Then:
 1. Watch the `Release` run in GitHub Actions. The summary shows the version (the computed tag when `tag` was empty), the npm tag, and the sha256.
 2. Check: `npm view openclaw-all-cli@X.Y.Z dist.shasum` matches the `.tgz` attached to the GitHub release (`sha1sum` of the file), and the package page shows the provenance badge.
 
-A failed run before the publish step is safe to repeat. A dispatched run: fix the cause, then dispatch a new run on `main` (a re-run keeps its old commit, so it is refused once `main` moved). A tag-push run: the tag stays on origin, so delete it (`git push origin :refs/tags/vX.Y.Z`), fix, and push the tag again, or dispatch the same version on `main` after deleting it. If the publish succeeded and only the GitHub release failed, do not publish again: the log line `release commit: <sha>, tarball sha256: <sha256>` before the failure gives both values; take the tarball from npm (`npm pack openclaw-all-cli@X.Y.Z`, after approval on a first release), check its sha256, then `gh release create vX.Y.Z openclaw-all-cli-X.Y.Z.tgz --target <sha> --generate-notes --notes "sha256: <sha256>"` (add `--prerelease` for a prerelease; `--target` also creates the tag).
+A failed run before the publish step is safe to repeat. One case is not: if the publish worked but the GitHub release failed, no tag exists, so every later run with an empty `tag` computes the same version and stops with "already on npm". Finish that release by hand as described below (its `--target` creates the tag); the next empty-tag run then moves on. A dispatched run: fix the cause, then dispatch a new run on `main` (a re-run keeps its old commit, so it is refused once `main` moved). A tag-push run: the tag stays on origin, so delete it (`git push origin :refs/tags/vX.Y.Z`), fix, and push the tag again, or dispatch the same version on `main` after deleting it. If the publish succeeded and only the GitHub release failed, do not publish again: the log line `release commit: <sha>, tarball sha256: <sha256>` before the failure gives both values; take the tarball from npm (`npm pack openclaw-all-cli@X.Y.Z`, after approval on a first release), check its sha256, then `gh release create vX.Y.Z openclaw-all-cli-X.Y.Z.tgz --target <sha> --generate-notes --notes "sha256: <sha256>"` (add `--prerelease` for a prerelease; `--target` also creates the tag).
 
 ## Dry run
 
@@ -36,7 +38,7 @@ Run the workflow by hand: Actions, `Release`, `Run workflow`, a tag name such as
 
 A dry run still fails on a bad tag name and on a version that is already on npm. A tag push needs its tag; only a dispatch may leave it empty.
 
-`Run workflow` with `dry_run` off is a real release (see Cut a release): run it on `main` with `tag` empty (next version) or a new tag. A dry run with `tag` empty also computes the version and prints it.
+`Run workflow` with `dry_run` off is a real release (see Cut a release): run it on `main` with `tag` empty (next version) or a new tag.
 
 `Run workflow` appears only once `release.yml` is on `main`; before that, use a `v*-dryrun.*` tag.
 
