@@ -13,9 +13,9 @@ A prerelease (`v1.2.3-rc.1`) publishes under the npm tag `next` and is marked as
 
 ## Cut a release
 
-The usual way: the agent asks the owner "release?" with the version, and on approval dispatches the workflow on `main` (`tag: vX.Y.Z`, `dry_run: false`). The run checks that the tag is new, releases `main`'s head, and the GitHub release creates the tag at that commit once publish or stage worked. A failed run creates no tag. A tag created this way starts no second run.
+One action, whenever you like: tell an agent "release" (optionally "minor" or "major"; the default is a patch), or run it yourself: Actions, `Release`, `Run workflow` on `main`, `tag` empty, `bump` (`patch`, `minor`, or `major`), `dry_run` off. The agent dispatches the same workflow. With the tag empty the script reads the stable `vX.Y.Z` tags on origin, takes the highest (none: `0.0.0`), raises it by `bump`, and prints the result (`release: no tag given; patch bump of v0.1.1 gives v0.1.2`). The run checks that the tag is new, releases `main`'s head, and the GitHub release creates the tag at that commit once publish or stage worked. A failed run creates no tag. A tag created this way starts no second run.
 
-By hand, the same: Actions, `Release`, `Run workflow` on `main`, the new tag, `dry_run` off. Or push the tag yourself:
+To pick the version yourself, fill `tag` (`vX.Y.Z`); `bump` is then ignored. Or push the tag:
 
 ```sh
 git switch main && git pull
@@ -25,18 +25,18 @@ git push origin vX.Y.Z
 
 Then:
 
-1. Watch the `Release` run in GitHub Actions. The summary shows the version, the npm tag, and the sha256.
+1. Watch the `Release` run in GitHub Actions. The summary shows the version (the computed tag when `tag` was empty), the npm tag, and the sha256.
 2. Check: `npm view openclaw-all-cli@X.Y.Z dist.shasum` matches the `.tgz` attached to the GitHub release (`sha1sum` of the file), and the package page shows the provenance badge.
 
 A failed run before the publish step is safe to repeat. A dispatched run: fix the cause, then dispatch a new run on `main` (a re-run keeps its old commit, so it is refused once `main` moved). A tag-push run: the tag stays on origin, so delete it (`git push origin :refs/tags/vX.Y.Z`), fix, and push the tag again, or dispatch the same version on `main` after deleting it. If the publish succeeded and only the GitHub release failed, do not publish again: the log line `release commit: <sha>, tarball sha256: <sha256>` before the failure gives both values; take the tarball from npm (`npm pack openclaw-all-cli@X.Y.Z`, after approval on a first release), check its sha256, then `gh release create vX.Y.Z openclaw-all-cli-X.Y.Z.tgz --target <sha> --generate-notes --notes "sha256: <sha256>"` (add `--prerelease` for a prerelease; `--target` also creates the tag).
 
 ## Dry run
 
-Run the workflow by hand: Actions, `Release`, `Run workflow`, a tag name such as `v0.0.1`, `dry_run` on (the default). It runs every step, including `npm publish --dry-run`, and stops before publishing; no GitHub release is created, and it needs no tag. A pushed tag that matches `v*-dryrun.*` (for example `v0.0.1-dryrun.1`) is always a dry run too. Delete such a tag afterwards (`git push origin :refs/tags/v0.0.1-dryrun.1`).
+Run the workflow by hand: Actions, `Release`, `Run workflow`, a tag name such as `v0.0.1` (or empty, to see the computed next version), `dry_run` on (the default). It runs every step, including `npm publish --dry-run`, and stops before publishing; no GitHub release is created, and it needs no tag. A pushed tag that matches `v*-dryrun.*` (for example `v0.0.1-dryrun.1`) is always a dry run too. Delete such a tag afterwards (`git push origin :refs/tags/v0.0.1-dryrun.1`).
 
-A dry run still fails on a bad tag name and on a version that is already on npm.
+A dry run still fails on a bad tag name and on a version that is already on npm. A tag push needs its tag; only a dispatch may leave it empty.
 
-`Run workflow` with `dry_run` off is a real release (see Cut a release): run it on `main` with a new tag.
+`Run workflow` with `dry_run` off is a real release (see Cut a release): run it on `main` with `tag` empty (next version) or a new tag. A dry run with `tag` empty also computes the version and prints it.
 
 `Run workflow` appears only once `release.yml` is on `main`; before that, use a `v*-dryrun.*` tag.
 

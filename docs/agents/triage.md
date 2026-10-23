@@ -58,4 +58,4 @@ End the run with a summary table: issue, decision, priority, path, what you wrot
 
 ## Then: implementation
 
-After the triage report, in the same session and under the same `dry run` setting, follow `docs/agents/implement.md` to build the issues the owner approved. Triage decisions of this run are not approvals: the implementation step takes only issues that already carry the owner's `status:approved`.
+After the triage report, in the same session and under the same `dry run` setting, follow `docs/agents/implement.md` to build the issues the owner approved. Triage decisions of this run are not approvals: the implementation step takes only issues that already carry the owner's `status:approved`, and issues in `status:planned` whose course correction is merged (the owner's earlier approval covers them). It also merges its own green batch pull request.

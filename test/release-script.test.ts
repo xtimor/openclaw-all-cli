@@ -59,7 +59,11 @@ case "$1" in
   merge-base) [ "\${STUB_ON_MAIN:-1}" = 1 ] ;;
   ls-remote)
     [ "\${STUB_LS_REMOTE_FAIL:-0}" = 1 ] && exit 128
-    [ "\${STUB_REMOTE_TAG:-0}" = 1 ] && echo "bbb	refs/tags/v9.9.9"
+    case "$*" in
+      *'refs/tags/v*'*)
+        for t in \${STUB_REMOTE_TAGS:-}; do printf 'bbb\trefs/tags/%s\n' "$t"; done ;;
+      *) [ "\${STUB_REMOTE_TAG:-0}" = 1 ] && echo "bbb	refs/tags/v9.9.9" ;;
+    esac
     exit 0 ;;
 esac
 `,
@@ -352,8 +356,98 @@ describe("release.sh", () => {
     });
   });
 
+  describe("COMPUTED_TAG (a dispatch with an empty tag releases the next version)", () => {
+    const tags = "v0.1.0 v0.1.1 v0.2.0-rc.1";
+    const dispatch = { RELEASE_TAG: "", RELEASE_EVENT: "workflow_dispatch", STUB_REMOTE_TAGS: tags };
+    const real = { ...dispatch, DRY_RUN: "false", STUB_PACKAGE: "exists", STUB_TAG_MISSING: "1", STUB_HEAD: "ccc" };
+
+    it("next patch: prints v0.1.2 and releases it as if it was given", () => {
+      const o = release({ ...real, RELEASE_BUMP: "patch" });
+      expect(o.status, o.stderr).toBe(0);
+      expect(o.stdout).toContain("v0.1.2");
+      expect(called(o, "npm version 0.1.2 --no-git-tag-version")).toHaveLength(1);
+      expect(called(o, "git ls-remote --tags --refs origin refs/tags/v*")).toHaveLength(1);
+      expect(published(o)[0]).toMatch(/^npm publish .*--provenance/);
+      const [gh] = called(o, "gh release create");
+      expect(gh).toMatch(/^gh release create v0\.1\.2 /);
+      expect(gh).toContain("--target ccc");
+      expect(o.summary).toContain("`v0.1.2`");
+    });
+
+    it("next minor and major", () => {
+      const minor = release({ ...real, RELEASE_BUMP: "minor" });
+      expect(minor.status, minor.stderr).toBe(0);
+      expect(called(minor, "gh release create")[0]).toMatch(/^gh release create v0\.2\.0 /);
+      const major = release({ ...real, RELEASE_BUMP: "major" });
+      expect(major.status, major.stderr).toBe(0);
+      expect(called(major, "gh release create")[0]).toMatch(/^gh release create v1\.0\.0 /);
+    });
+
+    it("sorts versions, not text (v0.1.10 is above v0.1.9)", () => {
+      const o = release({ ...dispatch, STUB_REMOTE_TAGS: "v0.1.9 v0.1.10 v0.1.2" });
+      expect(o.status, o.stderr).toBe(0);
+      expect(o.stdout).toContain("v0.1.11");
+    });
+
+    it("no stable tag (none, or only prereleases and -dryrun.): base 0.0.0, patch gives v0.0.1", () => {
+      for (const remote of ["", "v0.1.0-rc.1 v0.0.1-dryrun.1 v2.0.0-beta.1"]) {
+        const o = release({ ...dispatch, STUB_REMOTE_TAGS: remote });
+        expect(o.status, o.stderr).toBe(0);
+        expect(called(o, "npm version 0.0.1 --no-git-tag-version")).toHaveLength(1);
+      }
+    });
+
+    it("bump unset is patch", () => {
+      const o = release(dispatch);
+      expect(o.status, o.stderr).toBe(0);
+      expect(called(o, "npm version 0.1.2 --no-git-tag-version")).toHaveLength(1);
+    });
+
+    it("a dispatched dry run computes the tag too, and still publishes nothing", () => {
+      const o = release({ ...dispatch, DRY_RUN: "true", RELEASE_BUMP: "minor" });
+      expect(o.status, o.stderr).toBe(0);
+      expect(called(o, "npm version 0.2.0 --no-git-tag-version")).toHaveLength(1);
+      expect(published(o)[0]).toContain("--dry-run");
+      expect(called(o, "gh ")).toEqual([]);
+    });
+
+    it("a bad bump fails before any check and names the allowed values", () => {
+      const o = release({ ...real, RELEASE_BUMP: "huge" });
+      expect(o.status).not.toBe(0);
+      expect(o.stderr).toMatch(/patch, minor, or major/);
+      expect(o.calls).toEqual([]);
+    });
+
+    it("an empty tag on a tag push fails", () => {
+      for (const env of [{ RELEASE_EVENT: "push" }, {}] as Record<string, string>[]) {
+        const o = release({ RELEASE_TAG: "", DRY_RUN: "false", STUB_REMOTE_TAGS: tags, ...env });
+        expect(o.status).not.toBe(0);
+        expect(o.stderr).toContain("a tag push needs a tag");
+        expect(o.calls).toEqual([]);
+      }
+    });
+
+    it("fails before checks when origin cannot be read, and releases nothing", () => {
+      const o = release({ ...real, STUB_LS_REMOTE_FAIL: "1" });
+      expect(o.status).not.toBe(0);
+      expect(o.stderr).toContain("could not read tags from origin");
+      expect(called(o, "ci-check")).toEqual([]);
+      expect(published(o)).toEqual([]);
+      expect(called(o, "gh ")).toEqual([]);
+    });
+
+    it("an explicit tag ignores the bump and reads no tag list", () => {
+      const o = release({ ...real, RELEASE_TAG: "v1.0.1", RELEASE_BUMP: "major" });
+      expect(o.status, o.stderr).toBe(0);
+      expect(called(o, "npm version 1.0.1 --no-git-tag-version")).toHaveLength(1);
+      expect(called(o, "git ls-remote --tags --refs")).toEqual([]);
+      const bad = release({ ...real, RELEASE_TAG: "v1.0.1", RELEASE_BUMP: "huge" });
+      expect(bad.status, bad.stderr).toBe(0);
+    });
+  });
+
   describe("BAD_TAG", () => {
-    for (const tag of ["v1.2", "1.2.3", "v1.2.3.4", "v01.2.3", "v1.2.3-", "vX.Y.Z", "v1.2.3+build", ""]) {
+    for (const tag of ["v1.2", "1.2.3", "v1.2.3.4", "v01.2.3", "v1.2.3-", "vX.Y.Z", "v1.2.3+build"]) {
       it(`rejects "${tag}" before any check`, () => {
         const o = release({ RELEASE_TAG: tag, DRY_RUN: "false", NODE_AUTH_TOKEN: SECRET });
         expect(o.status).not.toBe(0);
