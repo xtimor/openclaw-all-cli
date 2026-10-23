@@ -3,14 +3,14 @@ title: 'Issue agents act as their own GitHub App, not as the owner'
 type: 'feature'
 ticket: 14
 created: '2026-10-23'
-status: 'in-progress'
+status: 'in-review'
 baseline_revision: '15fa8d8af552e3535a96637d3a3e57707a5b3177'
 route: 'full'
 route_source: 'auto'
 risk: 'high'
-review: ''
-review_source: ''
-lenses_ran: []
+review: 'thorough'
+review_source: 'pinned'
+lenses_ran: ['blind-hunter', 'edge-case-hunter', 'verification-gap', 'intent-alignment']
 review_loop_iteration: 0
 followup_review_recommended: false
 context: ['{project-root}/AGENTS.md', '{project-root}/MEMORY.md']
