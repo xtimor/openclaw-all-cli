@@ -1,6 +1,6 @@
 // Applies the decisions of transitions.mjs to GitHub. Entry points for .github/workflows/issue-flow.yml, which
 // calls them from actions/github-script (`github` is its octokit, `context` the event, `core` the logger).
-// No model, no text from an issue is evaluated; the owner list comes from the workflow's ISSUE_FLOW_OWNERS.
+// No model, no text from an issue is evaluated; the owner list comes from the workflow's ISSUE_FLOW_OWNERS, the agent logins from ISSUE_FLOW_AGENTS.
 import { STALE_DAYS, decide, isBot, linkedIssues, needsInfoSince, needsTimeline, parseOwners, staleIssues, AGENT_MARKER_RE } from "./transitions.mjs";
 
 /** Sending the label requests one by one keeps their order: the new status first, then the old ones go. */
@@ -81,6 +81,7 @@ async function eachSafely(items, core, work) {
  */
 export async function runEvent({ github, context, core, env = process.env }) {
   const owners = parseOwners(env.ISSUE_FLOW_OWNERS);
+  const agents = parseOwners(env.ISSUE_FLOW_AGENTS); // the agents' GitHub App bot login(s); never an owner
   const payload = context.payload ?? {};
   const sender = payload.sender?.login ?? null;
   const results = [];
@@ -92,7 +93,7 @@ export async function runEvent({ github, context, core, env = process.env }) {
       return;
     }
     const timeline = event.name === "issues" && needsTimeline(issue, event) ? await readTimeline(github, context, number) : [];
-    const actions = decide(event, issue, { owners, timeline });
+    const actions = decide(event, issue, { owners, agents, timeline });
     if (actions.length === 0) {
       core.info(`issue-flow: #${number} nothing to do (${event.name} ${event.action})`);
       return;

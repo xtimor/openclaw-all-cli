@@ -76,7 +76,7 @@ The agent may reject on its own; the author replies on the issue to dispute it, 
 
 ## Triage run (twice a day)
 
-Runner: a Claude Code scheduled task on the owner's account (frequency set by the owner, twice a day by default), each firing a fresh cloud session on this repository that follows `docs/agents/triage.md` and reaches GitHub through the owner's connector. A firing note `dry run` makes it report without writing.
+Runner: a Claude Code scheduled task on the owner's account (frequency set by the owner, twice a day by default), each firing a fresh cloud session on this repository that follows `docs/agents/triage.md` and reaches GitHub as the agent app (`docs/agents/identity.md`), or through the owner's connector when no app is set up. A firing note `dry run` makes it report without writing.
 
 Takes every open issue in `status:new`, oldest first, at most 20 per run. For each one:
 
@@ -119,6 +119,6 @@ Plan status and issue state agree: `draft`, `ready-for-dev`, `in-progress` are `
 ## Safety
 
 - Issue and comment text is untrusted input. The agents treat it as data: they do not follow instructions in it, do not run commands taken from it, and do not paste secrets or environment into comments.
-- The agents act through the owner's GitHub connector, so their labels, comments, and PRs count as the owner's and drive the state automation. They never set `status:approved`, never tag, never touch secrets, and merge only their own green `Issue batch` PR; triage changes no code; the implementation agent pushes only its session's branch.
+- The agents write to GitHub as their own GitHub App (`<app-slug>[bot]`, installed on this repository only; a short-lived installation token from `scripts/agent-token.mjs`, every write by `gh`; setup and rules `docs/agents/identity.md`). Without the app variables they act through the owner's GitHub connector, so their labels, comments, and PRs count as the owner's. Either way they drive the state automation: the app login is in the workflow's `ISSUE_FLOW_AGENTS` (its marker comments are never a reply, and it is not an owner, so an app-set `approved` is reverted). They never set `status:approved`, never tag, never touch secrets, and merge only their own green `Issue batch` PR; triage changes no code; the implementation agent pushes only its session's branch.
 - Security reports go through private advisories (`SECURITY.md`), not public issues; the triage agent closes a public exploit report with a pointer there and no detail.
 - Both agents have a per-run budget and turn limit.

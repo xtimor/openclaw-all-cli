@@ -32,6 +32,9 @@ permissions:
 env:
   # Logins (comma separated) allowed to set status:approved. Anyone else's approval is removed again.
   ISSUE_FLOW_OWNERS: xtimor
+  # Logins (comma separated) of the issue agents' GitHub App, as `<app-slug>[bot]` (docs/agents/identity.md). Their marker
+  # comments are never an author's reply; they are not owners, so an approval by them is removed. Empty: the agents act as the owner.
+  ISSUE_FLOW_AGENTS: ""
 
 jobs:
   flow:

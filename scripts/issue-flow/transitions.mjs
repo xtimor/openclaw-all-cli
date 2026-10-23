@@ -224,9 +224,10 @@ function onIssues(event, issue, owners, timeline) {
 /** A comment that starts with one of these markers is an issue agent's (triage or implementation); it never counts as the author's reply. */
 export const AGENT_MARKER_RE = /^\s*<!--\s*issue-(?:triage|impl)\s*-->/;
 
-function onComment(event, issue, owners) {
-  // The issue agents write as an owner; their marker comment is never the author's reply. Anyone else's is.
-  if (event.action !== "created" || isBot(event.actor) || (event.agent === true && isOwner(event.actor, owners))) return [];
+function onComment(event, issue, owners, agents) {
+  // The issue agents write as an owner (no app configured) or as their own GitHub App (a login in `agents`); their marker
+  // comment is never the author's reply. Anyone else's is. An agent login is not an owner, so it can never approve.
+  if (event.action !== "created" || isBot(event.actor) || (event.agent === true && (isOwner(event.actor, owners) || isOwner(event.actor, agents)))) return [];
   if (issue.state !== "open" || !issue.labels.includes(NEEDS_INFO)) return [];
   if (lower(event.actor) === "" || lower(event.actor) !== lower(issue.author)) return [];
   return setStatus(issue, NEW);
@@ -271,18 +272,19 @@ function onStale(issue) {
  *   - opened | reopened also carry `at`, the event time (ISO).
  *   - `stale`: the daily job found the issue.
  * issue: a REST issue or a normalized one (`normalizeIssue`), as read now.
- * options: `owners` (logins that may approve) and `timeline` (the issue's label events, see `normalizeTimeline`; read it
+ * options: `owners` (logins that may approve), `agents` (logins of the issue agents' GitHub App; their marker comments are
+ *   not replies, and they are not owners), and `timeline` (the issue's label events, see `normalizeTimeline`; read it
  *   when `needsTimeline(issue)`).
  * Returns `[{op: "addLabel" | "removeLabel", label} | {op: "comment", body} | {op: "close", reason}]`, in the order to apply.
  */
-export function decide(event, issue, { owners = [], timeline = [] } = {}) {
+export function decide(event, issue, { owners = [], agents = [], timeline = [] } = {}) {
   const current = normalizeIssue(issue);
   if (current.isPullRequest || !event) return [];
   switch (event.name) {
     case "issues":
       return onIssues(event, current, owners, timeline);
     case "issue_comment":
-      return onComment(event, current, owners);
+      return onComment(event, current, owners, agents);
     case "pull_request":
       return onPullRequest(event, current, owners);
     case "stale":

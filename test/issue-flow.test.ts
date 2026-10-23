@@ -42,7 +42,7 @@ interface Transitions {
   NON_OWNER_APPROVAL_COMMENT: string;
   staleComment(login: unknown): string;
   needsInfoSince(events: unknown): number | null;
-  decide(event: Event, issue: IssueIn, options?: { owners?: string[]; timeline?: unknown[] }): Action[];
+  decide(event: Event, issue: IssueIn, options?: { owners?: string[]; agents?: string[]; timeline?: unknown[] }): Action[];
   approvalComment(eventId: unknown): Action;
   needsTimeline(issue: IssueIn, event?: Event): boolean;
   normalizeTimeline(raw: unknown): Array<{ id: unknown; label: string; actor: string | null }>;
@@ -379,6 +379,31 @@ describe("decide: issue_comment", () => {
     expect(t.decide({ ...comment("alice"), agent: true }, issue(["status:needs-info"]), { owners: ["owner"] })).toEqual([add("status:new"), remove("status:needs-info")]);
     // A plain author reply (no agent flag) counts as a reply, even for an author who is an owner.
     expect(t.decide(comment("alice"), issue(["status:needs-info"]), { owners: ["alice"] })).toEqual([add("status:new"), remove("status:needs-info")]);
+  });
+
+  it("AGENT_MARKER: a marker comment by an agent login is not a reply; the same text by anyone else, or without the marker, is", () => {
+    const APP = "oac-issue-agents[bot]";
+    const open = issue(["status:needs-info"], { user: { login: APP } }); // an issue the agent app itself opened
+    const reply = (actor: string, agent: boolean) => t.decide({ ...comment(actor), agent }, open, { owners: OWNERS, agents: [APP.toLowerCase()] });
+    expect(reply(APP, true)).toEqual([]);
+    expect(reply("OAC-Issue-Agents[bot]", true)).toEqual([]);
+    // Not the agent's login: still a reply when it is the author's.
+    const other = issue(["status:needs-info"], { user: { login: "alice" } });
+    expect(t.decide({ ...comment("alice"), agent: true }, other, { owners: OWNERS, agents: [APP] })).toEqual([add("status:new"), remove("status:needs-info")]);
+    // No agent list (app not configured): the app login's marker comment counts like anyone's.
+    expect(t.decide({ ...comment(APP), agent: true }, open, { owners: OWNERS })).toEqual([add("status:new"), remove("status:needs-info")]);
+    // The agent's comment without the marker is not an agent comment.
+    expect(reply(APP, false)).toEqual([add("status:new"), remove("status:needs-info")]);
+  });
+
+  it("APPROVAL_BY_AGENT: an approval by an agent login is reverted like anyone's (agents are not owners)", () => {
+    const APP = "oac-issue-agents[bot]";
+    const approved = t.decide({ name: "issues", action: "labeled", actor: APP, label: "status:approved" }, issue(["status:triaged", "status:approved"]), {
+      owners: OWNERS,
+      agents: [APP],
+      timeline: [labeledAt("status:triaged", "xtimor", 0, 1), labeledAt("status:approved", APP, 3, 2)],
+    });
+    expect(approved).toEqual([remove("status:approved"), revert(2)]);
   });
 
   it("AUTHOR_REPLY: a comment by someone else does nothing", () => {
@@ -822,6 +847,26 @@ describe("runEvent", () => {
     expect(await send("alice", "plain reply", "xtimor")).toEqual(["status:new"]);
   });
 
+  it("AGENT_MARKER: runEvent reads the agent logins from ISSUE_FLOW_AGENTS; an agent approval is reverted", async () => {
+    const APP = "oac-issue-agents[bot]";
+    const send = async (agents: string | undefined, body: string) => {
+      const fake = fakeGithub([{ number: 12, state: "open", labels: ["status:needs-info"], user: { login: APP } }]);
+      const payload = { action: "created", sender: { login: APP }, comment: { user: { login: APP }, body }, issue: { number: 12 } };
+      await apply.runEvent({ github: fake.github, context: ctx("issue_comment", payload), core: fakeCore(), env: { ISSUE_FLOW_OWNERS: "xtimor", ...(agents === undefined ? {} : { ISSUE_FLOW_AGENTS: agents }) } });
+      return fake.labelsOf(12);
+    };
+    expect(await send("Oac-Issue-Agents[bot], other[bot]", "<!-- issue-impl -->\n**Status:** needs-info")).toEqual(["status:needs-info"]);
+    expect(await send("Oac-Issue-Agents[bot]", "<!-- issue-triage -->\nx")).toEqual(["status:needs-info"]);
+    expect(await send("Oac-Issue-Agents[bot]", "plain text")).toEqual(["status:new"]);
+    expect(await send(undefined, "<!-- issue-impl -->\nx")).toEqual(["status:new"]);
+    expect(await send("", "<!-- issue-impl -->\nx")).toEqual(["status:new"]);
+
+    const fake = fakeGithub([{ number: 12, state: "open", labels: ["status:triaged", "status:approved"], user: { login: "alice" } }]);
+    const approval = { action: "labeled", label: { name: "status:approved" }, sender: { login: APP }, issue: { number: 12 } };
+    await apply.runEvent({ github: fake.github, context: ctx("issues", approval), core: fakeCore(), env: { ISSUE_FLOW_OWNERS: "xtimor", ISSUE_FLOW_AGENTS: APP } });
+    expect(fake.labelsOf(12)).toEqual(["status:triaged"]);
+  });
+
   it("PR_OPENED: links #12 and #13, skips a PR, a closed issue, a missing issue, and another repository", async () => {
     const fake = fakeGithub([
       { number: 12, state: "open", labels: ["status:in-progress"] },
@@ -1068,6 +1113,7 @@ describe("workflow file", () => {
 
   it("keeps the owner list in the workflow and never in the module", () => {
     expect(text).toMatch(/^ {2}ISSUE_FLOW_OWNERS: xtimor$/m);
+    expect(text).toMatch(/^ {2}ISSUE_FLOW_AGENTS: ""$/m);
     for (const file of ["transitions.mjs", "apply.mjs"]) expect(readFileSync(join(FLOW_DIR, file), "utf8")).not.toContain("xtimor");
   });
 
