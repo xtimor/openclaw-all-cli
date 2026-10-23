@@ -18,10 +18,10 @@ One `status:*` label per open issue, always exactly one. A closed issue has none
 | --- | --- | --- |
 | `status:new` | Filed or reopened, not yet triaged, or the author answered a question | triage agent |
 | `status:needs-info` | Either agent (or the owner) asked the author for details or a check only the author can do | author's reply (back to `new`), or the stale timer |
-| `status:triaged` | The agent accepts it: problem confirmed, priority set, scope written. Waits for the owner | owner |
+| `status:triaged` | The agent accepts it: problem confirmed, priority set, scope written. Waits for the owner, unless triage carried an earlier approval over a `needs-info` round | owner, or the implementation run (carried approval) |
 | `status:approved` | The owner approved it for development | implementation run |
 | `status:planned` | A course correction for it is merged; its BMAD tickets exist but are not built yet | implementation run (the owner's earlier approval covers it) |
-| `status:in-progress` | The implementation agent is working on it | implementation run, PR events |
+| `status:in-progress` | The implementation agent is working on it | implementation run (stops with `needs-info` for the author or `blocked` for the owner), PR events |
 | `status:in-review` | A pull request that fixes it is open | implementation agent (merges it on green), or the owner (closes the PR) |
 | `status:blocked` | The owner must decide (scope beyond the approval, protected files, product direction, repeated failure), or the PR was closed unmerged; the comment mentions the owner and says why | owner |
 
@@ -39,7 +39,7 @@ new ──triage: rejected─────────────► closed not 
 new ──triage: duplicate────────────► closed duplicate (link to the original)
 new ──triage: fixed by a done ticket► closed completed (ticket and commit named)
 
-needs-info ──author comments───────► new
+needs-info ──author comments───────► new   (also after an implementation question)
 needs-info ──14 days silent────────► closed not planned (stale; reopening brings it back)
 
 triaged ──owner sets approved──────► approved
@@ -53,8 +53,9 @@ in-review ──proposal PR merged─────► planned
 planned ──run starts, no new approval─► in-progress (build the new tickets)
 in-progress ──run needs the author's answer─► needs-info  (comment mentions the author; ticket stays blocked)
 in-progress ──run needs an owner decision──► blocked      (comment mentions the owner)
-needs-info ──author replies, triage: scope unchanged─► triaged ("Approval: carried over"); the next run builds it, no new approval
-needs-info ──author replies, triage: scope changed──► triaged ("a new approval is needed")
+new ──triage: approved before, owner approval newer than last close/reopen, answer settles the impl question, scope unchanged─► triaged ("Approval: carried over", short comment)
+new ──triage: approved before, but scope or path changed─► triaged ("a new approval is needed")
+triaged (approval carried over) ──run starts, no new approval─► in-progress
 in-review ──PR merged──────────────► closed completed
 in-review ──PR closed unmerged─────► blocked
 blocked ──owner sets approved──────► approved (retry)
@@ -86,7 +87,7 @@ Takes every open issue in `status:new`, oldest first, at most 20 per run. For ea
 
 It writes one triage comment per issue, marked `<!-- issue-triage -->`, and edits that same comment on a later pass. The run summary lists every decision.
 
-**Comment shape (both agents).** Every agent comment starts with its marker (`<!-- issue-triage -->` or `<!-- issue-impl -->`) and then states the status label, who is awaited (`@login`) and for what, and what happens next (`docs/agents/comments.md`). The state automation never counts an owner's marker comment as the author's reply. **Carried approval:** when an approved issue went through `needs-info` and triage finds the verdict, path, and draft ticket unchanged, it sets `triaged` and writes `**Approval:** carried over (owner approved <date>; scope unchanged)`; the implementation run takes such an issue because the owner's `labeled status:approved` event is in its history. Changed scope needs a new approval. No new label, and triage still never sets `approved`.
+**Comment shape (both agents).** Every agent comment starts with its marker (`<!-- issue-triage -->` or `<!-- issue-impl -->`) and then states the status label, who is awaited (`@login`) and for what, and what happens next (`docs/agents/comments.md`). The state automation never counts an owner's marker comment as the author's reply. **Carried approval:** only when the owner's latest `labeled status:approved` is later than the issue's last close and reopen, the implementation agent then set `needs-info` with a question, and the author's reply answers it; triage then posts a short `<!-- issue-triage -->` comment with `**Approval:** carried over (owner approved <date>; scope unchanged)` (it does not edit the main comment) and sets `triaged`. If the answer changes the draft ticket or the path, it re-triages normally and writes "a new approval is needed". The implementation run takes such an issue when the latest triage comment has the carried line and the same two event conditions hold, and the owner's `labeled status:approved` event is in the history. A second `needs-info` stop on one ticket, or a bot or deleted author, goes to `blocked`. The automation does not check the carried line: it rests on the agents following the prompts. No new label, and triage still never sets `approved`.
 
 ## Implementation run
 

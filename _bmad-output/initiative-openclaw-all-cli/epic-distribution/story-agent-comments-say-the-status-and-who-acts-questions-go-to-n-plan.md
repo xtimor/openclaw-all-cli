@@ -3,19 +3,26 @@ title: 'Agent comments say the status and who acts; questions go to needs-info'
 type: 'feature'
 ticket: 12
 created: '2026-10-23'
-status: 'in-progress'
+status: 'built'
 baseline_revision: 'de14796403166103fd6c898629f9cc1738a762dc'
 route: 'full'
 route_source: 'auto'
 risk: 'medium'
-review: ''
-review_source: ''
-lenses_ran: []
+review: 'thorough'
+review_source: 'pinned'
+lenses_ran: ['blind-hunter', 'edge-case-hunter', 'verification-gap', 'intent-alignment']
 review_loop_iteration: 0
 followup_review_recommended: false
 context: ['{project-root}/AGENTS.md', '{project-root}/MEMORY.md']
 warnings: []
-deferred: []
+deferred:
+  - summary: >-
+      Issue #13 must be moved to needs-info with a comment in the new shape.
+    evidence: |-
+      Live GitHub state; done by the orchestrator after merge.
+    location: >-
+      github issue 13
+    severity: medium
 ---
 
 <intent-contract>
@@ -80,6 +87,30 @@ deferred: []
 
 ## Review Triage Log
 
+### 2026-10-23 — Review pass
+- verdicts: 27 findings — high 0, medium 8, low 9, false 2, maybe-false 0, plus descriptive intent-alignment notes (d aligned; a, b, c prompt-only; e live)
+- findings:
+  - `[medium]` `[patch]` carried approval compared against an edited main comment; cancelled or pre-close approvals reusable (blind ×2, edge ×2) — anchored on: owner approval after the last close/reopen, a later impl `needs-info`, a reply to that question; triage posts a short comment and leaves the main comment alone.
+  - `[medium]` `[patch]` triage not told where the open question is (blind) — reads the latest impl comment's Waiting-for line.
+  - `[medium]` `[patch]` no cap on needs-info rounds (blind) — second stop on the same ticket goes to blocked.
+  - `[medium]` `[patch]` the author's answer never reaches the build (blind) — a `Decision:` line in the plan before retry.
+  - `[low]` `[patch]` Planned-path retry built only the blocked ticket (edge) — retries every not-done ticket named.
+  - `[low]` `[patch]` bot or ghost author cannot reply (edge) — blocked, owner mentioned.
+  - `[medium]` `[patch]` carried accept asked the owner to approve again (edge) — Waiting for: nothing.
+  - `[low]` `[patch]` Status rule vs closed issues (blind) — closed values allowed.
+  - `[low]` `[patch]` literal `@owner`/`@alice` in examples (blind) — placeholders.
+  - `[low]` `[patch]` "verdict" had no field (blind) — defined, old shape mapped.
+  - `[medium]` `[patch]` state rows, step 4, and diagram edges stale (blind, edge, intent) — fixed.
+  - `[low]` `[patch]` test comment over-claims; no no-space marker case (blind) — fixed, case added.
+  - `[low]` `[patch]` MEMORY skips the prompt-only risk (blind) — recorded.
+  - `[medium]` `[defer]` (e) issue #13 not migrated in the diff (blind, intent) — a live GitHub action done by the orchestrator after merge; recorded in the run log.
+  - `[low]` `[reject]` field order differs from the ticket text (blind, intent) — deliberate (Next in the first lines, AC 1); the ticket text is not the plan's to edit.
+  - `[low]` `[reject]` "ask the owner first" when both apply (edge, intent) — a safe tie-break; the owner can answer the reporter question too.
+  - `[low]` `[reject]` untested `^\s*` leading whitespace and owner-login case in runEvent (blind) — existing behavior, covered by `isOwner` tests.
+  - `[false]` `[reject]` review did not run (blind) — the diff was taken before this pass.
+  - `[false]` `[reject]` verification gaps (verification-gap: none found) — n/a.
+  - remaining low rows: duplicates across lenses, same routes.
+
 ## Design Notes
 
 Decision: carried approval is written by triage as an explicit `**Approval:** carried over` line, and the implementation agent also checks the owner's approval event; no new label. Ground: the owner wants one approval per issue, and the label set stays as it is.
@@ -89,3 +120,12 @@ Decision: carried approval is written by triage as an explicit `**Approval:** ca
 **Commands:**
 - `npx vitest run test/issue-flow.test.ts` -- expected: all pass
 - `npm run ci` -- expected: "All checks passed."
+
+## Auto Run Result
+
+- Status: built. One comment shape (`docs/agents/comments.md`) for both agents; questions for the reporter go to `status:needs-info`, owner decisions to `status:blocked`; an approval carries over one needs-info round from the implementation agent when the scope is unchanged; the state automation ignores an owner's `<!-- issue-impl -->` comment as a reply.
+- Review: 13 patch entries (8 medium, 5 low), 1 deferred (#13 live), 5 rejected with reasons.
+- Follow-up review recommended: false (no high patched; prompt-only changes).
+- Verification: `npx vitest run test/issue-flow.test.ts` 83 passed; `npm run ci` "All checks passed." after the patches.
+- Residual risk: carried approval rests on prompt-following; first exercised on issue #13.
+

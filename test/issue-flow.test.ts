@@ -367,6 +367,7 @@ describe("decide: issue_comment", () => {
     for (const marker of ["issue-triage", "issue-impl"]) {
       expect(t.AGENT_MARKER_RE.test(`<!-- ${marker} -->\n**Status:** needs-info`)).toBe(true);
       expect(t.AGENT_MARKER_RE.test(`I quote <!-- ${marker} --> here`)).toBe(false);
+      expect(t.AGENT_MARKER_RE.test(`<!--${marker}-->\ntext`)).toBe(true);
     }
     expect(t.AGENT_MARKER_RE.test("<!-- issue-other -->\ntext")).toBe(false);
     // An owner's agent comment (either marker) changes nothing.
@@ -374,7 +375,7 @@ describe("decide: issue_comment", () => {
     expect(t.decide({ ...comment("xtimor"), agent: true }, issue(["status:needs-info"]), { owners: OWNERS })).toEqual([]);
     // A reporter who is not an owner and starts a reply with a marker still counts as replying.
     expect(t.decide({ ...comment("alice"), agent: true }, issue(["status:needs-info"]), { owners: ["owner"] })).toEqual([add("status:new"), remove("status:needs-info")]);
-    // A plain author reply, and a marker quoted mid-text (no agent flag), count as a reply.
+    // A plain author reply (no agent flag) counts as a reply, even for an author who is an owner.
     expect(t.decide(comment("alice"), issue(["status:needs-info"]), { owners: ["alice"] })).toEqual([add("status:new"), remove("status:needs-info")]);
   });
 
