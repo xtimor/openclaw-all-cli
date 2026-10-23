@@ -38,7 +38,15 @@ class AgentTokenError extends Error {
 
 const b64url = (input) => Buffer.from(input).toString("base64url");
 
-const pemText = (value) => (value.startsWith("-----BEGIN") ? value : Buffer.from(value, "base64").toString("utf8")).replace(/\r\n/g, "\n").trim();
+/** Rebuilds a PEM whose line breaks were lost (pasted as one line, or spaces instead of newlines). */
+function pemLines(text) {
+  const match = /^(-----BEGIN [A-Z ]+-----)\s*([A-Za-z0-9+/=\s]+?)\s*(-----END [A-Z ]+-----)$/.exec(text);
+  if (!match) return text;
+  const body = match[2].replace(/\s+/g, "");
+  return [match[1], ...(body.match(/.{1,64}/g) ?? []), match[3]].join("\n");
+}
+
+const pemText = (value) => pemLines((value.trim().startsWith("-----BEGIN") ? value : Buffer.from(value, "base64").toString("utf8")).replace(/\r\n/g, "\n").trim());
 
 /** The private key from the PEM text or the base64 of the PEM file (either works in either variable). The message never contains the value. */
 function readKey(value, name) {
