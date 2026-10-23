@@ -3,7 +3,7 @@ title: 'Implementation run on the owner''s approval'
 type: 'feature'
 ticket: '9'
 created: '2026-10-22'
-status: 'built'
+status: done
 baseline_revision: 'f4e702a8d96f49edc4a1a13929f3a835e6cfc8df'
 route: 'oneshot'
 route_source: 'auto'

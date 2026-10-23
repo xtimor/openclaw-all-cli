@@ -1,6 +1,6 @@
 name: Release
 
-# Release vX.Y.Z: dispatch on main with dry_run off (creates the tag), or push the tag. All logic is in scripts/release.sh; see docs/release.md.
+# Release vX.Y.Z: dispatch on main with dry_run off (creates the tag; an empty tag computes the next version from bump), or push the tag. All logic is in scripts/release.sh; see docs/release.md.
 # workflow_dispatch with dry_run (default) runs every step except publish and the GitHub release.
 on:
   push:
@@ -8,9 +8,16 @@ on:
   workflow_dispatch:
     inputs:
       tag:
-        description: 'Tag to release, e.g. v1.2.3 (a dry run only uses it as the version)'
-        required: true
+        description: 'Tag to release, e.g. v1.2.3. Leave empty to release the next version (see bump). A dry run only uses it as the version'
+        required: false
         type: string
+        default: ''
+      bump:
+        description: 'Which part of the latest stable tag to raise when tag is empty (ignored when a tag is given)'
+        required: false
+        type: choice
+        options: [patch, minor, major]
+        default: patch
       dry_run:
         description: 'Run everything except publish and the GitHub release. A real run (false) on main creates the new tag at the head of main'
         required: true
@@ -54,7 +61,9 @@ jobs:
         run: scripts/release.sh
         env:
           # Event data goes through env, never into the script text.
-          RELEASE_TAG: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}
+          # Empty on a dispatch without a tag: the script computes the next version.
+          RELEASE_TAG: ${{ github.event_name == 'push' && github.ref_name || inputs.tag || '' }}
+          RELEASE_BUMP: ${{ github.event_name == 'workflow_dispatch' && inputs.bump || '' }}
           RELEASE_EVENT: ${{ github.event_name }}
           DRY_RUN: ${{ github.event_name == 'workflow_dispatch' && inputs.dry_run || 'false' }}
           # Stage-only npm token for the first release; delete it after the trust is set (docs/release.md).

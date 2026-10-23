@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # Release the package as `vX.Y.Z` (GitHub Actions: .github/workflows/release.yml; docs/release.md), from a
-# pushed tag or from a dispatch on main that creates the tag.
+# pushed tag or from a dispatch on main that creates the tag. A dispatch may leave the tag empty: the next
+# version is computed from the stable `v*` tags on origin and RELEASE_BUMP.
 # Agent-neutral. All logic is here; the workflow only wires triggers, permissions, and secrets.
 #
 #   validate the tag -> (real release) tag push: tag is HEAD and on origin/main; dispatch: HEAD is
@@ -9,7 +10,9 @@
 #   publish | stage | dry-run -> GitHub release with the same .tgz.
 #
 # Env:
-#   RELEASE_TAG       the tag, e.g. v1.2.3 or v1.2.3-rc.1 (GITHUB_REF_NAME on a tag push)
+#   RELEASE_TAG       the tag, e.g. v1.2.3 or v1.2.3-rc.1 (GITHUB_REF_NAME on a tag push); empty on a
+#                     dispatch = compute the next version (RELEASE_BUMP) from origin's stable tags
+#   RELEASE_BUMP      patch (default), minor, or major; used only when RELEASE_TAG is empty
 #   DRY_RUN           true (default) or false; a tag `v*-dryrun.*` is always a dry run
 #   NODE_AUTH_TOKEN   the stage-only npm token; used for `npm stage publish` and nothing else
 #   GH_TOKEN          for `gh release create`
@@ -47,6 +50,30 @@ use_isolated_node() {
 use_isolated_node
 
 # --- validate the tag and the mode -------------------------------------------------------------
+
+if [ -z "$TAG" ]; then
+  # A dispatch with no tag releases the next version: highest stable tag on origin plus the bump.
+  [ "${RELEASE_EVENT:-push}" = workflow_dispatch ] ||
+    fail "a tag push needs a tag; only a dispatched run may leave the tag empty to compute the next version."
+  BUMP="${RELEASE_BUMP:-patch}"
+  case "$BUMP" in
+    patch | minor | major) ;;
+    *) fail "RELEASE_BUMP must be patch, minor, or major, got \"$BUMP\"." ;;
+  esac
+  remote_tags="$(git ls-remote --tags --refs origin 'refs/tags/v*')" ||
+    fail "could not read tags from origin; nothing was released."
+  # Stable versions only: prereleases (and -dryrun.) tags never set the base.
+  latest="$(printf '%s\n' "$remote_tags" | sed 's#.*refs/tags/##' |
+    { grep -E '^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$' || true; } | sort -V | tail -n 1)"
+  base="${latest#v}"
+  IFS=. read -r base_major base_minor base_patch <<<"${base:-0.0.0}"
+  case "$BUMP" in
+    major) TAG="v$((base_major + 1)).0.0" ;;
+    minor) TAG="v${base_major}.$((base_minor + 1)).0" ;;
+    patch) TAG="v${base_major}.${base_minor}.$((base_patch + 1))" ;;
+  esac
+  echo "release: no tag given; $BUMP bump of ${latest:-no stable tag (base v0.0.0)} gives $TAG"
+fi
 
 SEMVER='^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?$'
 [[ "$TAG" =~ $SEMVER ]] || fail "tag \"$TAG\" is not allowed: use vMAJOR.MINOR.PATCH with an optional prerelease, e.g. v1.2.3 or v1.2.3-rc.1."

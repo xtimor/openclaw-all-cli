@@ -117,3 +117,15 @@ after = [2, 7, 8]
 hitl = false
 risk = "high"
 references = ["epic-distribution.md", "issue-flow.md"]
+
+[[entry]]
+id = 11
+type = "story"
+title = "One approval per issue, merge on green, one-click release"
+description = "Owner's decision (2026-10-23): the owner's only touch per issue is `status:approved` after triage; everything after that runs without them, and the owner decides alone when to release. (a) The implementation agent merges its own batch pull request into `main` once GitHub CI on its head is green (merge commit, expected head sha); a red CI it cannot fix in the run leaves the PR open; at the start of every run an open batch PR that is green and mergeable is merged before a new batch starts, a red or conflicted one is reported and stops the run. (b) A course-correction proposal rides the batch PR and merges the same way; the `status:planned` issue it leaves is built by the next run without a second approval. (c) Release in one step: the `release.yml` dispatch takes an optional tag; with no tag it computes the next version from the latest stable `v*` tag and a `bump` choice (patch by default, minor, major); the owner can also tell any agent session \"release\". Protected files, owner-only approval, no secrets, no tags by the issue agents stay as before."
+verify = "Release-script tests cover the computed next version for each bump, no tag yet, and an empty tag on a tag push refused; `npm run ci` passes; a routine run with an approved issue ends with its batch PR merged into `main` and the issue closed with no owner action; an open green batch PR from an earlier run is merged at the start of the next run."
+covers = []
+after = [9, 10]
+hitl = false
+risk = "high"
+references = ["epic-distribution.md", "issue-flow.md"]
