@@ -1,6 +1,6 @@
 # Cursor provider
 
-What `cursor-cli/<model>` does in OpenClaw and how it compares with `claude-cli`. Setup is in [Setup](../setup.md); this page is reference and you do not need it to install. Sections: [How it runs](#how-it-runs), [Sessions](#sessions-resume-and-side-questions), [Chat continuity](#chat-continuity-across-a-model-switch), [OpenClaw tools](#openclaw-tools), [System prompt and skills](#system-prompt-and-skills), [Images](#images), [Compaction](#compaction), [Streaming](#streaming-and-tool-progress), [Permissions](#permissions-and-tool-availability), [Shell commands](#shell-commands-openclaw-exec), [Models](#models), [Operations](#operations), [Usage](#usage), [Parity with `claude-cli`](#parity-with-claude-cli), [Known limits](#known-limits), [Check it works](#check-it-works).
+What `cursor-cli/<model>` does in OpenClaw and how it compares with `claude-cli`. Setup is in [Setup](../setup.md); this page is reference and you do not need it to install. Sections: [How it runs](#how-it-runs), [Sessions](#sessions-resume-and-side-questions), [Chat continuity](#chat-continuity-across-a-model-switch), [OpenClaw tools](#openclaw-tools), [System prompt and skills](#system-prompt-and-skills), [Images](#images), [Compaction](#compaction), [Streaming](#streaming-and-tool-progress), [Permissions](#permissions-and-tool-availability), [Shell commands](#shell-commands-openclaw-exec), [Provider list and sign-in methods](#provider-list-and-sign-in-methods), [Models](#models), [Operations](#operations), [Usage](#usage), [Parity with `claude-cli`](#parity-with-claude-cli), [Known limits](#known-limits), [Check it works](#check-it-works).
 
 > **Status:** early release, installed from npm ([Setup](../setup.md)). Rows marked *spike* or *planned* in the parity table change as the plugin grows; each change to a row updates this page and that row's live test together.
 
@@ -34,7 +34,7 @@ OpenClaw owns which Cursor chat belongs to which OpenClaw chat. The plugin keeps
 | Cursor answers `session/load` with another session ID | That ID is reported and used for the next turn |
 | Cursor cannot load sessions at all | The turn fails with `capability_mismatch` |
 
-A warm process serves the next turn only when model, mode, working directory, agent home, auth profile, and Cursor session ID all match the turn (AD-13); otherwise it is closed and a new one resumes the chat. At most one process holds a chat: if a second process is about to load a chat an idle one holds, the idle one is closed first, and if that one is in the middle of a turn the new turn fails with a retryable error. A live probe (2026-10-18, cursor-agent 2026.10.16) showed why: Cursor lets two processes load one chat without an error, but each keeps its own view, a turn in one is invisible to the other, and the stored chat ends up with only one process's turns.
+A warm process serves the next turn only when model, mode, working directory, agent home, auth profile, thinking level, and Cursor session ID all match the turn (AD-13); otherwise it is closed and a new one resumes the chat. At most one process holds a chat: if a second process is about to load a chat an idle one holds, the idle one is closed first, and if that one is in the middle of a turn the new turn fails with a retryable error. A live probe (2026-10-18, cursor-agent 2026.10.16) showed why: Cursor lets two processes load one chat without an error, but each keeps its own view, a turn in one is invisible to the other, and the stored chat ends up with only one process's turns.
 
 A side question (OpenClaw's `/btw`, `executionMode: "side-question"`) opens a throwaway Cursor session in `ask` mode, with no MCP server (so no OpenClaw tools), no resume, and every permission request rejected without asking OpenClaw. It reports no session ID, so the chat's binding is untouched, and its process closes after the answer. The backend sets `sideQuestionToolMode: "disabled"`. Cursor cannot switch off its native `read`, `grep`, and `glob` per run (see Known limits), so a side question may still read files, but it cannot run a shell, write, or call an OpenClaw tool. Cursor keeps the throwaway session in the agent's `acp-sessions` folder; once the side question's process has exited (and its process group is gone), the plugin removes that one directory, by its session ID. An agent chat's directory is never removed. A new chat Cursor refuses after `session/new` (an unknown model, a missing mode) keeps its directory, because the plugin never learns its ID.
 
@@ -120,6 +120,8 @@ Live test: `test/live/images-compaction.live.test.ts` (row e: a mock API compact
 
 Cursor's replies reach OpenClaw while the turn runs, not when it ends: every `agent_message_chunk` becomes a text delta and every `agent_thought_chunk` a thinking delta, in order, and the closing record carries the full reply, which is exactly the concatenation of the text deltas. Nothing waits for the end of the turn. Live run (real `cursor-agent`, 2026.10.16): 159 text and 4 thinking deltas, the first one 9.6 s before the closing record.
 
+The closing record's text is not a second block for the host (checked in OpenClaw 2026.10.3's CLI runner and with a Gateway, 2026-10-22): it only sets the turn's final text, which falls back to the streamed text when empty. The "completed block" path serves only the built-in Claude records. A webchat turn is the streamed deltas, then one `chat` `final` with the whole reply; the transcript holds one assistant row. The host also emits its own `assistant` snapshot with the final text after every CLI run.
+
 Cursor's tool activity (`tool_call` and `tool_call_update`) shows as tool progress in OpenClaw. Rules:
 
 - **Once per call.** However many updates Cursor sends for one call ID, OpenClaw gets one start and at most one result (at `completed` or `failed`; a failed call is marked as an error). An update for a call the plugin has not seen counts as its start.
@@ -199,6 +201,17 @@ OpenClaw's `exec` backgrounds a command by itself after `yieldMs` (10 s by defau
 - **A sandboxed agent has two workspaces.** `exec` runs in the sandbox's working directory, but Cursor's native `read`, `grep`, and `glob` read the host workspace, and those reads leave the sandbox. A sandbox does not confine what the model can read.
 - **A selection that includes native `exec`.** If a run's tool selection lists native `exec`, the backend accepts it, although Cursor can never run a native `exec` (`Shell(*)` is denied). This is over-restrictive, not a bypass: that run's model has no shell of its own beyond what the host serves.
 
+## Provider list and sign-in methods
+
+The `cursor-cli` provider is in OpenClaw's provider list (Control UI: Models, **Connect provider**, group **Cursor CLI**) with two methods, declared in the manifest (`providerAuthChoices`, credential-only so the dialog lists them) and registered by the plugin (`registerProvider`, which carries only the methods; the catalog and the native login stay with the provider-catalog entry, `prepareSyntheticAuth` unchanged):
+
+- **`login`, "Use the cursor-agent login".** No fields. It runs the adapter's login probe (`cursor-agent status`, with the plugin config's `command` and `env`, without the cleared env keys) and reports logged in, or fails with ``Cursor CLI is not logged in. Run `cursor-agent login` ...``. It leaves a `CURSOR_API_KEY` out of the probe, so it reports the login itself, and says so when a key is set too.
+- **`api-key-env`, "Cursor CLI API key (CURSOR_API_KEY)".** Asks for a hidden key and returns a config patch that sets `plugins.entries.openclaw-all-cli.config.cursor-cli.env.CURSOR_API_KEY`, keeping the rest of the entry. That is the place the Cursor process, the probes, and the usage reader already read. Nothing is logged, noted, or echoed back, and no OpenClaw auth profile is created. It is not called `api-key`: OpenClaw gives that ID a quick entry that stores the key in its auth store instead.
+
+Checked against OpenClaw 2026.10.3: the Control UI list is built from the manifest's `providerAuthChoices` (credential-only choices with `appGuidedAuth` or `appGuidedSecret`; `models.authStatus` shows them as `loginOptions`), and the login flow looks the method up in the registered provider (the provider-catalog entry's `auth` is not read; with only the manifest, the flow fails with `No provider plugins found`). The gateway's `models.authLogin` ends a method that returns no profile with `<label> did not return a credential profile.` after the report or the config write, so the dialog shows that message; `openclaw models auth login --provider cursor-cli --method login` ends cleanly. The live look at a real Control UI is the owner's check.
+
+Allow-list: an explicit `agents.defaults.modelPolicy.allow` must name `cursor-cli/*`, or direct selection is refused (see [Setup](../setup.md#3-configure)).
+
 ## Models
 
 `/model`, the model picker, and `openclaw models list --provider cursor-cli` show the models your Cursor account has, as `cursor-cli/<name>` with the readable name Cursor gives them:
@@ -227,6 +240,39 @@ Cursor keeps the model you last used in the agent's own config (`<agentDir>/open
 OpenClaw loads the plugin before the first turn only when your config names a `cursor-cli/...` model, for example as the default model. Until then the Gateway's model list has no Cursor rows.
 
 Every model is declared to OpenClaw with `text` and `image` input, because the plugin sends images as ACP image blocks (P13, see Images), so OpenClaw routes image attachments to Cursor models.
+
+### Context window
+
+`openclaw models list --all` and the `/model` picker show a context window per model, and OpenClaw sizes its compaction by it. The plugin publishes the window it can ground, per model, and leaves the field out otherwise, so OpenClaw shows its own default (128k) only for those models:
+
+| Model | Window shown |
+| --- | --- |
+| The Cursor ID has a `context=` value (`context=256k`, `context=1m`) | That value: `k` is 1,000 and `m` is 1,000,000 (`256k` is 256,000), so the smaller reading is used and compaction never comes late |
+| No `context=` value, and the base model is `grok-4.7` (256k), `claude-opus-5-5` or `claude-opus-5` (300k) | That family's window, the one Cursor's listing gave for it |
+| Anything else (Auto, `composer-*`, `gemini-*`, other models) | None published: OpenClaw's default applies. The plugin does not guess a window Cursor did not state |
+
+A value that is not a number (`context=max`) is ignored. Effort variants of one model share their other parameters, so choosing an effort never changes the window. The window comes from the model list, so it follows Cursor's changes after the listing's one-minute cache (see above) and needs no setting. Live check (the numbers match the owner's Cursor account) not run: it needs a login.
+
+### Effort
+
+OpenClaw's Effort control (`/think`, the composer's effort picker) works for the models whose Cursor ID carries an effort setting: a `reasoning_effort=` or `effort=` parameter, as in `grok-4.7[context=256k,reasoning_effort=high,fast=true]`. Such a model is published as a reasoning model; every other model is published without reasoning, so the control does nothing there.
+
+Cursor has no per-turn effort switch over ACP. The effort is part of the model ID, so the plugin maps the level onto an ID Cursor listed. When a turn opens its session, the plugin looks in Cursor's list for a model with the same base and the same other parameters (`context`, `fast`, and so on) whose effort value matches the level, and runs the turn on it:
+
+| OpenClaw level | Cursor effort value |
+| --- | --- |
+| `off` | `none` or `off` |
+| `minimal`, `low`, `medium`, `high`, `xhigh`, `max` | the same word |
+| `adaptive` | none: the model you chose keeps its own effort |
+
+No level set is not "keep the model's effort": OpenClaw 2026.10.3 then runs a reasoning model at its default level, `medium` (unless `thinkingDefault` or the model's `thinking` parameter in your config says otherwise), and that is the level the plugin gets. So `cursor-cli/<model>` with a listed `medium` variant runs on that variant until you pick another level. A level with no matching variant runs the model you chose, with its own effort. The plugin never invents an ID; Cursor refuses a model it did not list.
+
+What Cursor does not offer:
+
+- Effort can only be chosen among the variants Cursor lists. When the list holds one variant per model (the usual case in a plain account listing), the level cannot change anything, and the model keeps the effort in its ID. The Effort control still shows for that model.
+- `/think` and the picker offer only `off` to `high` for these models: OpenClaw 2026.10.3 refuses `/think xhigh`, `max`, and `adaptive` for them. A Cursor `xhigh` or `max` variant is reached through its own model row.
+- The level applies when the session opens. Changing it in a running chat starts a new Cursor process that resumes the same chat (the same restart as a model change, about 3 seconds).
+- A side question runs with the level of the chat's run like any other turn.
 
 ## Operations
 
@@ -287,10 +333,10 @@ Live test: `test/live/usage.live.test.ts`.
 
 | # | Feature | Status | Notes |
 | --- | --- | --- | --- |
-| P1 | Provider in `/model`, model aliases | approx | The account's models are listed in `/model` and `openclaw models list` as `cursor-cli/<name>`, read from Cursor itself and cached; the name is mapped to Cursor's exact ID; aliases are Cursor's own spellings of Auto, not `claude-cli`'s short names. Live test: `test/live/model-catalog.live.test.ts` |
+| P1 | Provider in `/model`, model aliases | approx | The account's models are listed in `/model` and `openclaw models list` as `cursor-cli/<name>`, read from Cursor itself and cached; the name is mapped to Cursor's exact ID; aliases are Cursor's own spellings of Auto, not `claude-cli`'s short names; a model whose ID carries an effort parameter is published as a reasoning model, and OpenClaw's effort level selects the listed variant with that effort (see Effort); each model carries its context window when its ID states one (`context=256k`) or its family is known, else none (see Context window). Live test: `test/live/model-catalog.live.test.ts` |
 | P2 | Subscription login counts as auth | match | `cursor-agent status` (live: `Logged in as <email>`; the logged-out wording is unconfirmed) or `CURSOR_API_KEY`. The models are available with either, and unavailable without. Live test: `test/live/model-catalog.live.test.ts` |
 | P3 | Streaming text, thinking, and tool progress | approx | Text and thinking deltas as they arrive; Cursor's native tool calls and OpenClaw tools called through the MCP proxy as display-only start and result events, one pair per call. The host does not treat them as tool execution, unlike `claude-cli`'s. Live test: `test/live/streaming.live.test.ts` |
-| P4 | Warm process per conversation | approx | The plugin keeps one `cursor-agent acp` process per conversation, but OpenClaw 2026.10.3 puts the per-turn MCP settings path into its live-session fingerprint, so it restarts the process every turn and the next turn resumes with `session/load`. A process is reused only when model, mode, cwd, home, auth profile, and session ID all match, and one chat never has two processes. Live evidence: `test/live/session-resume.live.test.ts` (warm follow-up with only the new prompt, restart, one process per chat) and `test/live/mcp-proxy.live.test.ts` (warm session with a stand-in host) and the real-host run in the ticket notes |
+| P4 | Warm process per conversation | approx | The plugin keeps one `cursor-agent acp` process per conversation, but OpenClaw 2026.10.3 puts the per-turn MCP settings path into its live-session fingerprint, so it restarts the process every turn and the next turn resumes with `session/load`. A process is reused only when model, mode, cwd, home, auth profile, thinking level, and session ID all match, and one chat never has two processes. Live evidence: `test/live/session-resume.live.test.ts` (warm follow-up with only the new prompt, restart, one process per chat) and `test/live/mcp-proxy.live.test.ts` (warm session with a stand-in host) and the real-host run in the ticket notes |
 | P5 | Resume a session | match | ACP `session/load` from the ID OpenClaw passes; the ID the CLI ends up with is reported every turn; a chat Cursor does not know fails as `session_expired` and OpenClaw decides about a fresh chat (`freshSessionRecovery: "invalidated-only"`). Live test: `test/live/session-resume.live.test.ts` |
 | P6 | Fork, resume at a checkpoint | gap | `cursor-agent` has no fork or checkpoint: no CLI flag, and ACP `initialize` reports `sessionCapabilities` with `list` only (no fork, no resume). OpenClaw 2026.10.3 copies a CLI binding into a forked session only for a backend with `forkArg` and `resumeAtArg` (`forkCliSessionBindings`), so a forked OpenClaw session starts a new Cursor chat |
 | P7 | OpenClaw tools as MCP | match | The plugin hands Cursor one MCP proxy per live session, and nothing else, in ACP `mcpServers`. It forwards each call to the turn's OpenClaw endpoint and rejects calls between turns. Live test: `test/live/mcp-proxy.live.test.ts` |
@@ -324,6 +370,7 @@ Live test: `test/live/usage.live.test.ts`.
   10. A listing in another host thread that answers the unload later than the 150 ms window, or whose worker thread the host ends, is not stopped until the next start's reap.
   11. The lock is released when the SIGKILL has been sent, not when the members have exited. Members that remain after the SIGKILL, if any, have no lock and no later start reaps them; they exit by themselves within about 5 minutes.
   12. Under a PID 1 that never reaps (a container without an init), zombie group members delay each close by up to the 2 s grace, and the start-up reaper waits the full grace per lock and logs "Part of the process group ... is still running" for zombie members.
+- **A webchat may draw the reply twice.** Seen as a report, not reproduced here. The plugin sends the reply once as streamed text and once as the closing record's text, and the host turns the second into the turn's final text only, so the plugin cannot remove a duplicate bubble without dropping the reply. If it shows, it comes from how the Control UI joins the host's deltas, `final`, and `assistant` snapshot (openclaw/openclaw#180927). See Streaming and tool progress.
 - **No separator around a tool call.** Cursor's message chunks carry no break between the text before and after a tool call, so a reply can read `...sentence.Next text`. The plugin passes the text through unchanged.
 - **Usage and a skewed clock.** A host clock more than 5 s off Cursor's makes usage 0 until the cooldown (see Usage).
 - **Usage needs an API key.** With a Cursor login only (no `CURSOR_API_KEY`), OpenClaw records 0 tokens for a turn. See Usage.

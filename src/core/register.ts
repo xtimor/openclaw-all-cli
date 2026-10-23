@@ -4,8 +4,10 @@ import { buildConfigSchema, capsOf, readBackendConfig } from "./config.ts";
 import { homeDirFor } from "./home.ts";
 import { reapOnce } from "./pid-locks.ts";
 import { ProcessPool } from "./pool.ts";
+import { createAuthProvider } from "./provider-auth.ts";
 import type { CliAdapter } from "./ports.ts";
 import type { OpenClawPluginApi } from "./sdk-types.ts";
+import { PLUGIN_ID } from "./synthetic-auth.ts";
 
 /** Ids of the agents the config names, plus the default `main`. */
 function configuredAgentIds(config: unknown): string[] {
@@ -31,6 +33,8 @@ export function registerAdapters(api: OpenClawPluginApi, adapters: readonly CliA
     const pool = new ProcessPool(capsOf(settings));
     pools.push(pool);
     api.registerCliBackend(buildCliBackend(adapter, { settings, warn, pool }));
+    // The Control UI's provider list and `models auth login` read the provider's auth methods.
+    api.registerProvider(createAuthProvider(adapter, PLUGIN_ID));
     if (api.registrationMode === "full") {
       for (const agentId of configuredAgentIds(api.config)) {
         try {

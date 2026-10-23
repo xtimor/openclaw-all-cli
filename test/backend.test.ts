@@ -347,6 +347,7 @@ describe("operations wiring (P17, P19)", () => {
     registerAdapters(
       {
         pluginConfig: {},
+        registerProvider: () => {},
         logger: { warn: (m: string) => warnings.push(m) },
         registerCliBackend: (b: Backend) => backends.push(b),
         lifecycle: { onDispose: (fn: () => unknown) => (hooks.dispose.push(fn), () => {}) },
@@ -375,6 +376,7 @@ describe("operations wiring (P17, P19)", () => {
     registerAdapters(
       {
         pluginConfig: {},
+        registerProvider: () => {},
         logger: { warn: () => {} },
         registerCliBackend: (b: Backend) => backends.push(b),
         registerService: (service: { stop: () => Promise<void> }) => services.push(service),
@@ -407,6 +409,7 @@ describe("operations wiring (P17, P19)", () => {
     registerAdapters(
       {
         pluginConfig: {},
+        registerProvider: () => {},
         logger: { warn: () => {} },
         registerCliBackend: () => {},
         registerService: (service: { stop: () => Promise<void> }) => services.push(service),
@@ -455,6 +458,7 @@ describe("operations wiring (P17, P19)", () => {
         runtime: { agent: { resolveAgentDir: (_cfg: unknown, id: string) => agentDirOf(id) } },
         logger: { warn: () => {} },
         registerCliBackend: () => {},
+        registerProvider: () => {},
       }) as never;
     const discovery = [lock("main-d"), lock("work-d")];
     registerAdapters(api("discovery"), ADAPTERS);
@@ -798,9 +802,11 @@ describe("row gates reach execute through the backend (P9, P16)", () => {
 describe("plugin registration", () => {
   it("registers one backend per adapter", () => {
     const registered: string[] = [];
+    const providers: string[] = [];
     registerAdapters(
       {
         pluginConfig: { "cursor-cli": { command: "/x/cursor-agent" } },
+        registerProvider: (provider: { id: string }) => providers.push(provider.id),
         logger: { warn: () => {} },
         registerCliBackend: (b: { id: string; config: { command: string } }) => {
           registered.push(`${b.id}:${b.config.command}`);
@@ -809,6 +815,8 @@ describe("plugin registration", () => {
       ADAPTERS,
     );
     expect(registered).toEqual(["cursor-cli:/x/cursor-agent"]);
+    // The provider carries the auth methods that OpenClaw's login flows read.
+    expect(providers).toEqual(["cursor-cli"]);
   });
 });
 
@@ -862,6 +870,7 @@ describe("MCP proxy wiring", () => {
     registerAdapters(
       {
         pluginConfig: {},
+        registerProvider: () => {},
         logger: { warn: (message: string) => warnings.push(message) },
         registerCliBackend: (backend: Backend) => backends.push(backend),
       } as never,
@@ -1019,7 +1028,7 @@ describe("provider entry by parity row (P1, P2, P17)", () => {
 });
 
 describe("provider catalog entry", () => {
-  type Row = { id: string; name: string; cost: unknown; input: unknown; reasoning: boolean };
+  type Row = { id: string; name: string; cost: unknown; input: unknown; reasoning: boolean; contextWindow?: number };
   type Result = { provider: { baseUrl: string; api: string; models: Row[] } } | null;
   const quickList = { ...cursorAdapter, listModels: (p: Parameters<typeof cursorAdapter.listModels>[0]) => cursorAdapter.listModels({ ...p, timeoutMs: 400 }) };
   const config = { plugins: { entries: { "openclaw-all-cli": { config: { "cursor-cli": { command: FAKE_CURSOR_AGENT } } } } } };
@@ -1037,6 +1046,23 @@ describe("provider catalog entry", () => {
     const result = await catalog.run({ config, env: fakeEnv(), providerIds: ["cursor-cli"] });
     expect(ids(result)).toEqual(["auto", "fake-fast", "fake-slow", "twin", "twin-high"]);
     expect(result?.provider.models[0]).toMatchObject({ id: "auto", name: "Auto", reasoning: false, input: ["text", "image"] });
+    // A model whose Cursor ID carries an effort parameter is published as a reasoning model.
+    expect(result?.provider.models.map((model) => [model.id, model.reasoning])).toEqual([
+      ["auto", false],
+      ["fake-fast", false],
+      ["fake-slow", true],
+      ["twin", true],
+      ["twin-high", true],
+    ]);
+    // A window is published only for a model whose Cursor ID states one; the others get none, not a guess.
+    expect(result?.provider.models.map((model) => [model.id, model.contextWindow])).toEqual([
+      ["auto", undefined],
+      ["fake-fast", undefined],
+      ["fake-slow", 1_000_000],
+      ["twin", undefined],
+      ["twin-high", undefined],
+    ]);
+    expect(result?.provider.models.map((model) => "contextWindow" in model)).toEqual([false, false, true, false, false]);
     // OpenClaw drops a provider with no base URL or api; no request goes to either.
     expect(result?.provider.baseUrl).toBeTruthy();
     expect(result?.provider.api).toBeTruthy();
@@ -1155,13 +1181,14 @@ describe("session resume and side questions (P4, P5, P18)", () => {
   async function turn(
     agentDir: string,
     prompt: string,
-    extra: { env?: Record<string, string>; sessionId?: string; useResume?: boolean; executionMode?: "agent" | "side-question"; authProfileId?: string } = {},
+    extra: { env?: Record<string, string>; sessionId?: string; useResume?: boolean; executionMode?: "agent" | "side-question"; authProfileId?: string; modelId?: string; thinkingLevel?: string } = {},
   ) {
-    const { env, sessionId, useResume, executionMode, authProfileId } = extra;
+    const { env, sessionId, useResume, executionMode, authProfileId, modelId, thinkingLevel } = extra;
     const prepared = await backend.prepareExecution!({
       agentDir,
       ...(executionMode ? { executionMode } : {}),
       ...(authProfileId ? { authProfileId } : {}),
+      ...(thinkingLevel ? { thinkingLevel } : {}),
     } as never);
     const records: Record<string, unknown>[] = [];
     for await (const record of prepared!.execute!({
@@ -1170,7 +1197,7 @@ describe("session resume and side questions (P4, P5, P18)", () => {
       cwd: workspace,
       env: fakeEnv(env),
       prompt,
-      modelId: "auto",
+      modelId: modelId ?? "auto",
       systemPrompt: "",
       useResume: useResume ?? false,
       ...(sessionId ? { sessionId } : {}),
@@ -1185,6 +1212,16 @@ describe("session resume and side questions (P4, P5, P18)", () => {
     const last = events.at(-1) as { text?: string; errorText?: string; sessionId?: string } | null;
     return { records, events, last };
   }
+
+  it("runs a turn on the effort variant that matches the thinking level the host prepared the run with", async () => {
+    const agentDir = join(scratch, "effort-agent");
+    const high = await turn(agentDir, "hello", { modelId: "twin", thinkingLevel: "high" });
+    expect(high.last?.text).toContain("model twin[effort=high]");
+    const unset = await turn(agentDir, "hello", { modelId: "twin" });
+    expect(unset.last?.text).toContain("model twin[effort=low]");
+    const plain = await turn(agentDir, "hello", { modelId: "fake-fast", thinkingLevel: "high" });
+    expect(plain.last?.text).toContain("model fake-fast[speed=fast,fast=true]");
+  });
 
   it("keeps the chat across a restart, answers the fact, and sends only the new prompt", async () => {
     const chats = mkdtempSync(join(scratch, "chats-"));

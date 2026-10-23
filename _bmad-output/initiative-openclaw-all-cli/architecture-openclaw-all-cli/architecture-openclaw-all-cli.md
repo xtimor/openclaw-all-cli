@@ -149,7 +149,7 @@ flowchart LR
 
 - **Binds:** CAP-4, CAP-8, CAP-9
 - **Prevents:** a warm process carrying another turn's model, mode, working directory, home, or auth into this one.
-- **Rule:** A live process is reused only when `modelId`, mode, `cwd`, home, `authProfileId`, and the native session ID all match the turn. Otherwise the core closes it and opens a new one, resuming via ACP `session/load` when `ctx.useResume` is true. Live processes register through `ctx.liveSession`.
+- **Rule:** A live process is reused only when `modelId`, mode, `cwd`, home, `authProfileId`, the run's thinking level (it picks the model variant at open), and the native session ID all match the turn. Otherwise the core closes it and opens a new one, resuming via ACP `session/load` when `ctx.useResume` is true. Live processes register through `ctx.liveSession`.
 
 ### AD-14 — Operations
 

@@ -36,6 +36,21 @@ function makeAdapter(listModels: (params: ListModelsParams) => Promise<readonly 
 const params = (env: Record<string, string | undefined> = { KEY: "a" }) => ({ command: "acme", env, lockDir: "/nonexistent/oac-home" });
 
 describe("model catalog", () => {
+  it("carries a model's context window into its row, and no window key when unknown", async () => {
+    const catalog = createModelCatalog(
+      makeAdapter(async () => [
+        { name: "auto", label: "Auto", id: "default[]" },
+        { name: "big", label: "Big", id: "big[context=1m]", contextWindow: 1_000_000 },
+      ]),
+    );
+    const rows = await catalog.list(params());
+    expect(rows).toEqual([
+      { id: "auto", name: "Auto" },
+      { id: "big", name: "Big", contextWindow: 1_000_000 },
+    ]);
+    expect("contextWindow" in rows[0]!).toBe(false);
+  });
+
   it("maps the adapter's models onto rows named by the model name", async () => {
     const list = vi.fn(async () => MODELS);
     const catalog = createModelCatalog(makeAdapter(list));

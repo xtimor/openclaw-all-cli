@@ -69,13 +69,14 @@ describe("cursor adapter", () => {
     expect(events.at(-1)).toMatchObject({ kind: "result", text: "hi" });
   });
 
-  const openOn = async (modelId: string, env: Record<string, string> = {}) => {
+  const openOn = async (modelId: string, env: Record<string, string> = {}, thinkingLevel?: string) => {
     const session = await cursorAdapter.open({
       command: FAKE_CURSOR_AGENT,
       args: cursorAdapter.launchArgs,
       cwd: process.cwd(),
       env: fakeEnv(env),
       modelId,
+      ...(thinkingLevel ? { thinkingLevel } : {}),
       onPermissionRequest: async () => "reject_once",
     });
     open.push(session);
@@ -108,6 +109,17 @@ describe("cursor adapter", () => {
     expect(await replyOf(await openOn("twin-high"))).toMatchObject({
       text: expect.stringContaining("model twin[effort=high]"),
     });
+  });
+
+  it("runs a reasoning model on the listed variant that matches the thinking level, else on the row's own", async () => {
+    expect(await replyOf(await openOn("twin", {}, "high"))).toMatchObject({ text: expect.stringContaining("model twin[effort=high]") });
+    expect(await replyOf(await openOn("twin-high", {}, "low"))).toMatchObject({ text: expect.stringContaining("model twin[effort=low]") });
+    // No variant for the level: the row's own ID.
+    expect(await replyOf(await openOn("twin-high", {}, "xhigh"))).toMatchObject({ text: expect.stringContaining("model twin[effort=high]") });
+    expect(await replyOf(await openOn("twin"))).toMatchObject({ text: expect.stringContaining("model twin[effort=low]") });
+    // Rows without an effort variant are not touched.
+    expect(await replyOf(await openOn("fake-fast", {}, "high"))).toMatchObject({ text: expect.stringContaining("model fake-fast[speed=fast,fast=true]") });
+    expect(await replyOf(await openOn("auto", {}, "high"))).toMatchObject({ text: expect.stringContaining("model default[]") });
   });
 
   it("works with an agent that reports only the models state", async () => {
@@ -198,9 +210,9 @@ describe("cursor adapter", () => {
         expect(models).toEqual([
           { name: "auto", label: "Auto", id: "default[]" },
           { name: "fake-fast", label: "fake-fast", id: "fake-fast[speed=fast,fast=true]" },
-          { name: "fake-slow", label: "fake-slow", id: "fake-slow[context=1m,effort=high]" },
-          { name: "twin", label: "twin (effort=low)", id: "twin[effort=low]" },
-          { name: "twin-high", label: "twin (effort=high)", id: "twin[effort=high]" },
+          { name: "fake-slow", label: "fake-slow", id: "fake-slow[context=1m,effort=high]", reasoning: true, contextWindow: 1_000_000 },
+          { name: "twin", label: "twin (effort=low)", id: "twin[effort=low]", reasoning: true },
+          { name: "twin-high", label: "twin (effort=high)", id: "twin[effort=high]", reasoning: true },
         ]);
         const methods = readFileSync(file, "utf8")
           .trim()

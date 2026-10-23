@@ -228,6 +228,13 @@ export type OpenParams = {
   cwd: string;
   env: Record<string, string>;
   modelId: string;
+  /**
+   * OpenClaw's thinking level for the turn (`off`, `low`, `medium`, `high`, ...). With no level set,
+   * OpenClaw 2026.10.3 sends its own default (`medium` for a reasoning row, `off` otherwise), so it is
+   * absent only when the host gives none. An adapter whose model has an effort setting picks the
+   * matching variant at open.
+   */
+  thinkingLevel?: string;
   /** Defaults to `agent`. A side question has no `resumeSessionId` and no `mcpServers`. */
   executionMode?: ExecutionMode;
   /**
@@ -308,6 +315,10 @@ export type CliModel = {
   label: string;
   /** The CLI's exact ID for the model (it may hold brackets and commas). The adapter maps `name` onto it. */
   id: string;
+  /** True when the CLI shows the model has a reasoning-effort setting. Absent: it does not. */
+  reasoning?: boolean;
+  /** The model's context window in tokens, when the CLI states it or the adapter knows it. Absent: unknown, the host's default applies. */
+  contextWindow?: number;
 };
 
 export type ListModelsParams = {
@@ -376,6 +387,13 @@ export interface CliAdapter {
    * key that carries the CLI's login.
    */
   readonly clearEnv: readonly string[];
+  /**
+   * Optional. Name of the env var that carries the CLI's API key, for example `ACME_API_KEY`.
+   * When set, the provider offers a method that saves a key into the plugin config `env`.
+   */
+  readonly apiKeyEnvVar?: string;
+  /** Optional. The command line that logs the CLI in, shown when the login is missing. Default `<command> login`. */
+  readonly loginCommand?: string;
   /**
    * Checks the installed CLI against `manifest.minVersion` (AD-14). Resolves `"ok"`, or a
    * warning when the version cannot be read (the turn still runs). Throws `CliError`:

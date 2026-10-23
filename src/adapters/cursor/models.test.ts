@@ -29,7 +29,60 @@ describe("buildCursorCatalog", () => {
       name: "grok-4.7",
       label: "grok-4.7",
       id: "grok-4.7[context=256k,reasoning_effort=high,fast=true]",
+      reasoning: true,
+      contextWindow: 256_000,
     });
+  });
+
+  it("gives a row its own context window, else its family's, else none", () => {
+    const windows = Object.fromEntries(buildCursorCatalog(REAL).map((model) => [model.name, model.contextWindow]));
+    expect(windows).toEqual({
+      auto: undefined,
+      "grok-4.7": 256_000,
+      "composer-2.5": undefined,
+      "claude-opus-5-5": 300_000,
+      "claude-opus-5": 300_000,
+      "gemini-3.1-pro": undefined,
+      "gemini-3-flash": undefined,
+    });
+    // A row without the parameter takes its family's window, a row with it keeps its own.
+    const rows = buildCursorCatalog([
+      { id: "grok-4.7[reasoning_effort=high]", name: "grok-4.7" },
+      { id: "grok-4.7[Context=1m,fast=true]", name: "grok-4.7" },
+      { id: "claude-opus-5-5[effort=low]", name: "claude-opus-5-5" },
+      { id: "mystery[context=64k]", name: "mystery" },
+      { id: "mystery-2[fast=true]", name: "mystery-2" },
+    ]);
+    expect(rows.map((model) => model.contextWindow)).toEqual([256_000, 1_000_000, 300_000, 64_000, undefined]);
+    // The row object holds no window key at all when unknown, so nothing undefined is published.
+    expect("contextWindow" in rows[4]!).toBe(false);
+  });
+
+  it("reads k and m as 1 000 and 1 000 000, and ignores a value that is not a window", () => {
+    const of = (value: string, base = "mystery") => buildCursorCatalog([{ id: `${base}[context=${value}]`, name: base }])[0]?.contextWindow;
+    expect([of("256k"), of("1m"), of("1M"), of("1.5m"), of("200000")]).toEqual([256_000, 1_000_000, 1_000_000, 1_500_000, 200_000]);
+    expect([of("max"), of("0"), of("0k"), of(""), of("-5k"), of("1e3")]).toEqual([undefined, undefined, undefined, undefined, undefined, undefined]);
+    // A bad value falls back to the family, never throws.
+    expect(of("max", "grok-4.7")).toBe(256_000);
+    expect(buildCursorCatalog([{ id: "constructor[]", name: "constructor" }])[0]?.contextWindow).toBeUndefined();
+  });
+
+  it("marks a model reasoning when its ID carries an effort parameter, and no other", () => {
+    const rows = Object.fromEntries(buildCursorCatalog(REAL).map((model) => [model.name, model.reasoning]));
+    expect(rows).toEqual({
+      auto: undefined,
+      "grok-4.7": true,
+      "composer-2.5": undefined,
+      "claude-opus-5-5": true,
+      "claude-opus-5": true,
+      "gemini-3.1-pro": undefined,
+      "gemini-3-flash": undefined,
+    });
+    const twins = buildCursorCatalog([
+      { id: "twin[effort=low]", name: "twin" },
+      { id: "twin[Reasoning_Effort=high]", name: "twin" },
+    ]);
+    expect(twins.map((model) => model.reasoning)).toEqual([true, true]);
   });
 
   it("keeps a name while Cursor changes the parameter defaults", () => {
@@ -143,5 +196,44 @@ describe("selectCursorModel", () => {
     expect(selectCursorModel("auto", [])).toBeNull();
     expect(selectCursorModel("auto", REAL.slice(1))).toBeNull();
     expect(selectCursorModel("grok-4.7", [])).toBeUndefined();
+  });
+});
+
+describe("selectCursorModel with a thinking level", () => {
+  const LISTING = [
+    { id: "default[]", name: "Auto" },
+    { id: "x[reasoning_effort=high,fast=true]", name: "x" },
+    { id: "x[reasoning_effort=low,fast=true]", name: "x" },
+    { id: "x[reasoning_effort=medium,fast=true]", name: "x" },
+    { id: "x[reasoning_effort=none,fast=true]", name: "x" },
+    { id: "x[reasoning_effort=high,fast=false]", name: "x" },
+    { id: "composer-2.5[fast=true]", name: "composer-2.5" },
+    { id: "solo[effort=high]", name: "solo" },
+  ];
+
+  it("picks the listed variant with the matching effort and the same other parameters", () => {
+    expect(selectCursorModel("x", LISTING, "low")).toBe("x[reasoning_effort=low,fast=true]");
+    expect(selectCursorModel("x", LISTING, "MEDIUM")).toBe("x[reasoning_effort=medium,fast=true]");
+    expect(selectCursorModel("x", LISTING, "off")).toBe("x[reasoning_effort=none,fast=true]");
+    // From a suffixed row too: the choice depends on the base and the other parameters, not on the row's own effort.
+    expect(selectCursorModel("x[reasoning_effort=low,fast=true]", LISTING, "high")).toBe("x[reasoning_effort=high,fast=true]");
+    expect(selectCursorModel("x[reasoning_effort=high,fast=false]", LISTING, "low")).toBe("x[reasoning_effort=high,fast=false]");
+  });
+
+  it("keeps the row's own ID for no level, a level without a variant, adaptive, or a model without effort", () => {
+    expect(selectCursorModel("x", LISTING)).toBe("x[reasoning_effort=high,fast=true]");
+    expect(selectCursorModel("x", LISTING, "xhigh")).toBe("x[reasoning_effort=high,fast=true]");
+    expect(selectCursorModel("x", LISTING, "adaptive")).toBe("x[reasoning_effort=high,fast=true]");
+    expect(selectCursorModel("solo", LISTING, "low")).toBe("solo[effort=high]");
+    expect(selectCursorModel("composer-2.5", LISTING, "high")).toBe("composer-2.5[fast=true]");
+    expect(selectCursorModel("auto", LISTING, "high")).toBe("default[]");
+  });
+
+  it("never returns an ID Cursor did not list, and leaves unknown models and null unchanged", () => {
+    expect(selectCursorModel("nope", LISTING, "low")).toBeUndefined();
+    expect(selectCursorModel("auto", [], "low")).toBeNull();
+    for (const level of ["off", "minimal", "low", "medium", "high", "xhigh", "adaptive", "max", "weird"]) {
+      expect(LISTING.map((entry) => entry.id)).toContain(selectCursorModel("x", LISTING, level));
+    }
   });
 });

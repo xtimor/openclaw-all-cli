@@ -163,6 +163,7 @@ function prepareExecutionFor(
           systemPrompt: flags.systemPrompt,
           images: flags.images,
           ...(ctx.authProfileId ? { authProfileId: ctx.authProfileId } : {}),
+          ...(ctx.thinkingLevel ? { thinkingLevel: ctx.thinkingLevel } : {}),
           ...(options.warn ? { warn: options.warn } : {}),
         }),
       };

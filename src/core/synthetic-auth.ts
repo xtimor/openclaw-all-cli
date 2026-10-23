@@ -28,13 +28,15 @@ type CatalogContext = {
   providerIds?: readonly string[];
 };
 
-/** A catalog row in the shape of OpenClaw's model definition. The CLI reports no price, window, or limits. */
+/** A catalog row in the shape of OpenClaw's model definition. The CLI reports no price or limits; a window is set only when the adapter knows it, else the host's default applies. */
 function toModelDefinition(row: CatalogRow, input: Array<"text" | "image">) {
   return {
     id: row.id,
     name: row.name,
-    reasoning: false,
+    // A model whose CLI shows an effort setting lets OpenClaw's Effort control through.
+    reasoning: row.reasoning === true,
     input,
+    ...(row.contextWindow !== undefined ? { contextWindow: row.contextWindow } : {}),
     // A CLI login bills the user's own plan, not OpenClaw.
     cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
   };

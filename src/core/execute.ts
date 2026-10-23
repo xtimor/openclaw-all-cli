@@ -51,6 +51,11 @@ export type ExecuteOptions = {
    * not). It is part of the reuse key: a process never serves another profile (AD-13).
    */
   authProfileId?: string;
+  /**
+   * OpenClaw's thinking level for the run (`prepareExecution` knows it, `execute` does not). It is
+   * part of the reuse key: the adapter picks the model's effort variant when it opens the session.
+   */
+  thinkingLevel?: string;
   /** Deadline for one MCP tool call through the proxy, in ms. Default: the adapter's `mcpCallTimeoutMs` minus 5 s, or none. Tests inject a small one. */
   callDeadlineMs?: number;
   /**
@@ -77,9 +82,9 @@ export type ExecuteOptions = {
   imageRoots?: readonly string[];
 };
 
-/** AD-13: model, mode, working directory, home, and auth profile. The native session ID is checked on the session. */
-function reuseKey(ctx: ExecuteContext, home: AgentHome, authProfileId: string | undefined, hostShell: boolean): string {
-  return JSON.stringify([ctx.modelId, modeOf(ctx), hostShell, ctx.cwd, home.dir, authProfileId ?? null]);
+/** AD-13: model, mode, working directory, home, auth profile, and thinking level. The native session ID is checked on the session. */
+function reuseKey(ctx: ExecuteContext, home: AgentHome, authProfileId: string | undefined, hostShell: boolean, thinkingLevel: string | undefined): string {
+  return JSON.stringify([ctx.modelId, modeOf(ctx), hostShell, ctx.cwd, home.dir, authProfileId ?? null, thinkingLevel ?? null]);
 }
 
 export function errorRecord(error: unknown): CoreRecord {
@@ -115,10 +120,10 @@ export function createExecute(adapter: CliAdapter, options: ExecuteOptions): Cli
   const approvals = options.approvals ?? true;
   const readsUsage = options.usage ?? true;
   const required = requiredCapabilities(adapter.manifest);
-  const { authProfileId } = options;
+  const { authProfileId, thinkingLevel } = options;
   const pool = options.pool ?? new ProcessPool({ maxTurns: Infinity, maxProcesses: Infinity });
 
-  const attachDeps: AttachDeps = { adapter, home, warn, approvals, continuity, required, abortGraceMs };
+  const attachDeps: AttachDeps = { adapter, home, warn, approvals, continuity, required, abortGraceMs, ...(thinkingLevel ? { thinkingLevel } : {}) };
   const liveEntryDeps: LiveEntryDeps = { pool, callDeadlineMs };
 
   function reusable(ctx: ExecuteContext, live: LiveSessionCapability | undefined, hostShell: boolean): OpenEntry | undefined {
@@ -127,7 +132,7 @@ export function createExecute(adapter: CliAdapter, options: ExecuteOptions): Cli
     const entry = liveEntries.get(current);
     if (!entry?.session || entry.busy || entry.degraded || !entry.session.alive) return undefined;
     if (!ctx.useResume || ctx.sessionId !== entry.session.sessionId) return undefined;
-    return entry.key === reuseKey(ctx, home, authProfileId, hostShell) ? (entry as OpenEntry) : undefined;
+    return entry.key === reuseKey(ctx, home, authProfileId, hostShell, thinkingLevel) ? (entry as OpenEntry) : undefined;
   }
 
   /**
@@ -183,7 +188,7 @@ export function createExecute(adapter: CliAdapter, options: ExecuteOptions): Cli
     let fresh: LiveEntry;
     try {
       await ensureVersion(ctx);
-      fresh = await createLiveEntry(liveEntryDeps, reuseKey(ctx, home, authProfileId, shell.hostShell), ctx, live, withMcp);
+      fresh = await createLiveEntry(liveEntryDeps, reuseKey(ctx, home, authProfileId, shell.hostShell, thinkingLevel), ctx, live, withMcp);
     } catch (error) {
       if (ctx.abortSignal?.aborted) throw error;
       // A superseded run must throw, not turn into an error record.
