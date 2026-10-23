@@ -18,6 +18,8 @@
 //   {op:"pr_ready", pr}                                    only a pull request by AGENT_LOGIN
 //   {op:"pr_edit", pr, title?, body?}                      only a pull request by AGENT_LOGIN
 //   {op:"merge", pr, sha}                                  method merge; see checkMergeable and checkGreen
+//   {op:"pr_close", pr}                                    closes only an open draft `Issue batch` PR by AGENT_LOGIN from a `claude/` branch of this repository,
+//                                                          not updated for IDLE_HOURS (4) hours
 // Everything is validated first; nothing is applied when anything is refused. Applying stops at the first failure.
 //
 // Environment: AGENT_WRITE_OPS, GH_TOKEN (the app's installation token), GITHUB_REPOSITORY, GITHUB_ACTOR (the dispatcher),
@@ -40,6 +42,7 @@ const MAX_MESSAGE = 300;
 const HEAD_PREFIX = "claude/";
 const BATCH_TITLE = "Issue batch";
 const BASE_BRANCH = "main";
+const IDLE_MS = 4 * 60 * 60 * 1000; // a draft batch PR untouched this long counts as interrupted
 const CLOSE_REASONS = new Set(["completed", "not_planned", "duplicate"]);
 const FORBIDDEN_LABEL = "status:approved";
 // Only the project's own label families: a typo or a lookalike never creates a label, and "." or ".." never reaches a URL.
@@ -54,6 +57,7 @@ const OP_KEYS = {
   pr_ready: { required: ["pr"], optional: [] },
   pr_edit: { required: ["pr"], optional: ["title", "body"] },
   merge: { required: ["pr", "sha"], optional: [] },
+  pr_close: { required: ["pr"], optional: [] },
 };
 
 /** A failure with an exit code and a message that is safe to print. `refused`: a guard said no (nothing sent for it). */
@@ -174,6 +178,9 @@ export function validate(text) {
         if (raw.title !== undefined && !isText(raw.title)) throw refuse(`${where}: title must be a non-empty string`);
         if (raw.body !== undefined && typeof raw.body !== "string") throw refuse(`${where}: body must be a string`);
         return { op: "pr_edit", pr: raw.pr, title: raw.title, body: raw.body };
+      case "pr_close":
+        if (!isId(raw.pr)) throw refuse(`${where}: pr must be a positive integer`);
+        return { op: "pr_close", pr: raw.pr };
       default:
         if (!isId(raw.pr)) throw refuse(`${where}: pr must be a positive integer`);
         if (typeof raw.sha !== "string" || !/^[0-9a-f]{40}$/i.test(raw.sha)) throw refuse(`${where}: sha must be a full 40-character commit sha`);
@@ -194,6 +201,23 @@ export function checkMergeable(pr, op, { repo, login }) {
   if (typeof pr.title !== "string" || !pr.title.startsWith(BATCH_TITLE)) throw refuse(`PR #${op.pr}: title does not start with "${BATCH_TITLE}"`);
   if (lower(pr.head?.sha) !== op.sha) throw refuse(`PR #${op.pr}: head is not ${op.sha.slice(0, 7)}`);
   if (pr.mergeable_state !== "clean") throw refuse(`PR #${op.pr}: mergeable state is ${JSON.stringify(String(pr.mergeable_state ?? "unknown"))}, not "clean"`);
+}
+
+/**
+ * The close guards, on a freshly read pull request: an open draft batch PR of the app from a `claude/` branch of this
+ * repository, not updated for 4 hours (`now()` is the run's clock in ms; a missing or unreadable `updated_at` is refused).
+ */
+export function checkClosable(pr, op, { repo, login, now = Date.now }) {
+  if (pr.state !== "open") throw refuse(`PR #${op.pr} is not open`);
+  if (pr.draft !== true) throw refuse(`PR #${op.pr} is not a draft`);
+  if (lower(pr.user?.login) !== lower(login)) throw refuse(`PR #${op.pr} was not opened by ${login}`);
+  const ref = pr.head?.ref;
+  if (typeof ref !== "string" || !ref.startsWith(HEAD_PREFIX)) throw refuse(`PR #${op.pr}: head branch is not a ${HEAD_PREFIX} branch`);
+  if (lower(pr.head?.repo?.full_name) !== lower(repo)) throw refuse(`PR #${op.pr}: head branch is not in ${repo}`);
+  if (typeof pr.title !== "string" || !pr.title.startsWith(BATCH_TITLE)) throw refuse(`PR #${op.pr}: title does not start with "${BATCH_TITLE}"`);
+  const updated = typeof pr.updated_at === "string" ? Date.parse(pr.updated_at) : Number.NaN;
+  if (!Number.isFinite(updated)) throw refuse(`PR #${op.pr}: its last update time could not be read`);
+  if (now() - updated < IDLE_MS) throw refuse(`PR #${op.pr}: updated less than 4 hours ago; it may still be in use`);
 }
 
 const PASSING = new Set(["success", "skipped", "neutral"]);
@@ -359,6 +383,11 @@ function handlers(config, client) {
       await client.rest("PATCH", `${base}/pulls/${op.pr}`, body);
       return { target: `PR #${op.pr}`, result: `edited ${Object.keys(body).join(" and ")}` };
     },
+    async pr_close(op) {
+      checkClosable(await readPull(op.pr), op, config);
+      await client.rest("PATCH", `${base}/pulls/${op.pr}`, { state: "closed" });
+      return { target: `PR #${op.pr}`, result: "closed" };
+    },
     async merge(op) {
       checkMergeable(await readPull(op.pr), op, config);
       checkGreen((await client.rest("GET", `${base}/commits/${op.sha}/check-runs?per_page=100`)).data, (await client.rest("GET", `${base}/commits/${op.sha}/status`)).data, op);
@@ -392,10 +421,10 @@ export function formatSummary({ login, repo, actor, outcome, message, rows }) {
 /**
  * Runs the whole input. `log(line)` is called with each progress line as it happens (the acting login, then one per finished
  * operation). Returns `{code, outcome, message, rows}`; it writes nothing itself. A missing or malformed variable throws a
- * WriteError with code 2.
+ * WriteError with code 2. `now` is the clock in ms (injected by in-process callers; the script uses the real one).
  */
-export async function run(env, log = () => {}) {
-  const config = readConfig(env);
+export async function run(env, log = () => {}, now = Date.now) {
+  const config = { ...readConfig(env), now };
   const base = { login: config.login, repo: config.repo, actor: config.actor };
   const finish = (code, outcome, message, rows = []) => ({ code, outcome, message, rows, ...base });
   log(`acting as ${config.login}`);

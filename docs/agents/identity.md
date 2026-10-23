@@ -18,18 +18,17 @@ At the start of a run, before any GitHub write.
    - 404 (no file), or an empty or missing `login`: no relay. Keep the owner connector, set `ME` as your instructions say (the connector's "get me" call, or `gh api user`), write directly as before, and put "acting as the owner (no agent app configured)" in your report. Skip to step 4.
    - Any other answer (no answer, 403, a file that is not JSON, a login that does not end in `[bot]`): stop and report; do not guess.
 2. **From here a failed relay stops the run; it never falls back to writing as the owner.**
-3. **Write through the relay.** Collect the writes of one step into one JSON list in a temporary file outside the repository, dispatch, wait for the run, and read the effects back:
+3. **Write through the relay.** Collect the writes of one step into one JSON list and write it to a file under `/tmp` with the Write tool (not a shell heredoc or function, no ad hoc wrapper scripts: the session's permission check denies those). Then run exactly this, from the repository root, with nothing before it (no `cd ... &&`, no environment prefix, no absolute path, no pipe), one call per dispatch:
 
    ```bash
-   OPS=/tmp/agent-ops.json    # your list; outside the repository
-   URL="$(gh workflow run agent-write.yml --ref main -f ops="$(cat "$OPS")")" || { echo "dispatch failed" >&2; exit 1; }   # stop and report
-   ID="${URL##*/}"; case "$ID" in ''|*[!0-9]*) echo "no run id in: $URL" >&2; exit 1;; esac                              # stop and report
-   gh run watch "$ID" --exit-status || true
-   CONCLUSION="$(gh api "repos/xtimor/openclaw-all-cli/actions/runs/$ID" --jq .conclusion)"
-   [ "$CONCLUSION" = success ] || { echo "relay run $ID: $CONCLUSION" >&2; exit 1; }                                      # stop and report
+   scripts/agent-relay.sh /tmp/agent-ops-<n>.json
    ```
 
-   (Treat an `exit` here as: stop the run and say what failed in your report, after the read-back below.) `gh workflow run` prints the new run's URL; the id is its last part. If your `gh` prints no URL (an older version), list the runs instead and take the newest `workflow_dispatch` run created after the dispatch: `gh api 'repos/xtimor/openclaw-all-cli/actions/workflows/agent-write.yml/runs?event=workflow_dispatch&per_page=5' --jq '.workflow_runs[] | [.id, .created_at, .actor.login] | @tsv'` (the actor is the owner); prefer the URL.
+   The allow rules in `.claude/settings.json` match only that command shape (`scripts/agent-relay.sh <file>`); any other shape is not allowed and a refused call stops the run.
+
+   The script (`scripts/agent-relay.sh`, the only relay entry point the repository's `.claude/settings.json` allows) dispatches `agent-write.yml` on `main` with the file's text, watches the run, checks that it concluded `success`, and prints the run id. It waits until the run is `completed` (polling every 10 s for about 20 minutes after `gh run watch`). It exits non-zero with a one-line reason on stderr when the file is missing, not a JSON array, or over 60 000 bytes (exit 2, nothing dispatched; split the step), the dispatch fails, no run id comes back, the run did not succeed (`relay run <id>: <conclusion>`), or it is still running after the wait (`relay run <id> still <status>; do not re-dispatch, read back first`: then read the effects back by REST and dispatch only what is missing). Treat a non-zero exit as: stop the run and say what failed in your report, after the read-back below. It never touches the proxy variables.
+
+   If your `gh` prints no run URL (an older version), the script stops with "no run id"; list the runs instead and take the newest `workflow_dispatch` run created after the dispatch: `gh api 'repos/xtimor/openclaw-all-cli/actions/workflows/agent-write.yml/runs?event=workflow_dispatch&per_page=5' --jq '.workflow_runs[] | [.id, .created_at, .actor.login] | @tsv'` (the actor is the owner).
 
    **Read every effect back by REST** (step 4), whether the run succeeded or not: the comment by `ME` on the issue, the issue's labels and state, the pull request by head branch (`gh api 'repos/xtimor/openclaw-all-cli/pulls?head=xtimor:<branch>&state=all'`), its draft and merged state. **Never repeat operations that a failed run may have applied without reading back first**, and then dispatch only what is still missing. Rules:
    - **One dispatch per issue step**, and the next only after the previous run has finished. Runs do not queue safely when two are pending.
@@ -50,6 +49,7 @@ At the start of a run, before any GitHub write.
    | `pr_create` | `head`, `title`, `body`?, `draft`? | `head` must be a `claude/` branch of this repository; base is `main` |
    | `pr_ready` | `pr` | the pull request's author must be the app |
    | `pr_edit` | `pr`, `title`?, `body`? | the pull request's author must be the app |
+   | `pr_close` | `pr` | closes only an open draft pull request by the app, head branch `claude/` in this repository, title starting `Issue batch`, not updated for 4 hours or more (an interrupted batch; see [implement.md](implement.md#before-the-batch)); anything else is refused |
    | `merge` | `pr`, `sha` | method `merge`; refused unless the pull request is open, not a draft, by the app, head branch `claude/` in this repository, base `main`, title starting `Issue batch`, head sha equal to `sha`, mergeable state `clean`, the check run named `check` present and `success` on that sha, every other check run completed `success`, `skipped`, or `neutral`, and the combined commit status not `failure`/`pending`/`error` (no statuses at all is fine) |
 
    Example, a triage decision (comment, then labels, in one run):
