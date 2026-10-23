@@ -3,7 +3,7 @@ title: 'Issue agents act as their own GitHub App, not as the owner'
 type: 'feature'
 ticket: 14
 created: '2026-10-23'
-status: 'in-review'
+status: 'built'
 baseline_revision: '15fa8d8af552e3535a96637d3a3e57707a5b3177'
 route: 'full'
 route_source: 'auto'
@@ -75,8 +75,42 @@ deferred: []
 
 ## Review Triage Log
 
+### 2026-10-23 — Review pass (one review over tickets 3.13 and 3.14, diff ce72bb5..6cfab69)
+- verdicts: 33 findings — high 1, medium 8, low 13, false 0, maybe-false 0, plus descriptive intent notes
+- findings:
+  - `[high]` `[patch]` (3.14) a failed mint left `GH_TOKEN` empty and writes fell back to the owner (edge ×2) — mint once with a hard stop; a configured app never falls back.
+  - `[medium]` `[patch]` (3.14) GraphQL author logins differ from `<slug>[bot]` (blind, verification-gap, intent) — REST reads for every author/actor check.
+  - `[medium]` `[patch]` (3.14) "owner marker comments count as yours" had no anchor (blind) — defined once in identity.md, anchored on the app's first marker comment.
+  - `[medium]` `[patch]` (3.14) implement.md ignored that definition (blind) — scope, housekeeping, recovery, carried-approval refer to it.
+  - `[medium]` `[patch]` (3.14) docs said agent events start no workflow (blind) — corrected in issues.md and the workflow header.
+  - `[medium]` `[patch]` (3.14) `ISSUE_FLOW_AGENTS` effect overstated (blind) — narrow effect stated.
+  - `[medium]` `[patch]` (3.14) proxy branch untested (verification-gap, blind) — CONNECT-tunnel stub test (Node 24.22 tunnels even http targets).
+  - `[medium]` `[patch]` (3.14) symlinked invocation exits 0 with empty stdout (edge) — realpath guard, symlink test.
+  - `[low]` `[patch]` (3.14) mint per write (blind) — mint once, re-mint after ~50 min.
+  - `[low]` `[patch]` (3.14) raw PEM pasted by mistake; dead catch (blind) — raw PEM accepted, catch removed, tests.
+  - `[low]` `[patch]` (3.14) whitespace-only variable ambiguity (edge) — "set" means non-empty after trim.
+  - `[low]` `[patch]` (3.14) setup step wording (blind) — fixed.
+  - `[low]` `[patch]` (3.14) redirect test without Location (edge) — fixed, asserts one request.
+  - `[low]` `[patch]` (3.13) events read for issues that cannot change the outcome (blind) — skip for issues already 30 days without update (the orchestrator's first wording was inverted; the implementer's direction is the correct one).
+  - `[low]` `[patch]` (3.13) no decision line; ticket ids differ (blind) — fixed.
+  - `[low]` `[reject]` token not narrowed per agent (blind) — repo-scoped already; per-agent scopes add surface for little gain.
+  - `[low]` `[reject]` events 404 test and log-line assertion (blind) — the 500 fallback covers the path.
+  - `[low]` `[reject]` stale close despite a missed author-reply run (edge) — a missed workflow run is not a realistic path; reopening restores it.
+  - `[low]` `[reject]` owner-authored batch PR left open across the switch (edge, intent) — none open; the rule reports it.
+  - `[low]` `[reject]` `>= 30` vs "more than 30" (intent) — one-day edge, documented as 30 days.
+  - `[low]` `[reject]` bot authors get no mention (intent) — a bot cannot be notified.
+  - remaining rows: duplicates across lenses, same routes.
+
 ## Verification
 
 **Commands:**
 - `npx vitest run test/agent-token.test.ts test/issue-flow.test.ts` -- expected: all pass
 - `npm run ci` -- expected: "All checks passed."
+
+## Auto Run Result
+
+- Status: built. Reviewed together with its sibling ticket; fixes in commit 2b80a1b.
+- Verification: `npx vitest run test/agent-token.test.ts test/issue-flow.test.ts` 108 passed (Node 24.22); `npm run ci` "All checks passed."
+- Follow-up review recommended: false (the one high patch is a documented hard stop, verified by reading).
+- Live check pending: a session with `AGENT_APP_ID`/`AGENT_APP_PRIVATE_KEY_B64` mints a token as the app; then a routine run shows the bot login.
+
