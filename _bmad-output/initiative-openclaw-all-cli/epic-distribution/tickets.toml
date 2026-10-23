@@ -189,3 +189,15 @@ after = [12, 15]
 hitl = false
 risk = "medium"
 references = ["epic-distribution.md", "issue-flow.md"]
+
+[[entry]]
+id = 17
+type = "story"
+title = "Relay writes pass the routine's permission check; interrupted batches recover without the owner"
+description = "Live run 2026-10-23 15:47 UTC (routine session cse_01NHNq9nub8VdabWtTG493AC): the first relay dispatch worked (draft batch PR #24 by the bot, #14 in progress), then the session's auto-mode permission check denied the next relay write (an ad hoc `/tmp/relay.sh` with a shell function writing ops files), and the run ended with #11 and #9 untouched and draft PR #24 left open; under today's rules the next run waits on that draft or, after 6 h, only reports it for the owner. (a) A repository script `scripts/agent-relay.sh <ops.json>` does the dispatch, takes the run id from the URL, watches it, checks the conclusion, and exits non-zero on any failure (no secrets, no proxy bypass); `.claude/settings.json` allows exactly that script (and `gh run watch`/`gh api` reads it needs) so an unattended run is not stopped by the permission check; `docs/agents/identity.md` uses the script instead of an inline snippet. (b) Interrupted batch recovery without the owner: a draft batch PR by the agent login, titled `Issue batch`, not updated for more than 4 hours, is closed by the run through a new relay op `pr_close` (own draft `Issue batch` PRs only, enforced in `scripts/agent-write.mjs`), and its issues left in `status:in-progress` whose owner approval still stands are taken again in this run (their approval carries; nothing is lost but the unmerged branch). Docs (implement.md, issues.md, issue-flow.md) and MEMORY follow. Then the stuck draft #24 is recovered by the next run."
+verify = "Unit tests for `pr_close` (own draft batch only; others refused) and for `scripts/agent-relay.sh` against a stub `gh` (URL parse, failure exit, conclusion check); `npm run ci` passes; the next routine run closes draft #24, builds #14, #11, #9, and merges its batch PR."
+covers = []
+after = [15, 16]
+hitl = false
+risk = "high"
+references = ["epic-distribution.md", "issue-flow.md"]
