@@ -3,7 +3,7 @@ title: 'Live checks never block a build; approved asset paths may join package f
 type: 'chore'
 ticket: 16
 created: '2026-10-23'
-status: 'built'
+status: done
 baseline_revision: 'e4ffee3b29305a481395cb21cc6916ecda3c3d77'
 route: 'oneshot'
 route_source: 'auto'
