@@ -228,28 +228,23 @@ describe("agent-token", () => {
     expect(await run([], { AGENT_APP_ID: undefined }, link)).toMatchObject({ code: 2, stdout: "" });
   });
 
-  it.skipIf(typeof http.setGlobalProxyFromEnv !== "function")("goes through HTTP_PROXY when set", async () => {
-    // Node's proxy support tunnels with CONNECT, also for an http:// target: this proxy stub only tunnels to the API stub.
+  it("connects directly, never through a proxy (the session proxy swaps in the owner's GitHub credentials)", async () => {
     const seen: string[] = [];
-    const proxy = createServer();
-    proxy.on("connect", (req, socket, head) => {
+    const proxy = createServer((req, res) => {
+      seen.push(`${req.method} ${req.url}`);
+      res.writeHead(502).end();
+    });
+    proxy.on("connect", (req, socket) => {
       seen.push(`CONNECT ${req.url}`);
-      const upstream = connect(Number(new URL(base).port), "127.0.0.1", () => {
-        socket.write("HTTP/1.1 200 Connection Established\r\n\r\n");
-        upstream.write(head);
-        upstream.pipe(socket);
-        socket.pipe(upstream);
-      });
-      upstream.on("error", () => socket.destroy());
-      socket.on("error", () => upstream.destroy());
+      socket.destroy();
     });
     await new Promise<void>((done) => proxy.listen(0, "127.0.0.1", done));
     try {
-      const port = (proxy.address() as AddressInfo).port;
-      const result = await run([], { HTTP_PROXY: `http://127.0.0.1:${port}`, GITHUB_API_URL: "http://api.example.invalid" });
-      expect(result).toMatchObject({ code: 0, stdout: `${TOKEN}\n`, stderr: "" });
-      expect([...new Set(seen)]).toEqual(["CONNECT api.example.invalid:80"]); // one tunnel per connection
-      expect(calls.map((call) => `${call.method} ${call.path}`)).toEqual([`GET /repos/${REPO}/installation`, `POST /app/installations/${INSTALLATION}/access_tokens`]);
+      const url = `http://127.0.0.1:${(proxy.address() as AddressInfo).port}`;
+      const env = { HTTP_PROXY: url, HTTPS_PROXY: url, http_proxy: url, https_proxy: url, NO_PROXY: "", no_proxy: "" };
+      expect(await run([], env)).toMatchObject({ code: 0, stdout: `${TOKEN}\n`, stderr: "" });
+      expect(await run([], { ...env, NODE_USE_ENV_PROXY: "1" })).toMatchObject({ code: 0, stdout: `${TOKEN}\n`, stderr: "" });
+      expect(seen).toEqual([]);
     } finally {
       proxy.closeAllConnections();
       await new Promise((done) => proxy.close(done));

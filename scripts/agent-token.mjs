@@ -14,11 +14,12 @@
 //
 // stdout holds only the token (or the login). Messages go to stderr and never contain the key, the JWT, or a token.
 // Exit 0 ok, 1 the key or the GitHub API failed, 2 a variable is missing or malformed.
-// Proxy: Node's `fetch` ignores the proxy variables by default. The script switches them on when one is set, through
-// `http.setGlobalProxyFromEnv` where Node has it (verified on the repo's Node 24.22; not checked on other versions).
+// No proxy, on purpose: the cloud session's proxy replaces the Authorization header of api.github.com requests with the
+// owner's credentials (probed 2026-10-23), so a JWT or app token sent through it never reaches GitHub. The script connects
+// directly (Node's `fetch` ignores the proxy variables unless NODE_USE_ENV_PROXY is set; then it re-runs itself without it).
 import { createPrivateKey, sign } from "node:crypto";
 import { realpathSync } from "node:fs";
-import * as http from "node:http";
+import { spawnSync } from "node:child_process";
 import { pathToFileURL } from "node:url";
 
 const DEFAULT_REPO = "xtimor/openclaw-all-cli";
@@ -157,9 +158,13 @@ export async function run(argv, env, nowMs = Date.now()) {
 }
 
 async function main() {
-  // Node's fetch ignores HTTPS_PROXY unless asked; honor the environment's proxy when this Node can.
-  const wantsProxy = ["HTTPS_PROXY", "https_proxy", "HTTP_PROXY", "http_proxy"].some((name) => process.env[name]);
-  if (wantsProxy && typeof http.setGlobalProxyFromEnv === "function") http.setGlobalProxyFromEnv(process.env);
+  // With NODE_USE_ENV_PROXY set, Node's fetch would use the proxy, which swaps in the owner's credentials: re-run directly.
+  if (process.env.NODE_USE_ENV_PROXY) {
+    const { NODE_USE_ENV_PROXY: _drop, ...env } = process.env;
+    const child = spawnSync(process.execPath, [process.argv[1], ...process.argv.slice(2)], { env, stdio: "inherit" });
+    process.exitCode = child.status ?? 1;
+    return;
+  }
   try {
     const out = await run(process.argv.slice(2), process.env);
     process.stdout.write(`${out}\n`);

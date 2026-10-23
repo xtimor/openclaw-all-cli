@@ -16,19 +16,21 @@ At the start of a run, before any GitHub write. A variable is **set** when it is
    ```
 
    (Treat an `exit` here as: stop the run and say what failed in your report.) An empty `GH_TOKEN` would make `gh` use other credentials, which is why the check comes before any write.
-3. Do **every** GitHub write with `gh` under that token, passed in the environment of that one command:
+3. Do **every** GitHub write with `gh` under that token, **directly, not through the session proxy**: the cloud session's proxy replaces the `Authorization` header of `api.github.com` requests with the owner's credentials, so a write sent through it lands under the owner's name whatever `GH_TOKEN` says. Clear the proxy variables for that one command:
 
    ```bash
-   GH_TOKEN="$TOKEN" gh issue comment 12 --body-file /tmp/c.md
-   GH_TOKEN="$TOKEN" gh issue edit 12 --add-label status:triaged --remove-label status:new
-   GH_TOKEN="$TOKEN" gh issue close 12 --reason "not planned"
-   GH_TOKEN="$TOKEN" gh pr create --draft --base main --head "$BRANCH" --title "Issue batch (in progress)" --body-file /tmp/pr.md
-   GH_TOKEN="$TOKEN" gh pr ready 20
-   GH_TOKEN="$TOKEN" gh pr merge 20 --merge --match-head-commit "$SHA"
-   GH_TOKEN="$TOKEN" gh api -X PATCH repos/xtimor/openclaw-all-cli/issues/comments/<id> -f body="$(cat /tmp/c.md)"
+   agh() { env -u HTTPS_PROXY -u https_proxy -u HTTP_PROXY -u http_proxy -u ALL_PROXY -u all_proxy GH_TOKEN="$TOKEN" gh "$@"; }
+   agh api /installation/repositories --jq .total_count >/dev/null || { echo "app token did not reach GitHub" >&2; exit 1; }   # proof, before the first write
+   agh issue comment 12 --body-file /tmp/c.md
+   agh issue edit 12 --add-label status:triaged --remove-label status:new
+   agh issue close 12 --reason "not planned"
+   agh pr create --draft --base main --head "$BRANCH" --title "Issue batch (in progress)" --body-file /tmp/pr.md
+   agh pr ready 20
+   agh pr merge 20 --merge --match-head-commit "$SHA"
+   agh api -X PATCH repos/xtimor/openclaw-all-cli/issues/comments/<id> -f body="$(cat /tmp/c.md)"
    ```
 
-   The token lives one hour. Mint again only when it is older than about 50 minutes (note the time of the mint), with the same checks. If each of your commands runs in a fresh shell, repeat the mint and checks at the top of every command that writes, and put the writes of one step in that one command. The session's own `GH_TOKEN` is the owner's or the platform's; the prefix overrides it for that command only.
+   The proof call answers only for an installation token; through the proxy (owner credentials) it fails, so a run whose writes would land as the owner stops before the first one. The token lives one hour. Mint again only when it is older than about 50 minutes (note the time of the mint), with the same checks. If each of your commands runs in a fresh shell, repeat the mint, the `agh` definition, and the proof at the top of every command that writes, and put the writes of one step in that one command. Reads may go through the proxy.
 4. **Read authors and actors by REST.** `gh pr view --json author` and `gh issue view --json comments` use GraphQL, where an app shows under another name than `<slug>[bot]`. For every check of who wrote or did something, use `gh api` and compare the REST login with `ME`: a pull request's author `gh api repos/xtimor/openclaw-all-cli/pulls/<n> --jq .user.login`; a comment's author `gh api repos/xtimor/openclaw-all-cli/issues/<n>/comments --paginate` (`.user.login`, `.created_at`, `.body`); an event's actor `gh api repos/xtimor/openclaw-all-cli/issues/<n>/events --paginate` (`.actor.login`). Other reads may use any tool.
 5. `git push` of your session branch still uses the session's git access (it is not a GitHub API write); the pull request you open from it is the app's.
 6. Never print, log, commit, or paste the key, the token, or a JWT: no `echo "$TOKEN"`, `set -x`, `env`, or `gh auth status`; no token in a command line, URL, remote, file in the repository, comment, or report. The script prints only the token (or the login) and never the key.
@@ -62,4 +64,4 @@ What changes: the agents' comments, labels, and pull requests are the bot's. The
 
 Rotate the key by generating a new one on the app page, replacing the variable, and deleting the old key there. If the key leaks, delete it on the app page at once; tokens expire within the hour.
 
-If `GET /app` is not reachable from the routine's network (a restricted proxy), `--login` reads the slug from the installation instead; the token path needs `GET /repos/{repo}/installation` and `POST /app/installations/{id}/access_tokens`. Node's `fetch` ignores the proxy variables by default; the script enables them through `http.setGlobalProxyFromEnv`, verified on the repo's Node 24.22 (other versions not checked).
+If `GET /app` is not reachable from the routine's network (a restricted proxy), `--login` reads the slug from the installation instead; the token path needs `GET /repos/{repo}/installation` and `POST /app/installations/{id}/access_tokens`. The script connects to GitHub directly and never through the session proxy (which would swap in the owner's credentials); with `NODE_USE_ENV_PROXY` set it re-runs itself without it.
