@@ -62,7 +62,7 @@ Triage needs info:
 <!-- issue-triage -->
 **Status:** `status:needs-info`: details are missing
 **Waiting for:** @<author-login>: answers to the questions below
-**Next:** when you reply, the issue goes back to `status:new` and the next triage run decides; with no reply in 14 days it is closed as not planned
+**Next:** when you reply, the issue goes back to `status:new` and the next triage run decides; after 30 days in `status:needs-info` it is closed as not planned and you are notified
 **What happened:** the steps do not show which `cursor-agent` version is installed.
 **Evidence:** not reproduced on `main` with 2026.10.19.
 **Questions:** 1. Output of `cursor-agent --version`? 2. Does it fail on the first turn or later?
@@ -89,7 +89,7 @@ Implementation needs info (only the reporter can answer):
 <!-- issue-impl -->
 **Status:** `status:needs-info`: the build needs a check only the reporter can do
 **Waiting for:** @<author-login>: run `openclaw models list --all` with your login and paste the context column
-**Next:** when you reply, triage re-checks the scope; if it is unchanged, the next run builds it with the owner's earlier approval; with no reply in 14 days it is closed as not planned
+**Next:** when you reply, triage re-checks the scope; if it is unchanged, the next run builds it with the owner's earlier approval; after 30 days in `status:needs-info` it is closed as not planned and you are notified
 **What happened:** the build stopped at ticket 3.12; the window cannot be read without a Cursor login.
 **Evidence:** ticket 3.12 is `blocked` with this reason; `npm run ci` is green on the branch without the change.
 

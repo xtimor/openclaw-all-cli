@@ -17,7 +17,7 @@ One `status:*` label per open issue, always exactly one. A closed issue has none
 | State | Meaning | Who moves it out |
 | --- | --- | --- |
 | `status:new` | Filed or reopened, not yet triaged, or the author answered a question | triage agent |
-| `status:needs-info` | Either agent (or the owner) asked the author for details or a check only the author can do | author's reply (back to `new`), or the stale timer |
+| `status:needs-info` | Either agent (or the owner) asked the author for details or a check only the author can do | author's reply (back to `new`), or the stale timer (30 days from the latest `needs-info` label; the closing comment mentions the author) |
 | `status:triaged` | The agent accepts it: problem confirmed, priority set, scope written. Waits for the owner, unless triage carried an earlier approval over a `needs-info` round | owner, or the implementation run (carried approval) |
 | `status:approved` | The owner approved it for development | implementation run |
 | `status:planned` | A course correction for it is merged; its BMAD tickets exist but are not built yet | implementation run (the owner's earlier approval covers it) |
@@ -40,7 +40,7 @@ new ──triage: duplicate────────────► closed duplic
 new ──triage: fixed by a done ticket► closed completed (ticket and commit named)
 
 needs-info ──author comments───────► new   (also after an implementation question)
-needs-info ──14 days silent────────► closed not planned (stale; reopening brings it back)
+needs-info ──30 days in the status─► closed not planned (stale, author mentioned; reopening brings it back)
 
 triaged ──owner sets approved──────► approved
 triaged ──owner rejects────────────► closed not planned
