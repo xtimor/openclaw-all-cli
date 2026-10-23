@@ -3,7 +3,7 @@ title: 'Triage agent twice a day'
 type: 'feature'
 ticket: '8'
 created: '2026-10-22'
-status: 'in-review'
+status: done
 baseline_revision: '4a38d82e6ec74981650616f69619006ae6b03b6f'
 route: 'oneshot'
 route_source: 'auto'
