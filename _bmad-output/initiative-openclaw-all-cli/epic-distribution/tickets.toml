@@ -177,3 +177,15 @@ after = [14]
 hitl = false
 risk = "high"
 references = ["epic-distribution.md", "issue-flow.md"]
+
+[[entry]]
+id = 16
+type = "story"
+title = "Live checks never block a build; approved asset paths may join package files"
+description = "Owner's report (2026-10-23, issues #11 and #9): the implementation run blocked #11 because its draft needed live Cursor measurements, though the routine's environment has `CURSOR_API_KEY` and AGENTS.md says to build anyway and record a live check as not run; it blocked #9 because the approved draft adds an icon path to `package.json` `files`, a protected field. (a) `docs/agents/implement.md`: live checks never block; with `CURSOR_API_KEY` set the run executes the ticket's live checks, else lists them as not run; an investigate-first draft is built with the plan measuring first. (b) Adding new paths to `files` is allowed when the approved draft names it (additions only, `test/package-contents.test.ts` lists them); other protected files and fields stay blocked. (c) `docs/agents/triage.md` and `docs/issues.md` match. Owner decision for #9: a neutral own icon, not Cursor's mark."
+verify = "Docs read consistently (implement, triage, issues); `npm run ci` passes; the owner re-approves #11 and #9 (their earlier approval stands; done from the owner's session at their request), each with a comment in the comments.md shape, and the next run builds them."
+covers = []
+after = [12, 15]
+hitl = false
+risk = "medium"
+references = ["epic-distribution.md", "issue-flow.md"]
