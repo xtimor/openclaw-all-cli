@@ -201,3 +201,15 @@ after = [15, 16]
 hitl = false
 risk = "high"
 references = ["epic-distribution.md", "issue-flow.md"]
+
+[[entry]]
+id = 18
+type = "story"
+title = "Batch heartbeat: interrupted work is retaken within an hour"
+description = "Owner's report (2026-10-23 18:00 UTC run): the owner closed draft #24 by hand, #14 stayed `in-progress`, and the next run built nothing (it waited 6 hours on #14 and held #9 and #11 back too). (a) A running batch refreshes its draft `Issue batch (in progress)` at least every 30 minutes (a push or a `pr_edit` with `Last activity: <time>`). (b) A draft with that exact title idle over 1 hour is interrupted; the relay `pr_close` refuses younger drafts and any other title, so an owner-paused batch (`Issue batch: #A, ...`) is never closed. (c) An `in-progress` issue with no open batch PR and no impl comment for 1 hour is retaken under the standing approval, never blocked for that, and never holds back other approved issues; only an open batch PR stops a new batch."
+verify = "`test/agent-write.test.ts` covers the 1-hour boundary and the title rule; `npm run ci` passes; a Run now after the merge builds #14, #11, and #9."
+covers = []
+after = [17]
+hitl = false
+risk = "medium"
+references = ["epic-distribution.md", "issue-flow.md"]

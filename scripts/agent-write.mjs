@@ -18,8 +18,8 @@
 //   {op:"pr_ready", pr}                                    only a pull request by AGENT_LOGIN
 //   {op:"pr_edit", pr, title?, body?}                      only a pull request by AGENT_LOGIN
 //   {op:"merge", pr, sha}                                  method merge; see checkMergeable and checkGreen
-//   {op:"pr_close", pr}                                    closes only an open draft `Issue batch` PR by AGENT_LOGIN from a `claude/` branch of this repository,
-//                                                          not updated for IDLE_HOURS (4) hours
+//   {op:"pr_close", pr}                                    closes only an open draft titled `Issue batch (in progress)` by AGENT_LOGIN from a `claude/` branch of this repository,
+//                                                          not updated for 1 hour (runs refresh their draft at least every 30 minutes)
 // Everything is validated first; nothing is applied when anything is refused. Applying stops at the first failure.
 //
 // Environment: AGENT_WRITE_OPS, GH_TOKEN (the app's installation token), GITHUB_REPOSITORY, GITHUB_ACTOR (the dispatcher),
@@ -41,8 +41,9 @@ const MAX_INPUT = 60_000;
 const MAX_MESSAGE = 300;
 const HEAD_PREFIX = "claude/";
 const BATCH_TITLE = "Issue batch";
+const CLAIM_TITLE = "Issue batch (in progress)"; // a run's draft before it finishes; an owner-paused batch has another title
 const BASE_BRANCH = "main";
-const IDLE_MS = 4 * 60 * 60 * 1000; // a draft batch PR untouched this long counts as interrupted
+const IDLE_MS = 60 * 60 * 1000; // a draft batch PR untouched this long counts as interrupted
 const CLOSE_REASONS = new Set(["completed", "not_planned", "duplicate"]);
 const FORBIDDEN_LABEL = "status:approved";
 // Only the project's own label families: a typo or a lookalike never creates a label, and "." or ".." never reaches a URL.
@@ -205,7 +206,7 @@ export function checkMergeable(pr, op, { repo, login }) {
 
 /**
  * The close guards, on a freshly read pull request: an open draft batch PR of the app from a `claude/` branch of this
- * repository, not updated for 4 hours (`now()` is the run's clock in ms; a missing or unreadable `updated_at` is refused).
+ * repository, not updated for 1 hour (`now()` is the run's clock in ms; a missing or unreadable `updated_at` is refused).
  */
 export function checkClosable(pr, op, { repo, login, now = Date.now }) {
   if (pr.state !== "open") throw refuse(`PR #${op.pr} is not open`);
@@ -214,10 +215,10 @@ export function checkClosable(pr, op, { repo, login, now = Date.now }) {
   const ref = pr.head?.ref;
   if (typeof ref !== "string" || !ref.startsWith(HEAD_PREFIX)) throw refuse(`PR #${op.pr}: head branch is not a ${HEAD_PREFIX} branch`);
   if (lower(pr.head?.repo?.full_name) !== lower(repo)) throw refuse(`PR #${op.pr}: head branch is not in ${repo}`);
-  if (typeof pr.title !== "string" || !pr.title.startsWith(BATCH_TITLE)) throw refuse(`PR #${op.pr}: title does not start with "${BATCH_TITLE}"`);
+  if (pr.title !== CLAIM_TITLE) throw refuse(`PR #${op.pr}: title is not "${CLAIM_TITLE}" (an owner-paused batch is never closed)`);
   const updated = typeof pr.updated_at === "string" ? Date.parse(pr.updated_at) : Number.NaN;
   if (!Number.isFinite(updated)) throw refuse(`PR #${op.pr}: its last update time could not be read`);
-  if (now() - updated < IDLE_MS) throw refuse(`PR #${op.pr}: updated less than 4 hours ago; it may still be in use`);
+  if (now() - updated < IDLE_MS) throw refuse(`PR #${op.pr}: updated less than 1 hour ago; it may still be in use`);
 }
 
 const PASSING = new Set(["success", "skipped", "neutral"]);
