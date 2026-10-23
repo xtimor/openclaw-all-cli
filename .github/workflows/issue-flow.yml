@@ -37,7 +37,7 @@ env:
   # Logins (comma separated) of the issue agents' GitHub App, as `<app-slug>[bot]` (docs/agents/identity.md). Only effect: an
   # agent's marker comment is never an author's reply (matters when the app opened the issue). The app's approval is reverted
   # because it is not in ISSUE_FLOW_OWNERS. Empty: the agents act as the owner.
-  ISSUE_FLOW_AGENTS: ""
+  ISSUE_FLOW_AGENTS: "openclaw-all-cli-agent[bot]"
 
 jobs:
   flow:
