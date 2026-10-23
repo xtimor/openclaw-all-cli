@@ -129,3 +129,15 @@ after = [9, 10]
 hitl = false
 risk = "high"
 references = ["epic-distribution.md", "issue-flow.md"]
+
+[[entry]]
+id = 12
+type = "story"
+title = "Agent comments say the status and who acts; questions go to needs-info"
+description = "Owner's report (2026-10-23, issue #13): after approval the implementation agent set `status:blocked` with a question that only a live check by the reporter could answer, and its comment did not say clearly who must do what. (a) One comment shape for both agents (triage and implementation), defined once in `docs/agents/` and used by both prompts: the marker, then **Status** (the label it sets and what it means), **Waiting for** (who, by `@login`, and exactly what; or 'nothing: the next run does X'), **What happened** (short), **Evidence**, **Next** (what happens after that action), and the agent signature. (b) The implementation agent sets `status:needs-info` (not `blocked`) when the open point is information or a check the reporter can give (a live run, logs, versions), mentioning the author; `status:blocked` stays for decisions only the owner can make (scope beyond the approval, protected files, product direction, repeated failures), naming the owner. (c) One approval per issue still holds: an issue the owner approved that went to `needs-info` and came back through the author's reply is re-triaged; when the verdict, path, and draft ticket are unchanged, the next implementation run builds it without a new approval (the triage comment records that the approval carries over); a changed scope needs a new approval. (d) The state automation ignores `<!-- issue-impl -->` comments by an owner the same way it ignores `<!-- issue-triage -->` ones, so the agent's own comment never counts as the author's reply. (e) Issue #13 is moved to the new shape: `status:needs-info` with a structured comment asking its author for the live webchat check."
+verify = "`test/issue-flow.test.ts` covers an owner `<!-- issue-impl -->` comment on a `needs-info` issue (no change) and an author reply (back to `new`); `npm run ci` passes; issue #13 shows `status:needs-info` and a comment in the new shape naming who acts; `docs/issues.md` describes both statuses and the carried-over approval."
+covers = []
+after = [11]
+hitl = false
+risk = "medium"
+references = ["epic-distribution.md", "issue-flow.md"]
