@@ -3,7 +3,7 @@ title: 'Agent comments say the status and who acts; questions go to needs-info'
 type: 'feature'
 ticket: 12
 created: '2026-10-23'
-status: 'ready-for-dev'
+status: 'in-progress'
 baseline_revision: 'de14796403166103fd6c898629f9cc1738a762dc'
 route: 'full'
 route_source: 'auto'
