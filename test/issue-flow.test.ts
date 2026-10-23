@@ -1118,7 +1118,7 @@ describe("workflow file", () => {
 
   it("keeps the owner list in the workflow and never in the module", () => {
     expect(text).toMatch(/^ {2}ISSUE_FLOW_OWNERS: xtimor$/m);
-    expect(text).toMatch(/^ {2}ISSUE_FLOW_AGENTS: ""$/m);
+    expect(text).toMatch(/^ {2}ISSUE_FLOW_AGENTS: "openclaw-all-cli-agent\[bot\]"$/m);
     for (const file of ["transitions.mjs", "apply.mjs"]) expect(readFileSync(join(FLOW_DIR, file), "utf8")).not.toContain("xtimor");
   });
 
