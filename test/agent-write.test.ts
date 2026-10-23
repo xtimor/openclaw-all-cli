@@ -276,8 +276,10 @@ describe("agent-write", () => {
     expect(calls).toEqual([]);
   });
 
+  const hoursAgo = (hours: number) => new Date(Date.now() - hours * 3_600_000).toISOString();
+
   it("PR_CLOSE: closes the app's own open draft batch PR with state closed", async () => {
-    answers.set(`GET /repos/${REPO}/pulls/21`, [200, pull({ number: 21, draft: true, title: "Issue batch (in progress)" })]);
+    answers.set(`GET /repos/${REPO}/pulls/21`, [200, pull({ number: 21, draft: true, title: "Issue batch (in progress)", updated_at: hoursAgo(5) })]);
     const result = await run([{ op: "pr_close", pr: 21 }]);
     expect(result).toMatchObject({ code: 0, stderr: "" });
     expect(seen()).toEqual(["GET /pulls/21", "PATCH /pulls/21"]);
@@ -305,7 +307,7 @@ describe("agent-write", () => {
     ];
     for (const [name, override] of cases) {
       calls = [];
-      answers.set(`GET /repos/${REPO}/pulls/21`, [200, pull({ number: 21, draft: true, ...override })]);
+      answers.set(`GET /repos/${REPO}/pulls/21`, [200, pull({ number: 21, draft: true, updated_at: hoursAgo(5), ...override })]);
       const result = await run([{ op: "pr_close", pr: 21 }]);
       expect(result.code, name).toBe(1);
       expect(seen(), name).toEqual(["GET /pulls/21"]);
@@ -318,11 +320,34 @@ describe("agent-write", () => {
     expect(seen()).toEqual(["GET /pulls/21"]);
   });
 
+  it("PR_CLOSE: a draft updated less than 4 hours ago, or with no readable update time, is refused; one idle longer is closed", async () => {
+    const cases: Array<[string, unknown, number]> = [
+      ["just now", hoursAgo(0), 1],
+      ["3 hours", hoursAgo(3), 1],
+      ["3h59", hoursAgo(3.98), 1],
+      ["future", hoursAgo(-1), 1],
+      ["missing", undefined, 1],
+      ["unreadable", "yesterday", 1],
+      ["number", 5, 1],
+      ["4h01", hoursAgo(4.02), 0],
+      ["a day", hoursAgo(24), 0],
+    ];
+    for (const [name, updated_at, code] of cases) {
+      calls = [];
+      answers.set(`GET /repos/${REPO}/pulls/21`, [200, pull({ number: 21, draft: true, title: "Issue batch (in progress)", updated_at })]);
+      const result = await run([{ op: "pr_close", pr: 21 }]);
+      expect(result.code, name).toBe(code);
+      expect(seen(), name).toEqual(code === 1 ? ["GET /pulls/21"] : ["GET /pulls/21", "PATCH /pulls/21"]);
+      if (code === 1) expect(result.summary, name).toContain("refused");
+    }
+  });
+
   it("PR_CLOSE: a bad shape is refused before any call; a failed PATCH stops the list", async () => {
     for (const entry of [{ op: "pr_close" }, { op: "pr_close", pr: "21" }, { op: "pr_close", pr: 0 }, { op: "pr_close", pr: 21, state: "open" }, { op: "pr_close", pr: 21, sha: SHA }]) {
       expect((await run([entry])).code, JSON.stringify(entry)).toBe(1);
     }
     expect(calls).toEqual([]);
+    answers.set(`GET /repos/${REPO}/pulls/21`, [200, pull({ number: 21, draft: true, updated_at: hoursAgo(5) })]);
     answers.set(`PATCH /repos/${REPO}/pulls/21`, [403, { message: "Resource not accessible" }]);
     const result = await run([{ op: "pr_close", pr: 21 }, { op: "comment", issue: 12, body: "later" }]);
     expect(result.code).toBe(1);
