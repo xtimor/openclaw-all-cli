@@ -276,6 +276,60 @@ describe("agent-write", () => {
     expect(calls).toEqual([]);
   });
 
+  it("PR_CLOSE: closes the app's own open draft batch PR with state closed", async () => {
+    answers.set(`GET /repos/${REPO}/pulls/21`, [200, pull({ number: 21, draft: true, title: "Issue batch (in progress)" })]);
+    const result = await run([{ op: "pr_close", pr: 21 }]);
+    expect(result).toMatchObject({ code: 0, stderr: "" });
+    expect(seen()).toEqual(["GET /pulls/21", "PATCH /pulls/21"]);
+    expect(calls[1]?.body).toEqual({ state: "closed" });
+    expect(calls[1]?.auth).toBe(`Bearer ${TOKEN}`);
+    expect(result.summary).toContain("PR #21");
+    expect(result.summary).toContain("closed");
+    expect(leaked(result)).toEqual([]);
+  });
+
+  it("PR_CLOSE: not a draft, closed, another author, another title, a head outside claude/, a fork, or a deleted fork is refused, nothing patched", async () => {
+    const cases: Array<[string, Record<string, unknown>]> = [
+      ["ready", { draft: false }],
+      ["closed", { state: "closed" }],
+      ["merged", { state: "closed", merged: true }],
+      ["author", { user: { login: "xtimor" } }],
+      ["no author", { user: null }],
+      ["title", { title: "Fix everything" }],
+      ["title case", { title: "issue batch: #1" }],
+      ["no title", { title: undefined }],
+      ["head ref", { head: { ref: "feature/x", sha: SHA, repo: { full_name: REPO } } }],
+      ["no head", { head: undefined }],
+      ["fork", { head: { ref: "claude/x", sha: SHA, repo: { full_name: "evil/openclaw-all-cli" } } }],
+      ["deleted fork", { head: { ref: "claude/x", sha: SHA, repo: null } }],
+    ];
+    for (const [name, override] of cases) {
+      calls = [];
+      answers.set(`GET /repos/${REPO}/pulls/21`, [200, pull({ number: 21, draft: true, ...override })]);
+      const result = await run([{ op: "pr_close", pr: 21 }]);
+      expect(result.code, name).toBe(1);
+      expect(seen(), name).toEqual(["GET /pulls/21"]);
+      expect(result.summary, name).toContain("refused");
+    }
+    // An unreadable pull request is refused too.
+    calls = [];
+    answers.set(`GET /repos/${REPO}/pulls/21`, [200, null]);
+    expect((await run([{ op: "pr_close", pr: 21 }])).code).toBe(1);
+    expect(seen()).toEqual(["GET /pulls/21"]);
+  });
+
+  it("PR_CLOSE: a bad shape is refused before any call; a failed PATCH stops the list", async () => {
+    for (const entry of [{ op: "pr_close" }, { op: "pr_close", pr: "21" }, { op: "pr_close", pr: 0 }, { op: "pr_close", pr: 21, state: "open" }, { op: "pr_close", pr: 21, sha: SHA }]) {
+      expect((await run([entry])).code, JSON.stringify(entry)).toBe(1);
+    }
+    expect(calls).toEqual([]);
+    answers.set(`PATCH /repos/${REPO}/pulls/21`, [403, { message: "Resource not accessible" }]);
+    const result = await run([{ op: "pr_close", pr: 21 }, { op: "comment", issue: 12, body: "later" }]);
+    expect(result.code).toBe(1);
+    expect(seen()).toEqual(["GET /pulls/21", "PATCH /pulls/21"]);
+    expect(result.summary).toContain("Stopped at operation 1 of 2");
+  });
+
   it("MERGE: merges the agent's own ready batch PR with method merge and the sha", async () => {
     const result = await run([{ op: "merge", pr: 20, sha: SHA.toUpperCase() }]);
     expect(result.code).toBe(0);

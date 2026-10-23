@@ -2,7 +2,10 @@
   "permissions": {
     "allow": [
       "Bash(uv run _bmad/scripts/*)",
-      "Bash(uv run */_bmad/scripts/*)"
+      "Bash(uv run */_bmad/scripts/*)",
+      "Bash(scripts/agent-relay.sh *)",
+      "Bash(bash scripts/agent-relay.sh *)",
+      "Bash(./scripts/agent-relay.sh *)"
     ]
   },
   "hooks": {
