@@ -1,9 +1,7 @@
 ---
 title: "One approval per issue, merge on green, one-click release"
 ticket: 11
-status: blocked
-blocked_at: "2026-10-23"
-blocked_reason: "no subagents"
+status: draft
 ---
 
 ## Auto Run Result
