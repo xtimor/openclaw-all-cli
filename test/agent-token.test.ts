@@ -218,6 +218,14 @@ describe("agent-token", () => {
     expect(decodeJwt(calls[0]?.auth).signed).toBe(true);
   });
 
+  it("a PEM whose line breaks were lost (one line, or spaces) works", async () => {
+    for (const flat of [pem.replace(/\n/g, ""), pem.replace(/\n/g, " "), `  ${pem.replace(/\n/g, "")}  `]) {
+      const result = await run([], { AGENT_APP_PRIVATE_KEY_B64: undefined, AGENT_APP_PRIVATE_KEY: flat });
+      expect(result).toMatchObject({ code: 0, stdout: `${TOKEN}\n`, stderr: "" });
+      expect(secretsIn(result, [flat])).toEqual([]);
+    }
+  });
+
   it("AGENT_APP_PRIVATE_KEY: the raw PEM is the canonical variable; _B64 is an alternative; both must hold the same key", async () => {
     const raw = await run([], { AGENT_APP_PRIVATE_KEY_B64: undefined, AGENT_APP_PRIVATE_KEY: pem });
     expect(raw).toMatchObject({ code: 0, stdout: `${TOKEN}\n`, stderr: "" });

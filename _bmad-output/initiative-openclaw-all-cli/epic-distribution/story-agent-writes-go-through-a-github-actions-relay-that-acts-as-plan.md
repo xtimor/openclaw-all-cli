@@ -76,6 +76,8 @@ deferred: []
 
 ## Implementation Notes
 
+- 2026-10-23, live setup: the owner pasted the PEM into the environment secret as one line (line breaks removed). `agent-token.mjs` now rebuilds a PEM whose breaks were lost (one line or spaces); test added.
+
 ## Plan Change Log
 
 ## Review Triage Log
