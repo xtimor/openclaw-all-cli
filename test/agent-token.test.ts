@@ -1,10 +1,13 @@
 import { execFile } from "node:child_process";
 import { generateKeyPairSync, verify, type KeyObject } from "node:crypto";
+import { mkdtempSync, rmSync, symlinkSync } from "node:fs";
+import * as http from "node:http";
 import { createServer, type IncomingMessage, type Server } from "node:http";
-import type { AddressInfo } from "node:net";
+import { connect, type AddressInfo } from "node:net";
+import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from "vitest";
 
 /**
  * scripts/agent-token.mjs against a local stub of the GitHub App endpoints (ticket 3.14): the JWT is checked with the
@@ -79,6 +82,11 @@ beforeEach(() => {
   answers = new Map();
 });
 
+const dirs: string[] = [];
+afterEach(() => {
+  while (dirs.length > 0) rmSync(dirs.pop() as string, { recursive: true, force: true });
+});
+
 interface Run {
   code: number;
   stdout: string;
@@ -86,11 +94,11 @@ interface Run {
 }
 
 // A child process, never spawnSync: the stub serves from this process.
-function run(args: string[] = [], env: Record<string, string | undefined> = {}): Promise<Run> {
+function run(args: string[] = [], env: Record<string, string | undefined> = {}, script = SCRIPT): Promise<Run> {
   const merged: Record<string, string | undefined> = { ...stripped(), AGENT_APP_ID: APP_ID, AGENT_APP_PRIVATE_KEY_B64: KEY_B64, GITHUB_API_URL: base, ...env };
   for (const key of Object.keys(merged)) if (merged[key] === undefined) delete merged[key];
   return new Promise((done) => {
-    execFile(process.execPath, [SCRIPT, ...args], { env: merged as NodeJS.ProcessEnv, timeout: 20_000 }, (error, stdout, stderr) => {
+    execFile(process.execPath, [script, ...args], { env: merged as NodeJS.ProcessEnv, timeout: 20_000 }, (error, stdout, stderr) => {
       done({ code: error ? (typeof error.code === "number" ? error.code : 1) : 0, stdout, stderr });
     });
   });
@@ -191,9 +199,8 @@ describe("agent-token", () => {
 
   it("BAD_KEY: a value that is not the base64 of a PEM key exits 1 without the value", async () => {
     const garbage = Buffer.from("this is not a key at all").toString("base64");
-    const rawPem = pem; // the PEM itself, not its base64
     const publicOnly = Buffer.from(pair.publicKey.export({ type: "spki", format: "pem" }) as string).toString("base64");
-    for (const value of [garbage, rawPem, "%%%", publicOnly]) {
+    for (const value of [garbage, "%%%", publicOnly, "-----BEGIN PRIVATE KEY-----\nnot a key\n-----END PRIVATE KEY-----"]) {
       const result = await run([], { AGENT_APP_PRIVATE_KEY_B64: value });
       expect(result).toMatchObject({ code: 1, stdout: "" });
       expect(result.stderr).toContain("AGENT_APP_PRIVATE_KEY_B64 is not a valid private key");
@@ -203,6 +210,50 @@ describe("agent-token", () => {
     const notRsa = generateKeyPairSync("ec", { namedCurve: "P-256" }).privateKey.export({ type: "pkcs8", format: "pem" }) as string;
     expect(await run([], { AGENT_APP_PRIVATE_KEY_B64: Buffer.from(notRsa).toString("base64") })).toMatchObject({ code: 1, stdout: "" });
     expect(calls).toEqual([]);
+  });
+
+  it("a PEM pasted as is (not base64) works too", async () => {
+    const result = await run([], { AGENT_APP_PRIVATE_KEY_B64: pem });
+    expect(result).toMatchObject({ code: 0, stdout: `${TOKEN}\n`, stderr: "" });
+    expect(decodeJwt(calls[0]?.auth).signed).toBe(true);
+  });
+
+  it("runs when invoked through a symlink", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "agent-token-"));
+    dirs.push(dir);
+    const link = join(dir, "token.mjs");
+    symlinkSync(SCRIPT, link);
+    expect(await run([], {}, link)).toMatchObject({ code: 0, stdout: `${TOKEN}\n`, stderr: "" });
+    expect(await run(["--login"], {}, link)).toMatchObject({ code: 0, stdout: "oac-issue-agents[bot]\n" });
+    expect(await run([], { AGENT_APP_ID: undefined }, link)).toMatchObject({ code: 2, stdout: "" });
+  });
+
+  it.skipIf(typeof http.setGlobalProxyFromEnv !== "function")("goes through HTTP_PROXY when set", async () => {
+    // Node's proxy support tunnels with CONNECT, also for an http:// target: this proxy stub only tunnels to the API stub.
+    const seen: string[] = [];
+    const proxy = createServer();
+    proxy.on("connect", (req, socket, head) => {
+      seen.push(`CONNECT ${req.url}`);
+      const upstream = connect(Number(new URL(base).port), "127.0.0.1", () => {
+        socket.write("HTTP/1.1 200 Connection Established\r\n\r\n");
+        upstream.write(head);
+        upstream.pipe(socket);
+        socket.pipe(upstream);
+      });
+      upstream.on("error", () => socket.destroy());
+      socket.on("error", () => upstream.destroy());
+    });
+    await new Promise<void>((done) => proxy.listen(0, "127.0.0.1", done));
+    try {
+      const port = (proxy.address() as AddressInfo).port;
+      const result = await run([], { HTTP_PROXY: `http://127.0.0.1:${port}`, GITHUB_API_URL: "http://api.example.invalid" });
+      expect(result).toMatchObject({ code: 0, stdout: `${TOKEN}\n`, stderr: "" });
+      expect([...new Set(seen)]).toEqual(["CONNECT api.example.invalid:80"]); // one tunnel per connection
+      expect(calls.map((call) => `${call.method} ${call.path}`)).toEqual([`GET /repos/${REPO}/installation`, `POST /app/installations/${INSTALLATION}/access_tokens`]);
+    } finally {
+      proxy.closeAllConnections();
+      await new Promise((done) => proxy.close(done));
+    }
   });
 
   it("API_ERROR: a 401 or 404 exits 1 with the status and message, and no key, JWT, or token", async () => {
@@ -260,9 +311,19 @@ describe("agent-token", () => {
   });
 
   it("a redirect is not followed (the JWT stays with the API host)", async () => {
-    answers.set(`GET /repos/${REPO}/installation`, [302, {}]);
-    const result = await run();
-    expect(result).toMatchObject({ code: 1, stdout: "" });
-    expect(calls).toHaveLength(1);
+    const moved = createServer((req, res) => {
+      calls.push({ method: req.method ?? "GET", path: req.url ?? "", body: null, auth: req.headers.authorization });
+      res.writeHead(302, { location: req.url ?? "/" }); // to its own path: a followed redirect would be a second request
+      res.end();
+    });
+    await new Promise<void>((done) => moved.listen(0, "127.0.0.1", done));
+    try {
+      const result = await run([], { GITHUB_API_URL: `http://127.0.0.1:${(moved.address() as AddressInfo).port}` });
+      expect(result).toMatchObject({ code: 1, stdout: "" });
+      expect(calls).toHaveLength(1);
+      expect(secretsIn(result)).toEqual([]);
+    } finally {
+      await new Promise((done) => moved.close(done));
+    }
   });
 });

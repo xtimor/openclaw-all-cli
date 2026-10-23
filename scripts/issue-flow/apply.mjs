@@ -167,6 +167,9 @@ export async function runStale({ github, context, core, dryRun = true, now = Dat
   const since = new Map();
   for (const issue of open) {
     if (issue.pull_request) continue;
+    // The label is never newer than the last update, so an issue not updated for STALE_DAYS is stale without its events.
+    const updated = Date.parse(issue.updated_at ?? "");
+    if (Number.isFinite(updated) && now - updated >= STALE_DAYS * 24 * 60 * 60 * 1000) continue;
     try {
       const time = needsInfoSince(await readTimeline(github, context, issue.number));
       if (time !== null) since.set(issue.number, time);

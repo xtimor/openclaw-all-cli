@@ -14,9 +14,10 @@
 //
 // stdout holds only the token (or the login). Messages go to stderr and never contain the key, the JWT, or a token.
 // Exit 0 ok, 1 the key or the GitHub API failed, 2 a variable is missing or malformed.
-// Proxy: Node's `fetch` ignores HTTPS_PROXY by default. The script switches it on when a proxy variable is set (Node
-// with `http.setGlobalProxyFromEnv`); on an older Node set NODE_USE_ENV_PROXY=1 (Node 24) yourself.
+// Proxy: Node's `fetch` ignores the proxy variables by default. The script switches them on when one is set, through
+// `http.setGlobalProxyFromEnv` where Node has it (verified on the repo's Node 24.22; not checked on other versions).
 import { createPrivateKey, sign } from "node:crypto";
+import { realpathSync } from "node:fs";
 import * as http from "node:http";
 import { pathToFileURL } from "node:url";
 
@@ -35,14 +36,9 @@ class AgentTokenError extends Error {
 
 const b64url = (input) => Buffer.from(input).toString("base64url");
 
-/** The private key from the base64 of its PEM file. The message never contains the value. */
-function readKey(base64) {
-  let pem;
-  try {
-    pem = Buffer.from(base64, "base64").toString("utf8");
-  } catch {
-    pem = "";
-  }
+/** The private key from the base64 of its PEM file (a PEM pasted as is also works). The message never contains the value. */
+function readKey(value) {
+  const pem = value.startsWith("-----BEGIN") ? value : Buffer.from(value, "base64").toString("utf8");
   let key;
   try {
     key = createPrivateKey(pem);
@@ -175,4 +171,14 @@ async function main() {
   }
 }
 
-if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) await main();
+// Run when invoked as the script, also through a symlink (compare real paths).
+function invokedDirectly() {
+  if (!process.argv[1]) return false;
+  try {
+    return import.meta.url === pathToFileURL(realpathSync(process.argv[1])).href;
+  } catch {
+    return true;
+  }
+}
+
+if (invokedDirectly()) await main();

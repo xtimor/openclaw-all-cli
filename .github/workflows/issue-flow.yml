@@ -7,7 +7,8 @@ name: Issue flow
 # checks out or runs PR code. Issue and PR text is data and is never put into a command or an expression.
 # No concurrency group: GitHub keeps only one pending run per group and would drop events. Runs may overlap; the
 # status is always settled from the issue's current labels and label timeline, so parallel runs converge.
-# Events made with GITHUB_TOKEN (this workflow's own, or an agent's) start no workflow; the bot guard is defense only.
+# Events made with GITHUB_TOKEN (this workflow's own) start no workflow; the bot guard is defense only. The issue agents'
+# events (their GitHub App token, or the owner's connector) do start it, like a person's, and are reconciled here.
 on:
   issues:
     types: [opened, reopened, closed, labeled, unlabeled]
@@ -32,8 +33,9 @@ permissions:
 env:
   # Logins (comma separated) allowed to set status:approved. Anyone else's approval is removed again.
   ISSUE_FLOW_OWNERS: xtimor
-  # Logins (comma separated) of the issue agents' GitHub App, as `<app-slug>[bot]` (docs/agents/identity.md). Their marker
-  # comments are never an author's reply; they are not owners, so an approval by them is removed. Empty: the agents act as the owner.
+  # Logins (comma separated) of the issue agents' GitHub App, as `<app-slug>[bot]` (docs/agents/identity.md). Only effect: an
+  # agent's marker comment is never an author's reply (matters when the app opened the issue). The app's approval is reverted
+  # because it is not in ISSUE_FLOW_OWNERS. Empty: the agents act as the owner.
   ISSUE_FLOW_AGENTS: ""
 
 jobs:

@@ -1053,21 +1053,26 @@ describe("runStale", () => {
     expect(fake.state(1)).toBe("open");
   });
 
-  it("STALE: unreadable or missing label events fall back to the last update", async () => {
+  it("STALE: an issue not updated for 30 days is closed without reading its events", async () => {
+    const fake = fakeGithub([{ number: 1, state: "open", labels: ["status:needs-info"], updated_at: daysAgo(31), user: { login: "alice" } }]);
+    expect(await apply.runStale({ github: fake.github, context: ctx("schedule", {}), core: fakeCore(), dryRun: false, now: NOW })).toEqual([1]);
+    expect(fake.calls).toEqual(["paginate open status:needs-info", "comment 1 @alice, this issue h", "remove 1 status:needs-info", "update 1 closed not_planned"]);
+  });
+
+  it("STALE: unreadable or missing label events fall back to the last update (still open)", async () => {
     const list: FakeIssue[] = [
-      { number: 1, state: "open", labels: ["status:needs-info"], updated_at: daysAgo(31) },
-      { number: 2, state: "open", labels: ["status:needs-info"], updated_at: daysAgo(31) },
-      { number: 3, state: "open", labels: ["status:needs-info"], updated_at: daysAgo(29) },
+      { number: 1, state: "open", labels: ["status:needs-info"], updated_at: daysAgo(10) },
+      { number: 2, state: "open", labels: ["status:needs-info"], updated_at: daysAgo(29) },
     ];
     const fake = fakeGithub(list, {
       events: { 2: [{ id: 9, event: "labeled", created_at: daysAgo(35), label: { name: "type:bug" } }] },
       failOn: (call) => (call === "events 1" ? Object.assign(new Error("Server Error"), { status: 500 }) : undefined),
     });
     const core = fakeCore();
-    expect(await apply.runStale({ github: fake.github, context: ctx("schedule", {}), core, dryRun: false, now: NOW })).toEqual([1, 2]);
+    expect(await apply.runStale({ github: fake.github, context: ctx("schedule", {}), core, dryRun: false, now: NOW })).toEqual([]);
     expect(core.lines.join("\n")).toContain("warning: issue-flow: #1 events not read, using its last update: Server Error");
-    expect(fake.comments(1)).toEqual([t.staleComment("")]); // no author on these fakes: no mention
-    expect(fake.state(3)).toBe("open");
+    expect(fake.state(1)).toBe("open");
+    expect(fake.state(2)).toBe("open");
   });
 
   it("STALE: a dry run lists and changes nothing", async () => {
