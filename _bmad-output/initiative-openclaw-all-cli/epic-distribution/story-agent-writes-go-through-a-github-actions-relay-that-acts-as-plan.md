@@ -3,7 +3,7 @@ title: 'Agent writes go through a GitHub Actions relay that acts as the agent ap
 type: 'feature'
 ticket: 15
 created: '2026-10-23'
-status: 'built'
+status: done
 baseline_revision: '19fe7f20987b15329f45b1704828ac51aa68a842'
 route: 'full'
 route_source: 'auto'

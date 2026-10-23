@@ -3,7 +3,7 @@ title: 'Issue agents act as their own GitHub App, not as the owner'
 type: 'feature'
 ticket: 14
 created: '2026-10-23'
-status: 'built'
+status: done
 baseline_revision: '15fa8d8af552e3535a96637d3a3e57707a5b3177'
 route: 'full'
 route_source: 'auto'
