@@ -141,3 +141,27 @@ after = [11]
 hitl = false
 risk = "medium"
 references = ["epic-distribution.md", "issue-flow.md"]
+
+[[entry]]
+id = 13
+type = "story"
+title = "needs-info issues close after 30 days in that status, with the author notified"
+description = "Owner's decision (2026-10-23): an open issue that has been in `status:needs-info` for more than 30 days is closed as not planned (never deleted) by the daily stale job, with a comment that mentions the author so GitHub notifies them, says why, and says that reopening brings it back to `status:new`. The 30 days count from the latest time `status:needs-info` was added (the issue's label events), not from the last update; an issue with no readable label event falls back to its last update. Replaces the 14-day rule everywhere (code, tests, docs, agent comment examples)."
+verify = "`test/issue-flow.test.ts` covers: 31 days since the needs-info label with later unrelated updates → closed with an @author comment; 29 days → open; fallback to updated_at; dry run lists only; `npm run ci` passes; a dispatched dry run of the Issue flow stale job lists nothing wrongly."
+covers = []
+after = [12]
+hitl = false
+risk = "medium"
+references = ["epic-distribution.md", "issue-flow.md"]
+
+[[entry]]
+id = 14
+type = "story"
+title = "Issue agents act as their own GitHub App, not as the owner"
+description = "Owner's decision (2026-10-23): the triage and implementation agents write to GitHub as a GitHub App the owner creates and installs on this repository only (shown as `<app-slug>[bot]`), not through the owner's connector. A small agent-neutral script mints a short-lived installation token from environment variables the owner sets in the cloud environment of the routine (`AGENT_APP_ID`, `AGENT_APP_PRIVATE_KEY_B64`; never printed or logged), and the agents use it with `gh` for every GitHub write (comments, labels, issue state, pull requests, merges); reads may use either. `ME` becomes the app's bot login; the owner list stays the owner's. The state automation treats marker comments by an agent login (new workflow setting `ISSUE_FLOW_AGENTS`) like an owner's, the batch-PR merge rule requires the PR author to be the agent login, and the owner-only approval rule is unchanged (the app's `status:approved` is reverted like anyone's). Without the variables the agents keep working as today (owner identity) and say so in the report. Docs: a setup section (create the app, permissions, install, generate the key, set the variables) in `docs/issues.md` or a new `docs/agents/identity.md`."
+verify = "Unit tests for the token script (JWT claims and signing with a test key, installation lookup, error on missing variables, the key never in output) and for `ISSUE_FLOW_AGENTS` in the state automation; `npm run ci` passes; live: after the owner sets the variables, a routine run's comments, labels, and batch PR show the app's bot login."
+covers = []
+after = [12]
+hitl = false
+risk = "high"
+references = ["epic-distribution.md", "issue-flow.md"]
