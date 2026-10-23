@@ -49,7 +49,7 @@ At the start of a run, before any GitHub write.
    | `pr_create` | `head`, `title`, `body`?, `draft`? | `head` must be a `claude/` branch of this repository; base is `main` |
    | `pr_ready` | `pr` | the pull request's author must be the app |
    | `pr_edit` | `pr`, `title`?, `body`? | the pull request's author must be the app |
-   | `pr_close` | `pr` | closes only an open draft pull request by the app, head branch `claude/` in this repository, title starting `Issue batch`, not updated for 4 hours or more (an interrupted batch; see [implement.md](implement.md#before-the-batch)); anything else is refused |
+   | `pr_close` | `pr` | closes only an open draft pull request by the app, head branch `claude/` in this repository, title exactly `Issue batch (in progress)`, not updated for 1 hour or more (an interrupted batch; see [implement.md](implement.md#before-the-batch)); anything else is refused |
    | `merge` | `pr`, `sha` | method `merge`; refused unless the pull request is open, not a draft, by the app, head branch `claude/` in this repository, base `main`, title starting `Issue batch`, head sha equal to `sha`, mergeable state `clean`, the check run named `check` present and `success` on that sha, every other check run completed `success`, `skipped`, or `neutral`, and the combined commit status not `failure`/`pending`/`error` (no statuses at all is fine) |
 
    Example, a triage decision (comment, then labels, in one run):
