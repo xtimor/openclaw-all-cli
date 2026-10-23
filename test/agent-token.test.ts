@@ -218,6 +218,31 @@ describe("agent-token", () => {
     expect(decodeJwt(calls[0]?.auth).signed).toBe(true);
   });
 
+  it("AGENT_APP_PRIVATE_KEY: the repository secret's raw PEM works alone, with the _B64 one winning when both are set", async () => {
+    const raw = await run([], { AGENT_APP_PRIVATE_KEY_B64: undefined, AGENT_APP_PRIVATE_KEY: pem });
+    expect(raw).toMatchObject({ code: 0, stdout: `${TOKEN}\n`, stderr: "" });
+    expect(decodeJwt(calls[0]?.auth).signed).toBe(true);
+    expect(secretsIn(raw)).toEqual([]);
+    // The same key as base64 and with the trailing newline a secret may carry.
+    expect(await run(["--login"], { AGENT_APP_PRIVATE_KEY_B64: undefined, AGENT_APP_PRIVATE_KEY: `${pem}\n\n` })).toMatchObject({ code: 0, stdout: "oac-issue-agents[bot]\n" });
+    expect(await run([], { AGENT_APP_PRIVATE_KEY_B64: undefined, AGENT_APP_PRIVATE_KEY: KEY_B64 })).toMatchObject({ code: 0, stdout: `${TOKEN}\n` });
+    // Both set: the _B64 one is read, so a bad raw key beside a good B64 one is not looked at.
+    expect(await run([], { AGENT_APP_PRIVATE_KEY: "garbage" })).toMatchObject({ code: 0, stdout: `${TOKEN}\n` });
+    expect(await run([], { AGENT_APP_PRIVATE_KEY_B64: "  ", AGENT_APP_PRIVATE_KEY: pem })).toMatchObject({ code: 0, stdout: `${TOKEN}\n` });
+  });
+
+  it("AGENT_APP_PRIVATE_KEY: an invalid value names its own variable and is never echoed; a missing key names both", async () => {
+    const bad = "-----BEGIN PRIVATE KEY-----\nnot a key\n-----END PRIVATE KEY-----";
+    const result = await run([], { AGENT_APP_PRIVATE_KEY_B64: undefined, AGENT_APP_PRIVATE_KEY: bad });
+    expect(result).toMatchObject({ code: 1, stdout: "" });
+    expect(result.stderr).toContain("AGENT_APP_PRIVATE_KEY is not a valid private key");
+    expect(result.stderr).not.toContain("not a key");
+    const none = await run([], { AGENT_APP_PRIVATE_KEY_B64: undefined, AGENT_APP_PRIVATE_KEY: " " });
+    expect(none).toMatchObject({ code: 2, stdout: "" });
+    expect(none.stderr).toContain("AGENT_APP_PRIVATE_KEY_B64 (or AGENT_APP_PRIVATE_KEY)");
+    expect(calls).toEqual([]);
+  });
+
   it("runs when invoked through a symlink", async () => {
     const dir = mkdtempSync(join(tmpdir(), "agent-token-"));
     dirs.push(dir);

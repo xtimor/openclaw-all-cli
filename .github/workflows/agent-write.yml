@@ -1,0 +1,60 @@
+name: Agent write
+
+# The relay for the issue agents' GitHub writes. A cloud session's proxy swaps the owner's credentials into every
+# api.github.com request, so an agent there can only write as the owner. It dispatches this workflow with a JSON list of
+# operations instead; the job mints the agent app's installation token from the repository secret and scripts/agent-write.mjs
+# (tested) applies the operations as `<app-slug>[bot]`, with its own guards. Design and the agents' side: docs/agents/identity.md.
+# Setup: secret AGENT_APP_PRIVATE_KEY (the app's PEM file, as is) and variable AGENT_APP_ID. Without AGENT_APP_ID the agents
+# write as the owner through their session, exactly as before; this workflow is then not used.
+# The input and the secrets reach the scripts only through env, never into the script text. The token is masked and never
+# leaves the one step that mints it. Runs only on main: a dispatch on another ref does nothing.
+# Runs queue (no cancel). GitHub keeps one pending run per group and replaces an older pending one with a newer one, so an
+# agent dispatches the next batch only after the previous run has finished.
+on:
+  workflow_dispatch:
+    inputs:
+      ops:
+        description: 'JSON array of operations (at most 50, 60 000 characters); see scripts/agent-write.mjs'
+        required: true
+        type: string
+
+# The app token does the writes; the job itself only reads the repository.
+permissions: {}
+
+concurrency:
+  group: agent-write
+  cancel-in-progress: false
+
+env:
+  # Same default as ci.yml and release.yml.
+  NODE_VERSION: 24.22.0
+  # Logins (comma separated) allowed to dispatch. Keep in sync with ISSUE_FLOW_OWNERS in issue-flow.yml.
+  ISSUE_FLOW_OWNERS: xtimor
+
+jobs:
+  write:
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+      - name: Apply the operations as the agent app
+        env:
+          AGENT_APP_ID: ${{ vars.AGENT_APP_ID }}
+          AGENT_APP_PRIVATE_KEY: ${{ secrets.AGENT_APP_PRIVATE_KEY }}
+          AGENT_APP_REPO: ${{ github.repository }}
+          AGENT_WRITE_OPS: ${{ inputs.ops }}
+        run: |
+          set -euo pipefail
+          TOKEN="$(node scripts/agent-token.mjs)"
+          [ -n "$TOKEN" ] || { echo "agent token empty" >&2; exit 1; }
+          echo "::add-mask::$TOKEN"
+          AGENT_LOGIN="$(node scripts/agent-token.mjs --login)"
+          GH_TOKEN="$TOKEN" AGENT_LOGIN="$AGENT_LOGIN" node scripts/agent-write.mjs

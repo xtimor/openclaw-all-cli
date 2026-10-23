@@ -3,12 +3,13 @@
 // (`<app-slug>[bot]`) and not as the owner. Agent-neutral and dependency-free (Node standard library, global `fetch`).
 // Design: _bmad-output/.../epic-distribution/issue-flow.md; how the agents use it: docs/agents/identity.md.
 //
-//   AGENT_APP_ID=... AGENT_APP_PRIVATE_KEY_B64=... node scripts/agent-token.mjs            # prints the token
-//   AGENT_APP_ID=... AGENT_APP_PRIVATE_KEY_B64=... node scripts/agent-token.mjs --login    # prints <app-slug>[bot] (GET /app, else the installation's app_slug)
+//   AGENT_APP_ID=... AGENT_APP_PRIVATE_KEY=... node scripts/agent-token.mjs            # prints the token
+//   AGENT_APP_ID=... AGENT_APP_PRIVATE_KEY=... node scripts/agent-token.mjs --login    # prints <app-slug>[bot] (GET /app, else the installation's app_slug)
 //
 // Environment:
 //   AGENT_APP_ID               the app's ID (or client ID). Required.
-//   AGENT_APP_PRIVATE_KEY_B64  the app's private key (PEM file) as one base64 string. Required.
+//   AGENT_APP_PRIVATE_KEY      the app's private key as the PEM file's text (the `Agent write` workflow's repository secret). One of the
+//   AGENT_APP_PRIVATE_KEY_B64  two keys is required: this one is the same PEM as one base64 string. Both set: the _B64 one wins.
 //   AGENT_APP_REPO             `owner/repo` the app is installed on (default xtimor/openclaw-all-cli).
 //   GITHUB_API_URL             API base (default https://api.github.com); tests point it at a local server.
 //
@@ -36,16 +37,17 @@ class AgentTokenError extends Error {
 
 const b64url = (input) => Buffer.from(input).toString("base64url");
 
-/** The private key from the base64 of its PEM file (a PEM pasted as is also works). The message never contains the value. */
-function readKey(value) {
+/** The private key from the PEM text or the base64 of the PEM file (either works in either variable). The message never contains the value. */
+function readKey(value, name) {
   const pem = value.startsWith("-----BEGIN") ? value : Buffer.from(value, "base64").toString("utf8");
   let key;
   try {
     key = createPrivateKey(pem);
   } catch {
-    throw new AgentTokenError("AGENT_APP_PRIVATE_KEY_B64 is not a valid private key: it must be the base64 of the app's PEM file (base64 -w0 key.pem)");
+    const hint = name === "AGENT_APP_PRIVATE_KEY" ? "the app's PEM file" : "the base64 of the app's PEM file (base64 -w0 key.pem)";
+    throw new AgentTokenError(`${name} is not a valid private key: it must be ${hint}`);
   }
-  if (key.asymmetricKeyType !== "rsa") throw new AgentTokenError("AGENT_APP_PRIVATE_KEY_B64 is not an RSA private key");
+  if (key.asymmetricKeyType !== "rsa") throw new AgentTokenError(`${name} is not an RSA private key`);
   return key;
 }
 
@@ -57,15 +59,20 @@ function appJwt(appId, key, nowSeconds) {
   return `${header}.${payload}.${signature}`;
 }
 
+const isSet = (value) => typeof value === "string" && value.trim() !== "";
+
 function readConfig(env) {
-  const missing = ["AGENT_APP_ID", "AGENT_APP_PRIVATE_KEY_B64"].filter((name) => typeof env[name] !== "string" || env[name].trim() === "");
+  const keyName = isSet(env.AGENT_APP_PRIVATE_KEY_B64) ? "AGENT_APP_PRIVATE_KEY_B64" : "AGENT_APP_PRIVATE_KEY";
+  const missing = [];
+  if (!isSet(env.AGENT_APP_ID)) missing.push("AGENT_APP_ID");
+  if (!isSet(env[keyName])) missing.push("AGENT_APP_PRIVATE_KEY_B64 (or AGENT_APP_PRIVATE_KEY)");
   if (missing.length > 0) throw new AgentTokenError(`missing environment variable: ${missing.join(", ")}`, 2);
   const appId = env.AGENT_APP_ID.trim();
   if (!/^[A-Za-z0-9_.-]{1,64}$/.test(appId)) throw new AgentTokenError("AGENT_APP_ID is not an app ID or client ID", 2);
   const repo = (env.AGENT_APP_REPO ?? "").trim() || DEFAULT_REPO;
   if (!/^[\w.-]+\/[\w.-]+$/.test(repo)) throw new AgentTokenError("AGENT_APP_REPO must look like owner/repo", 2);
   const api = ((env.GITHUB_API_URL ?? "").trim() || DEFAULT_API).replace(/\/+$/, "");
-  return { appId, repo, api, keyBase64: env.AGENT_APP_PRIVATE_KEY_B64.trim() };
+  return { appId, repo, api, keyName, keyValue: env[keyName].trim() };
 }
 
 /** One GitHub API call as the app. Returns the parsed JSON; a failure carries the status and the API's message only. */
@@ -151,7 +158,7 @@ export async function run(argv, env, nowMs = Date.now()) {
   const flags = argv.filter((arg) => arg !== "--login");
   if (flags.length > 0) throw new AgentTokenError("usage: node scripts/agent-token.mjs [--login]", 2);
   const config = readConfig(env);
-  const key = readKey(config.keyBase64);
+  const key = readKey(config.keyValue, config.keyName);
   const jwt = appJwt(config.appId, key, Math.floor(nowMs / 1000));
   return argv.includes("--login") ? readLogin(config, jwt) : mintToken(config, jwt);
 }
