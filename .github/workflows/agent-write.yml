@@ -2,14 +2,15 @@ name: Agent write
 
 # The relay for the issue agents' GitHub writes. A cloud session's proxy swaps the owner's credentials into every
 # api.github.com request, so an agent there can only write as the owner. It dispatches this workflow with a JSON list of
-# operations instead; the job mints the agent app's installation token from the repository secret and scripts/agent-write.mjs
+# operations instead; the job mints the agent app's installation token from the environment secret and scripts/agent-write.mjs
 # (tested) applies the operations as `<app-slug>[bot]`, with its own guards. Design and the agents' side: docs/agents/identity.md.
-# Setup: secret AGENT_APP_PRIVATE_KEY (the app's PEM file, as is) and variable AGENT_APP_ID. Without AGENT_APP_ID the agents
-# write as the owner through their session, exactly as before; this workflow is then not used.
-# The input and the secrets reach the scripts only through env, never into the script text. The token is masked and never
-# leaves the one step that mints it. Runs only on main: a dispatch on another ref does nothing.
-# Runs queue (no cancel). GitHub keeps one pending run per group and replaces an older pending one with a newer one, so an
-# agent dispatches the next batch only after the previous run has finished.
+# Setup: a GitHub Environment `agent` (deployment branches: only `main`) holding the secret AGENT_APP_PRIVATE_KEY (the app's PEM
+# file, as is) and the variable AGENT_APP_ID. The environment is what keeps the key from a copy of this file on another branch.
+# Without a login in .github/agent-identity.json the agents write as the owner through their session, exactly as before.
+# The input and the secrets reach the scripts only through env, never into the script text. The token is masked, lives in one
+# step, is revoked when the step ends, and the writer (which handles the untrusted list) runs without the private key.
+# Runs only on main: a dispatch on another ref does nothing. No concurrency group: GitHub would replace a pending run with a
+# newer one and drop its writes, so each agent waits for its own run to finish before it dispatches the next.
 on:
   workflow_dispatch:
     inputs:
@@ -20,10 +21,6 @@ on:
 
 # The app token does the writes; the job itself only reads the repository.
 permissions: {}
-
-concurrency:
-  group: agent-write
-  cancel-in-progress: false
 
 env:
   # Same default as ci.yml and release.yml.
@@ -36,6 +33,7 @@ jobs:
     if: github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     timeout-minutes: 10
+    environment: agent
     permissions:
       contents: read
     steps:
@@ -51,10 +49,15 @@ jobs:
           AGENT_APP_PRIVATE_KEY: ${{ secrets.AGENT_APP_PRIVATE_KEY }}
           AGENT_APP_REPO: ${{ github.repository }}
           AGENT_WRITE_OPS: ${{ inputs.ops }}
+          # Who started this run (differs from the actor on a re-run); the writer requires an owner and attempt 1.
+          GITHUB_TRIGGERING_ACTOR: ${{ github.triggering_actor }}
+          GITHUB_RUN_ATTEMPT: ${{ github.run_attempt }}
         run: |
           set -euo pipefail
           TOKEN="$(node scripts/agent-token.mjs)"
           [ -n "$TOKEN" ] || { echo "agent token empty" >&2; exit 1; }
           echo "::add-mask::$TOKEN"
+          # Revoke the token when this step ends, however it ends. The token is never written to the job environment file or to an output.
+          trap 'curl -sS -o /dev/null -X DELETE -H "Authorization: Bearer $TOKEN" -H "Accept: application/vnd.github+json" "$GITHUB_API_URL/installation/token" || true' EXIT
           AGENT_LOGIN="$(node scripts/agent-token.mjs --login)"
-          GH_TOKEN="$TOKEN" AGENT_LOGIN="$AGENT_LOGIN" node scripts/agent-write.mjs
+          env -u AGENT_APP_PRIVATE_KEY -u AGENT_APP_PRIVATE_KEY_B64 GH_TOKEN="$TOKEN" AGENT_LOGIN="$AGENT_LOGIN" node scripts/agent-write.mjs

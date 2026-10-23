@@ -8,8 +8,9 @@
 //
 // Environment:
 //   AGENT_APP_ID               the app's ID (or client ID). Required.
-//   AGENT_APP_PRIVATE_KEY      the app's private key as the PEM file's text (the `Agent write` workflow's repository secret). One of the
-//   AGENT_APP_PRIVATE_KEY_B64  two keys is required: this one is the same PEM as one base64 string. Both set: the _B64 one wins.
+//   AGENT_APP_PRIVATE_KEY      the app's private key as the PEM file's text (the `Agent write` workflow's environment secret). One of the
+//   AGENT_APP_PRIVATE_KEY_B64  two keys is required; the second is the same PEM as one base64 string (an alternative). Both set: they
+//                              must hold the same key, else exit 2.
 //   AGENT_APP_REPO             `owner/repo` the app is installed on (default xtimor/openclaw-all-cli).
 //   GITHUB_API_URL             API base (default https://api.github.com); tests point it at a local server.
 //
@@ -37,9 +38,11 @@ class AgentTokenError extends Error {
 
 const b64url = (input) => Buffer.from(input).toString("base64url");
 
+const pemText = (value) => (value.startsWith("-----BEGIN") ? value : Buffer.from(value, "base64").toString("utf8")).replace(/\r\n/g, "\n").trim();
+
 /** The private key from the PEM text or the base64 of the PEM file (either works in either variable). The message never contains the value. */
 function readKey(value, name) {
-  const pem = value.startsWith("-----BEGIN") ? value : Buffer.from(value, "base64").toString("utf8");
+  const pem = pemText(value);
   let key;
   try {
     key = createPrivateKey(pem);
@@ -62,11 +65,14 @@ function appJwt(appId, key, nowSeconds) {
 const isSet = (value) => typeof value === "string" && value.trim() !== "";
 
 function readConfig(env) {
-  const keyName = isSet(env.AGENT_APP_PRIVATE_KEY_B64) ? "AGENT_APP_PRIVATE_KEY_B64" : "AGENT_APP_PRIVATE_KEY";
+  const keyName = isSet(env.AGENT_APP_PRIVATE_KEY) ? "AGENT_APP_PRIVATE_KEY" : "AGENT_APP_PRIVATE_KEY_B64";
   const missing = [];
   if (!isSet(env.AGENT_APP_ID)) missing.push("AGENT_APP_ID");
-  if (!isSet(env[keyName])) missing.push("AGENT_APP_PRIVATE_KEY_B64 (or AGENT_APP_PRIVATE_KEY)");
+  if (!isSet(env[keyName])) missing.push("AGENT_APP_PRIVATE_KEY (or AGENT_APP_PRIVATE_KEY_B64)");
   if (missing.length > 0) throw new AgentTokenError(`missing environment variable: ${missing.join(", ")}`, 2);
+  if (isSet(env.AGENT_APP_PRIVATE_KEY) && isSet(env.AGENT_APP_PRIVATE_KEY_B64) && pemText(env.AGENT_APP_PRIVATE_KEY.trim()) !== pemText(env.AGENT_APP_PRIVATE_KEY_B64.trim())) {
+    throw new AgentTokenError("AGENT_APP_PRIVATE_KEY and AGENT_APP_PRIVATE_KEY_B64 are both set and differ: set only one", 2);
+  }
   const appId = env.AGENT_APP_ID.trim();
   if (!/^[A-Za-z0-9_.-]{1,64}$/.test(appId)) throw new AgentTokenError("AGENT_APP_ID is not an app ID or client ID", 2);
   const repo = (env.AGENT_APP_REPO ?? "").trim() || DEFAULT_REPO;

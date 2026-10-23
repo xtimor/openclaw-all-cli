@@ -184,7 +184,7 @@ describe("agent-token", () => {
     const empty = await run([], { AGENT_APP_ID: "  " });
     expect(empty).toMatchObject({ code: 2, stdout: "" });
     const both = await run([], { AGENT_APP_ID: undefined, AGENT_APP_PRIVATE_KEY_B64: undefined });
-    expect(both.stderr).toContain("AGENT_APP_ID, AGENT_APP_PRIVATE_KEY_B64");
+    expect(both.stderr).toContain("AGENT_APP_ID, AGENT_APP_PRIVATE_KEY (or AGENT_APP_PRIVATE_KEY_B64)");
     expect(calls).toEqual([]);
   });
 
@@ -218,17 +218,28 @@ describe("agent-token", () => {
     expect(decodeJwt(calls[0]?.auth).signed).toBe(true);
   });
 
-  it("AGENT_APP_PRIVATE_KEY: the repository secret's raw PEM works alone, with the _B64 one winning when both are set", async () => {
+  it("AGENT_APP_PRIVATE_KEY: the raw PEM is the canonical variable; _B64 is an alternative; both must hold the same key", async () => {
     const raw = await run([], { AGENT_APP_PRIVATE_KEY_B64: undefined, AGENT_APP_PRIVATE_KEY: pem });
     expect(raw).toMatchObject({ code: 0, stdout: `${TOKEN}\n`, stderr: "" });
     expect(decodeJwt(calls[0]?.auth).signed).toBe(true);
     expect(secretsIn(raw)).toEqual([]);
-    // The same key as base64 and with the trailing newline a secret may carry.
+    // A secret may carry trailing newlines or be the base64 of the PEM.
     expect(await run(["--login"], { AGENT_APP_PRIVATE_KEY_B64: undefined, AGENT_APP_PRIVATE_KEY: `${pem}\n\n` })).toMatchObject({ code: 0, stdout: "oac-issue-agents[bot]\n" });
     expect(await run([], { AGENT_APP_PRIVATE_KEY_B64: undefined, AGENT_APP_PRIVATE_KEY: KEY_B64 })).toMatchObject({ code: 0, stdout: `${TOKEN}\n` });
-    // Both set: the _B64 one is read, so a bad raw key beside a good B64 one is not looked at.
-    expect(await run([], { AGENT_APP_PRIVATE_KEY: "garbage" })).toMatchObject({ code: 0, stdout: `${TOKEN}\n` });
+    // _B64 alone, blank _B64 beside a PEM, and both holding the same key (text or base64) work.
+    expect(await run([], { AGENT_APP_PRIVATE_KEY_B64: KEY_B64 })).toMatchObject({ code: 0, stdout: `${TOKEN}\n` });
     expect(await run([], { AGENT_APP_PRIVATE_KEY_B64: "  ", AGENT_APP_PRIVATE_KEY: pem })).toMatchObject({ code: 0, stdout: `${TOKEN}\n` });
+    expect(await run([], { AGENT_APP_PRIVATE_KEY_B64: KEY_B64, AGENT_APP_PRIVATE_KEY: pem })).toMatchObject({ code: 0, stdout: `${TOKEN}\n` });
+    // Different keys in the two variables: exit 2 before any request, naming both and no value.
+    calls = [];
+    const other = generateKeyPairSync("rsa", { modulusLength: 2048 }).privateKey.export({ type: "pkcs8", format: "pem" }) as string;
+    for (const env of [{ AGENT_APP_PRIVATE_KEY_B64: KEY_B64, AGENT_APP_PRIVATE_KEY: other }, { AGENT_APP_PRIVATE_KEY_B64: "garbage", AGENT_APP_PRIVATE_KEY: pem }]) {
+      const result = await run([], env);
+      expect(result).toMatchObject({ code: 2, stdout: "" });
+      expect(result.stderr).toContain("AGENT_APP_PRIVATE_KEY and AGENT_APP_PRIVATE_KEY_B64 are both set and differ");
+      expect(secretsIn(result, [other])).toEqual([]);
+    }
+    expect(calls).toEqual([]);
   });
 
   it("AGENT_APP_PRIVATE_KEY: an invalid value names its own variable and is never echoed; a missing key names both", async () => {
@@ -239,7 +250,7 @@ describe("agent-token", () => {
     expect(result.stderr).not.toContain("not a key");
     const none = await run([], { AGENT_APP_PRIVATE_KEY_B64: undefined, AGENT_APP_PRIVATE_KEY: " " });
     expect(none).toMatchObject({ code: 2, stdout: "" });
-    expect(none.stderr).toContain("AGENT_APP_PRIVATE_KEY_B64 (or AGENT_APP_PRIVATE_KEY)");
+    expect(none.stderr).toContain("AGENT_APP_PRIVATE_KEY (or AGENT_APP_PRIVATE_KEY_B64)");
     expect(calls).toEqual([]);
   });
 

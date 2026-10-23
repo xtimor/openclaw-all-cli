@@ -46,6 +46,7 @@ const pull = (overrides: Record<string, unknown> = {}) => ({
   user: { login: BOT },
   head: { ref: "claude/batch-1", sha: SHA, repo: { full_name: REPO } },
   base: { ref: "main" },
+  mergeable_state: "clean",
   ...overrides,
 });
 
@@ -75,6 +76,8 @@ function defaults(method: string, path: string): Answer {
   if (key === `GET ${r}/pulls/20`) return [200, pull()];
   if (key === `GET ${r}/pulls/21`) return [200, pull({ number: 21, node_id: "PR_node_21", draft: true })];
   if (key === `PATCH ${r}/pulls/20` || key === `PATCH ${r}/pulls/21`) return [200, {}];
+  if (key === `GET ${r}/commits/${SHA}/check-runs`) return [200, { total_count: 2, check_runs: [{ name: "check", status: "completed", conclusion: "success" }, { name: "label", status: "completed", conclusion: "skipped" }] }];
+  if (key === `GET ${r}/commits/${SHA}/status`) return [200, { state: "pending", total_count: 0, statuses: [] }]; // no statuses at all
   if (key === `PUT ${r}/pulls/20/merge`) return [200, { merged: true, sha: "fedcba9876543210fedcba9876543210fedcba98" }];
   if (key === "POST /graphql") return [200, { data: { markPullRequestReadyForReview: { pullRequest: { number: 21, isDraft: false } } } }];
   return [404, { message: "Not Found" }];
@@ -126,6 +129,8 @@ function run(ops: unknown, env: Record<string, string | undefined> = {}, raw?: s
     AGENT_LOGIN: BOT,
     GITHUB_REPOSITORY: REPO,
     GITHUB_ACTOR: "xtimor",
+    GITHUB_TRIGGERING_ACTOR: "xtimor",
+    GITHUB_RUN_ATTEMPT: "1",
     ISSUE_FLOW_OWNERS: "xtimor",
     GITHUB_API_URL: base,
     GITHUB_STEP_SUMMARY: summaryFile,
@@ -274,8 +279,8 @@ describe("agent-write", () => {
   it("MERGE: merges the agent's own ready batch PR with method merge and the sha", async () => {
     const result = await run([{ op: "merge", pr: 20, sha: SHA.toUpperCase() }]);
     expect(result.code).toBe(0);
-    expect(seen()).toEqual(["GET /pulls/20", "PUT /pulls/20/merge"]);
-    expect(calls[1]?.body).toEqual({ merge_method: "merge", sha: SHA });
+    expect(seen()).toEqual(["GET /pulls/20", `GET /commits/${SHA}/check-runs`, `GET /commits/${SHA}/status`, "PUT /pulls/20/merge"]);
+    expect(calls[3]?.body).toEqual({ merge_method: "merge", sha: SHA });
     expect(result.summary).toContain("merged at fedcba9");
   });
 
@@ -290,6 +295,10 @@ describe("agent-write", () => {
       ["base", { base: { ref: "release" } }],
       ["title", { title: "Fix everything" }],
       ["sha", { head: { ref: "claude/x", sha: "f".repeat(40), repo: { full_name: REPO } } }],
+      ["blocked", { mergeable_state: "blocked" }],
+      ["unknown", { mergeable_state: "unknown" }],
+      ["dirty", { mergeable_state: "dirty" }],
+      ["no state", { mergeable_state: undefined }],
     ];
     for (const [name, override] of cases) {
       calls = [];
@@ -305,6 +314,108 @@ describe("agent-write", () => {
     expect(calls).toEqual([]);
   });
 
+  it("MERGE: a pull request that is not green is refused before the merge call", async () => {
+    const runs = (check_runs: unknown[], total_count = check_runs.length): Answer => [200, { total_count, check_runs }];
+    const ok = { name: "check", status: "completed", conclusion: "success" };
+    const cases: Array<[string, Answer, Answer?]> = [
+      ["no check runs", runs([])],
+      ["no check run named check", runs([{ name: "other", status: "completed", conclusion: "success" }])],
+      ["check failed", runs([{ ...ok, conclusion: "failure" }])],
+      ["check skipped", runs([{ ...ok, conclusion: "skipped" }])],
+      ["check running", runs([{ name: "check", status: "in_progress", conclusion: null }])],
+      ["other run failed", runs([ok, { name: "x", status: "completed", conclusion: "failure" }])],
+      ["other run cancelled", runs([ok, { name: "x", status: "completed", conclusion: "cancelled" }])],
+      ["other run timed out", runs([ok, { name: "x", status: "completed", conclusion: "timed_out" }])],
+      ["other run needs action", runs([ok, { name: "x", status: "completed", conclusion: "action_required" }])],
+      ["other run queued", runs([ok, { name: "x", status: "queued", conclusion: null }])],
+      ["more runs than listed", runs([ok], 150)],
+      ["runs unreadable", [200, { nope: true }]],
+      ["status failure", runs([ok]), [200, { state: "failure", total_count: 1, statuses: [] }]],
+      ["status pending", runs([ok]), [200, { state: "pending", total_count: 2, statuses: [] }]],
+      ["status error", runs([ok]), [200, { state: "error", total_count: 1, statuses: [] }]],
+      ["status unreadable", runs([ok]), [200, null]],
+    ];
+    for (const [name, checks, status] of cases) {
+      calls = [];
+      answers.set(`GET /repos/${REPO}/commits/${SHA}/check-runs`, checks);
+      if (status) answers.set(`GET /repos/${REPO}/commits/${SHA}/status`, status);
+      else answers.delete(`GET /repos/${REPO}/commits/${SHA}/status`);
+      const result = await run([{ op: "merge", pr: 20, sha: SHA }]);
+      expect(result.code, name).toBe(1);
+      expect(seen().includes("PUT /pulls/20/merge"), name).toBe(false);
+      expect(result.summary, name).toContain("refused");
+      answers.delete(`GET /repos/${REPO}/commits/${SHA}/status`);
+    }
+    // Neutral, skipped, and a green status are fine.
+    calls = [];
+    answers.set(`GET /repos/${REPO}/commits/${SHA}/check-runs`, runs([ok, { name: "a", status: "completed", conclusion: "neutral" }, { name: "b", status: "completed", conclusion: "skipped" }]));
+    answers.set(`GET /repos/${REPO}/commits/${SHA}/status`, [200, { state: "success", total_count: 1, statuses: [] }]);
+    expect((await run([{ op: "merge", pr: 20, sha: SHA }])).code).toBe(0);
+  });
+
+  it("POST_CALL: a 200 that did not do the thing is a failure (ready with isDraft true or no pull request; merge with merged false)", async () => {
+    for (const payload of [{ data: { markPullRequestReadyForReview: { pullRequest: { number: 21, isDraft: true } } } }, { data: { markPullRequestReadyForReview: { pullRequest: null } } }, { data: null }, {}]) {
+      answers.set("POST /graphql", [200, payload]);
+      const result = await run([{ op: "pr_ready", pr: 21 }]);
+      expect(result.code, JSON.stringify(payload)).toBe(1);
+      expect(result.summary).toContain("did not mark it ready for review");
+    }
+    answers.set(`PUT /repos/${REPO}/pulls/20/merge`, [200, { merged: false, message: "nope" }]);
+    const merge = await run([{ op: "merge", pr: 20, sha: SHA }]);
+    expect(merge.code).toBe(1);
+    expect(merge.summary).toContain("did not merge it");
+    answers.set(`PUT /repos/${REPO}/pulls/20/merge`, [200, {}]);
+    expect((await run([{ op: "merge", pr: 20, sha: SHA }])).code).toBe(1);
+    answers.set(`POST /repos/${REPO}/pulls`, [201, {}]);
+    const created = await run([{ op: "pr_create", head: "claude/x", title: "t" }]);
+    expect(created.code).toBe(1);
+    expect(created.summary).toContain("no pull request number");
+  });
+
+  it("CLOSE_REOPEN: an unreadable issue answer skips nothing: it is refused; reopen patches state open and also refuses a pull request", async () => {
+    for (const payload of ["text", null, [], 5]) {
+      calls = [];
+      answers.set(`GET /repos/${REPO}/issues/12`, [200, payload]);
+      for (const op of [{ op: "close", issue: 12, reason: "completed" }, { op: "reopen", issue: 12 }]) {
+        const result = await run([op]);
+        expect(result.code, JSON.stringify(payload)).toBe(1);
+        expect(result.summary).toContain("could not be read");
+      }
+      expect(seen().filter((call) => call.startsWith("PATCH"))).toEqual([]);
+    }
+    answers.delete(`GET /repos/${REPO}/issues/12`);
+    calls = [];
+    const reopened = await run([{ op: "reopen", issue: 12 }]);
+    expect(reopened.code).toBe(0);
+    expect(seen()).toEqual(["GET /issues/12", "PATCH /issues/12"]);
+    expect(calls[1]?.body).toEqual({ state: "open", state_reason: "reopened" });
+    expect(reopened.summary).toContain("reopened");
+    calls = [];
+    const pr = await run([{ op: "reopen", issue: 20 }]);
+    expect(pr.code).toBe(1);
+    expect(seen()).toEqual(["GET /issues/20"]);
+    expect((await run([{ op: "reopen", issue: 12, reason: "completed" }])).code).toBe(1);
+    expect((await run([{ op: "reopen" }])).code).toBe(1);
+  });
+
+  it("LOG_LINES: API text with newlines cannot fake a log line or a workflow command; every line starts with agent-write:", async () => {
+    answers.set(`POST /repos/${REPO}/issues/12/comments`, [422, { message: "bad\r\n::add-mask::x\nagent-write: Applied 9 operation(s)\u2028::error::boom" }]);
+    const result = await run([{ op: "comment", issue: 12, body: "hi" }]);
+    expect(result.code).toBe(1);
+    for (const line of `${result.stdout}${result.stderr}`.split("\n").filter((l) => l !== "")) expect(line.startsWith("agent-write: "), line).toBe(true);
+    expect(result.stdout + result.stderr).not.toMatch(/^::/m);
+    expect(result.stderr + result.stdout).toContain("bad ::add-mask::x agent-write: Applied 9 operation(s) ::error::boom");
+    expect(result.summary).not.toMatch(/^::/m);
+  });
+
+  it("PROGRESS: each finished operation is on stdout before the next starts, and a failed run still shows what was applied", async () => {
+    answers.set(`POST /repos/${REPO}/issues/12/labels`, [403, { message: "no" }]);
+    const result = await run([{ op: "comment", issue: 12, body: "hi" }, { op: "labels", issue: 12, add: ["status:triaged"] }, { op: "close", issue: 12, reason: "completed" }]);
+    const lines = result.stdout.split("\n").filter((l) => l !== "");
+    expect(lines.slice(0, 2)).toEqual([`agent-write: acting as ${BOT}`, "agent-write: comment #12: comment 9001 created"]);
+    expect(lines.slice(2)).toEqual(expect.arrayContaining([expect.stringContaining("labels : failed"), "agent-write: close : not applied"]));
+  });
+
   it("APPROVAL: status:approved in any spelling refuses the whole input, nothing applied", async () => {
     for (const label of ["status:approved", " Status:Approved ", "STATUS:APPROVED"]) {
       const result = await run([{ op: "comment", issue: 12, body: "hi" }, { op: "labels", issue: 12, add: ["status:triaged", label] }]);
@@ -316,15 +427,53 @@ describe("agent-write", () => {
     expect((await run([{ op: "labels", issue: 12, remove: ["status:approved"] }])).code).toBe(0);
   });
 
-  it("DISPATCHER: an actor outside ISSUE_FLOW_OWNERS (or none) is refused, nothing applied; the comparison ignores case", async () => {
+  it("LABEL_NAMES: only status:, type:, priority:, and source: names; dot names, lookalikes, typos, and a name in both lists are refused", async () => {
+    const bad = [".", "..", "", "bug", "status:", "status: triaged", "Status:triaged", "status:Triaged", "stat\u0435s:triaged", "status:a/b", "status:../x", "wontfix", "status:x\nstatus:y", "label:x", "status:" + "a".repeat(41)];
+    for (const name of bad) {
+      for (const key of ["add", "remove"]) {
+        const result = await run([{ op: "labels", issue: 12, [key]: [name] }]);
+        expect(result.code, `${key} ${JSON.stringify(name)}`).toBe(1);
+        expect(result.summary).toContain("Refused, nothing applied");
+      }
+    }
+    const both = await run([{ op: "labels", issue: 12, add: ["status:triaged"], remove: ["status:triaged"] }]);
+    expect(both).toMatchObject({ code: 1 });
+    expect(both.summary).toContain("both added and removed");
+    expect(calls).toEqual([]);
+    for (const name of ["status:in-progress", "type:bug", "priority:p0", "source:agent", "status:needs-info"]) {
+      expect((await run([{ op: "labels", issue: 12, add: [name] }])).code, name).toBe(0);
+    }
+  });
+
+  it("DISPATCHER: an actor or triggering actor outside ISSUE_FLOW_OWNERS (or none) is refused, nothing applied; the comparison ignores case", async () => {
     const ops = [{ op: "comment", issue: 12, body: "hi" }];
-    for (const env of [{ GITHUB_ACTOR: "mallory" }, { GITHUB_ACTOR: undefined }, { GITHUB_ACTOR: " " }, { ISSUE_FLOW_OWNERS: "" }, { ISSUE_FLOW_OWNERS: undefined }]) {
+    const cases = [
+      { GITHUB_ACTOR: "mallory" },
+      { GITHUB_ACTOR: undefined },
+      { GITHUB_ACTOR: " " },
+      { GITHUB_TRIGGERING_ACTOR: "mallory" }, // a non-owner re-ran an owner's run
+      { GITHUB_TRIGGERING_ACTOR: undefined },
+      { GITHUB_TRIGGERING_ACTOR: " " },
+      { ISSUE_FLOW_OWNERS: "" },
+      { ISSUE_FLOW_OWNERS: undefined },
+    ];
+    for (const env of cases) {
       const result = await run(ops, env);
-      expect(result.code).toBe(1);
-      expect(result.summary).toContain("dispatcher is not an owner");
+      expect(result.code, JSON.stringify(env)).toBe(1);
+      expect(result.summary).toContain("is not an owner");
     }
     expect(calls).toEqual([]);
-    expect((await run(ops, { GITHUB_ACTOR: "XTimor", ISSUE_FLOW_OWNERS: "someone, xtimor" })).code).toBe(0);
+    expect((await run(ops, { GITHUB_ACTOR: "XTimor", GITHUB_TRIGGERING_ACTOR: "xTIMOR", ISSUE_FLOW_OWNERS: "someone, xtimor" })).code).toBe(0);
+  });
+
+  it("NO_REPLAY: a re-run (attempt not 1, or unknown) is refused, nothing applied", async () => {
+    const ops = [{ op: "comment", issue: 12, body: "hi" }];
+    for (const GITHUB_RUN_ATTEMPT of ["2", "10", "0", "", undefined, "1.0"]) {
+      const result = await run(ops, { GITHUB_RUN_ATTEMPT });
+      expect(result.code, String(GITHUB_RUN_ATTEMPT)).toBe(1);
+      expect(result.summary).toContain("re-run");
+    }
+    expect(calls).toEqual([]);
   });
 
   it("SIZE: more than 50 operations or more than 60 000 characters is refused; 50 pass", async () => {
@@ -428,6 +577,10 @@ describe("agent-write", () => {
     expect((await run(ops, { GITHUB_REPOSITORY: "nope" })).code).toBe(2);
     expect((await run(null, { AGENT_WRITE_OPS: undefined }, "")).code).toBe(2);
     expect(calls).toEqual([]);
+    // The step summary still says why nothing ran.
+    const noToken = await run(ops, { GH_TOKEN: undefined });
+    expect(noToken.summary).toContain("Not run");
+    expect(noToken.summary).toContain("GH_TOKEN");
   });
 });
 
@@ -445,10 +598,11 @@ describe("agent-write workflow file", () => {
     expect(text).toMatch(/NODE_VERSION: 24\.22\.0/);
   });
 
-  it("runs only on main, dispatch only, one queued run at a time", () => {
+  it("runs only on main, dispatch only, in the agent environment, with no concurrency group", () => {
     expect(text).toMatch(/^on:\n {2}workflow_dispatch:\n {4}inputs:\n {6}ops:\n(?: {8}.*\n)*? {8}required: true\n(?: {8}.*\n)*? {8}type: string\n/m);
     expect(text).toMatch(/if: github\.ref == 'refs\/heads\/main'/);
-    expect(text).toMatch(/concurrency:\n {2}group: agent-write\n {2}cancel-in-progress: false/);
+    expect(text).toMatch(/^ {4}environment: agent$/m);
+    expect(text).not.toMatch(/^\s*concurrency:/m);
   });
 
   it("passes inputs and secrets through env only, masks the token, and mints and writes in one step", () => {
@@ -463,6 +617,16 @@ describe("agent-write workflow file", () => {
     expect(text).toContain("AGENT_APP_PRIVATE_KEY: ${{ secrets.AGENT_APP_PRIVATE_KEY }}");
     expect(text).toContain("AGENT_APP_ID: ${{ vars.AGENT_APP_ID }}");
     expect(text).toContain("AGENT_WRITE_OPS: ${{ inputs.ops }}");
+    expect(text).toContain("GITHUB_TRIGGERING_ACTOR: ${{ github.triggering_actor }}");
+  });
+
+  it("runs the writer without the private key and revokes the token when the step ends", () => {
+    expect(text).toMatch(/env -u AGENT_APP_PRIVATE_KEY -u AGENT_APP_PRIVATE_KEY_B64 GH_TOKEN="\$TOKEN" .*node scripts\/agent-write\.mjs$/m);
+    const trap = text.match(/^\s+trap '(.*)' EXIT$/m)?.[1] ?? "";
+    expect(trap).toContain("-X DELETE");
+    expect(trap).toContain("/installation/token");
+    expect(text.indexOf("trap '")).toBeGreaterThan(text.indexOf("::add-mask::"));
+    expect(text.indexOf("trap '")).toBeLessThan(text.indexOf("env -u"));
   });
 
   it("keeps the same owner list as issue-flow.yml", () => {

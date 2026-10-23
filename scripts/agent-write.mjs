@@ -10,20 +10,24 @@
 // Operations (JSON array, at most 50, the whole input at most 60 000 characters), applied in order:
 //   {op:"comment", issue, body}                            new comment on an issue or pull request
 //   {op:"edit_comment", comment_id, body}                  only a comment whose author is AGENT_LOGIN
-//   {op:"labels", issue, add?:[...], remove?:[...]}        add first, then remove (a label that is not there is fine); never `status:approved`
+//   {op:"labels", issue, add?:[...], remove?:[...]}        names like status:x, type:x, priority:x, source:x only; add first, then remove
+//                                                          (a label that is not there is fine); never add `status:approved`; no name in both lists
 //   {op:"close", issue, reason}                            reason: completed | not_planned | duplicate; an issue, never a pull request
+//   {op:"reopen", issue}                                   an issue, never a pull request
 //   {op:"pr_create", head, title, body?, draft?}           head must be a `claude/` branch of this repository; base is main
 //   {op:"pr_ready", pr}                                    only a pull request by AGENT_LOGIN
 //   {op:"pr_edit", pr, title?, body?}                      only a pull request by AGENT_LOGIN
-//   {op:"merge", pr, sha}                                  method merge; see checkMergeable
+//   {op:"merge", pr, sha}                                  method merge; see checkMergeable and checkGreen
 // Everything is validated first; nothing is applied when anything is refused. Applying stops at the first failure.
 //
 // Environment: AGENT_WRITE_OPS, GH_TOKEN (the app's installation token), GITHUB_REPOSITORY, GITHUB_ACTOR (the dispatcher),
-// ISSUE_FLOW_OWNERS (comma separated logins allowed to dispatch), AGENT_LOGIN (`<app-slug>[bot]`), GITHUB_API_URL (default
+// GITHUB_TRIGGERING_ACTOR (who started this run; differs from the actor on a re-run), GITHUB_RUN_ATTEMPT (must be "1": no
+// replays), ISSUE_FLOW_OWNERS (comma separated logins allowed to dispatch; both actors must be in it), AGENT_LOGIN (`<app-slug>[bot]`), GITHUB_API_URL (default
 // https://api.github.com), GITHUB_GRAPHQL_URL (default `<GITHUB_API_URL>/graphql`), GITHUB_STEP_SUMMARY (the Markdown summary).
 //
-// The token is never printed: every message goes through `clean`. The summary never holds a body. Exit 0 ok; 1 refused or
-// failed; 2 a variable is missing or malformed.
+// The token is never printed: every message goes through `clean`. The summary never holds a body. Every printed field is
+// one line and every line starts with `agent-write:`, so no text can fake a log line or a workflow command. Exit 0 ok; 1
+// refused or failed; 2 a variable is missing or malformed.
 import { appendFileSync, realpathSync } from "node:fs";
 import { pathToFileURL } from "node:url";
 import { parseOwners } from "./issue-flow/transitions.mjs";
@@ -38,11 +42,14 @@ const BATCH_TITLE = "Issue batch";
 const BASE_BRANCH = "main";
 const CLOSE_REASONS = new Set(["completed", "not_planned", "duplicate"]);
 const FORBIDDEN_LABEL = "status:approved";
+// Only the project's own label families: a typo or a lookalike never creates a label, and "." or ".." never reaches a URL.
+const LABEL_RE = /^(status|type|priority|source):[a-z0-9-]{1,40}$/;
 const OP_KEYS = {
   comment: { required: ["issue", "body"], optional: [] },
   edit_comment: { required: ["comment_id", "body"], optional: [] },
   labels: { required: ["issue"], optional: ["add", "remove"] },
   close: { required: ["issue", "reason"], optional: [] },
+  reopen: { required: ["issue"], optional: [] },
   pr_create: { required: ["head", "title"], optional: ["body", "draft"] },
   pr_ready: { required: ["pr"], optional: [] },
   pr_edit: { required: ["pr"], optional: ["title", "body"] },
@@ -81,6 +88,8 @@ function readConfig(env) {
     api,
     graphql,
     actor: env.GITHUB_ACTOR ?? "",
+    triggering: env.GITHUB_TRIGGERING_ACTOR ?? "",
+    attempt: (env.GITHUB_RUN_ATTEMPT ?? "").trim(),
     owners: parseOwners(env.ISSUE_FLOW_OWNERS ?? ""),
   };
 }
@@ -100,13 +109,10 @@ function labelList(op, key, index) {
   const value = op[key];
   if (value === undefined) return [];
   if (!Array.isArray(value) || value.length > 20) throw refuse(`operation ${index} (labels): ${key} must be a list of at most 20 labels`);
-  const names = [];
   for (const entry of value) {
-    // eslint-disable-next-line no-control-regex
-    if (!isText(entry) || entry.trim().length > 50 || /[\u0000-\u001f\u007f]/.test(entry)) throw refuse(`operation ${index} (labels): ${key} holds an invalid label name`);
-    names.push(entry.trim());
+    if (typeof entry !== "string" || !LABEL_RE.test(entry)) throw refuse(`operation ${index} (labels): ${key} may hold only status:, type:, priority:, or source: labels (lowercase)`);
   }
-  return [...new Set(names)];
+  return [...new Set(value)];
 }
 
 /** Parses and checks the whole input. Returns normalized operations or throws a refusal; sends nothing. */
@@ -140,13 +146,17 @@ export function validate(text) {
         const add = labelList(raw, "add", index);
         const remove = labelList(raw, "remove", index);
         if (add.length + remove.length === 0) throw refuse(`${where}: add or remove must name a label`);
-        if (add.some((name) => lower(name) === FORBIDDEN_LABEL)) throw refuse(`${where}: ${FORBIDDEN_LABEL} is the owner's to set`);
+        if (add.includes(FORBIDDEN_LABEL)) throw refuse(`${where}: ${FORBIDDEN_LABEL} is the owner's to set`);
+        if (add.some((name) => remove.includes(name))) throw refuse(`${where}: a label cannot be both added and removed`);
         return { op: "labels", issue: raw.issue, add, remove };
       }
       case "close":
         if (!isId(raw.issue)) throw refuse(`${where}: issue must be a positive integer`);
         if (typeof raw.reason !== "string" || !CLOSE_REASONS.has(raw.reason)) throw refuse(`${where}: reason must be one of ${[...CLOSE_REASONS].join(", ")}`);
         return { op: "close", issue: raw.issue, reason: raw.reason };
+      case "reopen":
+        if (!isId(raw.issue)) throw refuse(`${where}: issue must be a positive integer`);
+        return { op: "reopen", issue: raw.issue };
       case "pr_create":
         if (typeof raw.head !== "string" || !raw.head.startsWith(HEAD_PREFIX) || !/^[\w./-]+$/.test(raw.head) || raw.head.includes("..") || raw.head.length > 200) {
           throw refuse(`${where}: head must be a ${HEAD_PREFIX} branch of this repository`);
@@ -183,6 +193,29 @@ export function checkMergeable(pr, op, { repo, login }) {
   if (pr.base?.ref !== BASE_BRANCH) throw refuse(`PR #${op.pr}: base is not ${BASE_BRANCH}`);
   if (typeof pr.title !== "string" || !pr.title.startsWith(BATCH_TITLE)) throw refuse(`PR #${op.pr}: title does not start with "${BATCH_TITLE}"`);
   if (lower(pr.head?.sha) !== op.sha) throw refuse(`PR #${op.pr}: head is not ${op.sha.slice(0, 7)}`);
+  if (pr.mergeable_state !== "clean") throw refuse(`PR #${op.pr}: mergeable state is ${JSON.stringify(String(pr.mergeable_state ?? "unknown"))}, not "clean"`);
+}
+
+const PASSING = new Set(["success", "skipped", "neutral"]);
+
+/**
+ * The same "green" the agents check before they ask for a merge, on the head sha: the check run named `check` is present and
+ * succeeded, every other check run completed `success`, `skipped`, or `neutral`, and the combined commit status is not
+ * `failure` or `pending` (no statuses at all is fine; GitHub reports that as `pending` with a zero count).
+ */
+export function checkGreen(runs, status, op) {
+  const name = `PR #${op.pr}`;
+  if (!Array.isArray(runs?.check_runs) || !Number.isSafeInteger(runs.total_count)) throw refuse(`${name}: the check runs could not be read`);
+  if (runs.total_count > runs.check_runs.length) throw refuse(`${name}: too many check runs to verify (${runs.total_count})`);
+  const main = runs.check_runs.filter((run) => run?.name === "check");
+  if (main.length === 0) throw refuse(`${name}: the "check" run is missing`);
+  for (const run of runs.check_runs) {
+    if (run?.status !== "completed") throw refuse(`${name}: check run ${JSON.stringify(String(run?.name ?? "?"))} is not completed`);
+    if (!PASSING.has(run.conclusion)) throw refuse(`${name}: check run ${JSON.stringify(String(run.name ?? "?"))} concluded ${JSON.stringify(String(run.conclusion))}`);
+  }
+  if (main.some((run) => run.conclusion !== "success")) throw refuse(`${name}: the "check" run did not succeed`);
+  if (!isObject(status) || !Number.isSafeInteger(status.total_count)) throw refuse(`${name}: the commit status could not be read`);
+  if (status.total_count > 0 && status.state !== "success") throw refuse(`${name}: commit status is ${JSON.stringify(String(status.state))}`);
 }
 
 // ---- GitHub API ----
@@ -254,6 +287,12 @@ function handlers(config, client) {
   const requireAuthor = (author, what) => {
     if (lower(author) !== lower(login)) throw refuse(`${what} was not written by ${login}`);
   };
+  /** The issue, read fresh; an answer that is not an object, or a pull request, is refused (the agents change no pull request this way). */
+  const requireIssue = async (number) => {
+    const { data } = await client.rest("GET", `${base}/issues/${number}`);
+    if (!isObject(data)) throw refuse(`#${number}: GitHub's answer could not be read`);
+    if (data.pull_request !== undefined) throw refuse(`#${number} is a pull request; the agents never close or reopen one`);
+  };
   const readPull = async (number) => (await client.rest("GET", `${base}/pulls/${number}`)).data ?? {};
 
   return {
@@ -287,10 +326,14 @@ function handlers(config, client) {
       return { target: `#${op.issue}`, result: done.join("; ") };
     },
     async close(op) {
-      const { data } = await client.rest("GET", `${base}/issues/${op.issue}`);
-      if (data?.pull_request !== undefined) throw refuse(`#${op.issue} is a pull request; the agents never close one`);
+      await requireIssue(op.issue);
       await client.rest("PATCH", `${base}/issues/${op.issue}`, { state: "closed", state_reason: op.reason });
       return { target: `#${op.issue}`, result: `closed (${op.reason})` };
+    },
+    async reopen(op) {
+      await requireIssue(op.issue);
+      await client.rest("PATCH", `${base}/issues/${op.issue}`, { state: "open", state_reason: "reopened" });
+      return { target: `#${op.issue}`, result: "reopened" };
     },
     async pr_create(op) {
       const { data } = await client.rest("POST", `${base}/pulls`, { title: op.title, head: op.head, base: BASE_BRANCH, body: op.body, draft: op.draft });
@@ -318,6 +361,7 @@ function handlers(config, client) {
     },
     async merge(op) {
       checkMergeable(await readPull(op.pr), op, config);
+      checkGreen((await client.rest("GET", `${base}/commits/${op.sha}/check-runs?per_page=100`)).data, (await client.rest("GET", `${base}/commits/${op.sha}/status`)).data, op);
       const { data } = await client.rest("PUT", `${base}/pulls/${op.pr}/merge`, { merge_method: "merge", sha: op.sha });
       if (data?.merged !== true) throw new WriteError(`PUT /pulls/${op.pr}/merge: GitHub did not merge it`);
       return { target: `PR #${op.pr}`, result: `merged at ${String(data.sha ?? "").slice(0, 7) || "?"}` };
@@ -346,15 +390,21 @@ export function formatSummary({ login, repo, actor, outcome, message, rows }) {
 }
 
 /**
- * Runs the whole input. Returns `{code, outcome, message, rows}`; it writes nothing itself. A missing or malformed variable
- * throws a WriteError with code 2.
+ * Runs the whole input. `log(line)` is called with each progress line as it happens (the acting login, then one per finished
+ * operation). Returns `{code, outcome, message, rows}`; it writes nothing itself. A missing or malformed variable throws a
+ * WriteError with code 2.
  */
-export async function run(env) {
+export async function run(env, log = () => {}) {
   const config = readConfig(env);
   const base = { login: config.login, repo: config.repo, actor: config.actor };
   const finish = (code, outcome, message, rows = []) => ({ code, outcome, message, rows, ...base });
-  if (lower(config.actor) === "" || !config.owners.includes(lower(config.actor))) {
-    return finish(1, "Refused, nothing applied", "the dispatcher is not an owner (ISSUE_FLOW_OWNERS)");
+  log(`acting as ${config.login}`);
+  // Only an owner who started this very run may use the relay, and only on its first attempt: a re-run keeps the original
+  // `actor` and would replay the operations, so it is refused.
+  const refused = (message) => finish(1, "Refused, nothing applied", message);
+  if (config.attempt !== "1") return refused("this is a re-run (GITHUB_RUN_ATTEMPT is not 1); dispatch again instead");
+  for (const [who, name] of [[config.actor, "dispatcher"], [config.triggering, "triggering actor"]]) {
+    if (lower(who) === "" || !config.owners.includes(lower(who))) return refused(`the ${name} is not an owner (ISSUE_FLOW_OWNERS)`);
   }
   let ops;
   try {
@@ -366,46 +416,52 @@ export async function run(env) {
   const client = makeClient(config);
   const handle = handlers(config, client);
   const rows = [];
+  const add = (row) => {
+    rows.push(row);
+    log(`${row.op} ${row.target}: ${row.result}`);
+  };
   for (const [i, op] of ops.entries()) {
     try {
-      rows.push({ op: op.op, ...(await handle[op.op](op)) });
+      add({ op: op.op, ...(await handle[op.op](op)) });
     } catch (error) {
       // Only our own errors carry a safe message; anything else is reported without its text.
       const safe = error instanceof WriteError;
       const reason = safe ? client.clean(error.message) : "unexpected error";
-      rows.push({ op: op.op, target: "", result: `${safe && error.refused ? "refused" : "failed"}: ${reason}` });
-      for (const later of ops.slice(i + 1)) rows.push({ op: later.op, target: "", result: "not applied" });
+      add({ op: op.op, target: "", result: `${safe && error.refused ? "refused" : "failed"}: ${reason}` });
+      for (const later of ops.slice(i + 1)) add({ op: later.op, target: "", result: "not applied" });
       return finish(1, `Stopped at operation ${i + 1} of ${ops.length}`, `${ops.length - i - 1} later operation(s) not applied`, rows);
     }
   }
   return finish(0, `Applied ${ops.length} operation(s)`, "", rows);
 }
 
-function report(result, env) {
-  const text = formatSummary(result);
+/** One line, always starting with `agent-write:`: newlines in a message cannot start a fake log line or a `::` command. */
+const logLine = (text) => `agent-write: ${String(text).replace(/[\r\n\u0085\u2028\u2029]+/g, " ")}\n`;
+
+function writeSummary(env, text) {
   const file = env.GITHUB_STEP_SUMMARY;
-  if (typeof file === "string" && file !== "") {
-    try {
-      appendFileSync(file, `${text}\n`);
-    } catch {
-      // the log below still has the result
-    }
+  if (typeof file !== "string" || file === "") return;
+  try {
+    appendFileSync(file, `${text}\n`);
+  } catch {
+    // the log still has the result
   }
-  const stream = result.code === 0 ? process.stdout : process.stderr;
-  process.stdout.write(`agent-write: acting as ${result.login}\n`);
-  stream.write(`agent-write: ${result.outcome}${result.message ? `: ${result.message}` : ""}\n`);
-  for (const row of result.rows) process.stdout.write(`agent-write: ${row.op} ${row.target}: ${row.result}\n`);
 }
 
 async function main() {
+  const env = process.env;
   try {
-    const result = await run(process.env);
-    report(result, process.env);
+    const result = await run(env, (line) => process.stdout.write(logLine(line)));
+    writeSummary(env, formatSummary(result));
+    const stream = result.code === 0 ? process.stdout : process.stderr;
+    stream.write(logLine(`${result.outcome}${result.message ? `: ${result.message}` : ""}`));
     process.exitCode = result.code;
   } catch (error) {
     // Only our own errors carry a safe message; anything else is reported without its text.
     const safe = error instanceof WriteError;
-    process.stderr.write(`agent-write: ${safe ? error.message : "unexpected error"}\n`);
+    const message = safe ? error.message : "unexpected error";
+    writeSummary(env, `### Agent write\n\n**Not run**: ${cell(message)}\n`);
+    process.stderr.write(logLine(message));
     process.exitCode = safe ? error.code : 1;
   }
 }
