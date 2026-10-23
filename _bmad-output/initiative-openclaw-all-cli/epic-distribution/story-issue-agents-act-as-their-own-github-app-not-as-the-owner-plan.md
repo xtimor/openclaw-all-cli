@@ -73,6 +73,8 @@ deferred: []
 
 ## Plan Change Log
 
+- 2026-10-23, live finding and owner decision: the cloud session's proxy replaces the `Authorization` header of every `api.github.com` request with the owner's credentials (platform design: sessions are bound to the owner's repositories), so a token minted in the session cannot write as the app, and bypassing the proxy is not allowed (environment network policy; reverted in 19fe7f2). Owner chose a GitHub Actions relay: ticket 3.15 replaces this ticket's "agents mint in the session and write with `gh`" part. Kept from this ticket: `scripts/agent-token.mjs` (now run inside the relay workflow), `ISSUE_FLOW_AGENTS`, the REST author checks, and the "comments of yours" definition.
+
 ## Review Triage Log
 
 ### 2026-10-23 — Review pass (one review over tickets 3.13 and 3.14, diff ce72bb5..6cfab69)
