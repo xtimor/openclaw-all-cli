@@ -40,13 +40,14 @@ interface Transitions {
   STALE_DAYS: number;
   AGENT_MARKER_RE: RegExp;
   NON_OWNER_APPROVAL_COMMENT: string;
-  STALE_COMMENT: string;
-  decide(event: Event, issue: IssueIn, options?: { owners?: string[]; timeline?: unknown[] }): Action[];
+  staleComment(login: unknown): string;
+  needsInfoSince(events: unknown): number | null;
+  decide(event: Event, issue: IssueIn, options?: { owners?: string[]; agents?: string[]; timeline?: unknown[] }): Action[];
   approvalComment(eventId: unknown): Action;
   needsTimeline(issue: IssueIn, event?: Event): boolean;
   normalizeTimeline(raw: unknown): Array<{ id: unknown; label: string; actor: string | null }>;
   linkedIssues(body: unknown, repo?: string): Array<{ number: number; kind: "fixes" | "refs" }>;
-  staleIssues(issues: IssueIn[], now: Date | number, days?: number): IssueIn[];
+  staleIssues(issues: IssueIn[], now: Date | number, days?: number, since?: Map<number, unknown> | Record<number, unknown>): IssueIn[];
   parseOwners(value: unknown): string[];
   isBot(login: unknown): boolean;
 }
@@ -65,6 +66,7 @@ const apply = await load<Apply>("apply.mjs");
 const OWNERS = ["xtimor"];
 const REPO = "xtimor/openclaw-all-cli";
 const NOW = Date.parse("2026-10-22T12:00:00Z");
+const DAY = 24 * 3600 * 1000;
 const daysAgo = (days: number) => new Date(NOW - days * 24 * 3600 * 1000).toISOString();
 const issue = (labels: string[], extra: IssueIn = {}): IssueIn => ({ number: 12, state: "open", labels, user: { login: "alice" }, ...extra });
 const add = (label: string): Action => ({ op: "addLabel", label });
@@ -379,6 +381,31 @@ describe("decide: issue_comment", () => {
     expect(t.decide(comment("alice"), issue(["status:needs-info"]), { owners: ["alice"] })).toEqual([add("status:new"), remove("status:needs-info")]);
   });
 
+  it("AGENT_MARKER: a marker comment by an agent login is not a reply; the same text by anyone else, or without the marker, is", () => {
+    const APP = "oac-issue-agents[bot]";
+    const open = issue(["status:needs-info"], { user: { login: APP } }); // an issue the agent app itself opened
+    const reply = (actor: string, agent: boolean) => t.decide({ ...comment(actor), agent }, open, { owners: OWNERS, agents: [APP.toLowerCase()] });
+    expect(reply(APP, true)).toEqual([]);
+    expect(reply("OAC-Issue-Agents[bot]", true)).toEqual([]);
+    // Not the agent's login: still a reply when it is the author's.
+    const other = issue(["status:needs-info"], { user: { login: "alice" } });
+    expect(t.decide({ ...comment("alice"), agent: true }, other, { owners: OWNERS, agents: [APP] })).toEqual([add("status:new"), remove("status:needs-info")]);
+    // No agent list (app not configured): the app login's marker comment counts like anyone's.
+    expect(t.decide({ ...comment(APP), agent: true }, open, { owners: OWNERS })).toEqual([add("status:new"), remove("status:needs-info")]);
+    // The agent's comment without the marker is not an agent comment.
+    expect(reply(APP, false)).toEqual([add("status:new"), remove("status:needs-info")]);
+  });
+
+  it("APPROVAL_BY_AGENT: an approval by an agent login is reverted like anyone's (agents are not owners)", () => {
+    const APP = "oac-issue-agents[bot]";
+    const approved = t.decide({ name: "issues", action: "labeled", actor: APP, label: "status:approved" }, issue(["status:triaged", "status:approved"]), {
+      owners: OWNERS,
+      agents: [APP],
+      timeline: [labeledAt("status:triaged", "xtimor", 0, 1), labeledAt("status:approved", APP, 3, 2)],
+    });
+    expect(approved).toEqual([remove("status:approved"), revert(2)]);
+  });
+
   it("AUTHOR_REPLY: a comment by someone else does nothing", () => {
     expect(t.decide(comment("bob"), issue(["status:needs-info"]))).toEqual([]);
     expect(t.decide(comment("xtimor"), issue(["status:needs-info"]), { owners: OWNERS })).toEqual([]);
@@ -535,20 +562,59 @@ describe("staleIssues and decide: stale", () => {
     ...extra,
   });
 
-  it("STALE: 15 days is stale, 13 days is not, exactly 14 days is", () => {
-    const issues = [needsInfo(1, 15), needsInfo(2, 13), needsInfo(3, 14), needsInfo(4, 100)];
-    expect(t.staleIssues(issues, NOW, 14).map((i) => i.number)).toEqual([1, 3, 4]);
+  it("STALE: 31 days is stale, 29 days is not, exactly 30 days is", () => {
+    const issues = [needsInfo(1, 31), needsInfo(2, 29), needsInfo(3, 30), needsInfo(4, 100)];
+    expect(t.staleIssues(issues, NOW, 30).map((i) => i.number)).toEqual([1, 3, 4]);
     expect(t.staleIssues(issues, new Date(NOW)).map((i) => i.number)).toEqual([1, 3, 4]);
-    expect(t.STALE_DAYS).toBe(14);
+    expect(t.STALE_DAYS).toBe(30);
+  });
+
+  it("STALE: counts from the label, not from the last update (old label, updated yesterday)", () => {
+    const issues = [needsInfo(1, 1)];
+    expect(t.staleIssues(issues, NOW)).toEqual([]);
+    expect(t.staleIssues(issues, NOW, 30, new Map([[1, NOW - 31 * DAY]])).map((i) => i.number)).toEqual([1]);
+    expect(t.staleIssues(issues, NOW, 30, { 1: daysAgo(31) }).map((i) => i.number)).toEqual([1]);
+    expect(t.staleIssues(issues, NOW, 30, new Map([[1, new Date(NOW - 31 * DAY)]])).map((i) => i.number)).toEqual([1]);
+  });
+
+  it("STALE: a recent label stays open even when the issue was last updated long ago", () => {
+    const issues = [needsInfo(1, 60)];
+    expect(t.staleIssues(issues, NOW, 30, new Map([[1, NOW - 29 * DAY]]))).toEqual([]);
+  });
+
+  it("STALE: no label time for an issue falls back to its last update", () => {
+    const issues = [needsInfo(1, 31), needsInfo(2, 29), needsInfo(3, 31)];
+    const since = new Map<number, unknown>([[3, "not a date"]]);
+    expect(t.staleIssues(issues, NOW, 30, since).map((i) => i.number)).toEqual([1, 3]);
+    expect(t.staleIssues(issues, NOW, 30, undefined).map((i) => i.number)).toEqual([1, 3]);
+    expect(t.staleIssues(issues, NOW, 30, null as never).map((i) => i.number)).toEqual([1, 3]);
+  });
+
+  it("needsInfoSince: the latest needs-info labeled event counts (relabeled)", () => {
+    const event = (label: string, kind: string, daysBefore: number, id: number) => ({ id, event: kind, label: { name: label }, created_at: daysAgo(daysBefore) });
+    const events = [
+      event("status:needs-info", "labeled", 40, 1),
+      event("status:needs-info", "unlabeled", 38, 2),
+      event("status:triaged", "labeled", 38, 3),
+      event("status:needs-info", "labeled", 5, 4),
+      event("type:bug", "labeled", 1, 5),
+      { id: 6, event: "commented", created_at: daysAgo(0) },
+    ];
+    expect(t.needsInfoSince(events)).toBe(NOW - 5 * DAY);
+    expect(t.needsInfoSince([event("status:needs-info", "unlabeled", 3, 1)])).toBeNull();
+    expect(t.needsInfoSince([{ id: 1, event: "labeled", label: { name: "status:needs-info" }, created_at: "garbage" }])).toBeNull();
+    for (const value of [[], undefined, null, "x"]) expect(t.needsInfoSince(value)).toBeNull();
+    // Relabeled 5 days ago: not stale although the first label is 40 days old.
+    expect(t.staleIssues([needsInfo(1, 1)], NOW, 30, new Map([[1, t.needsInfoSince(events)]]))).toEqual([]);
   });
 
   it("skips other states, pull requests, closed issues, and unreadable dates", () => {
     const issues = [
-      needsInfo(1, 30, { labels: ["status:triaged"] }),
-      needsInfo(2, 30, { pull_request: {} }),
-      needsInfo(3, 30, { state: "closed" }),
-      needsInfo(4, 30, { updated_at: "not a date" }),
-      needsInfo(5, 30, { updated_at: undefined }),
+      needsInfo(1, 60, { labels: ["status:triaged"] }),
+      needsInfo(2, 60, { pull_request: {} }),
+      needsInfo(3, 60, { state: "closed" }),
+      needsInfo(4, 60, { updated_at: "not a date" }),
+      needsInfo(5, 60, { updated_at: undefined }),
       needsInfo(6, -3),
     ];
     expect(t.staleIssues(issues, NOW)).toEqual([]);
@@ -556,22 +622,35 @@ describe("staleIssues and decide: stale", () => {
     expect(t.staleIssues(undefined as unknown as IssueIn[], NOW)).toEqual([]);
   });
 
-  it("STALE: closes as not planned with a comment and keeps no status", () => {
-    expect(t.decide({ name: "stale" }, needsInfo(1, 15))).toEqual([
-      { op: "comment", body: t.STALE_COMMENT },
+  it("STALE: closes as not planned with a comment that mentions the author and keeps no status", () => {
+    expect(t.decide({ name: "stale" }, needsInfo(1, 31))).toEqual([
+      { op: "comment", body: t.staleComment("alice") },
       remove("status:needs-info"),
       { op: "close", reason: "not_planned" },
     ]);
-    expect(t.decide({ name: "stale" }, needsInfo(1, 15, { labels: ["status:triaged"] }))).toEqual([]);
-    expect(t.decide({ name: "stale" }, needsInfo(1, 15, { state: "closed" }))).toEqual([]);
+    expect(t.staleComment("alice")).toContain("@alice, this issue has been in `status:needs-info` for 30 days");
+    expect(t.decide({ name: "stale" }, needsInfo(1, 31, { labels: ["status:triaged"] }))).toEqual([]);
+    expect(t.decide({ name: "stale" }, needsInfo(1, 31, { state: "closed" }))).toEqual([]);
   });
 
-  it("the comments are fixed text with no issue data in them", () => {
-    for (const body of [t.STALE_COMMENT, t.NON_OWNER_APPROVAL_COMMENT]) {
+  it("STALE: an author that is a bot, missing, or malformed gets a comment without a mention", () => {
+    const plain = t.staleComment("");
+    expect(plain).not.toContain("@");
+    expect(plain).toMatch(/^<!-- issue-flow -->\nThis issue has been in `status:needs-info` for 30 days/);
+    for (const login of [undefined, null, "", "dependabot[bot]", "a b", "-x", "x".repeat(40), "@evil", "a\n@b", 5]) expect(t.staleComment(login)).toBe(plain);
+    expect(t.staleComment("octo_cat-1")).toContain("@octo_cat-1, this issue");
+    const noAuthor = needsInfo(1, 31, { user: undefined });
+    expect(t.decide({ name: "stale" }, noAuthor)[0]).toEqual({ op: "comment", body: plain });
+    expect(t.decide({ name: "stale" }, needsInfo(1, 31, { user: { login: "github-actions[bot]" } }))[0]).toEqual({ op: "comment", body: plain });
+  });
+
+  it("the comments keep the workflow's marker and carry no issue text beyond a checked login", () => {
+    for (const body of [t.staleComment(""), t.NON_OWNER_APPROVAL_COMMENT]) {
       expect(body).toMatch(/^<!-- issue-flow -->\n/);
       expect(body).not.toMatch(/\$\{|@\w/);
     }
-    expect(t.STALE_COMMENT).toContain("14 days");
+    expect(t.staleComment("alice")).toMatch(/^<!-- issue-flow -->\n@alice, /);
+    expect(t.staleComment("")).toContain("30 days");
   });
 });
 
@@ -637,6 +716,8 @@ function fakeGithub(
     paginate: async (method: unknown, params: { state: string; labels: string; issue_number: number }) => {
       if (method === rest.issues.listEvents) {
         calls.push(`events ${params.issue_number}`);
+        const error = options.failOn?.(`events ${params.issue_number}`);
+        if (error) throw error;
         return structuredClone(options.events?.[params.issue_number] ?? []);
       }
       if (method === rest.issues.listComments) {
@@ -764,6 +845,26 @@ describe("runEvent", () => {
     expect(await send("xtimor", "I quote <!-- issue-impl --> here", "xtimor")).toEqual(["status:new"]);
     expect(await send("alice", "<!-- issue-impl -->\nx", "xtimor")).toEqual(["status:new"]);
     expect(await send("alice", "plain reply", "xtimor")).toEqual(["status:new"]);
+  });
+
+  it("AGENT_MARKER: runEvent reads the agent logins from ISSUE_FLOW_AGENTS; an agent approval is reverted", async () => {
+    const APP = "oac-issue-agents[bot]";
+    const send = async (agents: string | undefined, body: string) => {
+      const fake = fakeGithub([{ number: 12, state: "open", labels: ["status:needs-info"], user: { login: APP } }]);
+      const payload = { action: "created", sender: { login: APP }, comment: { user: { login: APP }, body }, issue: { number: 12 } };
+      await apply.runEvent({ github: fake.github, context: ctx("issue_comment", payload), core: fakeCore(), env: { ISSUE_FLOW_OWNERS: "xtimor", ...(agents === undefined ? {} : { ISSUE_FLOW_AGENTS: agents }) } });
+      return fake.labelsOf(12);
+    };
+    expect(await send("Oac-Issue-Agents[bot], other[bot]", "<!-- issue-impl -->\n**Status:** needs-info")).toEqual(["status:needs-info"]);
+    expect(await send("Oac-Issue-Agents[bot]", "<!-- issue-triage -->\nx")).toEqual(["status:needs-info"]);
+    expect(await send("Oac-Issue-Agents[bot]", "plain text")).toEqual(["status:new"]);
+    expect(await send(undefined, "<!-- issue-impl -->\nx")).toEqual(["status:new"]);
+    expect(await send("", "<!-- issue-impl -->\nx")).toEqual(["status:new"]);
+
+    const fake = fakeGithub([{ number: 12, state: "open", labels: ["status:triaged", "status:approved"], user: { login: "alice" } }]);
+    const approval = { action: "labeled", label: { name: "status:approved" }, sender: { login: APP }, issue: { number: 12 } };
+    await apply.runEvent({ github: fake.github, context: ctx("issues", approval), core: fakeCore(), env: { ISSUE_FLOW_OWNERS: "xtimor", ISSUE_FLOW_AGENTS: APP } });
+    expect(fake.labelsOf(12)).toEqual(["status:triaged"]);
   });
 
   it("PR_OPENED: links #12 and #13, skips a PR, a closed issue, a missing issue, and another repository", async () => {
@@ -915,35 +1016,79 @@ describe("runEvent", () => {
 
 describe("runStale", () => {
   const issues = (): FakeIssue[] => [
-    { number: 1, state: "open", labels: ["status:needs-info"], updated_at: daysAgo(15) },
-    { number: 2, state: "open", labels: ["status:needs-info"], updated_at: daysAgo(13) },
-    { number: 3, state: "open", labels: ["status:triaged"], updated_at: daysAgo(40) },
-    { number: 4, state: "open", labels: ["status:needs-info"], updated_at: daysAgo(14), pull_request: {} },
+    { number: 1, state: "open", labels: ["status:needs-info"], updated_at: daysAgo(1), user: { login: "alice" } },
+    { number: 2, state: "open", labels: ["status:needs-info"], updated_at: daysAgo(29), user: { login: "bob" } },
+    { number: 3, state: "open", labels: ["status:triaged"], updated_at: daysAgo(60) },
+    { number: 4, state: "open", labels: ["status:needs-info"], updated_at: daysAgo(60), pull_request: {} },
   ];
+  const events = (): Record<number, unknown[]> => ({
+    1: [labeledAt("status:needs-info", "xtimor", 0, 1)].map((e) => ({ ...e, created_at: daysAgo(31) })),
+    2: [{ ...labeledAt("status:needs-info", "xtimor", 0, 2), created_at: daysAgo(29) }],
+  });
+  const labeledDaysAgo = (id: number, days: number) => ({ ...labeledAt("status:needs-info", "xtimor", 0, id), created_at: daysAgo(days) });
 
-  it("STALE: closes the 15-day issue with a comment, leaves the 13-day one", async () => {
-    const fake = fakeGithub(issues());
+  it("STALE: closes the issue labeled 31 days ago (updated yesterday) with a comment that mentions its author, leaves the 29-day one", async () => {
+    const fake = fakeGithub(issues(), { events: events() });
     const core = fakeCore();
     expect(await apply.runStale({ github: fake.github, context: ctx("schedule", {}), core, dryRun: false, now: NOW })).toEqual([1]);
-    expect(fake.calls).toEqual(["paginate open status:needs-info", "comment 1 No reply for 14 days", "remove 1 status:needs-info", "update 1 closed not_planned"]);
+    expect(fake.calls).toEqual(["paginate open status:needs-info", "events 1", "events 2", "comment 1 @alice, this issue h", "remove 1 status:needs-info", "update 1 closed not_planned"]);
+    expect(fake.comments(1)).toEqual([t.staleComment("alice")]);
     expect(fake.state(1)).toBe("closed");
     expect(fake.labelsOf(1)).toEqual([]);
+    expect(fake.state(2)).toBe("open");
+    expect(fake.labelsOf(2)).toEqual(["status:needs-info"]);
+  });
+
+  it("STALE: relabeled issue (added 40 days ago, removed, added 5 days ago) stays open", async () => {
+    const fake = fakeGithub([{ number: 1, state: "open", labels: ["status:needs-info"], updated_at: daysAgo(5) }], {
+      events: {
+        1: [
+          labeledDaysAgo(1, 40),
+          { id: 2, event: "unlabeled", created_at: daysAgo(38), label: { name: "status:needs-info" } },
+          labeledDaysAgo(3, 5),
+        ],
+      },
+    });
+    expect(await apply.runStale({ github: fake.github, context: ctx("schedule", {}), core: fakeCore(), dryRun: false, now: NOW })).toEqual([]);
+    expect(fake.state(1)).toBe("open");
+  });
+
+  it("STALE: an issue not updated for 30 days is closed without reading its events", async () => {
+    const fake = fakeGithub([{ number: 1, state: "open", labels: ["status:needs-info"], updated_at: daysAgo(31), user: { login: "alice" } }]);
+    expect(await apply.runStale({ github: fake.github, context: ctx("schedule", {}), core: fakeCore(), dryRun: false, now: NOW })).toEqual([1]);
+    expect(fake.calls).toEqual(["paginate open status:needs-info", "comment 1 @alice, this issue h", "remove 1 status:needs-info", "update 1 closed not_planned"]);
+  });
+
+  it("STALE: unreadable or missing label events fall back to the last update (still open)", async () => {
+    const list: FakeIssue[] = [
+      { number: 1, state: "open", labels: ["status:needs-info"], updated_at: daysAgo(10) },
+      { number: 2, state: "open", labels: ["status:needs-info"], updated_at: daysAgo(29) },
+    ];
+    const fake = fakeGithub(list, {
+      events: { 2: [{ id: 9, event: "labeled", created_at: daysAgo(35), label: { name: "type:bug" } }] },
+      failOn: (call) => (call === "events 1" ? Object.assign(new Error("Server Error"), { status: 500 }) : undefined),
+    });
+    const core = fakeCore();
+    expect(await apply.runStale({ github: fake.github, context: ctx("schedule", {}), core, dryRun: false, now: NOW })).toEqual([]);
+    expect(core.lines.join("\n")).toContain("warning: issue-flow: #1 events not read, using its last update: Server Error");
+    expect(fake.state(1)).toBe("open");
     expect(fake.state(2)).toBe("open");
   });
 
   it("STALE: a dry run lists and changes nothing", async () => {
-    const fake = fakeGithub(issues());
+    const fake = fakeGithub(issues(), { events: events() });
     const core = fakeCore();
     expect(await apply.runStale({ github: fake.github, context: ctx("workflow_dispatch", {}), core, dryRun: true, now: NOW })).toEqual([1]);
-    expect(fake.calls).toEqual(["paginate open status:needs-info"]);
+    expect(fake.calls).toEqual(["paginate open status:needs-info", "events 1", "events 2"]);
     expect(core.lines.join("\n")).toContain("would close #1");
     expect(fake.state(1)).toBe("open");
+    expect(fake.comments(1)).toEqual([]);
   });
 
   it("is a dry run unless asked otherwise", async () => {
-    const fake = fakeGithub(issues());
+    const fake = fakeGithub(issues(), { events: events() });
     await apply.runStale({ github: fake.github, context: ctx("workflow_dispatch", {}), core: fakeCore(), now: NOW });
-    expect(fake.calls).toEqual(["paginate open status:needs-info"]);
+    expect(fake.calls).toEqual(["paginate open status:needs-info", "events 1", "events 2"]);
   });
 
   it("isDryRun: dispatch defaults to a dry run, the schedule never is", () => {
@@ -973,6 +1118,7 @@ describe("workflow file", () => {
 
   it("keeps the owner list in the workflow and never in the module", () => {
     expect(text).toMatch(/^ {2}ISSUE_FLOW_OWNERS: xtimor$/m);
+    expect(text).toMatch(/^ {2}ISSUE_FLOW_AGENTS: ""$/m);
     for (const file of ["transitions.mjs", "apply.mjs"]) expect(readFileSync(join(FLOW_DIR, file), "utf8")).not.toContain("xtimor");
   });
 

@@ -25,8 +25,8 @@ export const PLANNED = "status:planned";
 export const IN_REVIEW = "status:in-review";
 export const BLOCKED = "status:blocked";
 
-/** Days a `needs-info` issue may stay silent before the daily job closes it. */
-export const STALE_DAYS = 14;
+/** Days a `needs-info` issue may stay in that status (counted from the latest time the label was added) before the daily job closes it. */
+export const STALE_DAYS = 30;
 
 /** The actor whose events the workflow itself causes; never handled again (no loops). */
 export const BOT_LOGIN = "github-actions[bot]";
@@ -42,7 +42,19 @@ export function approvalComment(eventId) {
   const key = `<!-- issue-flow:approval:${eventId} -->`;
   return { op: "comment", body: `${NON_OWNER_APPROVAL_COMMENT}\n${key}`, once: key };
 }
-export const STALE_COMMENT = `${MARKER}\nNo reply for ${STALE_DAYS} days, so this issue is closed as not planned. Reopen it to continue; it returns to \`${NEW}\`.`;
+
+// GitHub logins: letters, digits, hyphens (and `_` of managed users). A bot login (`name[bot]`) or anything else gets no mention.
+const LOGIN_RE = /^[A-Za-z0-9](?:[A-Za-z0-9_-]{0,38})$/;
+
+/**
+ * The comment for a stale close. A valid human login is mentioned, so GitHub notifies the author; an empty, bot, or
+ * malformed login gives the same text without a mention. The login is checked against LOGIN_RE and is the only issue data used.
+ */
+export function staleComment(login) {
+  const author = typeof login === "string" && LOGIN_RE.test(login) ? login : null;
+  const subject = author === null ? "This issue has" : `@${author}, this issue has`;
+  return `${MARKER}\n${subject} been in \`${NEEDS_INFO}\` for ${STALE_DAYS} days without a reply, so it is closed as not planned. Reopen it to continue; it returns to \`${NEW}\`.`;
+}
 
 const isStatus = (label) => STATUS_LABELS.includes(label);
 const lower = (value) => (typeof value === "string" ? value.toLowerCase() : "");
@@ -212,9 +224,10 @@ function onIssues(event, issue, owners, timeline) {
 /** A comment that starts with one of these markers is an issue agent's (triage or implementation); it never counts as the author's reply. */
 export const AGENT_MARKER_RE = /^\s*<!--\s*issue-(?:triage|impl)\s*-->/;
 
-function onComment(event, issue, owners) {
-  // The issue agents write as an owner; their marker comment is never the author's reply. Anyone else's is.
-  if (event.action !== "created" || isBot(event.actor) || (event.agent === true && isOwner(event.actor, owners))) return [];
+function onComment(event, issue, owners, agents) {
+  // The issue agents write as an owner (no app configured) or as their own GitHub App (a login in `agents`); their marker
+  // comment is never the author's reply. Anyone else's is. An agent login is not an owner, so it can never approve.
+  if (event.action !== "created" || isBot(event.actor) || (event.agent === true && (isOwner(event.actor, owners) || isOwner(event.actor, agents)))) return [];
   if (issue.state !== "open" || !issue.labels.includes(NEEDS_INFO)) return [];
   if (lower(event.actor) === "" || lower(event.actor) !== lower(issue.author)) return [];
   return setStatus(issue, NEW);
@@ -244,7 +257,7 @@ function onPullRequest(event, issue, owners) {
 
 function onStale(issue) {
   if (issue.state !== "open" || !issue.labels.includes(NEEDS_INFO)) return [];
-  return [comment(STALE_COMMENT), ...clearStatus(issue), { op: "close", reason: "not_planned" }];
+  return [comment(staleComment(issue.author)), ...clearStatus(issue), { op: "close", reason: "not_planned" }];
 }
 
 /**
@@ -259,18 +272,19 @@ function onStale(issue) {
  *   - opened | reopened also carry `at`, the event time (ISO).
  *   - `stale`: the daily job found the issue.
  * issue: a REST issue or a normalized one (`normalizeIssue`), as read now.
- * options: `owners` (logins that may approve) and `timeline` (the issue's label events, see `normalizeTimeline`; read it
+ * options: `owners` (logins that may approve), `agents` (logins of the issue agents' GitHub App; their marker comments are
+ *   not replies, and they are not owners), and `timeline` (the issue's label events, see `normalizeTimeline`; read it
  *   when `needsTimeline(issue)`).
  * Returns `[{op: "addLabel" | "removeLabel", label} | {op: "comment", body} | {op: "close", reason}]`, in the order to apply.
  */
-export function decide(event, issue, { owners = [], timeline = [] } = {}) {
+export function decide(event, issue, { owners = [], agents = [], timeline = [] } = {}) {
   const current = normalizeIssue(issue);
   if (current.isPullRequest || !event) return [];
   switch (event.name) {
     case "issues":
       return onIssues(event, current, owners, timeline);
     case "issue_comment":
-      return onComment(event, current, owners);
+      return onComment(event, current, owners, agents);
     case "pull_request":
       return onPullRequest(event, current, owners);
     case "stale":
@@ -303,16 +317,33 @@ export function linkedIssues(body, repo) {
 }
 
 /**
- * The open issues in `needs-info` whose last update is at least `days` days before `now` (a Date or epoch ms).
- * Pull requests and issues with an unreadable date are skipped. Returns the given objects, in the given order.
+ * When `status:needs-info` was last added: the latest `labeled` event for it in the issue's events (REST or normalized, see
+ * `normalizeTimeline`), as epoch ms; null when there is none or its time is unreadable.
  */
-export function staleIssues(issues, now, days = STALE_DAYS) {
+export function needsInfoSince(events) {
+  let since = null;
+  for (const entry of normalizeTimeline(events)) {
+    if (entry.kind === "labeled" && entry.label === NEEDS_INFO && Number.isFinite(entry.time)) since = since === null ? entry.time : Math.max(since, entry.time);
+  }
+  return since;
+}
+
+/**
+ * The open issues in `needs-info` that have been in that status for at least `days` days before `now` (a Date or epoch ms).
+ * `since` maps an issue number to the time `needs-info` was last added (epoch ms, Date, or ISO string; a Map or a plain
+ * object); an issue with no readable entry falls back to its last update. Pull requests and issues with no readable time
+ * are skipped. Returns the given objects, in the given order.
+ */
+export function staleIssues(issues, now, days = STALE_DAYS, since = new Map()) {
   const at = now instanceof Date ? now.getTime() : Number(now);
   if (!Array.isArray(issues) || !Number.isFinite(at)) return [];
+  const lookup = (number) => (since instanceof Map ? since.get(number) : since?.[number]);
+  const toMs = (value) => (value instanceof Date ? value.getTime() : typeof value === "string" ? Date.parse(value) : typeof value === "number" ? value : Number.NaN);
   return issues.filter((raw) => {
     const issue = normalizeIssue(raw);
     if (issue.isPullRequest || issue.state !== "open" || !issue.labels.includes(NEEDS_INFO)) return false;
-    const updated = Date.parse(issue.updatedAt ?? "");
-    return Number.isFinite(updated) && at - updated >= days * DAY_MS;
+    const labeled = toMs(lookup(issue.number));
+    const from = Number.isFinite(labeled) ? labeled : Date.parse(issue.updatedAt ?? "");
+    return Number.isFinite(from) && at - from >= days * DAY_MS;
   });
 }
