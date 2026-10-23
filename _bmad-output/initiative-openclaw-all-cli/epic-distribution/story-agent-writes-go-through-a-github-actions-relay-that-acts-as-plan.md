@@ -3,7 +3,7 @@ title: 'Agent writes go through a GitHub Actions relay that acts as the agent ap
 type: 'feature'
 ticket: 15
 created: '2026-10-23'
-status: 'in-review'
+status: 'built'
 baseline_revision: '19fe7f20987b15329f45b1704828ac51aa68a842'
 route: 'full'
 route_source: 'auto'
@@ -12,7 +12,7 @@ review: 'thorough'
 review_source: 'pinned'
 lenses_ran: ['blind-hunter', 'edge-case-hunter', 'verification-gap', 'intent-alignment']
 review_loop_iteration: 0
-followup_review_recommended: false
+followup_review_recommended: true
 context: ['{project-root}/AGENTS.md', '{project-root}/MEMORY.md', '{project-root}/docs/agents/identity.md']
 warnings: []
 deferred: []
@@ -80,8 +80,38 @@ deferred: []
 
 ## Review Triage Log
 
+### 2026-10-23 — Review pass
+- verdicts: 34 findings — high 4, medium 10, low 12, false 0, maybe-false 0, plus intent notes
+- findings:
+  - `[high]` `[patch]` `labels.remove: ["."]` normalizes to `DELETE /labels` = all labels removed (edge) — label names allow-listed by prefix and shape; both-lists refused.
+  - `[high]` `[patch]` a non-owner re-run replays an owner's ops (edge, blind) — triggering actor must be an owner; attempt must be 1.
+  - `[high]` `[patch]` another branch's copy of the workflow gets the secret (blind) — job in environment `agent`, deployment branches `main`.
+  - `[high]` `[patch]` the relay switch read an Actions variable: 403 from sessions (probed) and a settings read (blind) — `.github/agent-identity.json` read from `main`.
+  - `[medium]` `[patch]` shared concurrency group drops pending writes (blind, implementer) — removed.
+  - `[medium]` `[patch]` run discovery racy, dispatch exit unchecked, logs unreadable from sessions (edge, verification-gap, blind; logs probed 403) — run id from `gh workflow run`'s URL, conclusion check, REST read-back.
+  - `[medium]` `[patch]` relay merge did not check green though docs said so (blind) — `mergeable_state` clean, `check` success, other runs, combined status.
+  - `[medium]` `[patch]` post-call checks of pr_ready and merge untested (verification-gap) — tests.
+  - `[medium]` `[patch]` close guard skipped on a non-object answer (edge) — `requireIssue`.
+  - `[medium]` `[patch]` newline/`::` injection in log lines (edge) — one-line fields, `agent-write:` prefix.
+  - `[medium]` `[patch]` killed job shows nothing (blind) — rows print as they finish; summary on config failure.
+  - `[medium]` `[patch]` key in the writer's environment; token not revoked (blind) — `env -u`, revoke in a trap.
+  - `[medium]` `[patch]` stale `_B64` key wins (blind, intent) — canonical PEM preferred; both differing → exit 2.
+  - `[low]` `[patch]` issues.md contradiction; guard list in docs; MEMORY too long; reopen missing (blind, intent) — fixed, `reopen` added.
+  - `[low]` `[reject]` `pr_create` 422 for an existing head, closed-issue close, closed PR ready (blind) — GitHub's own errors surface as a failed op; agents read back.
+  - `[low]` `[reject]` timeout budget for 50 ops (blind) — per-op progress lines now show where it stopped; agents send one step per dispatch.
+  - remaining rows: duplicates across lenses, same routes.
+
 ## Verification
 
 **Commands:**
 - `npx vitest run test/agent-write.test.ts test/agent-token.test.ts test/issue-flow.test.ts` -- expected: all pass
 - `npm run ci` -- expected: "All checks passed."
+
+## Auto Run Result
+
+- Status: built. The `Agent write` relay (environment `agent`) mints the app token and applies a validated list of operations as the bot; agents switch on with `.github/agent-identity.json`.
+- Review: 14 patch entries (4 high, 10 medium), 2 rejected with reasons. Fixes in dac999c.
+- Follow-up review recommended: true — the four high fixes are security guards; a second look after the live run is worthwhile.
+- Verification: `npx vitest run test/agent-write.test.ts test/agent-token.test.ts test/issue-flow.test.ts` 139 passed; `npm run ci` "All checks passed."
+- Live check pending: the owner's `agent` environment; then one dispatched comment on a test issue under the bot login.
+
