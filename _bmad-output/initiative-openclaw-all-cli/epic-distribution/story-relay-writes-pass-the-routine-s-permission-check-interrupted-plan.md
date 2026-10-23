@@ -3,14 +3,14 @@ title: 'Relay writes pass the routine permission check; interrupted batches reco
 type: 'bugfix'
 ticket: 17
 created: '2026-10-23'
-status: 'in-progress'
+status: 'built'
 baseline_revision: 'fb975fd8e2e29f3f3b6fd390edc02562bb22daf0'
 route: 'full'
 route_source: 'auto'
 risk: 'high'
-review: ''
-review_source: ''
-lenses_ran: []
+review: 'quick'
+review_source: 'auto'
+lenses_ran: ['edge-case-hunter']
 review_loop_iteration: 0
 followup_review_recommended: false
 context: ['{project-root}/AGENTS.md', '{project-root}/MEMORY.md', '{project-root}/docs/agents/identity.md', '{project-root}/docs/agents/implement.md']
@@ -74,8 +74,28 @@ deferred: []
 
 ## Review Triage Log
 
+### 2026-10-23 — Review pass (edge-case-hunter)
+- verdicts: 10 findings — high 2, medium 5, low 3
+- findings:
+  - `[high]` `[patch]` watch returning early made a live run look failed and invited a re-dispatch — poll status to completed (~20 min), else stop with "do not re-dispatch".
+  - `[high]` `[patch]` closing an interrupted draft with `Fixes` lines moves its issues to blocked — `pr_edit` to a plain body before `pr_close`; retake in-progress/in-review/blocked-by-that-close issues of that draft.
+  - `[medium]` `[patch]` 4-hour idle rule only in the agent — relay `pr_close` also refuses a draft updated less than 4 h ago.
+  - `[medium]` `[patch]` retake widened to every in-progress issue at 4 h — limited to the closed draft's set; generic recovery stays at 6 h.
+  - `[medium]` `[patch]` allow rules match one spelling only — docs say run exactly `scripts/agent-relay.sh /tmp/agent-ops-<n>.json`, ops written with the Write tool.
+  - `[low]` `[patch]` node/jq validation differed — top-level JSON array required in both.
+  - `[low]` `[patch]` oversize ops failed generically — exit 2 "too large; split".
+  - `[medium]` `[reject]` gh without a run URL — the session's gh prints it (probed 2026-10-23).
+  - `[low]` `[reject]` live run silent for 4 h — runs push after each issue, which updates the PR.
+  - `[low]` `[reject]` env/cd-prefixed invocations — docs forbid them.
+
 ## Verification
 
 **Commands:**
 - `npx vitest run test/agent-relay.test.ts test/agent-write.test.ts` -- expected: all pass
 - `npm run ci` -- expected: "All checks passed."
+
+## Auto Run Result
+
+- Status: built. Fixes in eda4b0d. `npm run ci` green; relay and writer tests 45 passed.
+- Live check pending: the next routine run uses the script under the auto-mode check, closes draft #24, and builds #14, #11, #9.
+
