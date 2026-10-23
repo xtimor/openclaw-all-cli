@@ -22,7 +22,7 @@ Agent-neutral instructions for the issue triage run of `xtimor/openclaw-all-cli`
 ## Per issue
 
 0. **Still new.** Re-read the issue's labels just before deciding and again just before writing; skip it if it no longer has `status:new` (the owner may have acted meanwhile). Your comments are the ones that start with `<!-- issue-triage -->` **and** whose author is `ME`; ignore marker comments by anyone else. Your main comment is the earliest of yours. If your main comment exists and nobody but you commented after its last edit, an earlier run decided but did not finish the label step: apply the decision written in that comment (step 6.2) and go to the next issue.
-1. **Read the thread.** Read the body, every comment, and your earlier comment if any. An issue back from `needs-info` is re-triaged with the author's answers.
+1. **Read the thread.** Read the body, every comment, and your earlier comment if any. An issue back from `needs-info` is re-triaged with the author's answers. Also read its events (`gh api repos/xtimor/openclaw-all-cli/issues/<n>/events --paginate`; if `gh` cannot read them, treat the issue as never approved): note whether an owner (the list `ISSUE_FLOW_OWNERS` in `.github/workflows/issue-flow.yml`, compared case-insensitively) has a `labeled` event for `status:approved` in its history, and its date.
 2. **Duplicate.**
    - Of an issue (open or closed; search title words and error text): close as duplicate with a link. Exception: if that issue was closed as completed (fixed) and the bug reproduces again on `main`, it is a regression: accept with path **standalone** and link the old issue.
    - Of a BMAD ticket: if the ticket is open, accept with path **existing ticket** `<ref>`; if it is `done` and the bug no longer reproduces on `main`, close as completed with the ticket and its commit; if it is `done` and the bug still reproduces, it is a regression: accept with path **standalone** and name the ticket.
@@ -32,18 +32,23 @@ Agent-neutral instructions for the issue triage run of `xtimor/openclaw-all-cli`
 4. **Details.** If the version, the steps, the logs, or the idea's problem are missing or fuzzy, ask concrete numbered questions: the decision is needs info.
 5. **Decide.**
    - Accept → `status:triaged`, with a path: **standalone** (one bug or story), **epic entry** (fits a named epic), **course correction** (changes an epic, the spec, or the architecture), or **existing ticket** `<ref>`. Judge buildability with the single-ticket check: the "Ticket" section of `.claude/skills/bmad-ticket/references/validate-checks.md` (as `.claude/skills/bmad-ticket/references/validate.md` applies it), read and applied by you to the draft ticket.
+   - **Carried approval.** If the issue has such an owner approval event, and your new verdict, path, and draft ticket are all the same as in your main comment as it stands (the one the owner approved), the approval carries over: set `status:triaged` and write `**Approval:** carried over (owner approved <date>; scope unchanged)`. This is how an approved issue that went through `needs-info` returns to the build without a second approval; you still never add `status:approved`. If the verdict, path, or draft ticket changed (even slightly in scope), write `**Approval:** a new approval is needed (the <verdict|path|draft ticket> changed)` and ask the owner there. An issue never approved gets no `Approval` line.
    - Needs info → `status:needs-info`.
    - Reject → close as not planned with the reason (for example the Non-goal it hits).
 6. **Comment first, then labels** (the state automation must see your comment before the label change):
-   1. Write your main comment, or edit it on a re-triage. GitHub sends no notification for an edit, so on a re-triage that asks new questions also post a short new comment that starts with `<!-- issue-triage -->`, mentions the author (`@login`), and says the questions above were updated. Shape of the main comment:
+   1. Write your main comment, or edit it on a re-triage. Use the shape of [comments.md](comments.md) (marker, `Status`, `Waiting for`, `Next`, `What happened`, `Evidence`, signature) and keep the triage fields under it. `Waiting for` is the owner (`@login`) after an accept, the author (`@login`) for needs info, and nothing after a reject or duplicate. GitHub sends no notification for an edit, so on a re-triage that asks new questions or a new decision also post a short new comment that starts with `<!-- issue-triage -->`, mentions the person (`@login`), and says what the updated comment asks. Triage fields:
 
       ```markdown
       <!-- issue-triage -->
-      **Triage:** accepted | needs info | rejected | duplicate of #N | completed by <ticket>
+      **Status:** `status:triaged` | `status:needs-info` | rejected (closed not planned) | duplicate of #N | completed by <ticket>, and what it means
+      **Waiting for:** @login: ...
+      **Next:** ...
+      **What happened:** ...
       **Evidence:** what you checked and what you found (commands, files, results)
       **Priority:** pN, because ...   **Type:** bug | idea   **Path:** standalone | epic entry (<epic>) | course correction | existing ticket <ref>
       **Risk / size:** low|medium|high / S|M|L
       **Draft ticket:** title, one-paragraph description, verify line (accepted only)
+      **Approval:** carried over (owner approved <date>; scope unchanged) | a new approval is needed (...) (re-triage of an approved issue only)
       **Questions:** 1. ... (needs info only)
       **If you disagree:** reply here; the owner can reopen or change the decision. (rejected or duplicate only)
 
@@ -58,4 +63,4 @@ End the run with a summary table: issue, decision, priority, path, what you wrot
 
 ## Then: implementation
 
-After the triage report, in the same session and under the same `dry run` setting, follow `docs/agents/implement.md` to build the issues the owner approved. Triage decisions of this run are not approvals: the implementation step takes only issues that already carry the owner's `status:approved`, and issues in `status:planned` whose course correction is merged (the owner's earlier approval covers them). It also merges its own green batch pull request.
+After the triage report, in the same session and under the same `dry run` setting, follow `docs/agents/implement.md` to build the issues the owner approved. Triage decisions of this run are not approvals: the implementation step takes only issues that already carry the owner's `status:approved`, issues in `status:planned` whose course correction is merged, and `status:triaged` issues whose main comment carries `**Approval:** carried over` (the owner's earlier approval covers them). It also merges its own green batch pull request.

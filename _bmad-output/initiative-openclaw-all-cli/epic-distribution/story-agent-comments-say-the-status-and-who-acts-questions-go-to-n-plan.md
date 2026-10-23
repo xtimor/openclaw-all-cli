@@ -58,11 +58,11 @@ deferred: []
 ## Tasks & Acceptance
 
 **Execution:**
-- [ ] `scripts/issue-flow/transitions.mjs`, `scripts/issue-flow/apply.mjs` -- agent marker covers `issue-impl` -- agent comments are never the author's reply
-- [ ] `test/issue-flow.test.ts` -- matrix rows -- prove it
-- [ ] `docs/agents/comments.md` -- the shared shape with examples -- one format
-- [ ] `docs/agents/triage.md`, `docs/agents/implement.md` -- use the shape; needs-info vs blocked; carried approval -- the behavior
-- [ ] `docs/issues.md`, `issue-flow.md`, `epic-distribution.md`, `MEMORY.md` -- docs of record
+- [x] `scripts/issue-flow/transitions.mjs`, `scripts/issue-flow/apply.mjs` -- agent marker covers `issue-impl` -- agent comments are never the author's reply
+- [x] `test/issue-flow.test.ts` -- matrix rows -- prove it
+- [x] `docs/agents/comments.md` -- the shared shape with examples -- one format
+- [x] `docs/agents/triage.md`, `docs/agents/implement.md` -- use the shape; needs-info vs blocked; carried approval -- the behavior
+- [x] `docs/issues.md`, `issue-flow.md`, `epic-distribution.md`, `MEMORY.md` -- docs of record
 
 **Acceptance Criteria:**
 - Given any agent comment written under the new prompts, when the owner reads it, then its first lines say the status label, who is awaited (by `@login`) and for what, and what happens next.
@@ -70,6 +70,11 @@ deferred: []
 - Given that the author answers and triage finds the scope unchanged, when the next run starts, then the issue is built without a new owner approval.
 
 ## Implementation Notes
+
+- Renamed `TRIAGE_MARKER_RE` to `AGENT_MARKER_RE` (`issue-triage` or `issue-impl`) and the event flag `triage` to `agent`; tests updated, plus a `runEvent` test that reads the real comment body.
+- `docs/agents/comments.md` orders the fields Status, Waiting for, Next, What happened, Evidence so that the first lines carry what happens next (acceptance criterion 1).
+- Carried approval: triage reads the issue events for an owner `labeled status:approved`; the implementation agent takes `status:triaged` issues whose main triage comment carries `**Approval:** carried over` and re-checks the owner event.
+- Checks: `npx vitest run test/issue-flow.test.ts` (83 passed), `npm run ci` (All checks passed). Not run: an agent run on the new prompts.
 
 ## Plan Change Log
 

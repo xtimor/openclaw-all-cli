@@ -33,12 +33,12 @@ interface Event {
   repo?: string;
   headRepo?: string | null;
   author?: string | null;
-  triage?: boolean;
+  agent?: boolean;
 }
 interface Transitions {
   STATUS_LABELS: string[];
   STALE_DAYS: number;
-  TRIAGE_MARKER_RE: RegExp;
+  AGENT_MARKER_RE: RegExp;
   NON_OWNER_APPROVAL_COMMENT: string;
   STALE_COMMENT: string;
   decide(event: Event, issue: IssueIn, options?: { owners?: string[]; timeline?: unknown[] }): Action[];
@@ -363,12 +363,19 @@ describe("decide: issue_comment", () => {
     expect(t.decide(comment("ALICE"), issue(["status:needs-info"]))).toEqual([add("status:new"), remove("status:needs-info")]);
   });
 
-  it("AUTHOR_REPLY: the triage agent's comment (marker) is not a reply, even under the author's account", () => {
-    expect(t.decide({ ...comment("alice"), triage: true }, issue(["status:needs-info"]), { owners: ["alice"] })).toEqual([]);
-    // A reporter who is not an owner and starts a reply with the marker still counts as replying.
-    expect(t.decide({ ...comment("alice"), triage: true }, issue(["status:needs-info"]), { owners: ["owner"] })).toEqual([add("status:new"), remove("status:needs-info")]);
-    expect(t.TRIAGE_MARKER_RE.test("<!-- issue-triage -->\n**Triage:** needs info")).toBe(true);
-    expect(t.TRIAGE_MARKER_RE.test("I quote <!-- issue-triage --> here")).toBe(false);
+  it("AUTHOR_REPLY: an issue agent's comment (marker) is not a reply, even under the author's account", () => {
+    for (const marker of ["issue-triage", "issue-impl"]) {
+      expect(t.AGENT_MARKER_RE.test(`<!-- ${marker} -->\n**Status:** needs-info`)).toBe(true);
+      expect(t.AGENT_MARKER_RE.test(`I quote <!-- ${marker} --> here`)).toBe(false);
+    }
+    expect(t.AGENT_MARKER_RE.test("<!-- issue-other -->\ntext")).toBe(false);
+    // An owner's agent comment (either marker) changes nothing.
+    expect(t.decide({ ...comment("alice"), agent: true }, issue(["status:needs-info"]), { owners: ["alice"] })).toEqual([]);
+    expect(t.decide({ ...comment("xtimor"), agent: true }, issue(["status:needs-info"]), { owners: OWNERS })).toEqual([]);
+    // A reporter who is not an owner and starts a reply with a marker still counts as replying.
+    expect(t.decide({ ...comment("alice"), agent: true }, issue(["status:needs-info"]), { owners: ["owner"] })).toEqual([add("status:new"), remove("status:needs-info")]);
+    // A plain author reply, and a marker quoted mid-text (no agent flag), count as a reply.
+    expect(t.decide(comment("alice"), issue(["status:needs-info"]), { owners: ["alice"] })).toEqual([add("status:new"), remove("status:needs-info")]);
   });
 
   it("AUTHOR_REPLY: a comment by someone else does nothing", () => {
@@ -742,6 +749,20 @@ describe("runEvent", () => {
     expect(fake.labelsOf(12)).toEqual(["status:needs-info"]);
     await apply.runEvent({ github: fake.github, context: ctx("issue_comment", comment("alice")), core: fakeCore(), env });
     expect(fake.labelsOf(12)).toEqual(["status:new"]);
+  });
+
+  it("AUTHOR_REPLY: runEvent reads the marker at the start of the body, for the owner only", async () => {
+    const send = async (login: string, body: string, owners: string) => {
+      const fake = fakeGithub([{ number: 12, state: "open", labels: ["status:needs-info"], user: { login } }]);
+      const payload = { action: "created", sender: { login }, comment: { user: { login }, body }, issue: { number: 12 } };
+      await apply.runEvent({ github: fake.github, context: ctx("issue_comment", payload), core: fakeCore(), env: { ISSUE_FLOW_OWNERS: owners } });
+      return fake.labelsOf(12);
+    };
+    expect(await send("xtimor", "<!-- issue-impl -->\n**Status:** needs-info", "xtimor")).toEqual(["status:needs-info"]);
+    expect(await send("xtimor", "<!-- issue-triage -->\nx", "xtimor")).toEqual(["status:needs-info"]);
+    expect(await send("xtimor", "I quote <!-- issue-impl --> here", "xtimor")).toEqual(["status:new"]);
+    expect(await send("alice", "<!-- issue-impl -->\nx", "xtimor")).toEqual(["status:new"]);
+    expect(await send("alice", "plain reply", "xtimor")).toEqual(["status:new"]);
   });
 
   it("PR_OPENED: links #12 and #13, skips a PR, a closed issue, a missing issue, and another repository", async () => {
