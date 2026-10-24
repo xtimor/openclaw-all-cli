@@ -3,7 +3,7 @@ title: 'GitHub merges the green batch PR; the agent only marks it ready'
 type: 'feature'
 ticket: 20
 created: '2026-10-24'
-status: 'built'
+status: done
 baseline_revision: '85cf00b805d603b1996da6876d7735df3e374b35'
 route: 'full'
 route_source: 'auto'

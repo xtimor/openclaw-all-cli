@@ -3,7 +3,7 @@ title: 'One approval per issue, merge on green, one-click release'
 type: 'feature'
 ticket: 11
 created: '2026-10-23'
-status: 'built'
+status: done
 baseline_revision: 'a8c2509a842c1d9a332d2af70e36d9cd473161fb'
 route: 'full'
 route_source: 'auto'

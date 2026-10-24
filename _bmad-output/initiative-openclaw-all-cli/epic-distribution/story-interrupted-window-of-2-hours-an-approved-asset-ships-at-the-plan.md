@@ -3,7 +3,7 @@ title: 'Interrupted window of 2 hours; an approved asset ships at the path the h
 type: 'bugfix'
 ticket: 19
 created: '2026-10-24'
-status: 'built'
+status: done
 baseline_revision: '8bdcb0c797df814637027e1eec3b3a8696ff841b'
 route: 'oneshot'
 route_source: 'auto'
