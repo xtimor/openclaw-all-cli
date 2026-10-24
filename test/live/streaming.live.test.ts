@@ -5,11 +5,10 @@ import { afterAll, expect, it } from "vitest";
 import { cursorAdapter } from "../../src/adapters/cursor/index.ts";
 import { homeDirFor } from "../../src/core/home.ts";
 import { createExecute } from "../../src/core/execute.ts";
-import { SETTINGS_PATH_ENV } from "../../src/core/mcp-target.ts";
 import type { NormalizedEvent } from "../../src/core/ports.ts";
 import type { ExecuteContext } from "../../src/core/sdk-types.ts";
 import { STUB_TOOL, startStubMcpHost } from "../fixtures/stub-mcp-host.ts";
-import { LIVE_TIMEOUT_MS, describeLive, liveHostEnv, makeLiveSession, openclaw, writeSettingsFile } from "./harness.ts";
+import { LIVE_TIMEOUT_MS, describeLive, hostMcpArgs, liveHostEnv, makeLiveSession, openclaw, writeSettingsFile } from "./harness.ts";
 
 // Parity row P3 (streaming text, thinking, and tool progress). Real cursor-agent through the core's
 // `createExecute`, with a stub host standing in for OpenClaw's MCP endpoint, and then through the
@@ -31,12 +30,9 @@ describeLive("text, thinking, and tool progress stream as deltas (P3)", () => {
       const host = await startStubMcpHost();
       const ctx: ExecuteContext = {
         command: process.env.CURSOR_AGENT_BIN ?? cursorAdapter.command,
-        args: cursorAdapter.launchArgs,
+        args: [...cursorAdapter.launchArgs, ...hostMcpArgs(writeSettingsFile(root, "settings", host.url, "host-token", "capture"))],
         cwd: workspace,
-        env: {
-          ...liveHostEnv(),
-          [SETTINGS_PATH_ENV]: writeSettingsFile(root, "settings", host.url, "host-token", "capture"),
-        },
+        env: liveHostEnv(),
         prompt:
           `First read notes.txt with your native read tool. Then call the MCP tool ${STUB_TOOL} (server "openclaw") ` +
           `once with text "ping". Then write ten numbered sentences about harbours, one per line, and nothing else.`,

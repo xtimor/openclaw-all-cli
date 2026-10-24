@@ -6,7 +6,7 @@ import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 import { cursorAdapter } from "../src/adapters/cursor/index.ts";
 import { buildCliBackend } from "../src/core/backend.ts";
 import { liveEntries } from "../src/core/live-entry.ts";
-import { readTurnTarget } from "../src/core/mcp-target.ts";
+import { readTurnTarget, splitMcpArgs } from "../src/core/mcp-target.ts";
 import { ProcessPool } from "../src/core/pool.ts";
 import type { LiveSessionCapability } from "../src/core/sdk-types.ts";
 import { FAKE_CURSOR_AGENT, fakeEnv } from "./fixtures/paths.ts";
@@ -37,7 +37,7 @@ describe.skipIf(!hostAvailable)("OpenClaw host contracts the backend relies on",
   let host: {
     resolveCliBackendConfig: (provider: string, cfg?: Json) => Json | null;
     createMcpLoopbackServerConfig: (port: number) => Json;
-    prepareCliBundleMcpConfig: (params: Json) => Promise<{ backend: Json; env: Record<string, string>; cleanup?: () => Promise<void> }>;
+    prepareCliBundleMcpConfig: (params: Json) => Promise<{ backend: Json; env: Record<string, string>; mcpConfigHash: string; cleanup?: () => Promise<void> }>;
     prepareCliBundleMcpCaptureAttempt: (params: Json) => Promise<{ env: Record<string, string>; cleanup?: () => Promise<void> }>;
     createCliLiveSessionCapability: (params: Json) => LiveSessionCapability;
     acceptsCliLiveSession: (context: Json) => boolean;
@@ -98,7 +98,7 @@ describe.skipIf(!hostAvailable)("OpenClaw host contracts the backend relies on",
       id: "cursor-cli",
       pluginId: "openclaw-all-cli",
       bundleMcp: true,
-      bundleMcpMode: "gemini-system-settings",
+      bundleMcpMode: "claude-config-file",
       nativeToolMode: "selectable",
       toolAvailabilityEnforcement: "execution-args",
     });
@@ -128,11 +128,11 @@ describe.skipIf(!hostAvailable)("OpenClaw host contracts the backend relies on",
     });
   });
 
-  describe("the settings file the host writes (P7, AD-12)", () => {
+  describe("the MCP config file the host writes (P7, AD-12)", () => {
     const token = () => randomBytes(32).toString("hex");
 
     /** What the host does for a run: prepare the bundle MCP config, then the attempt's capture settings. */
-    async function hostSettings(port: number, variant: "additionalConfig" | "exclusiveConfig", bearer: string) {
+    async function hostConfig(port: number, variant: "additionalConfig" | "exclusiveConfig", bearer: string) {
       const prepared = await host.prepareCliBundleMcpConfig({
         enabled: true,
         mode: resolved.bundleMcpMode,
@@ -148,7 +148,7 @@ describe.skipIf(!hostAvailable)("OpenClaw host contracts the backend relies on",
       return {
         prepared,
         attempt: async (captureKey: string) => {
-          const attempt = await host.prepareCliBundleMcpCaptureAttempt({ mode: resolved.bundleMcpMode, backend: resolved.config, env: prepared.env, captureKey });
+          const attempt = await host.prepareCliBundleMcpCaptureAttempt({ mode: resolved.bundleMcpMode, backend: prepared.backend, env: prepared.env, captureKey });
           cleanups.push(() => attempt.cleanup?.());
           return attempt;
         },
@@ -156,41 +156,48 @@ describe.skipIf(!hostAvailable)("OpenClaw host contracts the backend relies on",
     }
 
     for (const variant of ["additionalConfig", "exclusiveConfig"] as const) {
-      it(`reads as the loopback URL, bearer token, and capture key (${variant})`, async () => {
+      it(`reads as the loopback URL, bearer token, and capture key, from the --mcp-config file in the launch args (${variant})`, async () => {
         const bearer = token();
-        const settings = await hostSettings(48_231, variant, bearer);
+        const config = await hostConfig(48_231, variant, bearer);
         const key1 = randomUUID();
         const key2 = randomUUID();
-        const first = await settings.attempt(key1);
-        const second = await settings.attempt(key2);
+        const launch = splitMcpArgs(config.prepared.backend.args);
+        // The CLI must never see the host's flags: only `acp` is left.
+        expect(launch.args).toEqual(["acp"]);
+        expect(launch.mcpConfigPath).toBeTruthy();
 
-        for (const [attempt, key] of [[first, key1], [second, key2]] as const) {
-          const target = await readTurnTarget(attempt.env);
-          expect(target).toEqual({
+        // The capture attempt rewrites the same file in place with its key.
+        for (const key of [key1, key2]) {
+          await config.attempt(key);
+          expect(await readTurnTarget(launch.mcpConfigPath)).toEqual({
             ok: true,
             target: { url: "http://127.0.0.1:48231/mcp", headers: { Authorization: `Bearer ${bearer}`, "x-openclaw-cli-capture-key": key } },
           });
         }
-        // A new file per attempt, and not the prepared one: this is why the host's fingerprint moves every turn.
-        const paths = [settings.prepared.env.GEMINI_CLI_SYSTEM_SETTINGS_PATH, first.env.GEMINI_CLI_SYSTEM_SETTINGS_PATH, second.env.GEMINI_CLI_SYSTEM_SETTINGS_PATH];
-        expect(new Set(paths).size).toBe(3);
-        expect(paths.every((path) => typeof path === "string" && path.length > 0)).toBe(true);
       });
     }
+
+    it("writes a new file per run, and puts no settings path into the env", async () => {
+      const first = await hostConfig(48_233, "additionalConfig", token());
+      const second = await hostConfig(48_233, "additionalConfig", token());
+      const paths = [first, second].map((config) => splitMcpArgs(config.prepared.backend.args).mcpConfigPath);
+      expect(new Set(paths).size).toBe(2);
+      expect(Object.keys((await first.attempt(randomUUID())).env)).not.toContain("GEMINI_CLI_SYSTEM_SETTINGS_PATH");
+    });
 
     it("reaches the stub host's tools call through a plugin turn: the host-written Authorization and capture key arrive", async () => {
       const stub = await startStubMcpHost();
       cleanups.push(() => stub.close());
       const bearer = token();
       const captureKey = randomUUID();
-      const settings = await hostSettings(Number(new URL(stub.url).port), "additionalConfig", bearer);
-      const attempt = await settings.attempt(captureKey);
+      const config = await hostConfig(Number(new URL(stub.url).port), "additionalConfig", bearer);
+      const attempt = await config.attempt(captureKey);
 
       const prepared = await newBackend().backend.prepareExecution!({ agentDir: join(scratch, "agent-e2e") } as never);
       const records: Json[] = [];
       for await (const record of prepared!.execute!({
         command: resolved.config.command,
-        args: [...resolved.config.args],
+        args: [...config.prepared.backend.args],
         cwd: scratch,
         env: { ...fakeCliEnv(), ...attempt.env },
         prompt: `[[mcp-call]]${JSON.stringify({ tool: "oac_echo", arguments: { text: "hi" } })}`,
@@ -214,58 +221,78 @@ describe.skipIf(!hostAvailable)("OpenClaw host contracts the backend relies on",
 
   describe("the live-session capability (P4, AD-12, AD-13)", () => {
     const sessionKey = (label: string) => `agent:main:explicit:oac-host-contract-${label}-${randomUUID().slice(0, 8)}`;
-    const argv = () => [resolved.config.command as string, ...(resolved.config.args as string[])];
 
-    /** The host's real capability for one turn, built the way the host's runner builds it. */
-    async function capabilityFor(label: { sessionKey: string }, env: Record<string, string>, controller = new AbortController()) {
+    /** One run's inputs, as the host prepares them: launch args with the MCP flags, env, and the run's grant. */
+    type RunInput = { args: string[]; env: Record<string, string>; bearer: string; captureKey: string; mcpConfigHash: string };
+
+    /** The inputs of `count` runs of one session: the host writes a new config file, bearer, and capture key per run. */
+    async function runInputs(base: Record<string, string>, port: number, count: number): Promise<RunInput[]> {
+      const inputs: RunInput[] = [];
+      for (let n = 0; n < count; n += 1) {
+        const bearer = randomBytes(32).toString("hex");
+        const prepared = await host.prepareCliBundleMcpConfig({
+          enabled: true,
+          mode: resolved.bundleMcpMode,
+          backend: resolved.config,
+          workspaceDir: scratch,
+          config: {},
+          agentDir: scratch,
+          additionalConfig: host.createMcpLoopbackServerConfig(port),
+          env: { OPENCLAW_MCP_TOKEN: bearer, OPENCLAW_MCP_CLI_CAPTURE_KEY: "" },
+          warn: () => {},
+        });
+        cleanups.push(() => prepared.cleanup?.());
+        const captureKey = randomUUID();
+        const attempt = await host.prepareCliBundleMcpCaptureAttempt({ mode: resolved.bundleMcpMode, backend: prepared.backend, env: prepared.env, captureKey });
+        cleanups.push(() => attempt.cleanup?.());
+        inputs.push({ args: [...prepared.backend.args], env: { ...base, ...attempt.env }, bearer, captureKey, mcpConfigHash: prepared.mcpConfigHash });
+      }
+      return inputs;
+    }
+
+    /** What the host's grant does with each live-session `activate`: the process's bearer and capture key win. */
+    type GrantLog = { adopted: string[]; captured: string[] };
+
+    /** The host's real capability for one run, built the way the host's runner builds it. */
+    async function capabilityFor(label: { sessionKey: string }, input: RunInput, options: { model?: string; controller?: AbortController } = {}) {
+      const controller = options.controller ?? new AbortController();
       const runId = randomUUID();
       const admission = host.prepareSystemAgentRunAdmission({}, runId, "main", "test", () => {});
       const admittedRunContext = await admission.admit("cli");
       cleanups.push(() => admission.close());
       const params = { provider: "cursor-cli", agentId: "main", sessionId: "oac-host-contract", sessionKey: label.sessionKey, admittedRunContext, abortSignal: controller.signal };
+      const grants: GrantLog = { adopted: [], captured: [] };
       const context = {
         params,
         backendResolved: { id: "cursor-cli" },
-        preparedBackend: { backend: resolved.config, mcpConfigHash: "oac-host-contract" },
+        preparedBackend: {
+          backend: { ...resolved.config, args: input.args },
+          mcpConfigHash: input.mcpConfigHash,
+          mcpClientGrantCapture: {
+            transportToken: input.bearer,
+            adoptProcessToken: (processToken: string) => grants.adopted.push(processToken),
+            revokeProcessToken: () => {},
+            activate: () => {},
+            deactivate: () => {},
+          },
+        },
         workspaceDir: scratch,
         cwd: scratch,
-        normalizedModel: "auto",
+        normalizedModel: options.model ?? "auto",
         modelId: "auto",
         systemPrompt: "",
         executionTarget: { kind: "plugin" },
       };
       const capability = host.createCliLiveSessionCapability({
         context,
-        argv: argv(),
+        argv: [resolved.config.command as string, ...input.args],
         argv0: undefined,
-        env,
-        beginCapture: () => {},
+        env: input.env,
+        captureKey: input.captureKey,
+        beginCapture: (key: string) => grants.captured.push(key),
         abortSignal: controller.signal,
       });
-      return { capability, context, assertCurrent: host.createCliRunCurrentAssertion(params, controller.signal), signal: controller.signal };
-    }
-
-    /** The env of `count` turns of one run's settings: the host writes a new settings file per attempt and nothing else differs. */
-    async function attemptEnvs(base: Record<string, string>, port: number, count: number): Promise<Array<Record<string, string>>> {
-      const prepared = await host.prepareCliBundleMcpConfig({
-        enabled: true,
-        mode: resolved.bundleMcpMode,
-        backend: resolved.config,
-        workspaceDir: scratch,
-        config: {},
-        agentDir: scratch,
-        additionalConfig: host.createMcpLoopbackServerConfig(port),
-        env: { OPENCLAW_MCP_TOKEN: randomBytes(32).toString("hex"), OPENCLAW_MCP_CLI_CAPTURE_KEY: "" },
-        warn: () => {},
-      });
-      cleanups.push(() => prepared.cleanup?.());
-      const envs: Array<Record<string, string>> = [];
-      for (let n = 0; n < count; n += 1) {
-        const attempt = await host.prepareCliBundleMcpCaptureAttempt({ mode: resolved.bundleMcpMode, backend: resolved.config, env: prepared.env, captureKey: randomUUID() });
-        cleanups.push(() => attempt.cleanup?.());
-        envs.push({ ...base, ...attempt.env });
-      }
-      return envs;
+      return { capability, context, grants, assertCurrent: host.createCliRunCurrentAssertion(params, controller.signal), signal: controller.signal };
     }
 
     it("accepts the real backend as a plugin-owned live session", () => {
@@ -275,25 +302,27 @@ describe.skipIf(!hostAvailable)("OpenClaw host contracts the backend relies on",
       expect(host.acceptsCliLiveSession({ executionTarget: { kind: "plugin" }, preparedBackend: { backend: withoutLive } })).toBe(false);
     });
 
-    it("fingerprints a turn by its settings path, not by the capture key", async () => {
+    it("fingerprints runs of one session equally although each has a new config file, bearer token, and capture key", async () => {
       const base = fakeCliEnv();
       const key = sessionKey("fp");
-      const [envA, envB] = (await attemptEnvs(base, 48_232, 2)) as [Record<string, string>, Record<string, string>];
-      const fingerprint = async (env: Record<string, string>) => (await capabilityFor({ sessionKey: key }, env)).capability.fingerprint;
+      const [runA, runB] = (await runInputs(base, 48_232, 2)) as [RunInput, RunInput];
       const failure =
-        "OpenClaw's live-session fingerprint no longer follows GEMINI_CLI_SYSTEM_SETTINGS_PATH (or now follows the capture key). " +
-        "Recheck the MEMORY.md open risks before lifting the per-turn restart: adoptProcessToken moves a later turn's grant onto the first " +
-        "turn's bearer and capture key (the later file's credentials get 401); a degraded mark from one turn's settings; the proxy's SSE " +
-        "stream cut between turns; Mcp-Session-Id kept while the target changes.";
-      const a1 = await fingerprint(envA);
-      expect(await fingerprint(envA), "equal env, equal fingerprint").toBe(a1);
-      expect(await fingerprint(envB), failure).not.toBe(a1);
-      // Only the settings path differs between these two.
-      expect({ ...envB, GEMINI_CLI_SYSTEM_SETTINGS_PATH: envA.GEMINI_CLI_SYSTEM_SETTINGS_PATH }).toEqual(envA);
-      expect(await fingerprint({ ...envA, OPENCLAW_MCP_CLI_CAPTURE_KEY: "other-capture-key" }), "the capture key is ignored").toBe(a1);
+        "OpenClaw's live-session fingerprint now follows something that changes every run (the --mcp-config file path, the bearer token, " +
+        "or the capture key), so cursor-cli restarts the process every turn again (backlog bug 6, P4). If the host changed on purpose, " +
+        "recheck the MEMORY.md notes on the warm-process target before changing the backend's `bundleMcpMode`.";
+      const fingerprint = async (input: RunInput, model?: string) => (await capabilityFor({ sessionKey: key }, input, { model: model ?? "auto" })).capability.fingerprint;
+      // The runs differ in these, and only in these.
+      expect(splitMcpArgs(runA.args).mcpConfigPath).not.toBe(splitMcpArgs(runB.args).mcpConfigPath);
+      expect(runA.bearer).not.toBe(runB.bearer);
+      expect(runA.captureKey).not.toBe(runB.captureKey);
+      const a1 = await fingerprint(runA);
+      expect(await fingerprint(runA), "equal input, equal fingerprint").toBe(a1);
+      expect(await fingerprint(runB), failure).toBe(a1);
+      // Sanity: the fingerprint still follows what should restart a process.
+      expect(await fingerprint(runB, "another-model")).not.toBe(a1);
     });
 
-    it("restarts and resumes on a new settings path, and reuses the process on the same one", async () => {
+    it("reuses the process on a later turn (no initialize, no session/load) and restarts only when the host's fingerprint changes", async () => {
       const log = join(scratch, `live-session-${randomUUID().slice(0, 8)}.log`);
       const base = fakeCliEnv({ FAKE_CURSOR_LOG: log });
       const stub = await startStubMcpHost();
@@ -313,15 +342,15 @@ describe.skipIf(!hostAvailable)("OpenClaw host contracts the backend relies on",
         })();
       const methods = (lines: Json[]) => lines.map((line) => line.method).filter((method) => typeof method === "string");
 
-      /** One plugin turn with the host's capability for `env`. */
-      async function turn(env: Record<string, string>, resume: { useResume: boolean; sessionId?: string }, prompt: string) {
-        const { capability, assertCurrent, signal } = await capabilityFor(key, env);
+      /** One plugin turn with the host's capability for `input`. */
+      async function turn(input: RunInput, resume: { useResume: boolean; sessionId?: string }, prompt: string, model?: string) {
+        const { capability, assertCurrent, signal, grants } = await capabilityFor(key, input, model ? { model } : {});
         const records: Json[] = [];
         for await (const record of prepared!.execute!({
           command: resolved.config.command,
-          args: [...resolved.config.args],
+          args: [...input.args],
           cwd: scratch,
-          env,
+          env: input.env,
           prompt,
           modelId: "auto",
           systemPrompt: "",
@@ -338,45 +367,51 @@ describe.skipIf(!hostAvailable)("OpenClaw host contracts the backend relies on",
         }
         const result = records.find((record) => record.type === "result");
         expect(result?.event?.text, JSON.stringify(records)).toBeTypeOf("string");
-        return { capability, text: result!.event.text as string, sessionId: result!.sessionId as string };
+        return { capability, grants, text: result!.event.text as string, sessionId: result!.sessionId as string };
       }
 
-      const [envA, envB] = (await attemptEnvs(base, port, 2)) as [Record<string, string>, Record<string, string>];
+      const [runA, runB, runC] = (await runInputs(base, port, 3)) as [RunInput, RunInput, RunInput];
 
       // Turn 1: a new chat in a new process.
-      const first = await turn(envA, { useResume: false }, "say:one");
+      const first = await turn(runA, { useResume: false }, "say:one");
       expect(first.text).toBe("one");
       expect(first.sessionId).toBeTruthy();
       const firstHandle = first.capability.current();
       expect(firstHandle, "the plugin registered its handle with the host").toBeDefined();
       expect(liveEntries.get(firstHandle!), "the host's handle is the plugin's own").toBeDefined();
       expect(firstHandle!.fingerprint).toBe(first.capability.fingerprint);
+      expect(first.grants.captured).toEqual([runA.captureKey]);
 
-      // Turn 2: another settings path (as the host writes per turn). New process, the chat resumed by ID.
-      const second = await turn(envB, { useResume: true, sessionId: first.sessionId }, "say:two");
-      expect(second.text).toBe("two");
-      expect(second.capability.fingerprint).not.toBe(first.capability.fingerprint);
-      const secondHandle = second.capability.current();
-      expect(secondHandle).toBeDefined();
-      expect(secondHandle).not.toBe(firstHandle);
-      const afterSecond = logLines();
-      const lifecycle = methods(afterSecond).filter((method) => ["initialize", "session/new", "session/load"].includes(method));
-      expect(lifecycle).toEqual(["initialize", "session/new", "initialize", "session/load"]);
-      const load = afterSecond.find((line) => line.method === "session/load");
-      expect(load?.params?.sessionId).toBe(first.sessionId);
-      expect(new Set(afterSecond.filter((line) => line.method === "initialize").map((line) => line.pid)).size).toBe(2);
-
-      // Turn 3: the same settings path (same fingerprint). One process; only a prompt reaches it.
+      // Turn 2: the host wrote a new config file, bearer, and capture key. Same fingerprint, so the
+      // same process: only a prompt reaches it, and the host moved this run's grant onto turn 1's bearer.
       const mark = logLines().length;
-      const third = await turn(envB, { useResume: true, sessionId: second.sessionId }, "say:three");
-      expect(third.text).toBe("three");
-      expect(third.capability.fingerprint).toBe(second.capability.fingerprint);
-      expect(third.capability.current(), "the same handle serves the second and third turn").toBe(secondHandle);
+      const second = await turn(runB, { useResume: true, sessionId: first.sessionId }, `[[mcp-call]]${JSON.stringify({ tool: "oac_echo", arguments: { text: "warm" } })}`);
+      expect(second.text).toBe("echo:warm");
+      expect(second.capability.fingerprint).toBe(first.capability.fingerprint);
+      expect(second.capability.current(), "the same handle serves the second turn").toBe(firstHandle);
       expect(methods(logLines().slice(mark))).toEqual(["session/prompt"]);
+      expect(second.grants.adopted).toEqual([runA.bearer]);
+      expect(second.grants.captured).toEqual([runA.captureKey]);
+      // The tool call carries the credentials the host accepts for this process: turn 1's, not turn 2's file.
+      const calls = stub.toolCalls();
+      expect(calls).toHaveLength(1);
+      expect(calls[0]!.headers.authorization).toBe(`Bearer ${runA.bearer}`);
+      expect(calls[0]!.headers["x-openclaw-cli-capture-key"]).toBe(runA.captureKey);
+
+      // Turn 3: the host's fingerprint changes (another model). New process, the chat resumed by ID.
+      const third = await turn(runC, { useResume: true, sessionId: second.sessionId }, "say:three", "another-model");
+      expect(third.text).toBe("three");
+      expect(third.capability.fingerprint).not.toBe(first.capability.fingerprint);
+      expect(third.capability.current()).not.toBe(firstHandle);
+      const lifecycle = methods(logLines()).filter((method) => ["initialize", "session/new", "session/load"].includes(method));
+      expect(lifecycle).toEqual(["initialize", "session/new", "initialize", "session/load"]);
+      const load = logLines().find((line) => line.method === "session/load");
+      expect(load?.params?.sessionId).toBe(first.sessionId);
+      expect(new Set(logLines().filter((line) => line.method === "initialize").map((line) => line.pid)).size).toBe(2);
 
       // Closing the process releases the host's record: the handle is no longer current.
       await pool.closeAll();
-      const { capability: later } = await capabilityFor(key, envB);
+      const { capability: later } = await capabilityFor(key, runC, { model: "another-model" });
       expect(later.current()).toBeUndefined();
     }, 60_000);
   });

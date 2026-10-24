@@ -11,7 +11,8 @@ import { inspectProcess } from "./pid-locks.ts";
 import { ProcessPool } from "./pool.ts";
 import type { McpProxy } from "./mcp-proxy.ts";
 import { parseJsonlEvent } from "./events.ts";
-import { SETTINGS_PATH_ENV } from "./mcp-target.ts";
+import { MCP_CONFIG_FLAG } from "./mcp-target.ts";
+import { MCP_CONFIG_TEST_KEY, withHostMcp } from "../../test/fixtures/host-mcp.ts";
 import {
   CliError,
   type CheckVersionParams,
@@ -154,11 +155,10 @@ function makeLive() {
 }
 
 function makeCtx(overrides: Partial<ExecuteContext> = {}): ExecuteContext {
+  const host = withHostMcp(overrides.args ?? ["serve"], overrides.env ?? { PATH: "/bin" });
   return {
     command: "acme",
-    args: ["serve"],
     cwd: "/work",
-    env: { PATH: "/bin" },
     prompt: "hi",
     modelId: "auto",
     systemPrompt: "",
@@ -167,6 +167,7 @@ function makeCtx(overrides: Partial<ExecuteContext> = {}): ExecuteContext {
     requestToolPermission: async () => ({ behavior: "deny", message: "no" }),
     requestUserInput: async () => ({ status: "cancelled", message: "no" }),
     ...overrides,
+    ...host,
   };
 }
 
@@ -188,12 +189,38 @@ const usableEnv = (() => {
   const file = join(dir, "settings.json");
   writeFileSync(file, JSON.stringify({ mcpServers: { openclaw: { url: "http://127.0.0.1:1/mcp", headers: {} } } }));
   afterAll(() => rmSync(dir, { recursive: true, force: true }));
-  return { PATH: "/bin", [SETTINGS_PATH_ENV]: file };
+  return { PATH: "/bin", [MCP_CONFIG_TEST_KEY]: file };
 })();
 
 const proxyRefuses = (url: string) => fetch(url, { method: "POST", body: "{}" }).then(() => false, () => true);
 
 describe("createExecute", () => {
+  it("passes a text delta on while the turn is still running, before the CLI answers further", async () => {
+    // Backlog bug 6, AC3: nothing in the core waits for the turn's end (or for the usage read after it) before a delta moves on.
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => (release = resolve));
+    const { adapter } = makeAdapter(async function* () {
+      yield { kind: "text", text: "first" };
+      await gate;
+      yield { kind: "text", text: " second" };
+      yield { kind: "result", text: "first second", stopReason: "end_turn" };
+    });
+    const iterator = createExecute(adapter, { home: HOME })(makeCtx())[Symbol.asyncIterator]();
+    const seen: string[] = [];
+    try {
+      // The session ID record comes first, then the first delta, while the CLI is still held back.
+      for (let step = 0; step < 2; step += 1) {
+        const next = await Promise.race([iterator.next(), new Promise<"timeout">((resolve) => setTimeout(() => resolve("timeout"), 2_000))]);
+        expect(next, "a record arrives before the turn ends").not.toBe("timeout");
+        for (const event of parsed([(next as IteratorResult<Record<string, unknown>>).value])) seen.push(event.kind === "text" ? `text:${event.text}` : event.kind);
+      }
+      expect(seen).toEqual(["sessionId", "text:first"]);
+    } finally {
+      release();
+      for (let next = await iterator.next(); !next.done; next = await iterator.next());
+    }
+  });
+
   it("streams a turn: session ID, deltas, then one result with usage", async () => {
     const { adapter, sessions, opens } = makeAdapter();
     const { live, calls } = makeLive();
@@ -639,7 +666,7 @@ describe("createExecute MCP proxy (AD-12)", () => {
   }
 
   let counter = 0;
-  /** The settings file the host writes for one run. */
+  /** The MCP config file the host writes for one run. */
   function settingsFor(url: string, token: string, capture: string): Record<string, string> {
     const file = join(scratch, `settings-${counter++}.json`);
     writeFileSync(
@@ -648,7 +675,7 @@ describe("createExecute MCP proxy (AD-12)", () => {
         mcpServers: { openclaw: { type: "http", url, headers: { Authorization: `Bearer ${token}`, "x-openclaw-cli-capture-key": capture } } },
       }),
     );
-    return { PATH: "/bin", [SETTINGS_PATH_ENV]: file };
+    return { PATH: "/bin", [MCP_CONFIG_TEST_KEY]: file };
   }
 
   /** A CLI that calls the MCP server it was given, once per turn, like a tool call. */
@@ -772,7 +799,9 @@ describe("createExecute MCP proxy (AD-12)", () => {
     }
   });
 
-  it("points one warm session at each turn's target and rejects calls between turns", async () => {
+  it("keeps one warm session on the target it opened with and rejects calls between turns", async () => {
+    // The host moves each later run's grant onto the process's own bearer and capture key, so the
+    // later file's credentials (token-2, cap-2) are not the ones the host accepts for this process.
     const hostA = await startHost();
     const hostB = await startHost();
     try {
@@ -785,6 +814,7 @@ describe("createExecute MCP proxy (AD-12)", () => {
       const server = opens[0]!.mcpServers![0]!;
       const idle = await fetch(server.url, { method: "POST", headers: { ...server.headers, "Content-Type": "application/json" }, body: "{}" });
       expect(idle.status).toBe(503);
+      expect(hostA.seen).toHaveLength(1);
 
       const second = await run(
         execute,
@@ -794,13 +824,48 @@ describe("createExecute MCP proxy (AD-12)", () => {
       expect(opens).toHaveLength(1);
       expect(sessions).toHaveLength(1);
 
-      expect(hostA.seen).toHaveLength(1);
-      expect(hostA.seen[0]).toMatchObject({ authorization: "Bearer token-1", capture: "cap-1" });
-      expect(hostB.seen).toHaveLength(1);
-      expect(hostB.seen[0]).toMatchObject({ authorization: "Bearer token-2", capture: "cap-2" });
+      expect(hostA.seen).toHaveLength(2);
+      for (const seen of hostA.seen) expect(seen).toMatchObject({ authorization: "Bearer token-1", capture: "cap-1" });
+      expect(hostB.seen).toHaveLength(0);
     } finally {
       await hostA.close();
       await hostB.close();
+    }
+  });
+
+  it("runs a warm turn without tools, and keeps the process, when that turn's config file is unusable", async () => {
+    const host = await startHost();
+    const warnings: string[] = [];
+    try {
+      const { adapter, opens } = callingAdapter();
+      const { live } = makeLive();
+      const execute = createExecute(adapter, { home: HOME, warn: (message) => warnings.push(message) });
+      await run(execute, makeCtx({ liveSession: live, env: settingsFor(host.url, "t", "c") }));
+      const missing = join(scratch, "does-not-exist.json");
+      const second = await run(execute, makeCtx({ liveSession: live, useResume: true, sessionId: "native-1", env: { PATH: "/bin", [MCP_CONFIG_TEST_KEY]: missing } }));
+      expect(parsed(second).at(-1)).toMatchObject({ text: "503" });
+      expect(warnings).toHaveLength(1);
+      // The next turn with a good file works on the same process again.
+      const third = await run(execute, makeCtx({ liveSession: live, useResume: true, sessionId: "native-1", env: settingsFor(host.url, "t2", "c2") }));
+      expect(parsed(third).at(-1)).toMatchObject({ text: "200" });
+      expect(opens).toHaveLength(1);
+      expect(host.seen).toHaveLength(2);
+      expect(host.seen[1]).toMatchObject({ authorization: "Bearer t", capture: "c" });
+    } finally {
+      await host.close();
+    }
+  });
+
+  it("never gives the CLI the host's MCP flags", async () => {
+    const host = await startHost();
+    try {
+      const { adapter, opens } = makeAdapter();
+      const ctx = makeCtx({ env: settingsFor(host.url, "t", "c"), args: ["serve", "--disallowedTools", "WebSearch", HOST_SHELL_ARG] });
+      expect(ctx.args).toContain(MCP_CONFIG_FLAG);
+      await run(createExecute(adapter, { home: HOME }), ctx);
+      expect(opens[0]!.args).toEqual(["serve"]);
+    } finally {
+      await host.close();
     }
   });
 
@@ -829,7 +894,7 @@ describe("createExecute MCP proxy (AD-12)", () => {
     }
   });
 
-  it("runs the turn without tools and warns when the settings file is missing", async () => {
+  it("runs the turn without tools and warns when the MCP config file is missing", async () => {
     const warnings: string[] = [];
     const { adapter } = callingAdapter();
     const records = await run(
@@ -840,7 +905,7 @@ describe("createExecute MCP proxy (AD-12)", () => {
     expect(parsed(records).at(-1)).toMatchObject({ kind: "result", text: "503" });
     expect(records.at(-1)).not.toMatchObject({ is_error: true });
     expect(warnings).toHaveLength(1);
-    expect(warnings[0]).toContain(SETTINGS_PATH_ENV);
+    expect(warnings[0]).toContain(MCP_CONFIG_FLAG);
   });
 
   it("warns without leaking header values when the file lacks mcpServers.openclaw", async () => {
@@ -850,7 +915,7 @@ describe("createExecute MCP proxy (AD-12)", () => {
     const { adapter } = callingAdapter();
     const records = await run(
       createExecute(adapter, { home: HOME, warn: (message) => warnings.push(message) }),
-      makeCtx({ env: { [SETTINGS_PATH_ENV]: file } }),
+      makeCtx({ env: { [MCP_CONFIG_TEST_KEY]: file } }),
     );
     expect(parsed(records).at(-1)).toMatchObject({ text: "503" });
     expect(warnings.join("\n")).toContain("mcpServers.openclaw");
@@ -1124,7 +1189,7 @@ describe("createExecute with MCP off", () => {
     await run(createExecute(adapter, { home: HOME, mcp: true, warn: (message) => warnings.push(message) }), makeCtx());
     expect(opens[0]!.mcpServers).toHaveLength(1);
     expect(warnings).toHaveLength(1);
-    expect(warnings[0]).toContain(SETTINGS_PATH_ENV);
+    expect(warnings[0]).toContain(MCP_CONFIG_FLAG);
   });
 });
 
@@ -1784,7 +1849,7 @@ describe("createExecute side question cleanup (O2)", () => {
     } finally {
       fake.exitDelayMs = 0;
     }
-    expect(seen).toEqual([{ sessionId: "native-1", env: { ...usableEnv, ...HOME.env }, exited: true }]);
+    expect(seen).toEqual([{ sessionId: "native-1", env: { PATH: "/bin", ...HOME.env }, exited: true }]);
   });
 
   it("makes the pool wait for the discard before it counts the process as gone", async () => {

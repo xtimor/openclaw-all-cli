@@ -4,7 +4,6 @@ import { join } from "node:path";
 import { afterAll, expect, it } from "vitest";
 import { cursorAdapter } from "../../src/adapters/cursor/index.ts";
 import { createExecute } from "../../src/core/execute.ts";
-import { SETTINGS_PATH_ENV } from "../../src/core/mcp-target.ts";
 import type { CliAdapter, CliSession, NormalizedEvent, PermissionDecision } from "../../src/core/ports.ts";
 import type { ExecuteContext } from "../../src/core/sdk-types.ts";
 import { STUB_EXEC_TOOL, startStubMcpHost } from "../fixtures/stub-mcp-host.ts";
@@ -15,6 +14,7 @@ import {
   makeLiveSession,
   openclaw,
   replyLines,
+  hostMcpArgs,
   writeSettingsFile,
 } from "./harness.ts";
 
@@ -63,9 +63,9 @@ describeLive("permission requests go to the host (P8, P9)", () => {
   function turnContext(name: string, host: { url: string }, workspace: string, overrides: Partial<ExecuteContext>): ExecuteContext {
     return {
       command: process.env.CURSOR_AGENT_BIN ?? cursorAdapter.command,
-      args: cursorAdapter.launchArgs,
+      args: [...cursorAdapter.launchArgs, ...hostMcpArgs(writeSettingsFile(root, `settings-${name}`, host.url, `token-${name}`, `capture-${name}`))],
       cwd: workspace,
-      env: { ...liveHostEnv(), [SETTINGS_PATH_ENV]: writeSettingsFile(root, `settings-${name}`, host.url, `token-${name}`, `capture-${name}`) },
+      env: liveHostEnv(),
       prompt: "",
       modelId: "auto",
       systemPrompt: "",
