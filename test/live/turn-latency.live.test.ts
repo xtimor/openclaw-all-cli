@@ -17,6 +17,7 @@ import {
   openclaw,
   openclawAsync,
   startGateway,
+  waitFor,
   watchGatewayEvents,
   writeSettingsFile,
 } from "./harness.ts";
@@ -172,8 +173,9 @@ describeLive("per-turn latency through the real Gateway (P4)", () => {
           if (n === 2) startsAfterTwo = await liveSessionStarts(log);
           console.log(`LATENCY gateway turn ${n}: ${JSON.stringify(timing)}`);
         }
-        // The host's fingerprint no longer changes per turn: after the first two turns (the first turn of a
-        // fresh agent changes the system prompt and the tool list once) no turn starts a process.
+        // The host's fingerprint no longer changes per turn. Up to two starts are allowed: a turn that begins in
+        // the first seconds after the Gateway starts can see a model catalog without the plugin's rows, which
+        // changes the tool list once (backlog bug 8, the last test of this file shows the steady state).
         expect(startsAfterTwo).toBeLessThanOrEqual(2);
         expect(await liveSessionStarts(log)).toBe(startsAfterTwo);
         for (const timing of timings.slice(1)) expect(timing.firstAssistantMs).toBeGreaterThan(0);
@@ -239,12 +241,74 @@ describeLive("per-turn latency through the real Gateway (P4)", () => {
               break;
             }
           }
-          // The first turn of a fresh agent changes the system prompt and the tool list once; after that no turn starts a process.
+          // A turn in the first seconds after the Gateway starts can change the tool list once (backlog bug 8); after that no turn starts a process.
           if (usable) expect(await liveSessionStarts(log)).toBeLessThanOrEqual(2);
         }
         expect(usable, "three tries ended in OpenClaw's budget compaction").toBe(true);
       } finally {
         await gateway.stop();
+      }
+    },
+    LIVE_TIMEOUT_MS * 3,
+  );
+});
+
+/** `openclaw config get <key> --json`, or undefined when the key is not set. */
+function readConfig(key: string): string | undefined {
+  const result = openclaw(["config", "get", key, "--json"]);
+  return result.status === 0 ? result.stdout.trim() : undefined;
+}
+
+// Backlog bug 8. On OpenClaw 2026.10.3 the host reads whether a model takes images from the Gateway's model
+// catalog, which has no `cursor-cli` rows until the plugin's listing (about 4 s of ACP) has finished after the
+// Gateway starts. A turn that begins before that gets no `computer` and `view_image` tools, the next turn gets
+// them, and the changed tool list restarts cursor-agent once. Once the catalog has loaded, a new agent keeps
+// one process from its first turn: this row is that steady state.
+describeLive("a new agent on a Gateway whose model catalog has loaded (P4)", () => {
+  it(
+    "keeps one cursor-agent process for four turns, starting with the first",
+    async () => {
+      const root = mkdtempSync(join(tmpdir(), "oac-live-fresh-agent-"));
+      const agent = `oac-fresh-${Date.now().toString(36)}`;
+      const workspace = join(root, "workspace");
+      mkdirSync(workspace);
+      const priorPrimary = readConfig("agents.defaults.model.primary");
+      let gateway: Awaited<ReturnType<typeof startGateway>> | undefined;
+      let added = false;
+      try {
+        expect(openclaw(["config", "set", "agents.defaults.model.primary", "cursor-cli/auto"]).status).toBe(0);
+        const create = openclaw(["agents", "add", agent, "--non-interactive", "--workspace", workspace, "--model", "cursor-cli/auto"]);
+        expect(create.status, create.stdout + create.stderr).toBe(0);
+        added = true;
+        // A second, unrelated change of the system prompt: OpenClaw drops BOOTSTRAP.md from it when it deletes the file (MEMORY, backlog bug 8).
+        rmSync(join(workspace, "BOOTSTRAP.md"), { force: true });
+        gateway = await startGateway(18974);
+        // Wait for the plugin's rows: `models.list` shows them once the Gateway's catalog has loaded.
+        const loaded = await waitFor(
+          () => {
+            const listed = openclaw(["gateway", "call", "models.list", "--params", "{}", "--port", String(gateway!.port), "--json"], { timeoutMs: 30_000 });
+            return listed.status === 0 && /"provider":\s*"cursor-cli"/.test(listed.stdout);
+          },
+          90_000,
+          3_000,
+        );
+        expect(loaded, "the Gateway's model catalog never listed cursor-cli").toBe(true);
+        const log = gatewayLog();
+        const sessionId = `fresh-agent-${Date.now()}`;
+        for (let n = 1; n <= 4; n += 1) {
+          const run = await openclawAsync(["agent", "--agent", agent, "--session-id", sessionId, "--message", "Reply with the single word OK."], {
+            timeoutMs: 240_000,
+            env: gateway.env,
+          });
+          expect(run.status, `turn ${n}: ${run.stderr}`).toBe(0);
+        }
+        expect(await liveSessionStarts(log), "one `cli live session start` for the whole session").toBe(1);
+      } finally {
+        await gateway?.stop();
+        if (added) openclaw(["agents", "delete", agent, "--force"]);
+        if (priorPrimary === undefined) openclaw(["config", "unset", "agents.defaults.model.primary"]);
+        else openclaw(["config", "set", "agents.defaults.model.primary", priorPrimary, "--strict-json"]);
+        rmSync(root, { recursive: true, force: true });
       }
     },
     LIVE_TIMEOUT_MS * 3,
