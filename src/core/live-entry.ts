@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { releaseChat } from "./chat-registry.ts";
-import { startMcpProxy, type McpProxy } from "./mcp-proxy.ts";
+import { startMcpProxy, type McpProxy, type McpTarget } from "./mcp-proxy.ts";
 import type { PermissionTurn } from "./permissions.ts";
 import { CliError, type CliSession } from "./ports.ts";
 import type { PoolMember, ProcessPool } from "./pool.ts";
@@ -11,6 +11,11 @@ export type LiveEntry = {
   session?: CliSession;
   /** The session's MCP endpoint (AD-12). It lives and dies with the process. Absent when `mcp` is off. */
   proxy?: McpProxy;
+  /**
+   * The host target the process opened with. Warm turns reuse it: the host moves each later run's
+   * grant onto the process's own bearer and capture key.
+   */
+  target?: McpTarget;
   /** Set by the handle's close, which may arrive while the process is still opening. */
   closed?: boolean;
   /**

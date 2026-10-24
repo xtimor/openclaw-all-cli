@@ -63,10 +63,14 @@ export function buildCliBackend(adapter: CliAdapter, options: BuildBackendOption
       : { nativeToolMode: "always-on" as const }),
     ...(flags.mcp
       ? {
-          // P7: the host writes the turn's loopback URL and headers to a settings file, and the
-          // MCP proxy (AD-12) reads it. The file is the only reason these flags are set.
+          // P7: the host writes the turn's loopback URL and headers to a config file named by
+          // `--mcp-config`, and the MCP proxy (AD-12) reads it. The file is the only reason these
+          // flags are set; `execute` strips them before the launch. The mode matters for P4: the
+          // host's live-session fingerprint ignores that flag's value (as for `claude-cli`), while the
+          // `gemini-system-settings` mode puts a new file path into the env, which restarts the
+          // process every turn.
           bundleMcp: true,
-          bundleMcpMode: "gemini-system-settings" as const,
+          bundleMcpMode: "claude-config-file" as const,
         }
       : {}),
     // P8: the host serves its own exec tools in place of the CLI's native shell. It does so only for

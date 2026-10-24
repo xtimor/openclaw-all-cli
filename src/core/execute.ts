@@ -33,7 +33,7 @@ export type ExecuteOptions = {
   warn?: (message: string) => void;
   /**
    * Whether OpenClaw's tools reach the CLI through the MCP proxy (parity row P7). When false the
-   * core starts no proxy, hands the CLI no MCP server, and reads no settings file. Default true.
+   * core starts no proxy, hands the CLI no MCP server, and reads no MCP config file. Default true.
    */
   mcp?: boolean;
   /**
@@ -136,16 +136,29 @@ export function createExecute(adapter: CliAdapter, options: ExecuteOptions): Cli
   }
 
   /**
-   * The host mints a new URL and token per run, so every turn points the proxy at its own. A
-   * turn whose settings file has no usable target runs without OpenClaw tools.
+   * Points the proxy at a turn's target. A turn whose config file has no usable target runs without
+   * OpenClaw tools.
    */
-  function pointProxy(proxy: McpProxy, turnTarget: TurnTarget): void {
+  function pointProxy(entry: LiveEntry, proxy: McpProxy, turnTarget: TurnTarget): void {
     if (turnTarget.ok) {
       proxy.setTarget(turnTarget.target);
+      entry.target ??= turnTarget.target;
     } else {
       proxy.clearTarget();
       warn(`OpenClaw tools are unavailable in this turn: ${turnTarget.reason}.`);
     }
+  }
+
+  /**
+   * A warm process keeps the target it opened with. The host mints a new bearer and capture key per
+   * run, but its live-session `activate` moves the later run's grant onto the process's own bearer
+   * and capture key (`adoptProcessToken`, `beginCapture`): the later file's credentials are not the
+   * ones the host accepts for this process. The later file still has to be usable, or the turn
+   * runs without tools like any other.
+   */
+  function pointWarmProxy(entry: OpenEntry, proxy: McpProxy, turnTarget: TurnTarget): void {
+    if (turnTarget.ok && entry.target) proxy.setTarget(entry.target);
+    else pointProxy(entry, proxy, turnTarget);
   }
 
   /**
@@ -226,7 +239,7 @@ export function createExecute(adapter: CliAdapter, options: ExecuteOptions): Cli
       ctx.abortSignal?.throwIfAborted();
       fresh.turn = { ctx, ended: false };
       if (fresh.proxy) {
-        pointProxy(fresh.proxy, turnTarget);
+        pointProxy(fresh, fresh.proxy, turnTarget);
         fresh.degraded = !turnTarget.ok;
       }
       // The marker only says the host MAY serve exec: its tool policy can still drop the tool. The
@@ -268,11 +281,11 @@ export function createExecute(adapter: CliAdapter, options: ExecuteOptions): Cli
     // The host gives a side question no live session; if it ever did, the side question must not
     // restart or replace the chat's process.
     const live = sideQuestion ? undefined : ctx.liveSession;
-    // A side question gets no OpenClaw tools: no proxy, no MCP server, no settings file read.
+    // A side question gets no OpenClaw tools: no proxy, no MCP server, no config file read.
     const withMcp = mcp && !sideQuestion;
     const shell = splitHostShell(ctx);
 
-    const turnTarget: TurnTarget = withMcp ? await readTurnTarget(ctx.env) : { ok: false, reason: "MCP is off" };
+    const turnTarget: TurnTarget = withMcp ? await readTurnTarget(shell.mcpConfigPath) : { ok: false, reason: "MCP is off" };
     ctx.abortSignal?.throwIfAborted();
     let entry = reusable(ctx, live, shell.hostShell);
     if (!entry && live) await live.restart();
@@ -313,7 +326,7 @@ export function createExecute(adapter: CliAdapter, options: ExecuteOptions): Cli
       if (!opened) {
         live?.activate(active.handle);
         ctx.abortSignal?.throwIfAborted();
-        if (active.proxy) pointProxy(active.proxy, turnTarget);
+        if (active.proxy) pointWarmProxy(active, active.proxy, turnTarget);
       }
       ctx.abortSignal?.throwIfAborted();
       yield* promptTurn(turnArgs, active, tools, state);

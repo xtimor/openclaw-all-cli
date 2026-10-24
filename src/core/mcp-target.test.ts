@@ -2,7 +2,7 @@ import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterAll, describe, expect, it } from "vitest";
-import { readTurnTarget, SETTINGS_PATH_ENV } from "./mcp-target.ts";
+import { readTurnTarget, splitMcpArgs } from "./mcp-target.ts";
 
 describe("readTurnTarget", () => {
   const dir = mkdtempSync(join(tmpdir(), "oac-target-"));
@@ -10,12 +10,12 @@ describe("readTurnTarget", () => {
   const write = (name: string, value: unknown) => {
     const file = join(dir, name);
     writeFileSync(file, typeof value === "string" ? value : JSON.stringify(value));
-    return { [SETTINGS_PATH_ENV]: file };
+    return file;
   };
   const openclaw = (server: Record<string, unknown>) => ({ mcp: { allowed: ["openclaw"] }, mcpServers: { openclaw: server } });
 
   it("reads the url and headers of mcpServers.openclaw", async () => {
-    const env = write(
+    const file = write(
       "ok.json",
       openclaw({
         type: "http",
@@ -23,7 +23,7 @@ describe("readTurnTarget", () => {
         headers: { Authorization: "Bearer t", "x-openclaw-cli-capture-key": "k", bad: 1 },
       }),
     );
-    await expect(readTurnTarget(env)).resolves.toEqual({
+    await expect(readTurnTarget(file)).resolves.toEqual({
       ok: true,
       target: {
         url: "http://127.0.0.1:4711/mcp",
@@ -33,13 +33,13 @@ describe("readTurnTarget", () => {
   });
 
   it("accepts httpUrl", async () => {
-    const env = write("http-url.json", openclaw({ httpUrl: "http://127.0.0.1:1/mcp" }));
-    await expect(readTurnTarget(env)).resolves.toMatchObject({ ok: true, target: { url: "http://127.0.0.1:1/mcp", headers: {} } });
+    const file = write("http-url.json", openclaw({ httpUrl: "http://127.0.0.1:1/mcp" }));
+    await expect(readTurnTarget(file)).resolves.toMatchObject({ ok: true, target: { url: "http://127.0.0.1:1/mcp", headers: {} } });
   });
 
   it.each(["", "   "])("falls back to url when httpUrl is blank (%j)", async (blank) => {
-    const env = write(`blank-${blank.length}.json`, openclaw({ httpUrl: blank, url: "http://127.0.0.1:2/mcp" }));
-    await expect(readTurnTarget(env)).resolves.toMatchObject({ ok: true, target: { url: "http://127.0.0.1:2/mcp" } });
+    const file = write(`blank-${blank.length}.json`, openclaw({ httpUrl: blank, url: "http://127.0.0.1:2/mcp" }));
+    await expect(readTurnTarget(file)).resolves.toMatchObject({ ok: true, target: { url: "http://127.0.0.1:2/mcp" } });
   });
 
   it.each([
@@ -47,21 +47,21 @@ describe("readTurnTarget", () => {
     ["remote", "http://example.com/mcp"],
     ["https", "https://127.0.0.1:1/mcp"],
   ])("falls back to url when httpUrl is %s", async (name, httpUrl) => {
-    const env = write(`bad-http-${name}.json`, openclaw({ httpUrl, url: "http://127.0.0.1:5/mcp" }));
-    await expect(readTurnTarget(env)).resolves.toMatchObject({ ok: true, target: { url: "http://127.0.0.1:5/mcp" } });
+    const file = write(`bad-http-${name}.json`, openclaw({ httpUrl, url: "http://127.0.0.1:5/mcp" }));
+    await expect(readTurnTarget(file)).resolves.toMatchObject({ ok: true, target: { url: "http://127.0.0.1:5/mcp" } });
   });
 
   it("prefers httpUrl over url when both are set", async () => {
-    const env = write("both.json", openclaw({ httpUrl: "http://127.0.0.1:3/mcp", url: "http://127.0.0.1:4/mcp" }));
-    await expect(readTurnTarget(env)).resolves.toMatchObject({ ok: true, target: { url: "http://127.0.0.1:3/mcp" } });
+    const file = write("both.json", openclaw({ httpUrl: "http://127.0.0.1:3/mcp", url: "http://127.0.0.1:4/mcp" }));
+    await expect(readTurnTarget(file)).resolves.toMatchObject({ ok: true, target: { url: "http://127.0.0.1:3/mcp" } });
   });
 
   it.each([
-    ["the variable unset", {}],
-    ["the variable empty", { [SETTINGS_PATH_ENV]: " " }],
-    ["a missing file", { [SETTINGS_PATH_ENV]: "/nonexistent/settings.json" }],
-  ])("fails without throwing for %s", async (_name, env) => {
-    await expect(readTurnTarget(env)).resolves.toMatchObject({ ok: false });
+    ["no path", undefined],
+    ["an empty path", ""],
+    ["a missing file", "/nonexistent/mcp.json"],
+  ])("fails without throwing for %s", async (_name, path) => {
+    await expect(readTurnTarget(path)).resolves.toMatchObject({ ok: false });
   });
 
   it.each([
@@ -76,5 +76,34 @@ describe("readTurnTarget", () => {
     const result = await readTurnTarget(write(`bad-${name.replaceAll(" ", "-")}.json`, value));
     expect(result.ok).toBe(false);
     expect(JSON.stringify(result)).not.toContain("secret-token");
+  });
+});
+
+describe("splitMcpArgs", () => {
+  it("takes the host's MCP flags out of the launch args and returns the config path", () => {
+    expect(splitMcpArgs(["acp", "--strict-mcp-config", "--mcp-config", "/tmp/a/mcp.json", "--disallowedTools", "WebSearch,mcp__openclaw__x", "--keep"])).toEqual({
+      args: ["acp", "--keep"],
+      mcpConfigPath: "/tmp/a/mcp.json",
+    });
+  });
+
+  it.each([
+    ["the = spelling", ["acp", "--mcp-config=/tmp/b/mcp.json", "--disallowed-tools=WebSearch"]],
+    ["a flag after the value", ["acp", "--mcp-config", "/tmp/b/mcp.json", "--strict-mcp-config", "--disallowed-tools", "WebSearch"]],
+  ])("handles %s", (_name, args) => {
+    expect(splitMcpArgs(args)).toEqual({ args: ["acp"], mcpConfigPath: "/tmp/b/mcp.json" });
+  });
+
+  it("reads every value of a variadic flag but returns the first path, and keeps args that follow a non-flag", () => {
+    expect(splitMcpArgs(["acp", "--mcp-config", "/tmp/one.json", "/tmp/two.json", "--model", "x"])).toEqual({
+      args: ["acp", "--model", "x"],
+      mcpConfigPath: "/tmp/one.json",
+    });
+  });
+
+  it("returns no path and the same args when the host added nothing", () => {
+    expect(splitMcpArgs(["acp"])).toEqual({ args: ["acp"], mcpConfigPath: undefined });
+    expect(splitMcpArgs(["acp", "--mcp-config"])).toEqual({ args: ["acp"], mcpConfigPath: undefined });
+    expect(splitMcpArgs(["acp", "--mcp-config="])).toEqual({ args: ["acp"], mcpConfigPath: undefined });
   });
 });

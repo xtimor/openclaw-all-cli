@@ -5,13 +5,13 @@ import { afterAll, expect, it } from "vitest";
 import { cursorAdapter } from "../../src/adapters/cursor/index.ts";
 import { homeDirFor } from "../../src/core/home.ts";
 import { createExecute } from "../../src/core/execute.ts";
-import { SETTINGS_PATH_ENV } from "../../src/core/mcp-target.ts";
 import type { CliAdapter, NormalizedEvent, OpenParams } from "../../src/core/ports.ts";
 import type { ExecuteContext } from "../../src/core/sdk-types.ts";
 import { STUB_TOOL, startStubMcpHost } from "../fixtures/stub-mcp-host.ts";
 import {
   LIVE_TIMEOUT_MS,
   describeLive,
+  hostMcpArgs,
   liveHostEnv,
   makeLiveSession,
   openclaw,
@@ -21,13 +21,15 @@ import {
 
 // Parity row P7 (OpenClaw tools as MCP through the per-session proxy, AD-12). Real cursor-agent,
 // one warm `createExecute` session, a stub HTTP MCP host standing in for OpenClaw. Each turn has
-// its own URL, token, and capture key, as OpenClaw mints them per run.
+// its own config file, token, and capture key, as OpenClaw mints them per run; the warm process
+// keeps the credentials it opened with, which the host accepts for it (it moves each later run's
+// grant onto them).
 describeLive("OpenClaw tools through the per-session MCP proxy (P7)", () => {
   const root = mkdtempSync(join(tmpdir(), "oac-live-mcp-"));
   afterAll(() => rmSync(root, { recursive: true, force: true }));
 
   it(
-    "reaches each turn's target with that turn's headers, and rejects calls between turns",
+    "reaches the opening target with the opening headers on every turn, and rejects calls between turns",
     async () => {
       const workspace = join(root, "workspace");
       mkdirSync(workspace);
@@ -52,12 +54,9 @@ describeLive("OpenClaw tools through the per-session MCP proxy (P7)", () => {
           const marker = `turn-${n}-marker`;
           const ctx: ExecuteContext = {
             command: process.env.CURSOR_AGENT_BIN ?? cursorAdapter.command,
-            args: cursorAdapter.launchArgs,
+            args: [...cursorAdapter.launchArgs, ...hostMcpArgs(writeSettingsFile(root, `settings-${n}`, host.url, `host-token-${n}`, `capture-${n}`))],
             cwd: workspace,
-            env: {
-              ...liveHostEnv(),
-              [SETTINGS_PATH_ENV]: writeSettingsFile(root, `settings-${n}`, host.url, `host-token-${n}`, `capture-${n}`),
-            },
+            env: liveHostEnv(),
             prompt: `Call the MCP tool ${STUB_TOOL} (server "openclaw") with text "${marker}". Reply with the tool's output only.`,
             modelId: "auto",
             systemPrompt: "",
@@ -101,14 +100,14 @@ describeLive("OpenClaw tools through the per-session MCP proxy (P7)", () => {
         const second = await turn(2, hostTwo);
         // One warm process served both turns.
         expect(opens).toHaveLength(1);
-        const calls2 = hostTwo.toolCalls();
+        const calls2 = hostOne.toolCalls().slice(calls1.length);
         expect(calls2.length).toBeGreaterThanOrEqual(1);
-        expect(calls2[0]!.headers.authorization).toBe("Bearer host-token-2");
-        expect(calls2[0]!.headers["x-openclaw-cli-capture-key"]).toBe("capture-2");
+        expect(calls2[0]!.headers.authorization).toBe("Bearer host-token-1");
+        expect(calls2[0]!.headers["x-openclaw-cli-capture-key"]).toBe("capture-1");
         expect(JSON.stringify(calls2[0]!.rpc)).toContain(second.marker);
         expect(second.reply).toContain(`echo:${second.marker}`);
-        // Turn 2 never reached turn 1's host.
-        expect(hostOne.toolCalls()).toHaveLength(calls1.length);
+        // Turn 2's own file named another host and credentials; the warm process never used them.
+        expect(hostTwo.toolCalls()).toHaveLength(0);
       } finally {
         live.current()?.close("abort");
         await hostOne.close();

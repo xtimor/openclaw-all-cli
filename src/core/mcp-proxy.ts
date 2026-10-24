@@ -6,7 +6,8 @@ import { Readable } from "node:stream";
 /**
  * A stable local MCP endpoint for one live session (AD-12). The CLI is given only this endpoint
  * and its own Bearer token. The host mints a new loopback URL and token for every run, so the
- * proxy forwards each request to the current turn's target and rejects calls outside a turn.
+ * proxy forwards each request to the target it was last pointed at (the core picks it: a warm
+ * process keeps the one it opened with) and rejects calls outside a turn.
  *
  * It is a thin forwarder, not an MCP server: it reads no tool call and relays method, path,
  * body, and the response stream.

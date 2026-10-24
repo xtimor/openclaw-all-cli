@@ -9,6 +9,7 @@ import { CONTINUITY_NOTE } from "../src/core/execute.ts";
 import { createManifest } from "../src/core/ports.ts";
 import { systemPromptBlock } from "../src/core/system-prompt.ts";
 import { FAKE_CURSOR_AGENT, fakeEnv } from "./fixtures/paths.ts";
+import { MCP_CONFIG_TEST_KEY, withHostMcp } from "./fixtures/host-mcp.ts";
 
 const calls = vi.hoisted(() => ({ options: [] as Array<Record<string, unknown>> }));
 vi.mock("../src/core/images.ts", async (importOriginal) => {
@@ -76,10 +77,9 @@ describe("images (P13)", () => {
     const records: Record<string, unknown>[] = [];
     for await (const record of prepared!.execute!({
       command: FAKE_CURSOR_AGENT,
-      args: ["acp"],
       ...(options.signal ? { abortSignal: options.signal } : {}),
+      ...withHostMcp(["acp"], fakeEnv({ FAKE_CURSOR_LOG: log, ...options.env })),
       cwd: workspace,
-      env: fakeEnv({ FAKE_CURSOR_LOG: log, ...options.env }),
       prompt,
       modelId: "auto",
       systemPrompt: options.systemPrompt ?? "",
@@ -146,7 +146,7 @@ describe("images (P13)", () => {
     const { agentDir, log } = freshDir("full");
     const system = "You are the OpenClaw agent.";
     const file = image(PNG);
-    await turn(agentDir, log, withImages("say:pong", file), { systemPrompt: system, env: { GEMINI_CLI_SYSTEM_SETTINGS_PATH: settings } });
+    await turn(agentDir, log, withImages("say:pong", file), { systemPrompt: system, env: { [MCP_CONFIG_TEST_KEY]: settings } });
     const [prompt] = rawPrompts(log);
     expect(prompt).toHaveLength(2);
     expect(prompt![0]).toEqual({ type: "text", text: `${systemPromptBlock(system)}\n\n${CONTINUITY_NOTE}\n\nsay:pong` });

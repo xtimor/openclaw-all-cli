@@ -14,6 +14,7 @@ import { createModelCatalog } from "../src/core/catalog.ts";
 import { inspectProcess } from "../src/core/pid-locks.ts";
 import { createSyntheticAuthProvider } from "../src/core/synthetic-auth.ts";
 import { FAKE_CURSOR_AGENT, fakeEnv } from "./fixtures/paths.ts";
+import { MCP_CONFIG_TEST_KEY, withHostMcp } from "./fixtures/host-mcp.ts";
 
 const manifest = JSON.parse(readFileSync(new URL("../openclaw.plugin.json", import.meta.url), "utf8"));
 const pkg = JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8"));
@@ -38,7 +39,7 @@ describe("cursor-cli backend", () => {
     expect(backend.sideQuestionToolMode).toBe("disabled");
     expect(backend).toMatchObject({
       bundleMcp: true,
-      bundleMcpMode: "gemini-system-settings",
+      bundleMcpMode: "claude-config-file",
       hostOwnedTools: ["exec", "process"],
       nativeToolMode: "selectable",
       toolAvailabilityEnforcement: "execution-args",
@@ -95,9 +96,8 @@ describe("cursor-cli backend", () => {
     const records: Record<string, unknown>[] = [];
     for await (const record of prepared!.execute!({
       command: FAKE_CURSOR_AGENT,
-      args: ["acp"],
+      ...withHostMcp(["acp"], fakeEnv(env)),
       cwd,
-      env: fakeEnv(env),
       prompt: "say:pong",
       modelId: "auto",
       systemPrompt: "",
@@ -123,7 +123,7 @@ describe("cursor-cli backend", () => {
     const settings = join(scratch, "continuity-settings.json");
     writeFileSync(settings, JSON.stringify({ mcpServers: { openclaw: { url: "http://127.0.0.1:1/mcp", headers: {} } } }));
     const log = join(scratch, "continuity.jsonl");
-    const env = { FAKE_CURSOR_LOG: log, GEMINI_CLI_SYSTEM_SETTINGS_PATH: settings };
+    const env = { FAKE_CURSOR_LOG: log, [MCP_CONFIG_TEST_KEY]: settings };
     const prompts = () =>
       readFileSync(log, "utf8")
         .trim()
@@ -854,13 +854,13 @@ describe("MCP proxy wiring", () => {
       .map((line) => JSON.parse(line))
       .find((entry) => entry.method === "session/new").params;
 
-  it("warns once, naming the settings variable, when a turn has no settings file (buildCliBackend)", async () => {
+  it("warns once, naming the config flag, when a turn has no MCP config file (buildCliBackend)", async () => {
     const warnings: string[] = [];
     const backend = buildCliBackend(cursorAdapter, { settings: {}, warn: (message) => warnings.push(message) });
     const records = await turn(backend, "warn-direct");
     expect(records.at(-1)).toMatchObject({ type: "result", is_error: false });
     expect(warnings).toHaveLength(1);
-    expect(warnings[0]).toContain("GEMINI_CLI_SYSTEM_SETTINGS_PATH");
+    expect(warnings[0]).toContain("--mcp-config");
     expect(sessionNewParams("warn-direct").mcpServers).toHaveLength(1);
   });
 
@@ -879,7 +879,7 @@ describe("MCP proxy wiring", () => {
     const records = await turn(backends[0]!, "warn-registered");
     expect(records.at(-1)).toMatchObject({ type: "result", is_error: false });
     expect(warnings).toHaveLength(1);
-    expect(warnings[0]).toContain("GEMINI_CLI_SYSTEM_SETTINGS_PATH");
+    expect(warnings[0]).toContain("--mcp-config");
   });
 
   it("starts no proxy and warns about nothing when the manifest leaves P7 undecided", async () => {
@@ -1193,9 +1193,8 @@ describe("session resume and side questions (P4, P5, P18)", () => {
     const records: Record<string, unknown>[] = [];
     for await (const record of prepared!.execute!({
       command: FAKE_CURSOR_AGENT,
-      args: ["acp"],
+      ...withHostMcp(["acp"], fakeEnv(env)),
       cwd: workspace,
-      env: fakeEnv(env),
       prompt,
       modelId: modelId ?? "auto",
       systemPrompt: "",
@@ -1305,7 +1304,7 @@ describe("session resume and side questions (P4, P5, P18)", () => {
     const file = join(dir, "settings.json");
     writeFileSync(file, JSON.stringify({ mcpServers: { openclaw: { url: "http://127.0.0.1:1/mcp", headers: {} } } }));
     const log = join(scratch, "side-settings.jsonl");
-    const env = { FAKE_CURSOR_LOG: log, GEMINI_CLI_SYSTEM_SETTINGS_PATH: file };
+    const env = { FAKE_CURSOR_LOG: log, [MCP_CONFIG_TEST_KEY]: file };
     await turn(join(scratch, "side-settings-agent"), "say:agent", { env: { ...env, FAKE_CURSOR_LOG: join(scratch, "agent-settings.jsonl") } });
     await turn(join(scratch, "side-settings-agent"), "say:side", { env, executionMode: "side-question" });
     const created = readFileSync(log, "utf8").trim().split("\n").map((line) => JSON.parse(line)).find((entry) => entry.method === "session/new");

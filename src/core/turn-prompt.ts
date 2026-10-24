@@ -1,3 +1,4 @@
+import { splitMcpArgs } from "./mcp-target.ts";
 import { SYSTEM_PROMPT_TRANSPORT_MARKER, neutralizeBlockMarkers } from "./system-prompt.ts";
 import type { ExecutionMode } from "./ports.ts";
 import type { ExecuteContext } from "./sdk-types.ts";
@@ -20,12 +21,17 @@ export const HOST_SHELL_ARG = "--openclaw-all-cli:host-shell";
 /** The tool whose presence in the host's tool list makes a turn a host-shell turn. */
 export const HOST_SHELL_TOOL = "exec";
 
-/** Whether the host serves a shell tool for this turn, and the launch args without the marker. */
-export function splitHostShell(ctx: ExecuteContext): { hostShell: boolean; args: string[] } {
+/**
+ * What the host put into the launch args: whether it serves a shell tool for this turn, the path of
+ * its MCP config file, and the launch args without any of that (the CLI must not see the host's flags).
+ */
+export function splitHostShell(ctx: ExecuteContext): { hostShell: boolean; mcpConfigPath: string | undefined; args: string[] } {
   // The system-prompt marker is the host's to read, never the CLI's: strip it if a host passes it on.
+  const { args, mcpConfigPath } = splitMcpArgs(ctx.args);
   return {
     hostShell: ctx.args.includes(HOST_SHELL_ARG),
-    args: ctx.args.filter((arg) => arg !== HOST_SHELL_ARG && arg !== SYSTEM_PROMPT_TRANSPORT_MARKER),
+    mcpConfigPath,
+    args: args.filter((arg) => arg !== HOST_SHELL_ARG && arg !== SYSTEM_PROMPT_TRANSPORT_MARKER),
   };
 }
 
