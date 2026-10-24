@@ -213,3 +213,27 @@ after = [17]
 hitl = false
 risk = "medium"
 references = ["epic-distribution.md", "issue-flow.md"]
+
+[[entry]]
+id = 19
+type = "story"
+title = "Interrupted window of 2 hours; an approved asset ships at the path the host reads"
+description = "Live 2026-10-24 03:47 run: one dev-orchestrator build went 63 minutes between pushes, past the 1-hour interrupted window (a parallel run could have closed a live batch); and #9 was blocked because the host reads a plugin icon only from `assets/icon.png` (PNG) while the approved draft named `assets/cursor-cli.svg` and the files exception allowed only named paths. (a) The interrupted-draft and orphan windows are 2 hours (relay `pr_close` guard, docs). (b) The `files` exception allows an approved asset's own single files under `assets/`, at the path and format the host reads, stated in the plan and PR."
+verify = "`test/agent-write.test.ts` covers the 2-hour boundary; `npm run ci` passes; #9 is built with `assets/icon.png`."
+covers = []
+after = [18]
+hitl = false
+risk = "low"
+references = ["epic-distribution.md", "issue-flow.md"]
+
+[[entry]]
+id = 20
+type = "story"
+title = "GitHub merges the green batch PR; the agent only marks it ready"
+description = "Live 2026-10-24 05:25 UTC: the routine's auto-mode permission check refused the agent's relay merge of batch PR #28 (\"Merge Without Review\"), so the batch waited for the owner. Owner's decision (2026-10-24): GitHub merges it. A workflow `.github/workflows/batch-merge.yml` (environment `agent`, runs from `main` only) starts on CI completion (`workflow_run` of `CI`), on a batch PR marked ready (`pull_request_target` `ready_for_review`, never checking out PR code), by hand, and hourly as a backstop; it lists open PRs and merges each one that passes the same guards the relay's `merge` uses today (author the app, head `claude/` in this repository, title starting `Issue batch`, not a draft, mergeable state clean, the `check` run success and every other run and status green, merge method `merge` with the head sha), as the app, through a tested script (`scripts/batch-merge.mjs`, reusing `checkMergeable`/`checkGreen` from `scripts/agent-write.mjs`). The relay's dispatcher guard does not apply (no dispatcher); nothing else is writable from this workflow. The agent stops merging: `docs/agents/implement.md` has it mark the batch ready and read back whether GitHub merged it; the start-of-run step leaves a green open batch to the workflow. Docs (`identity.md`, `issues.md`, `issue-flow.md`) and MEMORY follow."
+verify = "Unit tests for `scripts/batch-merge.mjs` against a local API stub: merges only a qualifying PR, skips every non-qualifying one (author, branch, title, draft, not clean, red or pending checks), handles several open PRs, no token in output; workflow file tests (pins, permissions, environment, no PR checkout, triggers); `npm run ci` passes; live: the next batch PR is merged by `openclaw-all-cli-agent[bot]` with no owner action."
+covers = []
+after = [19]
+hitl = false
+risk = "high"
+references = ["epic-distribution.md", "issue-flow.md"]

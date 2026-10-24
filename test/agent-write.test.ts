@@ -76,7 +76,7 @@ function defaults(method: string, path: string): Answer {
   if (key === `GET ${r}/pulls/20`) return [200, pull()];
   if (key === `GET ${r}/pulls/21`) return [200, pull({ number: 21, node_id: "PR_node_21", draft: true })];
   if (key === `PATCH ${r}/pulls/20` || key === `PATCH ${r}/pulls/21`) return [200, {}];
-  if (key === `GET ${r}/commits/${SHA}/check-runs`) return [200, { total_count: 2, check_runs: [{ name: "check", status: "completed", conclusion: "success" }, { name: "label", status: "completed", conclusion: "skipped" }] }];
+  if (key === `GET ${r}/commits/${SHA}/check-runs`) return [200, { total_count: 2, check_runs: [{ name: "check", app: { slug: "github-actions" }, status: "completed", conclusion: "success" }, { name: "label", status: "completed", conclusion: "skipped" }] }];
   if (key === `GET ${r}/commits/${SHA}/status`) return [200, { state: "pending", total_count: 0, statuses: [] }]; // no statuses at all
   if (key === `PUT ${r}/pulls/20/merge`) return [200, { merged: true, sha: "fedcba9876543210fedcba9876543210fedcba98" }];
   if (key === "POST /graphql") return [200, { data: { markPullRequestReadyForReview: { pullRequest: { number: 21, isDraft: false } } } }];
@@ -321,16 +321,17 @@ describe("agent-write", () => {
     expect(seen()).toEqual(["GET /pulls/21"]);
   });
 
-  it("PR_CLOSE: a draft updated less than 1 hour ago, or with no readable update time, is refused; one idle longer is closed", async () => {
+  it("PR_CLOSE: a draft updated less than 2 hours ago, or with no readable update time, is refused; one idle longer is closed", async () => {
     const cases: Array<[string, unknown, number]> = [
       ["just now", hoursAgo(0), 1],
       ["30 minutes", hoursAgo(0.5), 1],
       ["59 minutes", hoursAgo(0.98), 1],
+      ["1h59", hoursAgo(1.98), 1],
       ["future", hoursAgo(-1), 1],
       ["missing", undefined, 1],
       ["unreadable", "yesterday", 1],
       ["number", 5, 1],
-      ["1h01", hoursAgo(1.02), 0],
+      ["2h01", hoursAgo(2.02), 0],
       ["a day", hoursAgo(24), 0],
     ];
     for (const [name, updated_at, code] of cases) {
@@ -396,13 +397,17 @@ describe("agent-write", () => {
 
   it("MERGE: a pull request that is not green is refused before the merge call", async () => {
     const runs = (check_runs: unknown[], total_count = check_runs.length): Answer => [200, { total_count, check_runs }];
-    const ok = { name: "check", status: "completed", conclusion: "success" };
+    const ok = { name: "check", app: { slug: "github-actions" }, status: "completed", conclusion: "success" };
     const cases: Array<[string, Answer, Answer?]> = [
       ["no check runs", runs([])],
       ["no check run named check", runs([{ name: "other", status: "completed", conclusion: "success" }])],
       ["check failed", runs([{ ...ok, conclusion: "failure" }])],
       ["check skipped", runs([{ ...ok, conclusion: "skipped" }])],
-      ["check running", runs([{ name: "check", status: "in_progress", conclusion: null }])],
+      ["check running", runs([{ name: "check", app: { slug: "github-actions" }, status: "in_progress", conclusion: null }])],
+      ["check run from another app", runs([{ ...ok, app: { slug: "evil-app" } }])],
+      ["check run with no app", runs([{ name: "check", status: "completed", conclusion: "success" }])],
+      ["another app's check passes but the official one failed", runs([{ ...ok, conclusion: "failure" }, { ...ok, app: { slug: "evil-app" } }])],
+      ["official check ok but another app's check run of that name failed", runs([ok, { ...ok, app: { slug: "evil-app" }, conclusion: "failure" }])],
       ["other run failed", runs([ok, { name: "x", status: "completed", conclusion: "failure" }])],
       ["other run cancelled", runs([ok, { name: "x", status: "completed", conclusion: "cancelled" }])],
       ["other run timed out", runs([ok, { name: "x", status: "completed", conclusion: "timed_out" }])],

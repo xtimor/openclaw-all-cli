@@ -19,7 +19,7 @@
 //   {op:"pr_edit", pr, title?, body?}                      only a pull request by AGENT_LOGIN
 //   {op:"merge", pr, sha}                                  method merge; see checkMergeable and checkGreen
 //   {op:"pr_close", pr}                                    closes only an open draft titled `Issue batch (in progress)` by AGENT_LOGIN from a `claude/` branch of this repository,
-//                                                          not updated for 1 hour (runs refresh their draft at least every 30 minutes)
+//                                                          not updated for 2 hours (runs refresh their draft at least every 30 minutes)
 // Everything is validated first; nothing is applied when anything is refused. Applying stops at the first failure.
 //
 // Environment: AGENT_WRITE_OPS, GH_TOKEN (the app's installation token), GITHUB_REPOSITORY, GITHUB_ACTOR (the dispatcher),
@@ -43,7 +43,7 @@ const HEAD_PREFIX = "claude/";
 const BATCH_TITLE = "Issue batch";
 const CLAIM_TITLE = "Issue batch (in progress)"; // a run's draft before it finishes; an owner-paused batch has another title
 const BASE_BRANCH = "main";
-const IDLE_MS = 60 * 60 * 1000; // a draft batch PR untouched this long counts as interrupted
+const IDLE_MS = 2 * 60 * 60 * 1000; // a draft batch PR untouched this long counts as interrupted
 const CLOSE_REASONS = new Set(["completed", "not_planned", "duplicate"]);
 const FORBIDDEN_LABEL = "status:approved";
 // Only the project's own label families: a typo or a lookalike never creates a label, and "." or ".." never reaches a URL.
@@ -62,7 +62,7 @@ const OP_KEYS = {
 };
 
 /** A failure with an exit code and a message that is safe to print. `refused`: a guard said no (nothing sent for it). */
-class WriteError extends Error {
+export class WriteError extends Error {
   constructor(message, { code = 1, refused = false } = {}) {
     super(message);
     this.code = code;
@@ -206,7 +206,7 @@ export function checkMergeable(pr, op, { repo, login }) {
 
 /**
  * The close guards, on a freshly read pull request: an open draft batch PR of the app from a `claude/` branch of this
- * repository, not updated for 1 hour (`now()` is the run's clock in ms; a missing or unreadable `updated_at` is refused).
+ * repository, not updated for 2 hours (`now()` is the run's clock in ms; a missing or unreadable `updated_at` is refused).
  */
 export function checkClosable(pr, op, { repo, login, now = Date.now }) {
   if (pr.state !== "open") throw refuse(`PR #${op.pr} is not open`);
@@ -218,22 +218,23 @@ export function checkClosable(pr, op, { repo, login, now = Date.now }) {
   if (pr.title !== CLAIM_TITLE) throw refuse(`PR #${op.pr}: title is not "${CLAIM_TITLE}" (an owner-paused batch is never closed)`);
   const updated = typeof pr.updated_at === "string" ? Date.parse(pr.updated_at) : Number.NaN;
   if (!Number.isFinite(updated)) throw refuse(`PR #${op.pr}: its last update time could not be read`);
-  if (now() - updated < IDLE_MS) throw refuse(`PR #${op.pr}: updated less than 1 hour ago; it may still be in use`);
+  if (now() - updated < IDLE_MS) throw refuse(`PR #${op.pr}: updated less than 2 hours ago; it may still be in use`);
 }
 
 const PASSING = new Set(["success", "skipped", "neutral"]);
 
 /**
  * The same "green" the agents check before they ask for a merge, on the head sha: the check run named `check` is present and
- * succeeded, every other check run completed `success`, `skipped`, or `neutral`, and the combined commit status is not
+ * (run by GitHub Actions: `app.slug` is `github-actions`) succeeded, every other check run completed `success`, `skipped`, or `neutral`, and the combined commit status is not
  * `failure` or `pending` (no statuses at all is fine; GitHub reports that as `pending` with a zero count).
  */
 export function checkGreen(runs, status, op) {
   const name = `PR #${op.pr}`;
   if (!Array.isArray(runs?.check_runs) || !Number.isSafeInteger(runs.total_count)) throw refuse(`${name}: the check runs could not be read`);
   if (runs.total_count > runs.check_runs.length) throw refuse(`${name}: too many check runs to verify (${runs.total_count})`);
-  const main = runs.check_runs.filter((run) => run?.name === "check");
-  if (main.length === 0) throw refuse(`${name}: the "check" run is missing`);
+  // Only the CI workflow's own run counts: any app can create a check run with this name.
+  const main = runs.check_runs.filter((run) => run?.name === "check" && run.app?.slug === "github-actions");
+  if (main.length === 0) throw refuse(`${name}: the "check" run is missing or not from GitHub Actions`);
   for (const run of runs.check_runs) {
     if (run?.status !== "completed") throw refuse(`${name}: check run ${JSON.stringify(String(run?.name ?? "?"))} is not completed`);
     if (!PASSING.has(run.conclusion)) throw refuse(`${name}: check run ${JSON.stringify(String(run.name ?? "?"))} concluded ${JSON.stringify(String(run.conclusion))}`);
@@ -245,7 +246,8 @@ export function checkGreen(runs, status, op) {
 
 // ---- GitHub API ----
 
-function makeClient(config) {
+/** The REST/GraphQL client; scripts/batch-merge.mjs reuses it. `config` needs `token`, `api`, `graphql`. */
+export function makeClient(config) {
   const clean = (text) => (config.token.length >= 4 ? String(text).replaceAll(config.token, "[redacted]") : String(text));
   async function send(method, url, label, body) {
     let response;

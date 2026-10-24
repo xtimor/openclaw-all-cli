@@ -1,0 +1,70 @@
+name: Batch merge
+
+# Merges the agents' green batch pull request as the agent app. The routine's permission check refuses an agent's merge of its
+# own pull request, so the implementation agent only marks the batch ready and reads the result back; this workflow merges it
+# with the same guards the relay's `merge` operation has (scripts/batch-merge.mjs reuses checkMergeable and checkGreen of
+# scripts/agent-write.mjs): open, ready, by the app, a `claude/` head in this repository, base main, title `Issue batch...`,
+# mergeable state clean, the `check` run succeeded, every other run and the commit status green, merged at the head sha it read.
+# It only merges: no comment, label, close, or edit. Design: docs/agents/implement.md, docs/agents/identity.md.
+# Triggers: CI completed, a pull request marked ready, hourly (a trigger that came too early is retried), and by hand.
+# `workflow_run` and `schedule` run from the default branch; `pull_request_target` runs the workflow file of the pull request's
+# base branch. So a pull request cannot change what runs; the `main`-only `if` and the Environment `agent` (deployment branches:
+# only `main`) that holds the app's key are what stop other bases. Anyone can open a fork pull request that triggers
+# `pull_request_target`, so that event runs only when the head is in this repository. The job never checks out or runs pull
+# request code. The script also refuses a batch that changes a protected file (workflows, scripts, the agents' docs, ...). Event data reaches the script only through env. The token is masked, lives in one
+# step, is revoked when the step ends, and the merge script runs without the private key.
+# Concurrency: one run at a time; a dropped pending run is harmless, since the next trigger checks again.
+on:
+  workflow_run:
+    workflows: [CI]
+    types: [completed]
+  pull_request_target:
+    types: [ready_for_review]
+  workflow_dispatch:
+  schedule:
+    - cron: '23 * * * *'
+
+# The app token does the merge; the job itself only reads the repository.
+permissions: {}
+
+env:
+  # Same default as ci.yml and agent-write.yml.
+  NODE_VERSION: 24.22.0
+
+concurrency:
+  group: batch-merge
+  cancel-in-progress: false
+
+jobs:
+  merge:
+    if: github.ref == 'refs/heads/main' && (github.event_name != 'pull_request_target' || github.event.pull_request.head.repo.full_name == github.repository)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    environment: agent
+    permissions:
+      contents: read
+    steps:
+      # Main only: never the pull request's head.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: refs/heads/main
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+      - name: Merge the green batch pull request as the agent app
+        env:
+          AGENT_APP_ID: ${{ vars.AGENT_APP_ID }}
+          AGENT_APP_PRIVATE_KEY: ${{ secrets.AGENT_APP_PRIVATE_KEY }}
+          AGENT_APP_REPO: ${{ github.repository }}
+          # The pull request of the event, checked first (empty on a schedule, a dispatch, or a CI run without a pull request).
+          BATCH_PR: ${{ github.event.pull_request.number || github.event.workflow_run.pull_requests[0].number }}
+        run: |
+          set -euo pipefail
+          TOKEN="$(node scripts/agent-token.mjs)"
+          [ -n "$TOKEN" ] || { echo "agent token empty" >&2; exit 1; }
+          echo "::add-mask::$TOKEN"
+          # Revoke the token when this step ends, however it ends. The token is never written to the job environment file or to an output.
+          trap 'curl -sS -o /dev/null -X DELETE -H "Authorization: Bearer $TOKEN" -H "Accept: application/vnd.github+json" "$GITHUB_API_URL/installation/token" || true' EXIT
+          AGENT_LOGIN="$(node scripts/agent-token.mjs --login)"
+          env -u AGENT_APP_PRIVATE_KEY -u AGENT_APP_PRIVATE_KEY_B64 GH_TOKEN="$TOKEN" AGENT_LOGIN="$AGENT_LOGIN" node scripts/batch-merge.mjs
