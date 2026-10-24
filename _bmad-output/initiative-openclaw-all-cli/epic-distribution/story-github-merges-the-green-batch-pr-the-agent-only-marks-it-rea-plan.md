@@ -3,14 +3,14 @@ title: 'GitHub merges the green batch PR; the agent only marks it ready'
 type: 'feature'
 ticket: 20
 created: '2026-10-24'
-status: 'in-progress'
+status: 'built'
 baseline_revision: '85cf00b805d603b1996da6876d7735df3e374b35'
 route: 'full'
 route_source: 'auto'
 risk: 'high'
-review: ''
-review_source: ''
-lenses_ran: []
+review: 'quick'
+review_source: 'auto'
+lenses_ran: ['edge-case-hunter']
 review_loop_iteration: 0
 followup_review_recommended: false
 context: ['{project-root}/AGENTS.md', '{project-root}/MEMORY.md', '{project-root}/docs/agents/identity.md', '{project-root}/docs/agents/implement.md']
@@ -76,8 +76,28 @@ deferred: []
 
 ## Review Triage Log
 
+### 2026-10-24 — Review pass (edge-case-hunter, security focus)
+- verdicts: 10 findings — high 2, medium 4, low 4
+- findings:
+  - `[high]` `[patch]` a batch PR could change CI, scripts, or workflows and merge on its own green — protected paths and `package.json` protected fields skip the merge.
+  - `[high]` `[patch]` any app's `check` run counted — only GitHub Actions' `check` counts (relay and batch merge).
+  - `[medium]` `[patch]` fork PRs could trigger token-minting runs via `pull_request_target` — job runs only for same-repo heads.
+  - `[medium]` `[patch]` header comment overstated what `pull_request_target` runs — corrected.
+  - `[medium]` `[patch]` one page of PRs; hint outside it skipped — paginated, hint fetched directly.
+  - `[medium]` `[patch]` unknown merge outcome reported as skipped — failed, exit 1.
+  - `[low]` `[patch]` `mergeable_state: unknown` right after CI — re-read up to 3 times, 10 s apart.
+  - `[low]` `[reject]` `Fixes` lines for issues outside the batch — the agent writes the body; not a realistic path.
+  - `[low]` `[reject]` base retargeted between read and merge — narrow race; GitHub's head-sha check remains.
+  - `[low]` `[reject]` merge lag up to an hour — bounded by the retry and the hourly backstop.
+
 ## Verification
 
 **Commands:**
 - `npx vitest run test/batch-merge.test.ts test/agent-write.test.ts` -- all pass
 - `npm run ci` -- "All checks passed."
+
+## Auto Run Result
+
+- Status: built. Fixes in ee9043d and 33b62bc. `npm run ci` green; batch-merge and writer tests 105 passed; guard removals each fail a test.
+- Live check pending: the next batch PR merged by the bot through `Batch merge`.
+
