@@ -47,6 +47,7 @@ describe.skipIf(!hostAvailable)("OpenClaw host contracts the backend relies on",
       close(): void;
     };
     resolveCliMcpToolOwnership: (run: Json, options: Json) => { hostOwnedTools?: string[] };
+    prepareModelRunCapabilities: (catalogs: [Json[] | undefined, Json[]], run: [string, string, string]) => { modelHasVision: boolean };
   };
   let registered: { backend: unknown; pluginId: string } | undefined;
   let registry: { cliBackends: unknown[] };
@@ -75,6 +76,7 @@ describe.skipIf(!hostAvailable)("OpenClaw host contracts the backend relies on",
       prepareSystemAgentRunAdmission: await hostExport("prepareSystemAgentRunAdmission"),
       // Private to the host's chunk: its own body, run against the chunk's own imports.
       resolveCliMcpToolOwnership: await hostFunction("resolveCliMcpToolOwnership"),
+      prepareModelRunCapabilities: await hostExport("prepareModelRunCapabilities"),
     };
     // The host finds a CLI backend in the active plugin registry; register the real one, like the plugin's load does.
     registry = requireActivePluginRegistry();
@@ -219,6 +221,23 @@ describe.skipIf(!hostAvailable)("OpenClaw host contracts the backend relies on",
     });
   });
 
+  describe("the model capability a turn reads before the plugin's catalog has loaded (backlog bug 8)", () => {
+    const auto = { id: "auto", name: "Auto", provider: "cursor-cli", api: "openai-completions", baseUrl: "cli://local", input: ["text", "image"], reasoning: false };
+    const other = { id: "gpt", name: "GPT", provider: "openai", api: "openai-responses", input: ["text", "image"], reasoning: true };
+    const vision = (catalog: Json[] | undefined) => host.prepareModelRunCapabilities([catalog, []], ["cursor-cli", "auto", "openclaw"]).modelHasVision;
+
+    it("says a model has no vision when its row is missing from the catalog the run was given, and vision once the row is there", () => {
+      const failure =
+        "OpenClaw no longer derives `modelHasVision` from the catalog row's `input` alone. Backlog bug 8: a turn that starts before the Gateway has loaded " +
+        "the plugin's rows gets no `computer` and `view_image` tools, and the next turn gets them, which restarts cursor-agent once. If the host fixed that, " +
+        "the upstream issue in the plan is done: drop the note in docs/providers/cursor.md.";
+      expect(vision([other]), failure).toBe(false);
+      expect(vision(undefined), failure).toBe(false);
+      expect(vision([other, auto]), failure).toBe(true);
+      expect(vision([other, { ...auto, input: ["text"] }]), failure).toBe(false);
+    });
+  });
+
   describe("the live-session capability (P4, AD-12, AD-13)", () => {
     const sessionKey = (label: string) => `agent:main:explicit:oac-host-contract-${label}-${randomUUID().slice(0, 8)}`;
 
@@ -254,7 +273,11 @@ describe.skipIf(!hostAvailable)("OpenClaw host contracts the backend relies on",
     type GrantLog = { adopted: string[]; captured: string[] };
 
     /** The host's real capability for one run, built the way the host's runner builds it. */
-    async function capabilityFor(label: { sessionKey: string }, input: RunInput, options: { model?: string; controller?: AbortController } = {}) {
+    async function capabilityFor(
+      label: { sessionKey: string },
+      input: RunInput,
+      options: { model?: string; controller?: AbortController; systemPrompt?: string; promptToolNamesHash?: string } = {},
+    ) {
       const controller = options.controller ?? new AbortController();
       const runId = randomUUID();
       const admission = host.prepareSystemAgentRunAdmission({}, runId, "main", "test", () => {});
@@ -280,7 +303,8 @@ describe.skipIf(!hostAvailable)("OpenClaw host contracts the backend relies on",
         cwd: scratch,
         normalizedModel: options.model ?? "auto",
         modelId: "auto",
-        systemPrompt: "",
+        systemPrompt: options.systemPrompt ?? "",
+        ...(options.promptToolNamesHash ? { promptToolNamesHash: options.promptToolNamesHash } : {}),
         executionTarget: { kind: "plugin" },
       };
       const capability = host.createCliLiveSessionCapability({
@@ -320,6 +344,22 @@ describe.skipIf(!hostAvailable)("OpenClaw host contracts the backend relies on",
       expect(await fingerprint(runB), failure).toBe(a1);
       // Sanity: the fingerprint still follows what should restart a process.
       expect(await fingerprint(runB, "another-model")).not.toBe(a1);
+    });
+
+    it("fingerprints the system prompt text and the prompt tool names, so a changed tool list restarts the process (backlog bug 8)", async () => {
+      const [run] = (await runInputs(fakeCliEnv(), 48_234, 1)) as [RunInput];
+      const key = { sessionKey: sessionKey("fp-prompt") };
+      const failure =
+        "OpenClaw's live-session fingerprint no longer follows the system prompt text or the prompt tool names. Backlog bug 8 " +
+        "(turn 2 of a fresh agent restarted the process) was that: recheck its plan and the upstream issue text before relying on this.";
+      const fingerprint = async (options: { systemPrompt?: string; promptToolNamesHash?: string }) => (await capabilityFor(key, run, options)).capability.fingerprint;
+      const tools = { 1: "hash-of-50-tool-names", 2: "hash-of-52-tool-names" };
+      const prompt = "Tooling\n- exec\n- view_image\n- computer\n";
+      const base = await fingerprint({ systemPrompt: prompt, promptToolNamesHash: tools[1] });
+      expect(await fingerprint({ systemPrompt: prompt, promptToolNamesHash: tools[1] }), "equal input, equal fingerprint").toBe(base);
+      // What turn 1 and turn 2 of a fresh agent differed in on OpenClaw 2026.10.3: two tools (and their lines in the prompt).
+      expect(await fingerprint({ systemPrompt: prompt, promptToolNamesHash: tools[2] }), failure).not.toBe(base);
+      expect(await fingerprint({ systemPrompt: `${prompt}- extra\n`, promptToolNamesHash: tools[1] }), failure).not.toBe(base);
     });
 
     it("reuses the process on a later turn (no initialize, no session/load) and restarts only when the host's fingerprint changes", async () => {
