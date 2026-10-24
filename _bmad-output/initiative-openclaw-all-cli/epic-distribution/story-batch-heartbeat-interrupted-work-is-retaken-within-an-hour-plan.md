@@ -3,7 +3,7 @@ title: 'Batch heartbeat: interrupted work is retaken within an hour'
 type: 'bugfix'
 ticket: 18
 created: '2026-10-23'
-status: 'built'
+status: done
 baseline_revision: '703418530e2375a0b661c9f46a1000ee9b108a54'
 route: 'oneshot'
 route_source: 'auto'

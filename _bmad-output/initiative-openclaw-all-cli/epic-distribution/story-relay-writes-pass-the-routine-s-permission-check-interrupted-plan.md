@@ -3,7 +3,7 @@ title: 'Relay writes pass the routine permission check; interrupted batches reco
 type: 'bugfix'
 ticket: 17
 created: '2026-10-23'
-status: 'built'
+status: done
 baseline_revision: 'fb975fd8e2e29f3f3b6fd390edc02562bb22daf0'
 route: 'full'
 route_source: 'auto'
