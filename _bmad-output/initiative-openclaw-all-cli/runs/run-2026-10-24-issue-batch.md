@@ -15,3 +15,5 @@ Plan: 5 (quick review), 6 (thorough review), 7 (quick review); each build, revie
 ## Journal
 
 - 5 build — start
+- 5 build — blocked (intent gap: host reads only assets/icon.png, not an SVG; approved files path differs). Owner decision needed.
+- 6 build — start
