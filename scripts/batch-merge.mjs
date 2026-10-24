@@ -8,9 +8,11 @@
 //
 //   GH_TOKEN=<app token> AGENT_LOGIN='x[bot]' GITHUB_REPOSITORY=owner/repo [BATCH_PR=20] node scripts/batch-merge.mjs
 //
-// Lists the open pull requests titled `Issue batch...` by AGENT_LOGIN (BATCH_PR, a number from the triggering event, is checked
+// Lists (all pages of) the open pull requests titled `Issue batch...` by AGENT_LOGIN (BATCH_PR, a number from the triggering event, is checked
 // first), reads each fresh, and merges it only when every guard holds (method `merge`, expected head sha = the head read). A PR
-// that fails a guard is skipped. GitHub computes `mergeable_state` lazily: an `unknown` PR is re-read up to 3 more times, 10 s apart
+// that fails a guard is skipped, also one that changes a protected file (.github/, scripts/, _bmad/, .claude/, .agents/, docs/agents/,
+// AGENTS.md, SECURITY.md, or the scripts, publishConfig, name, bin, or a lost `files` entry of package.json): it stays open for the
+// owner. GitHub computes `mergeable_state` lazily: an `unknown` PR is re-read up to 3 more times, 10 s apart
 // (BATCH_MERGE_UNKNOWN_DELAY_MS, for tests), then skipped; the next trigger retries.
 //
 // Environment: GH_TOKEN (the app's installation token), AGENT_LOGIN (`<app-slug>[bot]`), GITHUB_REPOSITORY, BATCH_PR (optional),
@@ -27,6 +29,13 @@ const DEFAULT_API = "https://api.github.com";
 const BATCH_TITLE = "Issue batch";
 const UNKNOWN_RETRIES = 3; // re-reads of a PR whose mergeable state GitHub has not computed yet
 const UNKNOWN_DELAY_MS = 10_000;
+
+const MAX_LIST_PAGES = 20; // 2000 open pull requests
+const MAX_FILE_PAGES = 30; // GitHub lists at most 3000 files of a pull request
+// A batch must not change what guards it or what later runs execute (docs/agents/implement.md, "Protected files").
+const PROTECTED_PREFIXES = [".github/", "scripts/", "_bmad/", ".claude/", ".agents/", "docs/agents/"];
+const PROTECTED_FILES = new Set(["agents.md", "security.md"]);
+const PACKAGE_FIELDS = ["scripts", "publishConfig", "name", "bin"];
 
 const lower = (value) => (typeof value === "string" ? value.trim().toLowerCase() : "");
 
@@ -48,6 +57,58 @@ function readConfig(env) {
 /** The refusal's text without its `PR #N` lead, so a line reads `#N skipped: <reason>`. */
 const reasonOf = (error) => String(error.message).replace(/^PR #\d+:? /, "");
 
+const protectedPath = (path) => {
+  const name = lower(path);
+  return PROTECTED_FILES.has(name) || PROTECTED_PREFIXES.some((prefix) => name.startsWith(prefix));
+};
+
+const stable = (value) => JSON.stringify(value, (_key, item) => (item !== null && typeof item === "object" && !Array.isArray(item) ? Object.fromEntries(Object.entries(item).sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0))) : item));
+
+/** The guarded `package.json` fields that differ: scripts, publishConfig, name, bin, and `files` when an entry was lost or changed (added entries are fine). */
+function changedPackageFields(before, after) {
+  const changed = PACKAGE_FIELDS.filter((field) => stable(before[field]) !== stable(after[field]));
+  const kept = new Set((Array.isArray(after.files) ? after.files : []).map(stable));
+  if ((Array.isArray(before.files) ? before.files : []).some((entry) => !kept.has(stable(entry)))) changed.push("files");
+  return changed;
+}
+
+/** Whether a pull request is an open `Issue batch` PR of the app (the list filter, also used for the hinted one). */
+const isAgentBatch = (pr, login) => pr?.state === "open" && typeof pr.title === "string" && pr.title.startsWith(BATCH_TITLE) && lower(pr.user?.login) === lower(login) && Number.isSafeInteger(pr.number);
+
+/**
+ * Refuses a pull request that changes a protected file (a workflow, a script, the agents' docs, ...), or the guarded fields of
+ * `package.json` (compared at the base and head shas). Such a batch stays open for the owner.
+ */
+async function checkUnprotected(client, base, pr, number, sha) {
+  const paths = [];
+  for (let page = 1; ; page++) {
+    const files = (await client.rest("GET", `${base}/pulls/${number}/files?per_page=100&page=${page}`)).data;
+    if (!Array.isArray(files)) throw new WriteError(`PR #${number}: the changed files could not be read`, { refused: true });
+    for (const file of files) paths.push(file?.filename, file?.previous_filename);
+    if (files.length < 100) break;
+    if (page >= MAX_FILE_PAGES) throw new WriteError(`PR #${number}: too many changed files to verify`, { refused: true });
+  }
+  const names = paths.filter((path) => typeof path === "string");
+  const hit = [...new Set(names.filter(protectedPath))];
+  if (hit.length > 0) throw new WriteError(`PR #${number}: touches protected files: ${hit.slice(0, 5).join(", ")}${hit.length > 5 ? `, and ${hit.length - 5} more` : ""}`, { refused: true });
+  if (!names.includes("package.json")) return;
+  const baseSha = typeof pr.base?.sha === "string" ? pr.base.sha.toLowerCase() : "";
+  if (!/^[0-9a-f]{40}$/.test(baseSha)) throw new WriteError(`PR #${number}: its base sha could not be read`, { refused: true });
+  const read = async (ref) => {
+    const { data } = await client.rest("GET", `${base}/contents/package.json?ref=${ref}`);
+    try {
+      const parsed = JSON.parse(Buffer.from(String(data?.content ?? ""), "base64").toString("utf8"));
+      if (parsed !== null && typeof parsed === "object" && !Array.isArray(parsed)) return parsed;
+    } catch {
+      // reported below
+    }
+    throw new WriteError(`PR #${number}: package.json could not be read at ${ref.slice(0, 7)}`, { refused: true });
+  };
+  const before = await read(baseSha);
+  const changed = changedPackageFields(before, await read(sha));
+  if (changed.length > 0) throw new WriteError(`PR #${number}: touches protected files: package.json (${changed.join(", ")})`, { refused: true });
+}
+
 /**
  * Runs the whole check. `log(line)` gets each result line as it happens. Returns `{code, rows, message}`; it writes nothing
  * itself. A missing or malformed variable throws a WriteError with code 2.
@@ -63,22 +124,34 @@ export async function run(env, log = () => {}) {
   };
   let failed = false;
 
-  let listed;
+  const batches = [];
   try {
-    listed = (await client.rest("GET", `${base}/pulls?state=open&per_page=100`)).data;
+    for (let page = 1; ; page++) {
+      const listed = (await client.rest("GET", `${base}/pulls?state=open&per_page=100&page=${page}`)).data;
+      if (!Array.isArray(listed)) return { code: 1, rows, message: "the pull request list could not be read" };
+      batches.push(...listed.filter((pr) => isAgentBatch(pr, config.login)).map((pr) => pr.number));
+      if (listed.length < 100 || page >= MAX_LIST_PAGES) break;
+    }
   } catch (error) {
     return { code: 1, rows, message: error instanceof WriteError ? client.clean(error.message) : "unexpected error" };
   }
-  if (!Array.isArray(listed)) return { code: 1, rows, message: "the pull request list could not be read" };
-
-  const batches = listed.filter((pr) => typeof pr?.title === "string" && pr.title.startsWith(BATCH_TITLE) && lower(pr.user?.login) === lower(config.login) && Number.isSafeInteger(pr.number));
-  const order = batches.map((pr) => pr.number);
+  const order = [...new Set(batches)];
   if (config.hint !== null) {
-    if (order.includes(config.hint)) order.sort((a, b) => Number(b === config.hint) - Number(a === config.hint));
-    else add(config.hint, "skipped", "not an open agent batch pull request");
+    // The pull request of the event is read directly (it may be outside the pages above) and filtered the same way; it goes first.
+    let hinted = null;
+    try {
+      hinted = (await client.rest("GET", `${base}/pulls/${config.hint}`)).data;
+    } catch (error) {
+      add(config.hint, "skipped", error instanceof WriteError ? client.clean(error.message) : "unexpected error");
+    }
+    if (hinted !== null) {
+      if (isAgentBatch(hinted, config.login) && hinted.number === config.hint) order.splice(0, order.length, config.hint, ...order.filter((number) => number !== config.hint));
+      else add(config.hint, "skipped", "not an open agent batch pull request");
+    }
   }
 
   for (const number of order) {
+    let merging = false; // set at the merge call: an error there leaves the outcome unknown
     try {
       let pr = (await client.rest("GET", `${base}/pulls/${number}`)).data;
       // GitHub computes the mergeable state lazily (right after CI it is often `unknown`): ask again a few times before skipping.
@@ -98,6 +171,8 @@ export async function run(env, log = () => {}) {
       const runs = (await client.rest("GET", `${base}/commits/${sha}/check-runs?per_page=100`)).data;
       const status = (await client.rest("GET", `${base}/commits/${sha}/status`)).data;
       checkGreen(runs, status, op);
+      await checkUnprotected(client, base, pr, number, sha);
+      merging = true;
       const { data } = await client.rest("PUT", `${base}/pulls/${number}/merge`, { merge_method: "merge", sha });
       if (data?.merged !== true) throw new WriteError(`PUT /pulls/${number}/merge: GitHub did not merge it`);
       add(number, "merged", `at ${String(data.sha ?? "").slice(0, 7) || "?"}`);
@@ -106,11 +181,12 @@ export async function run(env, log = () => {}) {
       const reason = safe ? client.clean(reasonOf(error)) : "unexpected error";
       if (safe && error.refused) {
         add(number, "skipped", reason);
-      } else {
+      } else if (merging) {
         // Only a failed merge call is an error of this run; a failed read is retried by the next trigger.
-        const merging = /^PUT \/pulls\/\d+\/merge/.test(reason);
-        if (merging) failed = true;
-        add(number, merging ? "failed" : "skipped", reason);
+        failed = true;
+        add(number, "failed", safe ? reason : "merge outcome unknown");
+      } else {
+        add(number, "skipped", reason);
       }
     }
   }

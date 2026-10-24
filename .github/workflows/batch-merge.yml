@@ -7,9 +7,11 @@ name: Batch merge
 # mergeable state clean, the `check` run succeeded, every other run and the commit status green, merged at the head sha it read.
 # It only merges: no comment, label, close, or edit. Design: docs/agents/implement.md, docs/agents/identity.md.
 # Triggers: CI completed, a pull request marked ready, hourly (a trigger that came too early is retried), and by hand.
-# `workflow_run`, `pull_request_target`, and `schedule` run from the default branch, so a pull request cannot change what runs;
-# the job also runs only on main, in the Environment `agent` (deployment branches: only `main`) that holds the app's key, and it
-# never checks out or runs pull request code. Event data reaches the script only through env. The token is masked, lives in one
+# `workflow_run` and `schedule` run from the default branch; `pull_request_target` runs the workflow file of the pull request's
+# base branch. So a pull request cannot change what runs; the `main`-only `if` and the Environment `agent` (deployment branches:
+# only `main`) that holds the app's key are what stop other bases. Anyone can open a fork pull request that triggers
+# `pull_request_target`, so that event runs only when the head is in this repository. The job never checks out or runs pull
+# request code. The script also refuses a batch that changes a protected file (workflows, scripts, the agents' docs, ...). Event data reaches the script only through env. The token is masked, lives in one
 # step, is revoked when the step ends, and the merge script runs without the private key.
 # Concurrency: one run at a time; a dropped pending run is harmless, since the next trigger checks again.
 on:
@@ -35,7 +37,7 @@ concurrency:
 
 jobs:
   merge:
-    if: github.ref == 'refs/heads/main'
+    if: github.ref == 'refs/heads/main' && (github.event_name != 'pull_request_target' || github.event.pull_request.head.repo.full_name == github.repository)
     runs-on: ubuntu-latest
     timeout-minutes: 10
     environment: agent

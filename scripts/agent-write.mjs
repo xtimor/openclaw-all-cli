@@ -225,15 +225,16 @@ const PASSING = new Set(["success", "skipped", "neutral"]);
 
 /**
  * The same "green" the agents check before they ask for a merge, on the head sha: the check run named `check` is present and
- * succeeded, every other check run completed `success`, `skipped`, or `neutral`, and the combined commit status is not
+ * (run by GitHub Actions: `app.slug` is `github-actions`) succeeded, every other check run completed `success`, `skipped`, or `neutral`, and the combined commit status is not
  * `failure` or `pending` (no statuses at all is fine; GitHub reports that as `pending` with a zero count).
  */
 export function checkGreen(runs, status, op) {
   const name = `PR #${op.pr}`;
   if (!Array.isArray(runs?.check_runs) || !Number.isSafeInteger(runs.total_count)) throw refuse(`${name}: the check runs could not be read`);
   if (runs.total_count > runs.check_runs.length) throw refuse(`${name}: too many check runs to verify (${runs.total_count})`);
-  const main = runs.check_runs.filter((run) => run?.name === "check");
-  if (main.length === 0) throw refuse(`${name}: the "check" run is missing`);
+  // Only the CI workflow's own run counts: any app can create a check run with this name.
+  const main = runs.check_runs.filter((run) => run?.name === "check" && run.app?.slug === "github-actions");
+  if (main.length === 0) throw refuse(`${name}: the "check" run is missing or not from GitHub Actions`);
   for (const run of runs.check_runs) {
     if (run?.status !== "completed") throw refuse(`${name}: check run ${JSON.stringify(String(run?.name ?? "?"))} is not completed`);
     if (!PASSING.has(run.conclusion)) throw refuse(`${name}: check run ${JSON.stringify(String(run.name ?? "?"))} concluded ${JSON.stringify(String(run.conclusion))}`);

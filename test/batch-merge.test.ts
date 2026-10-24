@@ -4,7 +4,7 @@ import { createServer, type IncomingMessage, type Server } from "node:http";
 import type { AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from "vitest";
 
 /**
@@ -19,6 +19,7 @@ const SCRIPT = join(ROOT, "scripts", "batch-merge.mjs");
 const REPO = "xtimor/openclaw-all-cli";
 const BOT = "oac-issue-agents[bot]";
 const TOKEN = "ghs_STUB_INSTALLATION_TOKEN_0123456789";
+const BASE_SHA = "b".repeat(40);
 const TITLE_MARK = "TITLE_MARKER_must_not_be_echoed_5521";
 
 interface Call {
@@ -51,12 +52,12 @@ const pull = (number: number, overrides: Record<string, unknown> = {}) => ({
   title: "Issue batch: #1, #2",
   user: { login: BOT },
   head: { ref: `claude/batch-${number}`, sha: shaOf(number), repo: { full_name: REPO } },
-  base: { ref: "main" },
+  base: { ref: "main", sha: BASE_SHA },
   mergeable_state: "clean",
   ...overrides,
 });
 
-const green = { total_count: 2, check_runs: [{ name: "check", status: "completed", conclusion: "success" }, { name: "label", status: "completed", conclusion: "skipped" }] };
+const green = { total_count: 2, check_runs: [{ name: "check", app: { slug: "github-actions" }, status: "completed", conclusion: "success" }, { name: "label", status: "completed", conclusion: "skipped" }] };
 const noStatuses = { state: "pending", total_count: 0, statuses: [] };
 
 const stripped = () =>
@@ -70,9 +71,13 @@ async function readBody(req: IncomingMessage): Promise<Record<string, unknown> |
 }
 
 /** The stub's default world: `pulls` are open; every head is green with no statuses; a merge succeeds. */
-function defaults(method: string, path: string): Answer {
+function defaults(method: string, path: string, search: URLSearchParams): Answer {
   const r = `/repos/${REPO}`;
-  if (method === "GET" && path === `${r}/pulls`) return [200, pulls];
+  if (method === "GET" && path === `${r}/pulls`) {
+    const page = Number(search.get("page") ?? "1");
+    return [200, pulls.slice((page - 1) * 100, page * 100)];
+  }
+  if (method === "GET" && /\/pulls\/\d+\/files$/.test(path)) return [200, []];
   const one = /^\/repos\/[^/]+\/[^/]+\/pulls\/(\d+)$/.exec(path);
   if (method === "GET" && one) {
     const found = pulls.find((entry) => entry.number === Number(one[1]));
@@ -92,7 +97,8 @@ beforeAll(async () => {
     const method = req.method ?? "GET";
     calls.push({ method, path, search: url.search, body: await readBody(req), auth: req.headers.authorization });
     const queued = sequences.get(`${method} ${path}`);
-    const [status, payload] = (queued ? (queued.length > 1 ? queued.shift() : queued[0]) : undefined) ?? answers.get(`${method} ${path}`) ?? defaults(method, path);
+    const ref = url.searchParams.get("ref");
+    const [status, payload] = (queued ? (queued.length > 1 ? queued.shift() : queued[0]) : undefined) ?? (ref ? answers.get(`${method} ${path}@${ref}`) : undefined) ?? answers.get(`${method} ${path}`) ?? defaults(method, path, url.searchParams);
     res.writeHead(status, { "content-type": "application/json" });
     res.end(JSON.stringify(payload));
   });
@@ -163,9 +169,10 @@ describe("batch-merge", () => {
     pulls = [pull(20, { title: `Issue batch: #1, #2 ${TITLE_MARK}` })];
     const result = await run();
     expect(result).toMatchObject({ code: 0, stderr: "" });
-    expect(seen()).toEqual(["GET /pulls", "GET /pulls/20", `GET /commits/${shaOf(20)}/check-runs`, `GET /commits/${shaOf(20)}/status`, "PUT /pulls/20/merge"]);
+    expect(seen()).toEqual(["GET /pulls", "GET /pulls/20", `GET /commits/${shaOf(20)}/check-runs`, `GET /commits/${shaOf(20)}/status`, "GET /pulls/20/files", "PUT /pulls/20/merge"]);
     expect(calls[0]?.search).toContain("state=open");
     expect(calls[0]?.search).toContain("per_page=100");
+    expect(calls[0]?.search).toContain("page=1");
     expect(merges()).toHaveLength(1);
     expect(merges()[0]?.body).toEqual({ merge_method: "merge", sha: shaOf(20) });
     expect(calls.every((call) => call.auth === `Bearer ${TOKEN}`)).toBe(true);
@@ -275,10 +282,10 @@ describe("batch-merge", () => {
   const checkCases: [string, unknown, unknown, RegExp][] = [
     ["the check run missing", { total_count: 1, check_runs: [{ name: "label", status: "completed", conclusion: "success" }] }, noStatuses, /"check" run is missing/],
     ["no check runs at all", { total_count: 0, check_runs: [] }, noStatuses, /"check" run is missing/],
-    ["the check run pending", { total_count: 1, check_runs: [{ name: "check", status: "in_progress", conclusion: null }] }, noStatuses, /not completed/],
-    ["the check run failed", { total_count: 1, check_runs: [{ name: "check", status: "completed", conclusion: "failure" }] }, noStatuses, /concluded "failure"/],
-    ["another run failed", { total_count: 2, check_runs: [{ name: "check", status: "completed", conclusion: "success" }, { name: "lint", status: "completed", conclusion: "cancelled" }] }, noStatuses, /"lint" concluded "cancelled"/],
-    ["another run still running", { total_count: 2, check_runs: [{ name: "check", status: "completed", conclusion: "success" }, { name: "lint", status: "queued", conclusion: null }] }, noStatuses, /"lint" is not completed/],
+    ["the check run pending", { total_count: 1, check_runs: [{ name: "check", app: { slug: "github-actions" }, status: "in_progress", conclusion: null }] }, noStatuses, /not completed/],
+    ["the check run failed", { total_count: 1, check_runs: [{ name: "check", app: { slug: "github-actions" }, status: "completed", conclusion: "failure" }] }, noStatuses, /concluded "failure"/],
+    ["another run failed", { total_count: 2, check_runs: [{ name: "check", app: { slug: "github-actions" }, status: "completed", conclusion: "success" }, { name: "lint", status: "completed", conclusion: "cancelled" }] }, noStatuses, /"lint" concluded "cancelled"/],
+    ["another run still running", { total_count: 2, check_runs: [{ name: "check", app: { slug: "github-actions" }, status: "completed", conclusion: "success" }, { name: "lint", status: "queued", conclusion: null }] }, noStatuses, /"lint" is not completed/],
     ["a pending commit status", green, { state: "pending", total_count: 1, statuses: [{ state: "pending" }] }, /commit status is "pending"/],
     ["a failed commit status", green, { state: "failure", total_count: 1, statuses: [{ state: "failure" }] }, /commit status is "failure"/],
     ["too many check runs for one page", { total_count: 150, check_runs: green.check_runs }, noStatuses, /too many check runs/],
@@ -296,7 +303,7 @@ describe("batch-merge", () => {
 
   it("CHECKS: skipped and neutral runs next to a successful check are green; a statuses answer of success is green", async () => {
     pulls = [pull(20)];
-    answers.set(checkPath(20), [200, { total_count: 3, check_runs: [{ name: "check", status: "completed", conclusion: "success" }, { name: "a", status: "completed", conclusion: "neutral" }, { name: "b", status: "completed", conclusion: "skipped" }] }]);
+    answers.set(checkPath(20), [200, { total_count: 3, check_runs: [{ name: "check", app: { slug: "github-actions" }, status: "completed", conclusion: "success" }, { name: "a", status: "completed", conclusion: "neutral" }, { name: "b", status: "completed", conclusion: "skipped" }] }]);
     answers.set(statusPath(20), [200, { state: "success", total_count: 1, statuses: [{ state: "success" }] }]);
     const result = await run();
     expect(result.stdout).toBe("batch-merge: #20 merged: at fedcba9\n");
@@ -436,11 +443,180 @@ describe("batch-merge", () => {
 
   it("LOG_LINES: text with newlines in a check run name cannot fake a log line or a workflow command", async () => {
     pulls = [pull(20)];
-    answers.set(checkPath(20), [200, { total_count: 2, check_runs: [{ name: "check", status: "completed", conclusion: "success" }, { name: "x\n::add-mask::oops\nbatch-merge: #99 merged: fake", status: "completed", conclusion: "failure" }] }]);
+    answers.set(checkPath(20), [200, { total_count: 2, check_runs: [{ name: "check", app: { slug: "github-actions" }, status: "completed", conclusion: "success" }, { name: "x\n::add-mask::oops\nbatch-merge: #99 merged: fake", status: "completed", conclusion: "failure" }] }]);
     const result = await run();
     expect(result.code).toBe(0);
     for (const line of result.stdout.split("\n").filter(Boolean)) expect(line.startsWith("batch-merge: ")).toBe(true);
     expect(result.stdout.split("\n").filter(Boolean)).toHaveLength(1);
+    expect(merges()).toEqual([]);
+  });
+});
+
+describe("batch-merge guards beyond the relay's", () => {
+  const file = (filename: string, extra: Record<string, unknown> = {}) => ({ filename, status: "modified", ...extra });
+  const filesPath = `GET /repos/${REPO}/pulls/20/files`;
+  const pkg = (fields: Record<string, unknown>) => [200, { content: Buffer.from(JSON.stringify({ name: "p", scripts: { build: "tsc" }, files: ["dist", "docs"], ...fields })).toString("base64"), encoding: "base64" }] as Answer;
+  const pkgPath = `GET /repos/${REPO}/contents/package.json`;
+  const setPackages = (before: Answer, after: Answer) => {
+    answers.set(`${pkgPath}@${BASE_SHA}`, before);
+    answers.set(`${pkgPath}@${shaOf(20)}`, after);
+  };
+
+  it.each([".github/workflows/ci.yml", "scripts/batch-merge.mjs", "_bmad/custom/x.toml", ".claude/settings.json", ".agents/skills/x.md", "docs/agents/implement.md", "AGENTS.md", "SECURITY.md", "Scripts/x.mjs"])("PROTECTED: a batch that changes %s is skipped and stays open", async (path) => {
+    pulls = [pull(20)];
+    answers.set(filesPath, [200, [file("src/a.ts"), file(path)]]);
+    const result = await run();
+    expect(result).toMatchObject({ code: 0, stderr: "" });
+    expect(result.stdout).toBe(`batch-merge: #20 skipped: touches protected files: ${path}\n`);
+    expect(merges()).toEqual([]);
+  });
+
+  it("PROTECTED: a file renamed or deleted out of a protected path counts; look-alike paths and the docs outside docs/agents do not", async () => {
+    pulls = [pull(20)];
+    answers.set(filesPath, [200, [file("src/new.mjs", { status: "renamed", previous_filename: "scripts/old.mjs" })]]);
+    expect((await run()).stdout).toContain("touches protected files: scripts/old.mjs");
+    expect(merges()).toEqual([]);
+    answers.set(filesPath, [200, [file("docs/setup.md"), file("scriptsx/a.mjs"), file(".githubx/a"), file("src/scripts/a.ts"), file("test/agents.md"), file("docs/agents-notes.md"), file("package-lock.json")]]);
+    const fine = await run();
+    expect(fine.stdout).toBe("batch-merge: #20 merged: at fedcba9\n");
+    expect(merges()).toHaveLength(1);
+  });
+
+  it("PROTECTED: the file list is paged; a protected file on page 2 is found, and an unreadable or endless list is skipped", async () => {
+    pulls = [pull(20)];
+    const hundred = Array.from({ length: 100 }, (_, i) => file(`src/f${i}.ts`));
+    answers.set(filesPath, [200, hundred]);
+    sequences.set(filesPath, [[200, hundred], [200, [file(".github/workflows/x.yml")]]]);
+    const paged = await run();
+    expect(paged.stdout).toContain("touches protected files: .github/workflows/x.yml");
+    expect(calls.filter((call) => call.path.endsWith("/pulls/20/files")).map((call) => call.search)).toEqual(["?per_page=100&page=1", "?per_page=100&page=2"]);
+    expect(merges()).toEqual([]);
+
+    sequences.delete(filesPath);
+    answers.set(filesPath, [200, { not: "a list" }]);
+    expect((await run()).stdout).toContain("the changed files could not be read");
+    answers.set(filesPath, [200, hundred]); // every page full: more than GitHub lists
+    expect((await run()).stdout).toContain("too many changed files to verify");
+    expect(merges()).toEqual([]);
+  });
+
+  it.each([
+    ["scripts", { scripts: { build: "tsc", postinstall: "evil" } }],
+    ["publishConfig", { publishConfig: { access: "public" } }],
+    ["name", { name: "other" }],
+    ["bin", { bin: { x: "scripts/x.mjs" } }],
+    ["files (an entry lost)", { files: ["dist"] }],
+    ["files (an entry changed)", { files: ["dist", "docs/", "other"].slice(0, 1).concat(["doc"]) }],
+    ["files (removed)", { files: undefined }],
+  ])("PACKAGE: a changed %s in package.json is skipped", async (_name, change) => {
+    pulls = [pull(20)];
+    answers.set(filesPath, [200, [file("package.json")]]);
+    setPackages(pkg({}), pkg(change));
+    const result = await run();
+    expect(result).toMatchObject({ code: 0, stderr: "" });
+    expect(result.stdout).toMatch(/^batch-merge: #20 skipped: touches protected files: package\.json \(/);
+    expect(merges()).toEqual([]);
+    expect(calls.filter((call) => call.path.endsWith("/contents/package.json")).map((call) => call.search)).toEqual([`?ref=${BASE_SHA}`, `?ref=${shaOf(20)}`]);
+  });
+
+  it("PACKAGE: other fields, a reordered or longer files list, and a reordered scripts object are fine", async () => {
+    pulls = [pull(20)];
+    answers.set(filesPath, [200, [file("package.json")]]);
+    setPackages(pkg({}), [200, { content: Buffer.from(JSON.stringify({ files: ["docs", "dist", "assets/icon.png"], version: "9.9.9", dependencies: { a: "1" }, scripts: { build: "tsc" }, name: "p" })).toString("base64") }]);
+    const result = await run();
+    expect(result.stdout).toBe("batch-merge: #20 merged: at fedcba9\n");
+    expect(merges()).toHaveLength(1);
+  });
+
+  it("PACKAGE: package.json is read only when the batch changes it; an unreadable one or a missing base sha is skipped", async () => {
+    pulls = [pull(20)];
+    answers.set(filesPath, [200, [file("src/a.ts")]]);
+    expect((await run()).stdout).toContain("merged");
+    expect(calls.some((call) => call.path.endsWith("/contents/package.json"))).toBe(false);
+
+    answers.set(filesPath, [200, [file("package.json")]]);
+    setPackages(pkg({}), [200, { content: Buffer.from("{ not json").toString("base64") }]);
+    expect((await run()).stdout).toMatch(/skipped: package\.json could not be read at /);
+    setPackages(pkg({}), [404, { message: "Not Found" }]);
+    expect((await run()).stdout).toMatch(/skipped: GET \/contents\/package\.json\?ref=\w+: GitHub answered 404/);
+    pulls = [pull(20, { base: { ref: "main" } })];
+    setPackages(pkg({}), pkg({}));
+    expect((await run()).stdout).toContain("its base sha could not be read");
+    expect(merges()).toHaveLength(1); // only the first run, which changed no package.json
+  });
+
+  it("CHECK_APP: a check run named check from another app (or with no app) does not count", async () => {
+    pulls = [pull(20)];
+    for (const app of [{ slug: "evil-app" }, undefined]) {
+      answers.set(checkPath(20), [200, { total_count: 1, check_runs: [{ name: "check", app, status: "completed", conclusion: "success" }] }]);
+      const result = await run();
+      expect(result.stdout).toContain("the \"check\" run is missing or not from GitHub Actions");
+    }
+    expect(merges()).toEqual([]);
+  });
+
+  it("LIST: every page of open pull requests is read, so a batch after 100 others is merged", async () => {
+    pulls = [...Array.from({ length: 100 }, (_, i) => pull(1000 + i, { title: "Fix a thing", user: { login: "xtimor" } })), pull(20)];
+    const result = await run();
+    expect(result.stdout).toBe("batch-merge: #20 merged: at fedcba9\n");
+    expect(calls.filter((call) => call.path === `/repos/${REPO}/pulls`).map((call) => call.search)).toEqual(["?state=open&per_page=100&page=1", "?state=open&per_page=100&page=2"]);
+  });
+
+  it("HINT: the pull request of the event is read directly, also when the list does not hold it, and filtered the same way", async () => {
+    pulls = [pull(20)];
+    answers.set(`GET /repos/${REPO}/pulls`, [200, []]);
+    const outside = await run({ BATCH_PR: "20" });
+    expect(outside.stdout).toBe("batch-merge: #20 merged: at fedcba9\n");
+    expect(seen().slice(0, 2)).toEqual(["GET /pulls", "GET /pulls/20"]);
+
+    pulls = [pull(21, { state: "closed" }), pull(22, { title: "Other" }), pull(23, { user: { login: "xtimor" } })];
+    for (const number of [21, 22, 23]) {
+      calls = [];
+      const result = await run({ BATCH_PR: String(number) });
+      expect(result.stdout).toBe(`batch-merge: #${number} skipped: not an open agent batch pull request\n`);
+    }
+    calls = [];
+    const missing = await run({ BATCH_PR: "99" });
+    expect(missing).toMatchObject({ code: 0 });
+    expect(missing.stdout).toContain("#99 skipped: GET /pulls/99: GitHub answered 404");
+    expect(merges()).toEqual([]);
+  });
+
+  it("MERGE_OUTCOME_UNKNOWN: an error that is not ours at the merge call is reported as failed, exit 1", async () => {
+    pulls = [pull(20)];
+    const { run: runIn } = (await import(pathToFileURL(SCRIPT).href)) as { run: (env: Record<string, string>, log: (line: string) => void) => Promise<{ code: number; rows: { pr: number; result: string; reason: string }[] }> };
+    const real = globalThis.fetch;
+    // A response whose status cannot be read: thrown inside the client, outside its own error handling.
+    globalThis.fetch = (async (url: string | URL | Request, init?: RequestInit) => {
+      if (init?.method === "PUT") return { get status(): number { throw new TypeError("boom"); } } as unknown as Response;
+      return real(url, init);
+    }) as typeof fetch;
+    try {
+      const lines: string[] = [];
+      const result = await runIn({ GH_TOKEN: TOKEN, AGENT_LOGIN: BOT, GITHUB_REPOSITORY: REPO, GITHUB_API_URL: base }, (line) => lines.push(line));
+      expect(result.code).toBe(1);
+      expect(result.rows).toEqual([{ pr: 20, result: "failed", reason: "merge outcome unknown" }]);
+      expect(lines).toEqual(["#20 failed: merge outcome unknown"]);
+    } finally {
+      globalThis.fetch = real;
+    }
+  });
+
+  it("READ_ERRORS: an error that is not ours while reading is skipped with exit 0, not called a failed merge", async () => {
+    pulls = [pull(20)];
+    const { run: runIn } = (await import(pathToFileURL(SCRIPT).href)) as { run: (env: Record<string, string>, log: (line: string) => void) => Promise<{ code: number; rows: { result: string }[] }> };
+    const real = globalThis.fetch;
+    globalThis.fetch = (async (url: string | URL | Request, init?: RequestInit) => {
+      if (String(url).endsWith("/status")) return { get status(): number { throw new TypeError("boom"); } } as unknown as Response;
+      return real(url, init);
+    }) as typeof fetch;
+    try {
+      const result = await runIn({ GH_TOKEN: TOKEN, AGENT_LOGIN: BOT, GITHUB_REPOSITORY: REPO, GITHUB_API_URL: base }, () => {});
+      expect(result.code).toBe(0);
+      expect(result.rows[0]?.result).toBe("skipped");
+    } finally {
+      globalThis.fetch = real;
+    }
     expect(merges()).toEqual([]);
   });
 });
@@ -470,7 +646,7 @@ describe("batch-merge workflow file", () => {
   });
 
   it("runs only on main, in the agent environment, one run at a time without cancelling", () => {
-    expect(text).toMatch(/^ {4}if: github\.ref == 'refs\/heads\/main'$/m);
+    expect(text).toMatch(/^ {4}if: github\.ref == 'refs\/heads\/main' && \(github\.event_name != 'pull_request_target' \|\| github\.event\.pull_request\.head\.repo\.full_name == github\.repository\)$/m);
     expect(text).toMatch(/^ {4}environment: agent$/m);
     expect(text).toMatch(/^concurrency:\n {2}group: batch-merge\n {2}cancel-in-progress: false$/m);
   });
@@ -479,7 +655,10 @@ describe("batch-merge workflow file", () => {
     const checkout = text.match(/uses: actions\/checkout@.*\n {8}with:\n((?: {10}.*\n)+)/)?.[1] ?? "";
     expect(checkout).toMatch(/^ {10}ref: refs\/heads\/main$/m);
     expect(checkout).toMatch(/^ {10}persist-credentials: false$/m);
-    expect(text).not.toMatch(/github\.event\.pull_request\.head|github\.head_ref|github\.event\.workflow_run\.head|refs\/pull|pull_request\.merge_commit/);
+    // The head is read only in the job's `if` (to refuse a fork), never in a step.
+    const steps = text.slice(text.indexOf("    steps:"));
+    expect(steps).not.toMatch(/github\.event\.pull_request\.head/);
+    expect(text).not.toMatch(/github\.head_ref|github\.event\.workflow_run\.head|refs\/pull|pull_request\.merge_commit/);
     expect(text).not.toMatch(/\b(npm|npx|pnpm|yarn)\b\s+(ci|install|run|test|i)\b/);
   });
 
