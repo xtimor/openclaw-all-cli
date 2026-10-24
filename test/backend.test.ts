@@ -882,6 +882,26 @@ describe("MCP proxy wiring", () => {
     expect(warnings[0]).toContain("--mcp-config");
   });
 
+  it("registers the cursor-cli backend exactly once and warns about no older plugin", () => {
+    // The host refuses a second `cursor-cli` with `cli backend already registered: cursor-cli (<first owner>)`;
+    // the plugin never registers the id twice, so that line always names another plugin (docs/setup.md).
+    const warnings: string[] = [];
+    const backends: Backend[] = [];
+    registerAdapters(
+      {
+        pluginConfig: {},
+        // The config names an older plugin entry: the plugin must not guess a clash from it.
+        config: { plugins: { entries: { "cursor-cli": { enabled: true } } } },
+        registerProvider: () => {},
+        logger: { warn: (message: string) => warnings.push(message) },
+        registerCliBackend: (backend: Backend) => backends.push(backend),
+      } as never,
+      ADAPTERS,
+    );
+    expect(backends.map((backend) => backend.id)).toEqual(["cursor-cli"]);
+    expect(warnings).toEqual([]);
+  });
+
   it("starts no proxy and warns about nothing when the manifest leaves P7 undecided", async () => {
     const warnings: string[] = [];
     const adapter = {
