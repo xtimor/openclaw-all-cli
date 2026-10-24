@@ -3,7 +3,7 @@ title: 'Explain a cursor-cli backend id clash with the older plugin'
 type: 'bugfix'
 ticket: 'bug-explain-a-cursor-cli-backend-id-clash-with-the-older-plugin'
 created: '2026-10-24'
-status: blocked
+status: done
 baseline_revision: '3e0f205ff4f466412af3738010ecbfa2fb2a9d23'
 route: 'oneshot'
 route_source: 'auto'
@@ -16,8 +16,6 @@ followup_review_recommended: false
 context: ['{project-root}/MEMORY.md']
 warnings: []
 deferred: []
-blocked_at: "2026-10-24"
-blocked_reason: "no subagents"
 ---
 
 <intent-contract>
@@ -40,7 +38,7 @@ blocked_reason: "no subagents"
 
 Oneshot: a docs row plus one test. Findings (OpenClaw 2026.10.3 host source, `registry-*.mjs` `registerCliBackend`): the host reports `cli backend already registered: <id> (<pluginId>)` where `<pluginId>` is the FIRST owner of the id, so `(cursor-cli)` is the older plugin and this plugin (`openclaw-all-cli`) is the one refused. Only a duplicate id triggers it, and `registerAdapters` registers once per adapter (one adapter).
 
-AC2 decision, no warning: a plugin-side check could only read `api.config`. `plugins.entries.cursor-cli` shows a config entry, not a loaded plugin: an installed plugin has no entry, a stale entry can outlive a removal, and a disabled entry does not clash. The plugin API exposes no list of loaded plugins or of registered backends at `register` time. A warning from config would be wrong in both directions, so none is added; the docs carry the fix.
+AC2 decision, no warning: a plugin-side check could only read `api.config`. `plugins.entries.cursor-cli` shows a config entry, not a loaded plugin: an installed plugin has no entry, a stale entry can outlive a removal: `openclaw plugins uninstall` leaves an `enabled: false` marker entry (OpenClaw docs, cli/plugins/uninstall-and-update.md), so the entry outlives a correct removal, and the clash was seen with the entry disabled, so `enabled` tells nothing either. The plugin API exposes no list of loaded plugins or of registered backends at `register` time. A warning from config would be wrong in both directions, so none is added; the docs carry the fix.
 
 ## Tasks
 

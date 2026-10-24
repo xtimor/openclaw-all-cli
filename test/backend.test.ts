@@ -818,6 +818,26 @@ describe("plugin registration", () => {
     // The provider carries the auth methods that OpenClaw's login flows read.
     expect(providers).toEqual(["cursor-cli"]);
   });
+
+  it("registers the cursor-cli backend exactly once and warns about nothing when the config names another cursor-cli plugin", () => {
+    // The host refuses a second `cursor-cli` with `cli backend already registered: cursor-cli (<first owner>)`;
+    // the plugin never registers the id twice, so that line always names another plugin (docs/setup.md).
+    const warnings: string[] = [];
+    const backends: { id: string }[] = [];
+    registerAdapters(
+      {
+        pluginConfig: {},
+        // Pins current behavior: the config names an older plugin entry, and no clash is guessed from it.
+        config: { plugins: { entries: { "cursor-cli": { enabled: true } } } },
+        registerProvider: () => {},
+        logger: { warn: (message: string) => warnings.push(message) },
+        registerCliBackend: (backend: { id: string }) => backends.push(backend),
+      } as never,
+      ADAPTERS,
+    );
+    expect(backends.map((backend) => backend.id)).toEqual(["cursor-cli"]);
+    expect(warnings).toEqual([]);
+  });
 });
 
 describe("MCP proxy wiring", () => {
@@ -880,26 +900,6 @@ describe("MCP proxy wiring", () => {
     expect(records.at(-1)).toMatchObject({ type: "result", is_error: false });
     expect(warnings).toHaveLength(1);
     expect(warnings[0]).toContain("--mcp-config");
-  });
-
-  it("registers the cursor-cli backend exactly once and warns about no older plugin", () => {
-    // The host refuses a second `cursor-cli` with `cli backend already registered: cursor-cli (<first owner>)`;
-    // the plugin never registers the id twice, so that line always names another plugin (docs/setup.md).
-    const warnings: string[] = [];
-    const backends: Backend[] = [];
-    registerAdapters(
-      {
-        pluginConfig: {},
-        // The config names an older plugin entry: the plugin must not guess a clash from it.
-        config: { plugins: { entries: { "cursor-cli": { enabled: true } } } },
-        registerProvider: () => {},
-        logger: { warn: (message: string) => warnings.push(message) },
-        registerCliBackend: (backend: Backend) => backends.push(backend),
-      } as never,
-      ADAPTERS,
-    );
-    expect(backends.map((backend) => backend.id)).toEqual(["cursor-cli"]);
-    expect(warnings).toEqual([]);
   });
 
   it("starts no proxy and warns about nothing when the manifest leaves P7 undecided", async () => {

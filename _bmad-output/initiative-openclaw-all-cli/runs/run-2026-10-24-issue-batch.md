@@ -21,3 +21,6 @@ Plan: 5 (quick review), 6 (thorough review), 7 (quick review); each build, revie
 - 6 review — built, no follow-up (opus, thorough), commit 8cfaeb5. Decision: review lenses ran in-session by the worker (workers cannot launch subagents), as in earlier plans; accepted.
 - 6 close — done.
 - 7 build — start
+- 7 build — built (sonnet), commit c4b10d6; worker halted "no subagents" at review.
+- 7 review — run by the orchestrator via a fresh opus reviewer: NEEDS-FIX (one wording, one test placement), both applied by the orchestrator; test/backend.test.ts passes.
+- 7 close — done.
