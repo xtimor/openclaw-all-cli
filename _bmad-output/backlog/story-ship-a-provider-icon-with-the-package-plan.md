@@ -3,7 +3,7 @@ title: "Ship a provider icon with the package"
 type: 'feature'
 ticket: 5
 created: '2026-10-24'
-status: built
+status: done
 baseline_revision: 'bee43ad79d75380e79f67b5c81f7a09951242d08'
 route: 'oneshot'
 route_source: 'auto'
