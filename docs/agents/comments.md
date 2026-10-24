@@ -114,7 +114,7 @@ Implementation built (pull request):
 ```markdown
 <!-- issue-impl -->
 **Status:** `status:in-review`: a pull request is open
-**Waiting for:** nothing: the agent merges the batch pull request when its checks are green
+**Waiting for:** nothing: GitHub's `Batch merge` workflow merges the batch pull request when its checks are green
 **Next:** the merge closes the issue; to hold it, convert the pull request to draft
 **What happened:** built and reviewed; `npm run ci` passes.
 **Evidence:** pull request #21, ticket 3.12, plan `epic-distribution/story-...-plan.md`; live Cursor check not run.

@@ -62,7 +62,7 @@ const OP_KEYS = {
 };
 
 /** A failure with an exit code and a message that is safe to print. `refused`: a guard said no (nothing sent for it). */
-class WriteError extends Error {
+export class WriteError extends Error {
   constructor(message, { code = 1, refused = false } = {}) {
     super(message);
     this.code = code;
@@ -245,7 +245,8 @@ export function checkGreen(runs, status, op) {
 
 // ---- GitHub API ----
 
-function makeClient(config) {
+/** The REST/GraphQL client; scripts/batch-merge.mjs reuses it. `config` needs `token`, `api`, `graphql`. */
+export function makeClient(config) {
   const clean = (text) => (config.token.length >= 4 ? String(text).replaceAll(config.token, "[redacted]") : String(text));
   async function send(method, url, label, body) {
     let response;
