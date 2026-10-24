@@ -10,10 +10,11 @@
 //
 // Lists the open pull requests titled `Issue batch...` by AGENT_LOGIN (BATCH_PR, a number from the triggering event, is checked
 // first), reads each fresh, and merges it only when every guard holds (method `merge`, expected head sha = the head read). A PR
-// that fails a guard is skipped; GitHub computes `mergeable_state` lazily, so `unknown` is skipped and the next trigger retries.
+// that fails a guard is skipped. GitHub computes `mergeable_state` lazily: an `unknown` PR is re-read up to 3 more times, 10 s apart
+// (BATCH_MERGE_UNKNOWN_DELAY_MS, for tests), then skipped; the next trigger retries.
 //
 // Environment: GH_TOKEN (the app's installation token), AGENT_LOGIN (`<app-slug>[bot]`), GITHUB_REPOSITORY, BATCH_PR (optional),
-// GITHUB_API_URL (default https://api.github.com), GITHUB_GRAPHQL_URL (unused), GITHUB_STEP_SUMMARY (the Markdown summary).
+// BATCH_MERGE_UNKNOWN_DELAY_MS (test knob, default 10000), GITHUB_API_URL (default https://api.github.com), GITHUB_GRAPHQL_URL (unused), GITHUB_STEP_SUMMARY (the Markdown summary).
 //
 // Output: one line per PR, `batch-merge: #N merged|skipped|failed: <reason>`. The token is never printed (every message goes
 // through the client's `clean`); the summary and the log hold no PR title or body. Exit 0 unless a merge call failed or the list
@@ -24,6 +25,8 @@ import { checkGreen, checkMergeable, makeClient, WriteError } from "./agent-writ
 
 const DEFAULT_API = "https://api.github.com";
 const BATCH_TITLE = "Issue batch";
+const UNKNOWN_RETRIES = 3; // re-reads of a PR whose mergeable state GitHub has not computed yet
+const UNKNOWN_DELAY_MS = 10_000;
 
 const lower = (value) => (typeof value === "string" ? value.trim().toLowerCase() : "");
 
@@ -37,7 +40,9 @@ function readConfig(env) {
   const api = ((env.GITHUB_API_URL ?? "").trim() || DEFAULT_API).replace(/\/+$/, "");
   const rawPr = (env.BATCH_PR ?? "").trim();
   if (rawPr !== "" && !/^[1-9]\d{0,9}$/.test(rawPr)) throw new WriteError("BATCH_PR must be a pull request number", { code: 2 });
-  return { token: env.GH_TOKEN.trim(), repo, login, api, graphql: `${api}/graphql`, hint: rawPr === "" ? null : Number(rawPr) };
+  const delay = (env.BATCH_MERGE_UNKNOWN_DELAY_MS ?? "").trim();
+  if (delay !== "" && !/^\d{1,6}$/.test(delay)) throw new WriteError("BATCH_MERGE_UNKNOWN_DELAY_MS must be a number of milliseconds", { code: 2 });
+  return { unknownDelayMs: delay === "" ? UNKNOWN_DELAY_MS : Number(delay), token: env.GH_TOKEN.trim(), repo, login, api, graphql: `${api}/graphql`, hint: rawPr === "" ? null : Number(rawPr) };
 }
 
 /** The refusal's text without its `PR #N` lead, so a line reads `#N skipped: <reason>`. */
@@ -75,7 +80,12 @@ export async function run(env, log = () => {}) {
 
   for (const number of order) {
     try {
-      const pr = (await client.rest("GET", `${base}/pulls/${number}`)).data;
+      let pr = (await client.rest("GET", `${base}/pulls/${number}`)).data;
+      // GitHub computes the mergeable state lazily (right after CI it is often `unknown`): ask again a few times before skipping.
+      for (let retry = 0; retry < UNKNOWN_RETRIES && pr?.mergeable_state === "unknown" && pr.draft !== true; retry++) {
+        await new Promise((done) => setTimeout(done, config.unknownDelayMs));
+        pr = (await client.rest("GET", `${base}/pulls/${number}`)).data;
+      }
       if (pr === null || typeof pr !== "object" || Array.isArray(pr)) throw new WriteError(`PR #${number}: GitHub's answer could not be read`, { refused: true });
       if (pr.draft === true) {
         add(number, "skipped", "draft");

@@ -38,6 +38,8 @@ let calls: Call[] = [];
 let answers = new Map<string, Answer>();
 /** The open pull requests the stub knows (list and single read). */
 let pulls: Record<string, unknown>[] = [];
+/** Per-test answer sequences: `"METHOD path"` to a list of answers served in order (the last one repeats). */
+let sequences = new Map<string, Answer[]>();
 
 /** A distinct full sha per pull request number. */
 const shaOf = (number: number) => `${number.toString(16).padStart(8, "0")}${"ab".repeat(16)}`;
@@ -89,7 +91,8 @@ beforeAll(async () => {
     const path = decodeURIComponent(url.pathname);
     const method = req.method ?? "GET";
     calls.push({ method, path, search: url.search, body: await readBody(req), auth: req.headers.authorization });
-    const [status, payload] = answers.get(`${method} ${path}`) ?? defaults(method, path);
+    const queued = sequences.get(`${method} ${path}`);
+    const [status, payload] = (queued ? (queued.length > 1 ? queued.shift() : queued[0]) : undefined) ?? answers.get(`${method} ${path}`) ?? defaults(method, path);
     res.writeHead(status, { "content-type": "application/json" });
     res.end(JSON.stringify(payload));
   });
@@ -104,6 +107,7 @@ afterAll(async () => {
 beforeEach(() => {
   calls = [];
   answers = new Map();
+  sequences = new Map();
   pulls = [];
 });
 
@@ -130,6 +134,7 @@ function run(env: Record<string, string | undefined> = {}): Promise<Run> {
     GITHUB_REPOSITORY: REPO,
     GITHUB_API_URL: base,
     GITHUB_STEP_SUMMARY: summaryFile,
+    BATCH_MERGE_UNKNOWN_DELAY_MS: "10",
     ...env,
   };
   for (const key of Object.keys(merged)) if (merged[key] === undefined) delete merged[key];
@@ -230,12 +235,41 @@ describe("batch-merge", () => {
     expect(seen()).not.toContain(`GET /commits/${shaOf(20)}/check-runs`);
   });
 
-  it("NOT_CLEAN: a missing mergeable state counts as unknown", async () => {
+  it("UNKNOWN: a missing mergeable state counts as unknown", async () => {
     pulls = [pull(20, { mergeable_state: undefined })];
     const result = await run();
     expect(result.code).toBe(0);
     expect(result.stdout).toContain('mergeable state is "unknown"');
     expect(merges()).toEqual([]);
+  });
+
+  it("UNKNOWN: an unknown state that turns clean on the next read is merged", async () => {
+    pulls = [pull(20)];
+    sequences.set(`GET /repos/${REPO}/pulls/20`, [[200, pull(20, { mergeable_state: "unknown" })], [200, pull(20)]]);
+    const result = await run();
+    expect(result).toMatchObject({ code: 0, stderr: "" });
+    expect(result.stdout).toBe("batch-merge: #20 merged: at fedcba9\n");
+    expect(seen().filter((entry) => entry === "GET /pulls/20")).toHaveLength(2);
+    expect(merges()).toHaveLength(1);
+  });
+
+  it("UNKNOWN: still unknown after three more reads is skipped (four reads in all), without checks or a merge", async () => {
+    pulls = [pull(20, { mergeable_state: "unknown" })];
+    const result = await run();
+    expect(result).toMatchObject({ code: 0, stderr: "" });
+    expect(result.stdout).toMatch(/^batch-merge: #20 skipped: .*"unknown"/);
+    expect(seen().filter((entry) => entry === "GET /pulls/20")).toHaveLength(4);
+    expect(seen()).not.toContain(`GET /commits/${shaOf(20)}/check-runs`);
+    expect(merges()).toEqual([]);
+  });
+
+  it("UNKNOWN: a pull request that is not unknown is read once; a bad delay setting exits 2", async () => {
+    pulls = [pull(20, { mergeable_state: "blocked" })];
+    await run();
+    expect(seen().filter((entry) => entry === "GET /pulls/20")).toHaveLength(1);
+    calls = [];
+    expect((await run({ BATCH_MERGE_UNKNOWN_DELAY_MS: "soon" })).code).toBe(2);
+    expect(calls).toEqual([]);
   });
 
   const checkCases: [string, unknown, unknown, RegExp][] = [
