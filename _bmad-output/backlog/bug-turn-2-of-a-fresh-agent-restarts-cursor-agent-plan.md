@@ -3,7 +3,7 @@ title: 'Turn 2 of a fresh agent restarts cursor-agent'
 type: 'bugfix'
 ticket: '8'
 created: '2026-10-24'
-status: built
+status: done
 baseline_revision: '6007064291fe41fc2d61b4f8607f58e31f083921'
 route: 'full'
 route_source: 'auto'
