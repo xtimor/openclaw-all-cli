@@ -115,7 +115,12 @@ export function makeLiveSession(): LiveSessionCapability {
   };
 }
 
-/** Writes the settings file OpenClaw would write for a run: its loopback URL, token, and capture key. */
+/** The launch flags OpenClaw adds for a run's MCP config file (`bundleMcpMode: "claude-config-file"`). */
+export function hostMcpArgs(file: string): string[] {
+  return ["--strict-mcp-config", "--mcp-config", file];
+}
+
+/** Writes the config file OpenClaw would write for a run: its loopback URL, token, and capture key. */
 export function writeSettingsFile(dir: string, name: string, url: string, token: string, capture: string): string {
   const file = join(dir, `${name}.json`);
   writeFileSync(

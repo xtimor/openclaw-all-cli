@@ -6,6 +6,7 @@ import { cursorAdapter } from "../src/adapters/cursor/index.ts";
 import { buildCliBackend } from "../src/core/backend.ts";
 import { STUB_EXEC_TOOL, startStubMcpHost } from "./fixtures/stub-mcp-host.ts";
 import { FAKE_CURSOR_AGENT, fakeEnv } from "./fixtures/paths.ts";
+import { MCP_CONFIG_TEST_KEY, withHostMcp } from "./fixtures/host-mcp.ts";
 
 /**
  * The host-served `exec` path (ticket 1.19) end to end without Cursor: the real backend, the real
@@ -62,9 +63,8 @@ describe("exec through the MCP proxy", () => {
     const records: Array<Record<string, any>> = [];
     for await (const record of prepared!.execute!({
       command: FAKE_CURSOR_AGENT,
-      args: [...(options.args ?? ["acp"])],
+      ...withHostMcp([...(options.args ?? ["acp"])], fakeEnv({ [MCP_CONFIG_TEST_KEY]: settings })),
       cwd: scratch,
-      env: fakeEnv({ GEMINI_CLI_SYSTEM_SETTINGS_PATH: settings }),
       prompt,
       modelId: "auto",
       systemPrompt: "",

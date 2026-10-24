@@ -9,6 +9,7 @@ import { homeDirFor } from "../src/core/home.ts";
 import { createManifest } from "../src/core/ports.ts";
 import { SYSTEM_PROMPT_HEADER, SYSTEM_PROMPT_TRANSPORT_MARKER, deliveredFileFor, runtimeUpdateNote, systemPromptBlock } from "../src/core/system-prompt.ts";
 import { FAKE_CURSOR_AGENT, fakeEnv } from "./fixtures/paths.ts";
+import { MCP_CONFIG_TEST_KEY, withHostMcp } from "./fixtures/host-mcp.ts";
 
 // AD-15 / P12 through buildCliBackend -> prepareExecution -> execute, against the fake agent.
 describe("system prompt delivery (P12)", () => {
@@ -42,11 +43,10 @@ describe("system prompt delivery (P12)", () => {
     const records: Record<string, unknown>[] = [];
     for await (const record of prepared!.execute!({
       command: FAKE_CURSOR_AGENT,
-      args: options.args ?? ["acp"],
       ...(options.promptContext ? { promptContext: options.promptContext } : {}),
       ...(options.signal ? { abortSignal: options.signal } : {}),
+      ...withHostMcp(options.args ?? ["acp"], fakeEnv({ FAKE_CURSOR_LOG: log, ...options.env })),
       cwd: workspace,
-      env: fakeEnv({ FAKE_CURSOR_LOG: log, ...options.env }),
       prompt,
       modelId: "auto",
       systemPrompt: options.systemPrompt ?? "",
@@ -82,7 +82,7 @@ describe("system prompt delivery (P12)", () => {
 
   it("puts the block first on a fresh chat, before the continuity note and the prompt", async () => {
     const { agentDir, log } = fresh("fresh");
-    await turn(agentDir, log, "say:pong", { systemPrompt: S, env: { GEMINI_CLI_SYSTEM_SETTINGS_PATH: settings } });
+    await turn(agentDir, log, "say:pong", { systemPrompt: S, env: { [MCP_CONFIG_TEST_KEY]: settings } });
     const sent = rawPrompts(log);
     expect(sent).toHaveLength(1);
     expect(sent[0]).toBe(`${systemPromptBlock(S)}\n\n${CONTINUITY_NOTE}\n\nsay:pong`);
