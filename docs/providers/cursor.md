@@ -223,6 +223,8 @@ Checked against OpenClaw 2026.10.3: the Control UI list is built from the manife
 
 Allow-list: an explicit `agents.defaults.modelPolicy.allow` must name `cursor-cli/*`, or direct selection is refused (see [Setup](../setup.md#3-configure)).
 
+Icon: the package ships its own neutral icon (a terminal prompt and a block cursor, not Cursor's brand mark) as `assets/icon.png`, a 256x256 PNG. OpenClaw 2026.10.3 reads a plugin icon only from that fixed path (there is no manifest key), so the Gateway's `plugins.list` reports `hasIcon: true` for the plugin (`openclaw gateway call plugins.list`; `openclaw plugins inspect` prints no icon field in that version) and the host can show it in place of the letter avatar (the look in a real picker is the owner's check). It is one icon for the plugin, not one per CLI.
+
 ## Models
 
 `/model`, the model picker, and `openclaw models list --provider cursor-cli` show the models your Cursor account has, as `cursor-cli/<name>` with the readable name Cursor gives them:
