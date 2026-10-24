@@ -1,16 +1,17 @@
 import { spawnSync } from "node:child_process";
-import { existsSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 
 /**
- * The published tarball holds only the allowlist: built JavaScript, the manifest, the README, and the
- * license (npm adds package.json). Runs `npm pack --dry-run`, so it reflects `files` in package.json.
+ * The published tarball holds only the allowlist: built JavaScript, the manifest, the plugin icon, the
+ * README, and the license (npm adds package.json). Runs `npm pack --dry-run`, so it reflects `files` in
+ * package.json. The icon sits at `assets/icon.png`, the only path OpenClaw reads a plugin icon from.
  */
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
-const FIXED = new Set(["package.json", "README.md", "LICENSE", "openclaw.plugin.json"]);
+const FIXED = new Set(["package.json", "README.md", "LICENSE", "openclaw.plugin.json", "assets/icon.png"]);
 const DIST_ENTRIES = ["dist/plugin.js", "dist/provider-discovery.js"];
 
 // Compiled tests never ship, even if the build config stops excluding them.
@@ -36,6 +37,17 @@ describe("package contents", () => {
 
   it("packs the fixed files", () => {
     for (const path of FIXED) expect(paths, `missing ${path}`).toContain(path);
+  });
+
+  it("ships a small square PNG icon", () => {
+    const png = readFileSync(join(ROOT, "assets/icon.png"));
+    expect(png.subarray(0, 8).toString("hex")).toBe("89504e470d0a1a0a");
+    expect(png.subarray(12, 16).toString("ascii")).toBe("IHDR");
+    const width = png.readUInt32BE(16);
+    const height = png.readUInt32BE(20);
+    expect(width).toBe(height);
+    expect(width).toBeGreaterThanOrEqual(64);
+    expect(png.length).toBeLessThan(64 * 1024);
   });
 
   it.runIf(existsSync(join(ROOT, "dist")))("packs both dist entry files when dist/ exists", () => {
