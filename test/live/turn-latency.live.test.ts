@@ -16,14 +16,14 @@ import {
   makeLiveSession,
   openclaw,
   openclawAsync,
-  replyLines,
   startGateway,
   watchGatewayEvents,
   writeSettingsFile,
 } from "./harness.ts";
 
 // Backlog bug 6 (parity row P4): what a plain turn costs, stage by stage, with the process restarted
-// per turn (what OpenClaw 2026.10.3 forces) and with one warm process. Real cursor-agent through
+// per turn (what OpenClaw 2026.10.3 forced with the earlier `gemini-system-settings` MCP mode) and with
+// one warm process. Real cursor-agent through
 // `createExecute`; a stub HTTP MCP host stands in for OpenClaw. The numbers print as `LATENCY` lines.
 describeLive("per-turn latency of a plain cursor-cli turn (P4)", () => {
   const root = mkdtempSync(join(tmpdir(), "oac-live-latency-"));
@@ -199,12 +199,20 @@ describeLive("per-turn latency through the real Gateway (P4)", () => {
           const nonce = `nonce${Date.now().toString(36)}`;
           const log = gatewayLog();
           const turn = async (n: number, message: string, mustContain: string[]): Promise<boolean> => {
-            const run = await openclawAsync(["agent", "--session-id", sessionId, "--message", message], { timeoutMs: 240_000, env: gateway.env });
+            const run = await openclawAsync(["agent", "--session-id", sessionId, "--message", message, "--json"], { timeoutMs: 240_000, env: gateway.env });
             if (/transcript compaction failed/.test(run.stderr + run.stdout)) return false;
             expect(run.status, `turn ${n}: ${run.stderr}`).toBe(0);
             expect(run.stderr + run.stdout).not.toMatch(/cli terminal failure/);
-            const reply = replyLines(run.stdout).join("\n");
+            const json = JSON.parse(run.stdout) as {
+              payloads?: Array<{ text?: string }>;
+              result?: { payloads?: Array<{ text?: string }>; meta?: { toolSummary?: { tools?: string[] } } };
+              meta?: { toolSummary?: { tools?: string[] } };
+            };
+            const reply = (json.payloads ?? json.result?.payloads ?? []).map((payload) => payload.text ?? "").join("\n");
             for (const text of mustContain) expect(reply, `turn ${n}`).toContain(text);
+            // The session key is in the chat from turn 1, so the reply alone does not prove a call: the host's own tool summary does.
+            const tools = json.meta?.toolSummary?.tools ?? json.result?.meta?.toolSummary?.tools ?? [];
+            expect(tools.some((tool) => tool.endsWith("session_status")), `turn ${n} tools: ${tools.join(", ")}`).toBe(true);
             return true;
           };
           // session_status returns the session key, which contains the unique id: only a call that reached the host can say it.

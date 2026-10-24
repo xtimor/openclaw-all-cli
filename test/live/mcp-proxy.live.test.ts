@@ -119,9 +119,10 @@ describeLive("OpenClaw tools through the per-session MCP proxy (P7)", () => {
 });
 
 // The same row through the real OpenClaw: its per-run loopback URL, token, and capture key reach the
-// proxy only through the settings file. Run `npm run dev:install` first. Two turns of one session id:
-// the second restarts the process (the host's live-session fingerprint changes with the per-turn
-// settings path) and goes through `session/load` with `mcpServers` again.
+// proxy only through the MCP config file named by `--mcp-config`. Run `npm run dev:install` first. Two
+// turns of one session id: each `--local` run is a new OpenClaw process, so the second starts a new
+// cursor-agent and goes through `session/load` with `mcpServers` again (the warm path through a Gateway
+// is in `turn-latency.live.test.ts`).
 describeLive("OpenClaw tools reach cursor-cli through the real host (P7)", () => {
   it(
     "answers from an OpenClaw tool call in two turns of one session",

@@ -30,6 +30,20 @@ deferred:
     location: >-
       test/live/mcp-proxy.live.test.ts
     severity: medium (unverified)
+  - summary: >-
+      MEMORY.md says the proxy's SSE stream stays across turns, but every turn end (clearTarget) and start (setTarget) ends it.
+    evidence: |-
+      endRunning() aborts every running request, the GET stream included (src/core/mcp-proxy.ts setTarget/clearTarget). The real host answers GET /mcp with a 200 event stream (mcp-http-*.mjs), so with a real Gateway Cursor's stream is cut after each turn and a reconnect between turns gets 503. Warm tool calls still worked on turns 2 and 3 through a real Gateway (turn-latency.live, this pass), so the effect looks harmless; the record should say what happens. The fix edits MEMORY.md, an agent-context file.
+    location: >-
+      MEMORY.md (Open risk, warm-reuse effects)
+    severity: low
+  - summary: >-
+      The --local real-host row of mcp-proxy.live has no retry for OpenClaw's own cli_budget compaction failure and fails turn 1 often.
+    evidence: |-
+      Failed turn 1 (exit 1) in 2 of 5 runs in this pass; the Gateway log of the failed run shows `CLI transcript compaction failed for cursor-cli/auto: Unknown model: cursor-cli/auto`, the host flake MEMORY already records. The test predates this change; turn-latency.live's Gateway row already retries such tries.
+    location: >-
+      test/live/mcp-proxy.live.test.ts (OpenClaw tools reach cursor-cli through the real host)
+    severity: low
 ---
 
 <intent-contract>
@@ -120,6 +134,21 @@ Route: full by size (several hundred lines with tests); this worker cannot launc
   - `[maybe-false]` `[defer]` One `mcp-proxy.live` run in five saw no warm tool call on turn 2 - could be the model skipping the call (its own thinking said it knew the schema in another run) or a race in the proxy after a turn switch; 4 later runs and 3 Gateway-level runs passed; see `deferred`.
 - Note: the four lenses are subagents; this worker cannot launch one, so each pass is the worker's own read of the diff, the code it touches, and the host code (`lenses_ran` names the passes run in-session, not independent reviewers). Mutations run on the tree (each named test failed, then restored): `bundleMcpMode` back to gemini (backend and host-contract tests), flags not stripped (7 execute tests), warm turn re-pointed at its own file (host-contract and 2 execute tests).
 
+### 2026-10-24 — Review pass (follow-up)
+- verdicts: 11 findings — high 0, medium 1, low 9, false 0, maybe-false 1
+- findings:
+  - `[low]` `[patch]` (blind-hunter) The real-host block comment in `test/live/mcp-proxy.live.test.ts` still says the target comes from "the settings file" and that turn 2 restarts because the fingerprint changes with the settings path — rewritten: the `--mcp-config` file, and each `--local` run is a new OpenClaw process (warm path named in `turn-latency.live`).
+  - `[low]` `[patch]` (blind-hunter) The header of `test/live/turn-latency.live.test.ts` calls the per-turn restart "what OpenClaw 2026.10.3 forces" — now says it was forced with the earlier `gemini-system-settings` mode.
+  - `[low]` `[defer]` (blind-hunter) MEMORY.md says the proxy's SSE stream stays across turns, but `clearTarget`/`setTarget` end every running request, the GET stream included; the real host serves GET as a 200 event stream, so Cursor's stream is cut each turn and a reconnect between turns gets 503 — warm tool calls still worked through a real Gateway this pass, so harmless so far; the fix edits an agent-context file; see `deferred`.
+  - `[low]` `[reject]` (blind-hunter) `liveSessionStarts` reads only the newest-date log, so a rollover or a missing dir gives 0 starts — carried: same claim as the logged live-log row (missing file gives 0 starts, which fails only in the safe direction); code unchanged.
+  - `[low]` `[reject]` (edge-case-hunter) `splitMcpArgs` takes non-dash arguments after `--disallowedTools` as its values — carried: same rule as the host's `extractClaudeVariadicArgs`, both markers start with `-`; code unchanged.
+  - `[low]` `[reject]` (edge-case-hunter) A warm process keeps its opening URL, so a changed loopback port inside one Gateway life would strand it — carried: loopback and processes share the Gateway's life; code unchanged.
+  - `[medium]` `[patch]` (verification-gap) The Gateway warm-tool row in `turn-latency.live` proved the turn 2 and 3 tool calls only by reply text, but the session key it checks is already in the chat from turn 1, so a warm turn whose call failed (for example a 401 after a grant change) could still pass by copying it — the row now runs `openclaw agent --json` and asserts the host's `meta.toolSummary.tools` names `session_status` on every turn; passed live (3 turns, one try).
+  - `[low]` `[defer]` (verification-gap, other) The `--local` real-host row of `mcp-proxy.live` failed turn 1 in 2 of 5 runs on OpenClaw's own `cli_budget` compaction (`Unknown model: cursor-cli/auto`, Gateway log) and has no retry — pre-existing test and host flake, not caused by this change; see `deferred`.
+  - `[maybe-false]` `[defer]` (verification-gap) One `mcp-proxy.live` run in five missed the warm tool call — carried. New evidence this pass, not a re-route: a proxy probe (env-guarded log in a scratch edit of `mcp-proxy.ts`, reverted) over 3 runs of the stub row showed Cursor sends nothing between turns (its connect-time GET gets the stub's 405, tools stay cached), and the warm turn's first request is its `tools/call`, which arrives after `pointWarmProxy` has set the target synchronously before `session/prompt`; no window lets a Cursor request meet a cleared target, and one run's thinking weighed skipping the lookup ("I already know the schema"). 5 more stub-row runs passed. Reading: model-side, not a plugin race.
+  - `[low]` `[reject]` (intent-alignment) The plan's absolute bound (3 s plugin, 8 s Gateway) is not asserted; the live row asserts only warm < 0.75 of a restarted turn — the ticket asks for the bound stated in the plan with numbers, which it has; an absolute timing assertion on a live model adds flakiness, not protection.
+  - `[low]` `[reject]` (intent-alignment) The owner's surface (webchat, block streaming off, `assistant_output_started`) was not timed; the build timed `openclaw agent` and Gateway frames — the ticket's Notes route that timing to the owner when it cannot run here, and the plan records it as not verified; no code fix exists.
+
 ## Auto Run Result
 
 **Summary:** The backend now declares the host's `claude-config-file` MCP mode, so OpenClaw's live-session fingerprint no longer changes with the per-turn MCP path: from the third turn of a fresh agent a follow-up reaches the warm `cursor-agent` process (no `initialize`, no `session/load`). The plugin reads the turn's target from the `--mcp-config` file in the launch args, strips the host's MCP flags before the launch, and keeps a warm process on the target it opened with (the host moves each later grant onto that process's bearer and capture key). Measured first assistant text of a plain follow-up through a Gateway: 5.0 to 7.6 s, was 9.2 to 9.4 s; at the plugin 2 s warm against 6 s restarted. Cursor's cache is not a lever (no effect measured). No plugin buffering: deltas pass on as they arrive (test added; text reaches the host before the usage read).
@@ -129,6 +158,8 @@ Route: full by size (several hundred lines with tests); this worker cannot launc
 **Review:** patches applied 0; deferred 2 (turn 2 of a fresh agent, low; one unverified live miss, medium unverified); rejected 5 low and 1 false, reasons in the triage log. Lenses ran in-session (no subagent available), not as independent reviewers.
 
 **Verification:** `npm run ci` passed. Live (real `cursor-agent`, `CURSOR_API_KEY`, isolated OpenClaw 2026.10.3): `turn-latency.live.test.ts` (3 tests), `mcp-proxy.live.test.ts`, `streaming.live.test.ts`, `permission-routing.live.test.ts` passed (one earlier `mcp-proxy` miss, not reproduced in 4 runs; one Gateway tool run lost to OpenClaw's own budget compaction and passed on the next). Live timing of the owner's real workspace not run.
+
+**Follow-up review pass (2026-10-24):** lenses ran in-session again (this worker has no subagent tool), on the diff from `baseline_revision` to the build's commit, run log excluded. Patches applied 3 (1 medium, 2 low), all in live tests: `test/live/turn-latency.live.test.ts` (the Gateway warm-tool row now asserts the host's `meta.toolSummary` names `session_status` on every turn, since the reply's session key was already in the chat; stale header comment), `test/live/mcp-proxy.live.test.ts` (stale real-host comment). No production code changed; nothing reverted or re-derived. Deferred 2 new (MEMORY's SSE-stream sentence, low; the `--local` real-host row's missing compaction retry, low, pre-existing). Rejected 5 (3 carried, 2 intent-alignment readings), reasons in the triage log. Flaky warm-turn miss judged model-side, not a plugin race (proxy probe evidence in the triage log). Follow-up review recommended: false (follow-up pass, no high patched; patched by verdict: high 0, medium 1, low 2). Verification: `npm run ci` passed after the patches (1194 tests); live `turn-latency.live` warm-tool row passed with the new assertion; `mcp-proxy.live` stub row passed 6 of 6, the `--local` real-host row passed 3 of 5 (both failures OpenClaw's `cli_budget` compaction on turn 1).
 
 **Residual risks:** the first two turns of a fresh agent still restart once; the 15-20 s the owner saw may also hold model time (about 10 s in the report against 2 s here) that no plugin change reaches; a future OpenClaw that changes what its fingerprint hashes (the host-contract test names the failure) or stops moving the later grant onto the process bearer (the warm tool call would fail with 401).
 
