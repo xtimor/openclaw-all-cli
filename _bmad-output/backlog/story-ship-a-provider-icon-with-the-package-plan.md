@@ -1,9 +1,7 @@
 ---
 title: "Ship a provider icon with the package"
 ticket: 5
-status: blocked
-blocked_at: "2026-10-24"
-blocked_reason: "intent gap: OpenClaw 2026.10.3 has no manifest icon key and reads only the fixed path assets/icon.png (PNG), so assets/cursor-cli.svg can never give hasIcon: true (AC2); the working fix needs files entry assets/icon.png, which the allowance (only assets/cursor-cli.svg) forbids. Owner must amend the ticket: ship assets/icon.png and allow that files path."
+status: draft
 ---
 
 # Auto Run Result
@@ -18,3 +16,7 @@ Evidence (OpenClaw 2026.10.3, `.spike/openclaw/node_modules/openclaw`):
 - So AC1 and AC3 can be met with `assets/cursor-cli.svg`, but AC2 (`hasIcon: true`) cannot: no manifest key points at it, and the host would never read it. Shipping the SVG alone would add an unused file.
 
 Needed from the owner: amend the ticket to ship `assets/icon.png` (neutral terminal-with-cursor art, square, readable at 16 px; optionally keep an SVG source) and allow `assets/icon.png` as the exact `package.json` `files` entry (and in `test/package-contents.test.ts`). No code was changed.
+
+## Implementation Notes
+
+- Decision: retry (issue #9). The owner's 2026-10-24 approval fixes the path: ship the neutral icon as `assets/icon.png` and allow that exact `files` entry (and `test/package-contents.test.ts`). The ticket's acceptance criteria now name that path.
