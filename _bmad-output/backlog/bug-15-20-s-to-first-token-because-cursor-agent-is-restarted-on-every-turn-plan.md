@@ -3,7 +3,7 @@ title: '15-20 s to first token because cursor-agent is restarted on every turn'
 type: 'bugfix'
 ticket: '6'
 created: '2026-10-24'
-status: built
+status: done
 baseline_revision: 'dc124b7816265afa88fc70d62d7b89dfb5920655'
 route: 'full'
 route_source: 'auto'

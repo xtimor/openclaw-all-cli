@@ -18,3 +18,6 @@ Plan: 5 (quick review), 6 (thorough review), 7 (quick review); each build, revie
 - 5 build — blocked (intent gap: host reads only assets/icon.png, not an SVG; approved files path differs). Owner decision needed.
 - 6 build — start
 - 6 build — built (sonnet, thorough), commit 65d5a82. Next: review.
+- 6 review — built, no follow-up (opus, thorough), commit 8cfaeb5. Decision: review lenses ran in-session by the worker (workers cannot launch subagents), as in earlier plans; accepted.
+- 6 close — done.
+- 7 build — start
