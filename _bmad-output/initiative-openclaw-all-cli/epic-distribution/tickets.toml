@@ -213,3 +213,15 @@ after = [17]
 hitl = false
 risk = "medium"
 references = ["epic-distribution.md", "issue-flow.md"]
+
+[[entry]]
+id = 19
+type = "story"
+title = "Interrupted window of 2 hours; an approved asset ships at the path the host reads"
+description = "Live 2026-10-24 03:47 run: one dev-orchestrator build went 63 minutes between pushes, past the 1-hour interrupted window (a parallel run could have closed a live batch); and #9 was blocked because the host reads a plugin icon only from `assets/icon.png` (PNG) while the approved draft named `assets/cursor-cli.svg` and the files exception allowed only named paths. (a) The interrupted-draft and orphan windows are 2 hours (relay `pr_close` guard, docs). (b) The `files` exception allows an approved asset's own single files under `assets/`, at the path and format the host reads, stated in the plan and PR."
+verify = "`test/agent-write.test.ts` covers the 2-hour boundary; `npm run ci` passes; #9 is built with `assets/icon.png`."
+covers = []
+after = [18]
+hitl = false
+risk = "low"
+references = ["epic-distribution.md", "issue-flow.md"]

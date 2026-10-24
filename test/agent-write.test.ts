@@ -321,16 +321,17 @@ describe("agent-write", () => {
     expect(seen()).toEqual(["GET /pulls/21"]);
   });
 
-  it("PR_CLOSE: a draft updated less than 1 hour ago, or with no readable update time, is refused; one idle longer is closed", async () => {
+  it("PR_CLOSE: a draft updated less than 2 hours ago, or with no readable update time, is refused; one idle longer is closed", async () => {
     const cases: Array<[string, unknown, number]> = [
       ["just now", hoursAgo(0), 1],
       ["30 minutes", hoursAgo(0.5), 1],
       ["59 minutes", hoursAgo(0.98), 1],
+      ["1h59", hoursAgo(1.98), 1],
       ["future", hoursAgo(-1), 1],
       ["missing", undefined, 1],
       ["unreadable", "yesterday", 1],
       ["number", 5, 1],
-      ["1h01", hoursAgo(1.02), 0],
+      ["2h01", hoursAgo(2.02), 0],
       ["a day", hoursAgo(24), 0],
     ];
     for (const [name, updated_at, code] of cases) {
