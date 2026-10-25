@@ -3,7 +3,7 @@ title: "A changelog in the repository root, kept current by every change"
 type: 'feature'
 ticket: 9
 created: '2026-10-25'
-status: built
+status: done
 baseline_revision: 'd9753fbbdb7f1bbf8440d718f7fbabf54058347e'
 route: 'full'
 route_source: 'auto'
