@@ -4,6 +4,8 @@ What changed for people who use the plugin, newest first. Format: [Keep a Change
 
 ## Unreleased
 
+## 0.1.3 - 2026-10-25
+
 ### Added
 
 - This changelog. A release's GitHub notes are its section of this file.
