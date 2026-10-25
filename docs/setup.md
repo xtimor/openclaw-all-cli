@@ -279,6 +279,10 @@ Run `npm link openclaw` after every `npm install`, which removes the link. Witho
 
 The version in git is `0.0.0`. A release sets it from the tag `vX.Y.Z` (`scripts/release.sh`), so the tag is the single source. Do not bump it by hand. How to cut a release, run a dry run, and roll back: [Release](release.md).
 
+### Changelog
+
+[`CHANGELOG.md`](../CHANGELOG.md) lists what changed for users of the plugin, version by version. A change that alters what a user sees (behavior, setup or configuration, docs a user follows, a fixed issue) adds one line under `## Unreleased` in the same pull request; internal-only changes (CI, tests, tooling) add none. A release publishes its section as the GitHub release notes. The format, the checks, and how a release stamps the version: [Release](release.md#changelog).
+
 ### Checks (CI)
 
 `npm run ci` runs every check a pull request must pass (`scripts/ci-check.sh`, fail-fast, no Cursor login): the isolated Node and OpenClaw in `.spike/`, `npm ci`, typecheck, `npm test`, build, the package allowlist test (`test/package-contents.test.ts`, with the real `dist/`), `npm pack --dry-run`, and an install smoke check that installs the packed `.tgz` into a throwaway OpenClaw state and requires the plugin to be `loaded` with the `cursor-cli` backend. The smoke check never touches `.spike/state` or `~/.openclaw`. GitHub Actions (`.github/workflows/ci.yml`) runs the same script on every pull request and every push to `main`, with no secrets. Live tests (`npm run test:live`) are not part of it.

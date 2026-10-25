@@ -47,6 +47,7 @@ Early release. Cursor CLI only. Update with `openclaw plugins update openclaw-al
 ## Docs
 
 - [Setup](https://github.com/xtimor/openclaw-all-cli/blob/main/docs/setup.md): requirements, install, configuration, verification, troubleshooting.
+- [Changelog](https://github.com/xtimor/openclaw-all-cli/blob/main/CHANGELOG.md): what changed in each version, for users of the plugin.
 - [Release](https://github.com/xtimor/openclaw-all-cli/blob/main/docs/release.md): cut a release (on the owner's approval, or from a tag), dry run, first release, rollback, rotating the credential.
 - [Issues](https://github.com/xtimor/openclaw-all-cli/blob/main/docs/issues.md): file a bug or an idea (people and agents), the states, what happens when, security reports.
 - [Cursor provider](https://github.com/xtimor/openclaw-all-cli/blob/main/docs/providers/cursor.md): how `cursor-cli/<model>` runs and how it compares with `claude-cli`.

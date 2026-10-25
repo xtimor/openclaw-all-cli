@@ -1,0 +1,5 @@
+[workflow]
+# A change that alters what a user of the plugin sees adds its line under Unreleased in CHANGELOG.md (docs/release.md, "Changelog").
+persistent_facts = [
+  "Changelog rule: when this change alters what a user of the plugin sees (behavior, setup or configuration, docs a user follows, a fixed issue), add one plain-words line under `## Unreleased` in `CHANGELOG.md`, in the same change, with the issue link when there is one (format and examples: docs/release.md, section Changelog). Internal-only changes (CI, the agent flow, tests, tickets, plans, run logs, refactors) add none. Never stamp a version or release.",
+]
