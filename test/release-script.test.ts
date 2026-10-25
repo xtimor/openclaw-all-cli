@@ -46,6 +46,11 @@ esac
 `,
   gh: `#!/usr/bin/env bash
 echo "gh $* | token=\${NODE_AUTH_TOKEN:-}" >>"$STUB_LOG"
+# Keep the notes file's content: the script removes its work directory on exit.
+while [ $# -gt 0 ]; do
+  if [ "$1" = "--notes-file" ]; then cat "$2" >"$STUB_LOG.notes"; fi
+  shift
+done
 `,
   git: `#!/usr/bin/env bash
 echo "git $*" >>"$STUB_LOG"
@@ -76,6 +81,7 @@ exit 0
 
 let work: string;
 let stubBin: string;
+let failingNode: string;
 
 beforeAll(() => {
   work = mkdtempSync(join(tmpdir(), "release-script-"));
@@ -85,6 +91,19 @@ beforeAll(() => {
     writeFileSync(join(stubBin, name), STUBS[name]!);
     chmodSync(join(stubBin, name), 0o755);
   }
+  // A `node` that fails, to show the release notes step cannot fail a release; it logs what it could see.
+  failingNode = join(work, "failing-node");
+  mkdirSync(failingNode);
+  writeFileSync(
+    join(failingNode, "node"),
+    `#!/usr/bin/env bash
+echo "node $(basename "$1") $2" >>"$STUB_LOG"
+echo "node-env | gh=\${GH_TOKEN:-} oidc=\${ACTIONS_ID_TOKEN_REQUEST_TOKEN:-} token=\${NODE_AUTH_TOKEN:-}" >>"$STUB_LOG"
+echo "node: simulated failure" >&2
+exit 1
+`,
+  );
+  chmodSync(join(failingNode, "node"), 0o755);
   writeFileSync(join(work, "ci-check.sh"), STUBS["ci-check.sh"]!);
   chmodSync(join(work, "ci-check.sh"), 0o755);
 });
@@ -99,16 +118,20 @@ interface Outcome {
   summary: string;
   out: string[];
   packageJson: string;
+  /** What `gh release create --notes-file` was given; empty when the notes were generated. */
+  notes: string;
 }
 
 let counter = 0;
 
 /** Run the real script from a fresh project copy with the given env. */
-function release(env: Record<string, string>): Outcome {
+function release(env: Record<string, string>, changelog?: string): Outcome {
   const root = join(work, `case-${counter++}`);
   mkdirSync(join(root, "scripts"), { recursive: true });
   copyFileSync(join(ROOT, "scripts", "release.sh"), join(root, "scripts", "release.sh"));
   chmodSync(join(root, "scripts", "release.sh"), 0o755);
+  copyFileSync(join(ROOT, "scripts", "changelog.mjs"), join(root, "scripts", "changelog.mjs"));
+  if (changelog !== undefined) writeFileSync(join(root, "CHANGELOG.md"), changelog);
   writeFileSync(join(root, "package.json"), ORIGINAL_PACKAGE_JSON);
   const log = join(root, "calls.log");
   const summaryFile = join(root, "summary.md");
@@ -138,6 +161,7 @@ function release(env: Record<string, string>): Outcome {
     summary: existsSync(summaryFile) ? readFileSync(summaryFile, "utf8") : "",
     out: existsSync(outDir) ? readdirSync(outDir) : [],
     packageJson: readFileSync(join(root, "package.json"), "utf8"),
+    notes: existsSync(`${log}.notes`) ? readFileSync(`${log}.notes`, "utf8") : "",
   };
 }
 
@@ -449,6 +473,108 @@ describe("release.sh", () => {
       expect(called(o, "git ls-remote --tags --refs")).toEqual([]);
       const bad = release({ ...real, RELEASE_TAG: "v1.0.1", RELEASE_BUMP: "huge" });
       expect(bad.status, bad.stderr).toBe(0);
+    });
+  });
+
+  describe("RELEASE_NOTES (CHANGELOG.md feeds the GitHub release)", () => {
+    const changelog = [
+      "# Changelog",
+      "",
+      "## Unreleased",
+      "",
+      "### Added",
+      "",
+      "- Pending line.",
+      "",
+      "## 1.0.1 - 2026-02-02",
+      "",
+      "### Fixed",
+      "",
+      "- Named line.",
+      "",
+    ].join("\n");
+    const emptyUnreleased = "# Changelog\n\n## Unreleased\n\n### Added\n\n## 1.0.0 - 2026-01-01\n\n- Old.\n";
+    const real = { RELEASE_TAG: "v1.0.1", DRY_RUN: "false", RELEASE_EVENT: "workflow_dispatch", STUB_PACKAGE: "exists", STUB_TAG_MISSING: "1", STUB_HEAD: "ccc" };
+
+    it("the section named for the version is the notes, with the sha256 line and no generated notes", () => {
+      const o = release(real, changelog);
+      expect(o.status, o.stderr).toBe(0);
+      const [gh] = called(o, "gh release create");
+      expect(gh).toContain("--notes-file");
+      expect(gh).not.toContain("--generate-notes");
+      expect(o.notes).toMatch(/^### Fixed\n\n- Named line\.\n\nsha256: [0-9a-f]{64} \(openclaw-all-cli-stub\.tgz\)\n$/);
+      expect(o.notes).not.toContain("Pending line");
+      expect(o.stdout).toContain("release notes: CHANGELOG.md, section 1.0.1");
+      expect(o.summary).toContain("Release notes: CHANGELOG.md, section 1.0.1");
+      expect(o.summary).not.toContain("still lists");
+    });
+
+    it("an empty tag computes the version and finds its section", () => {
+      const o = release({ ...real, RELEASE_TAG: "", STUB_REMOTE_TAGS: "v1.0.0" }, changelog);
+      expect(o.status, o.stderr).toBe(0);
+      expect(called(o, "gh release create")[0]).toMatch(/^gh release create v1\.0\.1 /);
+      expect(o.notes).toContain("- Named line.");
+    });
+
+    it("with no section for the version, Unreleased is the notes and the summary asks for a stamp", () => {
+      const o = release({ ...real, RELEASE_TAG: "v1.0.2" }, changelog);
+      expect(o.status, o.stderr).toBe(0);
+      expect(o.notes).toMatch(/^### Added\n\n- Pending line\.\n\nsha256: /);
+      expect(o.stdout).toContain("release notes: CHANGELOG.md, Unreleased");
+      expect(o.stdout).toContain("stamp them as 1.0.2");
+      expect(o.summary).toContain("still lists these lines under Unreleased");
+    });
+
+    it("an empty Unreleased, or no changelog, or no lines at all: generated notes and the release still runs", () => {
+      const cases: Array<[string, string | undefined]> = [
+        ["empty Unreleased", emptyUnreleased],
+        ["no file", undefined],
+        ["an empty file", ""],
+        ["not a changelog", "just text\n"],
+      ];
+      for (const [name, text] of cases) {
+        const o = release({ ...real, RELEASE_TAG: "v1.0.2" }, text);
+        expect(o.status, `${name}: ${o.stderr}`).toBe(0);
+        const [gh] = called(o, "gh release create");
+        expect(gh, name).toContain("--generate-notes");
+        expect(gh, name).toMatch(/--notes sha256: [0-9a-f]{64}/);
+        expect(gh, name).not.toContain("--notes-file");
+        expect(o.notes, name).toBe("");
+        expect(o.stdout, name).toContain("release notes: generated by GitHub");
+        expect(o.summary, name).toContain("Release notes: generated by GitHub");
+      }
+    });
+
+    it("a first release, a prerelease, and a tag push use the changelog the same way", () => {
+      const first = release({ ...real, STUB_PACKAGE: "missing", NODE_AUTH_TOKEN: SECRET }, changelog);
+      expect(first.status, first.stderr).toBe(0);
+      expect(first.notes).toContain("- Named line.");
+      const rc = release({ ...real, RELEASE_TAG: "v1.1.0-rc.1" }, changelog);
+      expect(rc.status, rc.stderr).toBe(0);
+      expect(rc.notes).toContain("- Pending line.");
+      expect(called(rc, "gh release create")[0]).toContain("--prerelease");
+      const push = release({ ...real, RELEASE_EVENT: "push", STUB_TAG_MISSING: "0", STUB_HEAD: "aaa" }, changelog);
+      expect(push.status, push.stderr).toBe(0);
+      expect(called(push, "gh release create")[0]).toContain("--verify-tag");
+      expect(push.notes).toContain("- Named line.");
+    });
+
+    it("a dry run prints the notes it would use and creates no release", () => {
+      const o = release({ RELEASE_TAG: "v1.0.2", DRY_RUN: "true" }, changelog);
+      expect(o.status, o.stderr).toBe(0);
+      expect(o.stdout).toContain("release notes: CHANGELOG.md, Unreleased");
+      expect(o.stdout).toContain("- Pending line.");
+      expect(called(o, "gh ")).toEqual([]);
+    });
+
+    it("a node that fails never fails the release, and the changelog step gets no job credential", () => {
+      const o = release({ ...real, RELEASE_TAG: "v1.0.2", NODE_AUTH_TOKEN: SECRET, PATH: `${failingNode}:${stubBin}:${process.env.PATH ?? ""}` }, changelog);
+      expect(o.status, o.stderr).toBe(0);
+      expect(called(o, "gh release create")[0]).toContain("--generate-notes");
+      expect(o.stdout).toContain("release notes: generated by GitHub");
+      expect(called(o, "node ")).toEqual(["node changelog.mjs section"]);
+      expect(called(o, "node-env")).toEqual(["node-env | gh= oidc= token=XXXXX-XXXXX-XXXXX-XXXXX"]);
+      expect(o.calls.join("\n")).not.toContain(SECRET);
     });
   });
 
