@@ -1,0 +1,47 @@
+# Changelog
+
+What changed for people who use the plugin, newest first. Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). How it is kept and used by releases: [Release](https://github.com/xtimor/openclaw-all-cli/blob/main/docs/release.md#changelog).
+
+## Unreleased
+
+### Added
+
+- This changelog. A release's GitHub notes are its section of this file.
+
+## 0.1.2 - 2026-10-25
+
+### Added
+
+- The Cursor CLI provider is in the Control UI "Connect provider" list (and `openclaw models auth login --provider cursor-cli`) with two methods: use the `cursor-agent` login, or enter a `CURSOR_API_KEY`, which is stored in the plugin config for the Cursor process only. ([#10](https://github.com/xtimor/openclaw-all-cli/issues/10))
+- OpenClaw's Effort control (`/think`, the effort picker) works for Cursor models whose ID has an effort setting: the plugin runs the listed variant of the same model that matches the level. ([#8](https://github.com/xtimor/openclaw-all-cli/issues/8))
+- A plugin icon for the provider card and the model picker. ([#9](https://github.com/xtimor/openclaw-all-cli/issues/9))
+- Bug and idea forms on GitHub, a guide to reporting them ([Issues](https://github.com/xtimor/openclaw-all-cli/blob/main/docs/issues.md)), and a security policy.
+
+### Changed
+
+- Setup: with an explicit `agents.defaults.modelPolicy.allow`, add `cursor-cli/*` to it, or the Cursor models are refused and missing from `/model`.
+- Docs: the first turn after a Gateway start can restart `cursor-agent` once more, because OpenClaw is still loading the model list. Why, and the setting that avoids it, are in the [Cursor provider](https://github.com/xtimor/openclaw-all-cli/blob/main/docs/providers/cursor.md) known limits.
+- Docs: a webchat that draws a reply twice is OpenClaw's behavior, not the plugin's; the findings are in the Cursor provider known limits. ([#13](https://github.com/xtimor/openclaw-all-cli/issues/13))
+
+### Fixed
+
+- `cursor-agent` is no longer restarted on every turn. A follow-up reply starts in about 2 seconds in the plugin instead of about 5.5 seconds, and through a Gateway in 5 to 7.6 seconds instead of 9 seconds. ([#11](https://github.com/xtimor/openclaw-all-cli/issues/11))
+- Models no longer all show a 128k context window. A window is shown where Cursor states it (the `context=` value of the model ID, or a known model family); other models keep OpenClaw's default. ([#12](https://github.com/xtimor/openclaw-all-cli/issues/12))
+- The Gateway error `cli backend already registered: cursor-cli (cursor-cli)` is explained in Setup: the older `@jeehou/openclaw-cursor-cli` plugin is still installed and must be uninstalled. ([#14](https://github.com/xtimor/openclaw-all-cli/issues/14))
+
+## 0.1.1 - 2026-10-22
+
+### Changed
+
+- Setup installs the plugin from npm: `openclaw plugins install openclaw-all-cli --accept-capabilities --force`, and `openclaw plugins update openclaw-all-cli` updates it. Building from source moved to "Build from source".
+- Docs: the Gateway start uses `NO_COLOR=1` so its log can be searched, a first reply in a new workspace is OpenClaw's greeting, and the `plugin provenance-invalid` warning is harmless for the npm install.
+
+## 0.1.0 - 2026-10-22
+
+### Added
+
+- First release, on npm as `openclaw-all-cli` with provenance, and on GitHub with the tarball's sha256. It runs Cursor CLI (`cursor-agent`) as models `cursor-cli/<model>`.
+- The account's Cursor models are listed in `/model` and `openclaw models list`. Sign in with `cursor-agent login` or a `CURSOR_API_KEY`.
+- Replies stream as text, thinking, and tool progress. A chat continues across turns and Gateway restarts, and a chat carries over when the model is switched from or to an API model.
+- OpenClaw's tools, skills, system prompt, and `exec` are what the model uses; Cursor's own shell and file-writing tools are off, and approvals go through OpenClaw. Images work.
+- Token usage per turn with a `CURSOR_API_KEY`. Each agent gets its own Cursor config and chat store, and Cursor processes are stopped with the Gateway.
