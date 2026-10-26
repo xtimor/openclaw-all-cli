@@ -1070,7 +1070,7 @@ describe("provider catalog entry", () => {
     expect(catalog.order).toBe("late");
     const result = await catalog.run({ config, env: fakeEnv(), providerIds: ["cursor-cli"] });
     expect(ids(result)).toEqual(["auto", "fake-fast", "fake-slow", "twin", "twin-high"]);
-    expect(result?.provider.models[0]).toMatchObject({ id: "auto", name: "Auto", reasoning: false, input: ["text", "image"] });
+    expect(result?.provider.models[0]).toMatchObject({ id: "auto", name: "OAC / Auto", reasoning: false, input: ["text", "image"] });
     // A model whose Cursor ID carries an effort parameter is published as a reasoning model.
     expect(result?.provider.models.map((model) => [model.id, model.reasoning])).toEqual([
       ["auto", false],

@@ -45,19 +45,23 @@ describe("model catalog", () => {
     );
     const rows = await catalog.list(params());
     expect(rows).toEqual([
-      { id: "auto", name: "Auto" },
-      { id: "big", name: "Big", contextWindow: 1_000_000 },
+      { id: "auto", name: "OAC / Auto" },
+      { id: "big", name: "OAC / Big", contextWindow: 1_000_000 },
     ]);
     expect("contextWindow" in rows[0]!).toBe(false);
   });
 
-  it("maps the adapter's models onto rows named by the model name", async () => {
+  it("maps the adapter's models onto rows named with the OAC prefix and the model name as id", async () => {
     const list = vi.fn(async () => MODELS);
     const catalog = createModelCatalog(makeAdapter(list));
     await expect(catalog.list(params())).resolves.toEqual([
-      { id: "auto", name: "Auto" },
-      { id: "big", name: "Big" },
+      { id: "auto", name: "OAC / Auto" },
+      { id: "big", name: "OAC / Big" },
     ]);
+    const rows = await catalog.list(params({ KEY: "b" }));
+    expect(rows.length).toBeGreaterThan(0);
+    for (const row of rows) expect(row.name.startsWith("OAC / ")).toBe(true);
+    expect(rows.map((row) => row.id)).toEqual(["auto", "big"]);
     expect(list).toHaveBeenCalledWith({
       command: "acme",
       args: ["serve"],
@@ -68,7 +72,7 @@ describe("model catalog", () => {
   });
 
   it("derives the default row from the adapter's default model", () => {
-    expect(defaultCatalogRow(makeAdapter(async () => []))).toEqual({ id: "auto", name: "auto" });
+    expect(defaultCatalogRow(makeAdapter(async () => []))).toEqual({ id: "auto", name: "OAC / auto" });
   });
 
   it("caches a listing, and lists again after the TTL or when asked to refresh", async () => {
@@ -113,7 +117,7 @@ describe("model catalog", () => {
       throw new CliError({ code: "cli_not_found", message: "no acme" });
     });
     const catalog = createModelCatalog(makeAdapter(list), { warn });
-    await expect(catalog.list(params())).resolves.toEqual([{ id: "auto", name: "auto" }]);
+    await expect(catalog.list(params())).resolves.toEqual([{ id: "auto", name: "OAC / auto" }]);
     expect(warn).toHaveBeenCalledTimes(1);
     expect(warn.mock.calls[0]?.[0]).toContain("no acme");
     expect(warn.mock.calls[0]?.[0]).toContain("Acme");
@@ -138,7 +142,7 @@ describe("model catalog", () => {
   it("treats an empty listing as a failure", async () => {
     const warn = vi.fn();
     const catalog = createModelCatalog(makeAdapter(async () => []), { warn });
-    await expect(catalog.list(params())).resolves.toEqual([{ id: "auto", name: "auto" }]);
+    await expect(catalog.list(params())).resolves.toEqual([{ id: "auto", name: "OAC / auto" }]);
     expect(warn).toHaveBeenCalledTimes(1);
   });
 
@@ -154,8 +158,8 @@ describe("model catalog", () => {
     await expect(first).rejects.toThrow();
     release(MODELS);
     await expect(second).resolves.toEqual([
-      { id: "auto", name: "Auto" },
-      { id: "big", name: "Big" },
+      { id: "auto", name: "OAC / Auto" },
+      { id: "big", name: "OAC / Big" },
     ]);
     expect(list).toHaveBeenCalledTimes(1);
     // The listing's own signal (the unload's), never a caller's.
@@ -289,7 +293,7 @@ describe("listing process lock and unload (D22, AD-14)", () => {
     expect(state.aborted).toBe(true);
     expect(state.exited).toBe(true);
     // As a failed listing: the default row, and no failure to log (the unload stopped it).
-    await expect(listing).resolves.toEqual([{ id: "auto", name: "auto" }]);
+    await expect(listing).resolves.toEqual([{ id: "auto", name: "OAC / auto" }]);
     expect(warn).not.toHaveBeenCalled();
   });
 
