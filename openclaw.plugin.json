@@ -31,7 +31,7 @@
       "appGuidedAuth": "oauth",
       "assistantPriority": -10,
       "groupId": "cursor-cli",
-      "groupLabel": "Cursor CLI",
+      "groupLabel": "OAC / Cursor-CLI",
       "groupHint": "cursor-agent login or API key"
     },
     {
@@ -44,7 +44,7 @@
       "appGuidedSecret": true,
       "assistantPriority": 10,
       "groupId": "cursor-cli",
-      "groupLabel": "Cursor CLI",
+      "groupLabel": "OAC / Cursor-CLI",
       "groupHint": "cursor-agent login or API key"
     }
   ],
@@ -87,7 +87,7 @@
   },
   "uiHints": {
     "cursor-cli": {
-      "label": "Cursor CLI",
+      "label": "OAC / Cursor-CLI",
       "help": "Settings for the cursor-cli/<model> models, served by the local cursor-agent."
     },
     "cursor-cli.command": {

@@ -6,6 +6,7 @@ What changed for people who use the plugin, newest first. Format: [Keep a Change
 
 ### Changed
 
+- The provider shows as "OAC / Cursor-CLI" (provider list, "Connect provider" group, plugin settings), no longer the same "Cursor CLI" as the separate `@jeehou/openclaw-cursor-cli` plugin. The provider ID `cursor-cli` and model refs such as `cursor-cli/auto` are unchanged. ([#36](https://github.com/xtimor/openclaw-all-cli/issues/36))
 - Docs: the plugin icon shows on the Plugins page, in the command palette, in channel setup, and on the chat install card, but never in the model picker, on provider cards, or in the "Connect provider" list: OpenClaw draws those from brand artwork bundled with its Control UI, keyed by provider ID, and `cursor-cli` has none. This corrects the 0.1.2 note about the icon. Details and the OpenClaw code that decides it are in the [Cursor provider](https://github.com/xtimor/openclaw-all-cli/blob/main/docs/providers/cursor.md) docs. ([#35](https://github.com/xtimor/openclaw-all-cli/issues/35))
 
 ## 0.1.3 - 2026-10-25

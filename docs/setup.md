@@ -98,7 +98,7 @@ It prints `Auth profile: cursor-cli:manual (cursor-cli/api_key)`; remove it with
 
 ### Sign in from the Control UI or the CLI
 
-After [step 2](#2-install-the-plugin) (and a Gateway start), the provider is in the Control UI list: Models, **Connect provider**, group **Cursor CLI**. It has two methods (the same two work from `openclaw models auth login --provider cursor-cli --method <id>`):
+After [step 2](#2-install-the-plugin) (and a Gateway start), the provider is in the Control UI list: Models, **Connect provider**, group **OAC / Cursor-CLI**. It has two methods (the same two work from `openclaw models auth login --provider cursor-cli --method <id>`):
 
 | Method (ID) | What it does |
 | --- | --- |

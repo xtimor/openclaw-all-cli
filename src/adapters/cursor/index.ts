@@ -215,6 +215,8 @@ function modeFor(executionMode: ExecutionMode, hostShell: boolean): string {
 }
 
 const DISPLAY_NAME = "Cursor CLI";
+// Distinct from the older `@jeehou/openclaw-cursor-cli` plugin, which is also listed as "Cursor CLI".
+const PROVIDER_LABEL = "OAC / Cursor-CLI";
 
 function open(params: OpenParams): Promise<CliSession> {
   const executionMode = params.executionMode ?? "agent";
@@ -325,6 +327,7 @@ const usageReader = createCursorUsageReader();
 export const cursorAdapter: CliAdapter = {
   id: "cursor",
   displayName: DISPLAY_NAME,
+  providerLabel: PROVIDER_LABEL,
   command: "cursor-agent",
   launchArgs: ["acp"],
   defaultModel: "cursor-cli/auto",

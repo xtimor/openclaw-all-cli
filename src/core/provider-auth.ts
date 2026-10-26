@@ -157,7 +157,7 @@ export function createAuthMethods(adapter: CliAdapter, pluginId: string): AuthMe
 export function createAuthProvider(adapter: CliAdapter, pluginId: string) {
   return {
     id: backendIdFor(adapter),
-    label: adapter.displayName,
+    label: adapter.providerLabel ?? adapter.displayName,
     docsPath: "/providers/models",
     auth: createAuthMethods(adapter, pluginId),
   };

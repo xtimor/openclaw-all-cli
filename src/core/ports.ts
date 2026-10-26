@@ -360,6 +360,8 @@ export interface CliAdapter {
   /** Short CLI name, for example `acme`. The backend ID is `<id>-cli`. */
   readonly id: string;
   readonly displayName: string;
+  /** Provider name in OpenClaw's lists (provider label, Connect group). Defaults to `displayName`. */
+  readonly providerLabel?: string;
   /** Default binary name. */
   readonly command: string;
   /** Arguments that start the CLI in its session mode, for example `["acp"]`. */

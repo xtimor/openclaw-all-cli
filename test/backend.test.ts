@@ -967,6 +967,11 @@ describe("synthetic auth provider entry", () => {
     expect((provider as unknown as { id: string }[]).map((p) => p.id)).toEqual(ADAPTERS.map(backendIdFor));
   });
 
+  it("labels the provider OAC / Cursor-CLI and keeps its ID", () => {
+    const row = provider as unknown as { id: string; label: string }[];
+    expect(row.map((p) => [p.id, p.label])).toEqual([["cursor-cli", "OAC / Cursor-CLI"]]);
+  });
+
   it("returns the native-auth marker when the CLI login works", async () => {
     await expect(
       entry.prepareSyntheticAuth({ provider: "cursor-cli", config: config(FAKE_CURSOR_AGENT), env: fakeEnv() }),
