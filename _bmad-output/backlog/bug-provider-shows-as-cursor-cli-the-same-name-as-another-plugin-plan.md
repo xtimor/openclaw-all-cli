@@ -3,7 +3,7 @@ title: 'Provider shows as Cursor-CLI, the same name as another plugin'
 type: 'bugfix'
 ticket: '11'
 created: '2026-10-26'
-status: 'built'
+status: done
 baseline_revision: '2b1043535e94831c2b2848bae8ac4b16280647df'
 route: 'oneshot'
 route_source: 'auto'
