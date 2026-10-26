@@ -3,7 +3,7 @@ title: 'Show Cursor models as OAC / name in the model picker'
 type: 'bugfix'
 ticket: '12'
 created: '2026-10-26'
-status: built
+status: done
 baseline_revision: '7db770ccc976e3f5ea2de9f1f4586420cd81a164'
 route: 'oneshot'
 route_source: 'auto'
