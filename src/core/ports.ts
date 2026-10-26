@@ -7,13 +7,21 @@
 // Events (AD-3)
 // ---------------------------------------------------------------------------
 
-/** Token counts for one turn. Only the fields a CLI reports are set. */
+/**
+ * Token counts for one turn. Only the fields a CLI reports are set. The counts are sums over every
+ * model request of the turn, as the CLI reports them; they are not a reading of the context size.
+ */
 export type NormalizedUsage = {
   input?: number;
   output?: number;
   cacheRead?: number;
   cacheWrite?: number;
   total?: number;
+  /**
+   * Set by the core when the counts cannot be the turn's context size (they exceed the session's
+   * `contextCeiling`): the host then keeps no context reading from this turn. Adapters leave it unset.
+   */
+  contextUnknown?: true;
 };
 
 /**
@@ -283,6 +291,13 @@ export interface CliSession {
   readonly alive: boolean;
   /** What the CLI reported at open. Absent: the session reports nothing and is not checked. */
   readonly capabilities?: ReadonlySet<CliCapability>;
+  /**
+   * The most tokens one model request of this session can hold, when the adapter knows it: the
+   * model's context window, or a ceiling the adapter picks for a model without one. A turn's usage
+   * whose context reading exceeds it is a sum over several requests, not a context size.
+   * Absent: unknown, usage is passed on as reported.
+   */
+  readonly contextCeiling?: number;
   /**
    * Sends one prompt and yields the turn's events. The last event is `result` or `error`. The images
    * follow the text in the CLI's protocol; an empty text sends no text.

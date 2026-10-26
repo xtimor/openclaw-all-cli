@@ -6,7 +6,7 @@ import { createLiveEntry, liveEntries, type LiveEntry, type LiveEntryDeps, type 
 import { listToolNames, type McpProxy } from "./mcp-proxy.ts";
 import { readTurnTarget, type TurnTarget } from "./mcp-target.ts";
 import { requiredCapabilities } from "./manifest.ts";
-import { readTurnUsage } from "./usage.ts";
+import { boundTurnUsage, readTurnUsage } from "./usage.ts";
 import { DeliveredPrompts, deliveredFileFor, planDelivery } from "./system-prompt.ts";
 import { ProcessPool, type TurnSlot } from "./pool.ts";
 import { CONTINUITY_NOTE, HOST_SHELL_TOOL, composePrompt, modeOf, splitHostShell } from "./turn-prompt.ts";
@@ -421,6 +421,8 @@ export function createExecute(adapter: CliAdapter, options: ExecuteOptions): Cli
           warn,
         );
       }
+      // Either source sums the turn's requests; a sum no request could hold is not a context size (issue #40).
+      if (event.kind === "result" && summary.usage) summary.usage = boundTurnUsage(summary.usage, active.session.contextCeiling);
       yield toRecord(event satisfies NormalizedEvent, summary);
     }
     ctx.abortSignal?.throwIfAborted();

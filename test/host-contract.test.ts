@@ -5,7 +5,10 @@ import { join } from "node:path";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 import { cursorAdapter } from "../src/adapters/cursor/index.ts";
 import { buildCliBackend } from "../src/core/backend.ts";
+import { parseJsonlEvent, toRecord } from "../src/core/events.ts";
 import { liveEntries } from "../src/core/live-entry.ts";
+import type { NormalizedUsage } from "../src/core/ports.ts";
+import { boundTurnUsage } from "../src/core/usage.ts";
 import { readTurnTarget, splitMcpArgs } from "../src/core/mcp-target.ts";
 import { ProcessPool } from "../src/core/pool.ts";
 import type { LiveSessionCapability } from "../src/core/sdk-types.ts";
@@ -48,6 +51,7 @@ describe.skipIf(!hostAvailable)("OpenClaw host contracts the backend relies on",
     };
     resolveCliMcpToolOwnership: (run: Json, options: Json) => { hostOwnedTools?: string[] };
     prepareModelRunCapabilities: (catalogs: [Json[] | undefined, Json[]], run: [string, string, string]) => { modelHasVision: boolean };
+    deriveSessionTotalTokens: (params: { lastCallUsage?: Json; usage?: Json; promptTokens?: number }) => number | undefined;
   };
   let registered: { backend: unknown; pluginId: string } | undefined;
   let registry: { cliBackends: unknown[] };
@@ -77,6 +81,7 @@ describe.skipIf(!hostAvailable)("OpenClaw host contracts the backend relies on",
       // Private to the host's chunk: its own body, run against the chunk's own imports.
       resolveCliMcpToolOwnership: await hostFunction("resolveCliMcpToolOwnership"),
       prepareModelRunCapabilities: await hostExport("prepareModelRunCapabilities"),
+      deriveSessionTotalTokens: await hostExport("deriveSessionTotalTokens"),
     };
     // The host finds a CLI backend in the active plugin registry; register the real one, like the plugin's load does.
     registry = requireActivePluginRegistry();
@@ -235,6 +240,27 @@ describe.skipIf(!hostAvailable)("OpenClaw host contracts the backend relies on",
       expect(vision(undefined), failure).toBe(false);
       expect(vision([other, auto]), failure).toBe(true);
       expect(vision([other, { ...auto, input: ["text"] }]), failure).toBe(false);
+    });
+  });
+
+  describe("the context reading the host takes from a turn's usage (issue #40)", () => {
+    // What the plugin's result record hands the host; the CLI runner passes it on as the run's `lastCallUsage`.
+    const hostUsage = (usage: NormalizedUsage) => {
+      const parsed = parseJsonlEvent(JSON.stringify(toRecord({ kind: "result", text: "ok", stopReason: "end_turn" }, { usage }))) as { usage: Json };
+      return parsed.usage;
+    };
+    const failure =
+      "OpenClaw no longer reads the session's context size (the Control UI tile, cli_budget compaction) from a CLI turn's usage the way issue #40 assumes: " +
+      "`input + cacheRead + cacheWrite`, and nothing when `contextUsage.state` is `unavailable`. Recheck boundTurnUsage and docs/providers/cursor.md.";
+
+    it("reads the prompt buckets as the context size, and none from usage marked unavailable", () => {
+      const summed = { input: 100_000, output: 86_800, cacheRead: 5_400_000, cacheWrite: 0, total: 5_586_800 };
+      // Unbounded, the summed turn becomes a 5.5M context reading: the bug.
+      expect(host.deriveSessionTotalTokens({ lastCallUsage: hostUsage(summed), usage: hostUsage(summed) }), failure).toBe(5_500_000);
+      const bounded = hostUsage(boundTurnUsage(summed, 256_000));
+      expect(host.deriveSessionTotalTokens({ lastCallUsage: bounded, usage: bounded }), failure).toBeUndefined();
+      const plain = hostUsage(boundTurnUsage({ input: 5_074, output: 31, cacheRead: 10_240, cacheWrite: 0, total: 15_345 }, 256_000));
+      expect(host.deriveSessionTotalTokens({ lastCallUsage: plain, usage: plain }), failure).toBe(15_314);
     });
   });
 

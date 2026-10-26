@@ -20,6 +20,7 @@ import {
   type CliCapability,
   type CliSession,
   type NormalizedEvent,
+  type NormalizedUsage,
   type OpenParams,
   type PermissionDecision,
   type PermissionRequest,
@@ -58,6 +59,7 @@ class FakeSession implements CliSession {
   alive = true;
   /** What the CLI reported at open; absent means it reports nothing. */
   capabilities?: ReadonlySet<CliCapability>;
+  contextCeiling?: number;
   cancelled = 0;
   closed = 0;
   prompts: string[] = [];
@@ -2605,6 +2607,52 @@ describe("createExecute usage port", () => {
     };
     const second = await run(createExecute(thrown.adapter, { home: HOME }), makeCtx());
     expect(resultOf(second)).toMatchObject({ kind: "result", text: "echo:hi" });
+  });
+
+  describe("against the session's context ceiling (issue #40)", () => {
+    const SUMMED = { input: 100_000, output: 86_800, cacheRead: 5_400_000, cacheWrite: 0, total: 5_586_800 };
+    const PLAIN = { input: 5_074, output: 31, cacheRead: 10_240, cacheWrite: 0, total: 15_345 };
+    const withCeiling = (script: Script, ceiling: number | undefined) => {
+      const made = makeAdapter(script);
+      const open = made.adapter.open;
+      made.adapter.open = async (params) => {
+        const session = (await open(params)) as FakeSession;
+        if (ceiling !== undefined) session.contextCeiling = ceiling;
+        return session;
+      };
+      return made;
+    };
+    const reporting = (usage: NormalizedUsage): Script =>
+      async function* (prompt) {
+        yield { kind: "usage", usage };
+        yield { kind: "result", text: `echo:${prompt}`, stopReason: "end_turn" };
+      };
+
+    it("passes plausible usage of either source on unchanged", async () => {
+      const ledger = withCeiling(noUsageTurn, 256_000);
+      ledger.adapter.readUsage = async () => ({ usage: PLAIN });
+      expect(resultOf(await run(createExecute(ledger.adapter, { home: HOME }), makeCtx()))).toEqual({ kind: "result", text: "echo:hi", sessionId: "native-1", usage: PLAIN });
+      const acp = withCeiling(reporting({ input: 3, output: 4, total: 7 }), 256_000);
+      expect(resultOf(await run(createExecute(acp.adapter, { home: HOME }), makeCtx()))).toMatchObject({ usage: { input: 3, output: 4, total: 7 } });
+      expect((resultOf(await run(createExecute(acp.adapter, { home: HOME }), makeCtx())) as { usage: object }).usage).not.toHaveProperty("contextUsage");
+    });
+
+    it("tells the host a summed usage of either source is no context size, keeping the counts", async () => {
+      const expected = { input: 100_000, output: 86_800, cacheRead: 5_400_000, cacheWrite: 0, contextUsage: { state: "unavailable" } };
+      const ledger = withCeiling(noUsageTurn, 256_000);
+      ledger.adapter.readUsage = async () => ({ usage: SUMMED });
+      const fromLedger = resultOf(await run(createExecute(ledger.adapter, { home: HOME }), makeCtx())) as { usage: object };
+      expect(fromLedger.usage).toEqual(expected);
+      const acp = withCeiling(reporting({ input: 100_000, output: 86_800, total: 5_600_000 }), 256_000);
+      const fromAcp = resultOf(await run(createExecute(acp.adapter, { home: HOME }), makeCtx())) as { usage: object };
+      expect(fromAcp.usage).toEqual({ input: 100_000, output: 86_800, contextUsage: { state: "unavailable" } });
+    });
+
+    it("passes usage on as reported when the session has no ceiling", async () => {
+      const ledger = withCeiling(noUsageTurn, undefined);
+      ledger.adapter.readUsage = async () => ({ usage: SUMMED });
+      expect((resultOf(await run(createExecute(ledger.adapter, { home: HOME }), makeCtx())) as { usage: object }).usage).toEqual(SUMMED);
+    });
   });
 
   it("ends the wait at once when the turn is aborted", async () => {

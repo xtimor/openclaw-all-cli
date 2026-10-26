@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { buildCursorCatalog, resolveCursorModel, selectCursorModel } from "./models.ts";
+import { buildCursorCatalog, cursorContextCeiling, resolveCursorModel, selectCursorModel } from "./models.ts";
 
 // Shaped like the `session/new` result of cursor-agent 2026.10.16.
 const REAL = [
@@ -235,5 +235,24 @@ describe("selectCursorModel with a thinking level", () => {
     for (const level of ["off", "minimal", "low", "medium", "high", "xhigh", "adaptive", "max", "weird"]) {
       expect(LISTING.map((entry) => entry.id)).toContain(selectCursorModel("x", LISTING, level));
     }
+  });
+});
+
+describe("cursorContextCeiling (issue #40)", () => {
+  it("is the model's own window", () => {
+    expect(cursorContextCeiling("grok-4.7[context=256k,reasoning_effort=high,fast=true]", REAL)).toBe(256_000);
+    expect(cursorContextCeiling("claude-opus-5-5[context=300k,effort=medium,fast=false]", REAL)).toBe(300_000);
+  });
+
+  it("is the largest listed window for Auto, a model without a window, or an unnamed model", () => {
+    expect(cursorContextCeiling("default[]", REAL)).toBe(300_000);
+    expect(cursorContextCeiling("composer-2.5[fast=true]", REAL)).toBe(300_000);
+    expect(cursorContextCeiling(undefined, REAL)).toBe(300_000);
+    expect(cursorContextCeiling("default[]", [...REAL, { id: "grok-4.7[context=1m]", name: "grok-4.7" }])).toBe(1_000_000);
+  });
+
+  it("is none when no listed model has a window", () => {
+    expect(cursorContextCeiling("default[]", [{ id: "default[]", name: "Auto" }, { id: "composer-2.5[fast=true]", name: "composer-2.5" }])).toBeUndefined();
+    expect(cursorContextCeiling("default[]", [])).toBeUndefined();
   });
 });

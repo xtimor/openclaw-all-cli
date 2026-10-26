@@ -11,6 +11,10 @@ What changed for people who use the plugin, newest first. Format: [Keep a Change
 - Docs: with only the `cursor-agent` login, the Control UI provider card reads "Not configured" with a Connect button although every model works. OpenClaw 2026.10.3 builds that card from saved profiles and config or env keys only, and honors the plugin's declared synthetic auth only for its own bundled plugins, so the plugin cannot fix it without writing a placeholder key (it does not). Reported upstream as [openclaw/openclaw#184700](https://github.com/openclaw/openclaw/issues/184700); how to check the login meanwhile is in [Setup](https://github.com/xtimor/openclaw-all-cli/blob/main/docs/setup.md). ([#39](https://github.com/xtimor/openclaw-all-cli/issues/39))
 - Docs: the plugin icon shows on the Plugins page, in the command palette, in channel setup, and on the chat install card, but never in the model picker, on provider cards, or in the "Connect provider" list: OpenClaw draws those from brand artwork bundled with its Control UI, keyed by provider ID, and `cursor-cli` has none. This corrects the 0.1.2 note about the icon. Details and the OpenClaw code that decides it are in the [Cursor provider](https://github.com/xtimor/openclaw-all-cli/blob/main/docs/providers/cursor.md) docs. ([#35](https://github.com/xtimor/openclaw-all-cli/issues/35))
 
+### Fixed
+
+- The Control UI context tile no longer shows a Cursor turn far above the model's context window (such as 5.6M / 256k after a turn with tool calls). Cursor sums the tokens of every model request in a turn, so OpenClaw read those sums as the context size; when they are more than the window, the plugin now tells OpenClaw the turn's context size is unknown and leaves out the total. The tile then keeps the earlier reading (shown with `~`), and the input, output, and cache counts stay as Cursor reports them. What the numbers mean is in the [Cursor provider](https://github.com/xtimor/openclaw-all-cli/blob/main/docs/providers/cursor.md#usage) docs. ([#40](https://github.com/xtimor/openclaw-all-cli/issues/40))
+
 ## 0.1.3 - 2026-10-25
 
 ### Added

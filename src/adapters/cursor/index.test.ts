@@ -167,6 +167,14 @@ describe("cursor adapter", () => {
     expect(await replyOf(session)).toMatchObject({ kind: "result" });
   });
 
+  it("gives the session the context ceiling of the model it runs (issue #40)", async () => {
+    // The fake lists one window, `fake-slow[context=1m,...]`: its own for that row, the largest for the others.
+    expect((await openOn("fake-slow")).contextCeiling).toBe(1_000_000);
+    expect((await openOn("fake-fast")).contextCeiling).toBe(1_000_000);
+    expect((await openOn("auto")).contextCeiling).toBe(1_000_000);
+    expect((await openOn("auto", { FAKE_CURSOR_NO_MODELS: "1" })).contextCeiling).toBeUndefined();
+  });
+
   describe("listModels", () => {
     const list = (env: Record<string, string> = {}, extra: { command?: string; timeoutMs?: number } = {}) =>
       cursorAdapter.listModels({

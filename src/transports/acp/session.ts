@@ -82,6 +82,11 @@ export type AcpSessionOptions = {
    * `undefined` when the agent has no such model. Wins over `modelId`.
    */
   selectModel?: (available: readonly AcpModelInfo[], currentId: string | undefined) => string | null | undefined;
+  /**
+   * The session's context ceiling (`CliSession.contextCeiling`) for the exact model ID it runs
+   * (undefined when the agent names none) and the models it offers. Called once, after the handshake.
+   */
+  contextCeilingOf?: (modelId: string | undefined, available: readonly AcpModelInfo[]) => number | undefined;
   /** Native session to resume with `session/load`. */
   resumeSessionId?: string;
   /** Called once with the process ID right after the spawn, before the handshake. */
@@ -128,6 +133,7 @@ export class AcpSession implements CliSession {
     readonly models: readonly AcpModelInfo[],
     /** What the agent reported in `initialize`, in the core's names. */
     readonly capabilities: ReadonlySet<CliCapability>,
+    readonly contextCeiling: number | undefined,
   ) {}
 
   get pid(): number | undefined {
@@ -163,7 +169,9 @@ export class AcpSession implements CliSession {
 
     try {
       const started = await Promise.race([setup(connection, options), died]);
-      return new AcpSession(started.sessionId, runtime, connection, options.command, started.models, started.capabilities);
+      const ceiling = options.contextCeilingOf?.(started.modelId, started.models);
+      const contextCeiling = typeof ceiling === "number" && Number.isFinite(ceiling) && ceiling > 0 ? ceiling : undefined;
+      return new AcpSession(started.sessionId, runtime, connection, options.command, started.models, started.capabilities, contextCeiling);
     } catch (error) {
       return await failedOpen(runtime, options, error);
     } finally {

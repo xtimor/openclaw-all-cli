@@ -29,6 +29,18 @@ describe("core records", () => {
     });
   });
 
+  it("sends a usage that is no context size with the host's `contextUsage: unavailable` marker (issue #40)", () => {
+    const record = toRecord(
+      { kind: "result", text: "done", stopReason: "end_turn" },
+      { usage: { input: 100_000, output: 86_800, cacheRead: 5_400_000, contextUnknown: true } },
+    );
+    expect(parseJsonlEvent(JSON.stringify(record))).toEqual({
+      kind: "result",
+      text: "done",
+      usage: { input: 100_000, output: 86_800, cacheRead: 5_400_000, contextUsage: { state: "unavailable" } },
+    });
+  });
+
   it("closes a failed turn with an error result", () => {
     const record = toRecord({ kind: "error", error: { code: "auth", retryable: false, message: "log in" } });
     expect(record).toMatchObject({ type: "result", is_error: true });

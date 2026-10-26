@@ -9,6 +9,7 @@
 //   FAKE_CURSOR_LOG=<file>      append one JSON line per request the agent receives (with `t`, the epoch ms); the `initialize` line also carries
 //                               the process `argv` and CURSOR_CONFIG_DIR/CURSOR_DATA_DIR
 //   FAKE_CURSOR_LOG_END=1       also log a `prompt/end` line when a prompt ends
+//   FAKE_CURSOR_USAGE=1|<json> session/prompt answers with a small ACP usage, or with this JSON as its usage
 //   FAKE_CURSOR_VERSION=<text>  what `--version` prints (default "2026.10.14-fake")
 //   FAKE_CURSOR_VERSION_EXIT=<n> `--version` exits with this code after printing
 //   FAKE_CURSOR_DEFAULT_MODEL=m the exact model ID a new session starts with (default "default[]", Cursor's Auto)
@@ -329,7 +330,14 @@ async function runPrompt(id, params) {
   for (const piece of answer.match(/.{1,12}/g) ?? [answer]) {
     update(params.sessionId, { sessionUpdate: "agent_message_chunk", content: { type: "text", text: piece } });
   }
-  return reply(id, { stopReason: "end_turn", ...(process.env.FAKE_CURSOR_USAGE === "1" ? { usage: { totalTokens: 7, inputTokens: 3, outputTokens: 4 } } : {}) });
+  return reply(id, { stopReason: "end_turn", ...promptUsage() });
+}
+
+/** `FAKE_CURSOR_USAGE`: "1" reports a small ACP usage; a JSON object is reported as the usage itself. */
+function promptUsage() {
+  const value = process.env.FAKE_CURSOR_USAGE?.trim();
+  if (value === "1") return { usage: { totalTokens: 7, inputTokens: 3, outputTokens: 4 } };
+  return value?.startsWith("{") ? { usage: JSON.parse(value) } : {};
 }
 
 const rl = createInterface({ input: process.stdin });

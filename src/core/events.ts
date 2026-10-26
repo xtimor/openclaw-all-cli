@@ -41,6 +41,18 @@ export function toRecord(event: NormalizedEvent, summary: TurnSummary = {}): Cor
   return { type: "oac-event", oac: RECORD_MARKER, event };
 }
 
+/**
+ * A turn's usage in the host's words. `contextUsage: {state: "unavailable"}` is OpenClaw's own
+ * marker for CLI usage that is no context reading (2026.10.3 reads it before the token buckets);
+ * the public `CliBackendJsonlUsage` type does not list it, the host-contract test pins it.
+ */
+export type HostUsage = Omit<NormalizedUsage, "contextUnknown"> & { contextUsage?: { state: "unavailable" } };
+
+function toHostUsage(usage: NormalizedUsage): HostUsage {
+  const { contextUnknown, ...counts } = usage;
+  return contextUnknown ? { ...counts, contextUsage: { state: "unavailable" } } : counts;
+}
+
 /** What OpenClaw's JSONL parser hook returns. Mirrors `CliBackendParsedJsonlEvent`. */
 export type ParsedEvent =
   | { kind: "text"; text: string }
@@ -51,7 +63,7 @@ export type ParsedEvent =
       kind: "result";
       text?: string;
       sessionId?: string;
-      usage?: NormalizedUsage;
+      usage?: HostUsage;
       errorText?: string;
     }
   | { kind: "sessionId"; sessionId: string };
@@ -96,7 +108,7 @@ export function parseJsonlEvent(line: string): ParsedEvent | readonly ParsedEven
         kind: "result",
         text: event.text,
         ...(value.sessionId ? { sessionId: value.sessionId } : {}),
-        ...(value.usage ? { usage: value.usage } : {}),
+        ...(value.usage ? { usage: toHostUsage(value.usage) } : {}),
       };
     case "error":
       return { kind: "result", errorText: event.error.message };

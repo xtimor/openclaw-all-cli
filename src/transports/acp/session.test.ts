@@ -3,7 +3,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { inspectProcess } from "../../core/pid-locks.ts";
-import { CliError, type CliSession, type NormalizedEvent, type ProcessStartInfo } from "../../core/ports.ts";
+import { CliError, type CliSession, type NormalizedEvent, type NormalizedUsage, type ProcessStartInfo } from "../../core/ports.ts";
+import { boundTurnUsage } from "../../core/usage.ts";
 import { FAKE_CURSOR_AGENT, fakeEnv } from "../../../test/fixtures/paths.ts";
 import { KILL_GRACE_MS } from "./runtime.ts";
 import { AcpSession, type AcpPermissionRequest, type AcpSessionOptions } from "./session.ts";
@@ -105,6 +106,46 @@ describe("AcpSession", () => {
     expect(events.find((event) => event.kind === "usage")).toEqual({
       kind: "usage",
       usage: { input: 3, output: 4, total: 7 },
+    });
+  });
+
+  describe("usage against the context ceiling (issue #40)", () => {
+    const window = (id: string | undefined) => (id === "fake-slow[context=1m,effort=high]" ? 1_000_000 : 256_000);
+
+    it("reports the ceiling for the model the session runs, after a switch and without one", async () => {
+      const seen: Array<string | undefined> = [];
+      const switched = await start({
+        selectModel: () => "fake-slow[context=1m,effort=high]",
+        contextCeilingOf: (id, offered) => {
+          seen.push(id);
+          expect(offered.length).toBeGreaterThan(0);
+          return window(id);
+        },
+      });
+      expect(switched.contextCeiling).toBe(1_000_000);
+      const kept = await start({ selectModel: () => null, contextCeilingOf: (id) => (seen.push(id), window(id)) });
+      expect(kept.contextCeiling).toBe(256_000);
+      // No model choice at all: the agent's current model.
+      await start({ contextCeilingOf: (id) => (seen.push(id), window(id)) });
+      expect(seen).toEqual(["fake-slow[context=1m,effort=high]", "default[]", "default[]"]);
+      const none = await start();
+      expect(none.contextCeiling).toBeUndefined();
+      const bad = await start({ contextCeilingOf: () => Number.NaN });
+      expect(bad.contextCeiling).toBeUndefined();
+    });
+
+    it("keeps a plausible ACP total, and the core bound clamps an implausible one", async () => {
+      const plausible = await start({ env: { FAKE_CURSOR_USAGE: "1" }, contextCeilingOf: () => 256_000 });
+      const small = (await collect(plausible.prompt("say:x"))).find((event) => event.kind === "usage");
+      expect(small).toEqual({ kind: "usage", usage: { input: 3, output: 4, total: 7 } });
+      expect(boundTurnUsage((small as { usage: NormalizedUsage }).usage, plausible.contextCeiling)).toEqual({ input: 3, output: 4, total: 7 });
+
+      const reported = { totalTokens: 5_600_000, inputTokens: 100_000, outputTokens: 86_800, cachedReadTokens: 5_413_200 };
+      const summed = await start({ env: { FAKE_CURSOR_USAGE: JSON.stringify(reported) }, contextCeilingOf: () => 256_000 });
+      const big = (await collect(summed.prompt("say:x"))).find((event) => event.kind === "usage") as { usage: NormalizedUsage };
+      // The transport reports what the agent said; the core decides it is no context size.
+      expect(big.usage).toEqual({ input: 100_000, output: 86_800, cacheRead: 5_413_200, total: 5_600_000 });
+      expect(boundTurnUsage(big.usage, summed.contextCeiling)).toEqual({ input: 100_000, output: 86_800, cacheRead: 5_413_200, contextUnknown: true });
     });
   });
 

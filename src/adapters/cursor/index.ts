@@ -20,7 +20,7 @@ import {
   type OpenParams,
 } from "../../core/ports.ts";
 import { CURSOR_MIN_VERSION, cursorManifest } from "./manifest.ts";
-import { buildCursorCatalog, selectCursorModel } from "./models.ts";
+import { buildCursorCatalog, cursorContextCeiling, selectCursorModel } from "./models.ts";
 import { CURSOR_ALWAYS_ON_NATIVE_TOOLS, toCanonicalRequest } from "./permissions.ts";
 import { classifyCursorReplyError } from "./errors.ts";
 import { describeCursorToolCall } from "./tool-display.ts";
@@ -247,6 +247,7 @@ function open(params: OpenParams): Promise<CliSession> {
       }
       return id;
     },
+    contextCeilingOf: cursorContextCeiling,
     ...(params.onProcessStart ? { onProcessStart: params.onProcessStart } : {}),
     ...(params.resumeSessionId && !sideQuestion ? { resumeSessionId: params.resumeSessionId } : {}),
     ...(params.mcpServers?.length && !sideQuestion ? { mcpServers: params.mcpServers.map(toAcpMcpServer) } : {}),

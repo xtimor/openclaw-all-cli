@@ -132,6 +132,20 @@ export function buildCursorCatalog(entries: readonly CursorModelEntry[]): CliMod
 }
 
 /**
+ * The context ceiling of a session on the exact Cursor ID `modelId` (issue #40): the model's own
+ * window, else the largest window among the offered models (Auto runs one of them; a model with
+ * no known window gets the same bound), else none. Above it a turn's usage is a sum over several
+ * requests, not a context size.
+ */
+export function cursorContextCeiling(modelId: string | undefined, offered: readonly CursorModelEntry[]): number | undefined {
+  const catalog = buildCursorCatalog(offered);
+  const own = modelId === undefined ? undefined : catalog.find((model) => model.id === modelId)?.contextWindow;
+  if (own !== undefined) return own;
+  const windows = catalog.map((model) => model.contextWindow).filter((window): window is number => window !== undefined);
+  return windows.length > 0 ? Math.max(...windows) : undefined;
+}
+
+/**
  * Finds the exact Cursor ID for a requested model: the readable name, Cursor's exact ID, or
  * Cursor's own spelling of Auto. Case is ignored. `undefined` means the account has no such model.
  */
