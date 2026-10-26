@@ -3,7 +3,7 @@ title: "Provider card reads Not configured although the cursor-agent login works
 type: 'bugfix'
 ticket: 14
 created: '2026-10-26'
-status: built
+status: done
 baseline_revision: '5ab8643f7777707e5696ebf21945f7eebc7d78d2'
 route: 'oneshot'
 route_source: 'auto'
