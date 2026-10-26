@@ -3,7 +3,7 @@ title: 'Context usage tile shows totalTokens far above the model context window'
 type: 'bugfix'
 ticket: 15
 created: '2026-10-26'
-status: 'built'
+status: done
 baseline_revision: '3332cd30b5c6be5db2ddae4dcdff7e8bb76cc96b'
 route: 'full'
 route_source: 'auto'
