@@ -3,7 +3,7 @@ title: "First replies still take 15-20 s; investigate a warm cursor-agent start 
 type: 'bugfix'
 ticket: 13
 created: '2026-10-26'
-status: 'built'
+status: done
 baseline_revision: '36c27d5a5e2a88144bcf02d3733b519470bdc192'
 route: 'oneshot'
 route_source: 'auto'
