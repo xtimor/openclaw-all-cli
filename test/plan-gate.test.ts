@@ -1,5 +1,5 @@
 import { execFile } from "node:child_process";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
@@ -104,5 +104,69 @@ describe("plan-gate", () => {
     const missing = await run([join(dir, "nope-plan.md")]);
     expect(missing.code).toBe(2);
     expect(missing.stdout).toContain("not ok: the plan cannot be read");
+  });
+
+  describe("--changed <base>: CI gates the finished plans a batch adds or changes", () => {
+    const BAD = plan({ review: "''" }, "Status: blocked\nReview not run.");
+    const git = (cwd: string, ...args: string[]) =>
+      new Promise<void>((done, fail) => {
+        execFile("git", ["-c", "user.name=t", "-c", "user.email=t@example.com", "-c", "commit.gpgsign=false", ...args], { cwd }, (error) => (error ? fail(error) : done()));
+      });
+    const gate = (cwd: string, args: string[], env: Record<string, string> = {}) =>
+      new Promise<{ code: number; stdout: string }>((done) => {
+        const clean = Object.fromEntries(Object.entries(process.env).filter(([key]) => key !== "CI" && !key.startsWith("VITEST")));
+        execFile(process.execPath, [SCRIPT, ...args], { cwd, env: { ...clean, ...env }, timeout: 20_000 }, (error, stdout) => done({ code: error ? (typeof error.code === "number" ? error.code : 1) : 0, stdout }));
+      });
+    const put = (cwd: string, name: string, text: string) => {
+      mkdirSync(join(cwd, "_bmad-output", "backlog"), { recursive: true });
+      writeFileSync(join(cwd, "_bmad-output", "backlog", name), text);
+    };
+    async function repo(): Promise<string> {
+      const dir = mkdtempSync(join(tmpdir(), "plan-gate-git-"));
+      dirs.push(dir);
+      await git(dir, "init", "-q", "-b", "main");
+      put(dir, "old-bad-plan.md", BAD); // history that predates the gate: never flagged unless it changes
+      put(dir, "old-good-plan.md", plan());
+      await git(dir, "add", "-A");
+      await git(dir, "commit", "-q", "-m", "base");
+      await git(dir, "branch", "base");
+      return dir;
+    }
+
+    it("nothing changed: ok; old bad plans are not flagged; in-progress plans are ignored even if bad", async () => {
+      const dir = await repo();
+      expect(await gate(dir, ["--changed", "base"])).toEqual({ code: 0, stdout: "plan-gate: no finished plan changed since base\n" });
+      put(dir, "wip-plan.md", plan({ status: "in-progress", review: "''" }, "Status: blocked"));
+      expect((await gate(dir, ["--changed", "base"])).code).toBe(0);
+    });
+
+    it("a committed, a staged-and-edited, and an untracked finished plan are each checked; a bad one makes the run exit 1", async () => {
+      const dir = await repo();
+      put(dir, "new-good-plan.md", plan());
+      await git(dir, "add", "-A");
+      await git(dir, "commit", "-q", "-m", "good");
+      let out = await gate(dir, ["--changed", "base"]);
+      expect(out.code).toBe(0);
+      expect(out.stdout).toContain("new-good-plan.md: ok (done)");
+      expect(out.stdout).not.toContain("old-bad-plan.md");
+
+      put(dir, "ticket10-plan.md", BAD); // untracked
+      out = await gate(dir, ["--changed", "base"]);
+      expect(out.code).toBe(1);
+      expect(out.stdout).toMatch(/ticket10-plan\.md: not ok: review is empty/);
+
+      rmSync(join(dir, "_bmad-output", "backlog", "ticket10-plan.md"));
+      put(dir, "old-bad-plan.md", `${BAD}\nedited\n`); // an old bad plan that a batch touches is checked
+      out = await gate(dir, ["--changed", "base"]);
+      expect(out.code).toBe(1);
+      expect(out.stdout).toContain("old-bad-plan.md: not ok");
+    });
+
+    it("an unknown base exits 2 in CI and is skipped with a note elsewhere; a missing base argument is a usage error", async () => {
+      const dir = await repo();
+      expect(await gate(dir, ["--changed", "nope"], { CI: "true" })).toEqual({ code: 2, stdout: "plan-gate: base nope not found; cannot check\n" });
+      expect(await gate(dir, ["--changed", "nope"])).toEqual({ code: 0, stdout: "plan-gate: base nope not found; skipped\n" });
+      expect((await gate(dir, ["--changed"])).code).toBe(2);
+    });
   });
 });

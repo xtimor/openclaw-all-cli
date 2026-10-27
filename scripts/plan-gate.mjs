@@ -5,7 +5,9 @@
 // its Auto Run Result and the run still closed it as done.
 //
 //   node scripts/plan-gate.mjs <plan.md>...
-//
+//   node scripts/plan-gate.mjs --changed <base>     # the plans (_bmad-output/**/*-plan.md) added or changed since <base> that claim
+//                                                   # to be finished (done or built); `npm run ci` runs it with origin/main, so a
+//                                                   # batch whose plan says blocked or review not run is red and does not merge
 // One line per plan on stdout: `plan-gate: <path>: ok (<status>)` or `plan-gate: <path>: not ok: <reason>; <reason>`.
 // Exit 0 when every plan is ok, 1 when any is not, 2 on bad usage or an unreadable file. A plan is not ok when:
 //   - its status is not `done` or `built`, or `blocked_at`/`blocked_reason` are set (a HALT wrote them);
@@ -13,6 +15,7 @@
 //   - its `## Auto Run Result` says the status is blocked, names a blocking condition, or says the review did not run.
 // A review run in the build's own session (no subagents) counts as run when the plan says so. Plans are not scanned for
 // anything else: the gate answers "may this ticket be closed", not "is it good".
+import { execFileSync } from "node:child_process";
 import { readFileSync, realpathSync } from "node:fs";
 import { pathToFileURL } from "node:url";
 
@@ -55,9 +58,50 @@ export function planProblems(text) {
 
 export const planStatus = (text) => field(frontmatter(text), "status");
 
+const PLAN_PATH = /^_bmad-output\/.+-plan\.md$/;
+
+/**
+ * The finished plans (status done or built) added or changed since the merge base with `base`, committed, staged, edited, or
+ * new. Returns null when `base` cannot be resolved.
+ */
+function changedFinishedPlans(base) {
+  const git = (...args) => execFileSync("git", args, { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] });
+  let mergeBase;
+  try {
+    mergeBase = git("merge-base", base, "HEAD").trim();
+  } catch {
+    return null;
+  }
+  const names = new Set([...git("diff", "--name-only", "--diff-filter=AM", mergeBase, "--").split("\n"), ...git("ls-files", "--others", "--exclude-standard").split("\n")]);
+  return [...names].filter((path) => PLAN_PATH.test(path)).filter((path) => {
+    try {
+      return FINISHED.has(planStatus(readFileSync(path, "utf8")));
+    } catch {
+      return false; // deleted in the working tree
+    }
+  }).sort();
+}
+
 const oneLine = (text) => String(text).replace(/[\r\n\u0085\u2028\u2029]+/g, " ");
 
 function main(args) {
+  if (args[0] === "--changed") {
+    if (args.length !== 2) {
+      process.stderr.write("plan-gate: usage: node scripts/plan-gate.mjs --changed <base>\n");
+      return 2;
+    }
+    const plans = changedFinishedPlans(args[1]);
+    if (plans === null) {
+      // Without the base nothing can be compared: a CI run must not pass silently, a local run just says so.
+      process.stdout.write(`plan-gate: base ${oneLine(args[1])} not found; ${process.env.CI ? "cannot check" : "skipped"}\n`);
+      return process.env.CI ? 2 : 0;
+    }
+    if (plans.length === 0) {
+      process.stdout.write(`plan-gate: no finished plan changed since ${oneLine(args[1])}\n`);
+      return 0;
+    }
+    return main(plans);
+  }
   if (args.length === 0) {
     process.stderr.write("plan-gate: usage: node scripts/plan-gate.mjs <plan.md>...\n");
     return 2;

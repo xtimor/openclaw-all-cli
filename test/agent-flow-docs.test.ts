@@ -130,6 +130,12 @@ describe("a plan that says blocked or review not run is not closed done (e)", ()
     expect(build).toMatch(/block the issue \(\[step 3\]\(#3-block-an-issue\)\)/);
   });
 
+  it("CI runs the gate on the plans a branch changes, with the history it needs", () => {
+    expect(read("scripts", "ci-check.sh")).toContain("node scripts/plan-gate.mjs --changed origin/main");
+    expect(read(".github", "workflows", "ci.yml")).toMatch(/uses: actions\/checkout@[0-9a-f]{40} # v\d+\.\d+\.\d+\n\s+with:\n\s+fetch-depth: 0/);
+    expect(implement).toContain("node scripts/plan-gate.mjs --changed origin/main");
+  });
+
   it("the orchestrator is told to run the gate before it marks a ticket done", () => {
     const toml = read("_bmad", "custom", "dev-orchestrator.toml");
     expect(toml).toContain("scripts/plan-gate.mjs");
