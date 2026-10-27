@@ -3,7 +3,7 @@ title: 'A finished batch always reaches a ready PR; an idle draft is resumed, ne
 type: 'bugfix'
 ticket: 21
 created: '2026-10-27'
-status: built
+status: done
 baseline_revision: '9444917dfacb416fc77db28fa06faa04dd7e3310'
 route: 'full'
 route_source: 'auto'
