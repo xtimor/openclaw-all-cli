@@ -40,9 +40,18 @@ openclaw agent --local --model cursor-cli/auto --message "Reply with the word ok
 
 All settings are optional and live under `plugins.entries.openclaw-all-cli.config`. See [Setup](https://github.com/xtimor/openclaw-all-cli/blob/main/docs/setup.md#3-configure) for the keys, the Gateway start, and troubleshooting.
 
+## Update
+
+```sh
+openclaw plugins update openclaw-all-cli
+openclaw plugins list | grep openclaw-all-cli   # shows the installed version
+```
+
+A running local Gateway is refreshed by the update; otherwise the new version loads at the next Gateway start. If you installed a fixed version (`openclaw-all-cli@X.Y.Z`), `update` keeps it; to follow the latest release again, run the install command above. What changed in each version: [Changelog](https://github.com/xtimor/openclaw-all-cli/blob/main/CHANGELOG.md).
+
 ## Status
 
-Early release. Cursor CLI only. Update with `openclaw plugins update openclaw-all-cli`; to build from source, see [Build from source](https://github.com/xtimor/openclaw-all-cli/blob/main/docs/setup.md#build-from-source).
+Early release. Cursor CLI only. To build from source, see [Build from source](https://github.com/xtimor/openclaw-all-cli/blob/main/docs/setup.md#build-from-source).
 
 ## Docs
 

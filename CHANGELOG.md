@@ -8,6 +8,7 @@ What changed for people who use the plugin, newest first. Format: [Keep a Change
 
 ### Changed
 
+- README: an "Update" section with the update command, how to check the installed version, and what to do after a pinned install.
 - Cursor models show as "OAC / <name>" (for example "OAC / GPT-5.3 Codex") in the model picker and model lists, so they stand apart from another provider's models. Model IDs and refs such as `cursor-cli/auto` are unchanged. ([#37](https://github.com/xtimor/openclaw-all-cli/issues/37))
 - The provider shows as "OAC / Cursor-CLI" (provider list, "Connect provider" group, plugin settings), no longer the same "Cursor CLI" as the separate `@jeehou/openclaw-cursor-cli` plugin. The provider ID `cursor-cli` and model refs such as `cursor-cli/auto` are unchanged. ([#36](https://github.com/xtimor/openclaw-all-cli/issues/36))
 - Docs: with only the `cursor-agent` login, the Control UI provider card reads "Not configured" with a Connect button although every model works. OpenClaw 2026.10.3 builds that card from saved profiles and config or env keys only, and honors the plugin's declared synthetic auth only for its own bundled plugins, so the plugin cannot fix it without writing a placeholder key (it does not). Reported upstream as [openclaw/openclaw#184700](https://github.com/openclaw/openclaw/issues/184700); how to check the login meanwhile is in [Setup](https://github.com/xtimor/openclaw-all-cli/blob/main/docs/setup.md). ([#39](https://github.com/xtimor/openclaw-all-cli/issues/39))
