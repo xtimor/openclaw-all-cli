@@ -76,6 +76,8 @@ function defaults(method: string, path: string): Answer {
   if (key === `GET ${r}/pulls/20`) return [200, pull()];
   if (key === `GET ${r}/pulls/21`) return [200, pull({ number: 21, node_id: "PR_node_21", draft: true })];
   if (key === `PATCH ${r}/pulls/20` || key === `PATCH ${r}/pulls/21`) return [200, {}];
+  if (key === `GET ${r}/pulls/21/files`) return [200, []]; // an idle draft with no plan file: nothing built
+  if (key === `GET ${r}/pulls`) return [200, []]; // no other open batch PR
   if (key === `GET ${r}/commits/${SHA}/check-runs`) return [200, { total_count: 2, check_runs: [{ name: "check", app: { slug: "github-actions" }, status: "completed", conclusion: "success" }, { name: "label", status: "completed", conclusion: "skipped" }] }];
   if (key === `GET ${r}/commits/${SHA}/status`) return [200, { state: "pending", total_count: 0, statuses: [] }]; // no statuses at all
   if (key === `PUT ${r}/pulls/20/merge`) return [200, { merged: true, sha: "fedcba9876543210fedcba9876543210fedcba98" }];
@@ -282,9 +284,9 @@ describe("agent-write", () => {
     answers.set(`GET /repos/${REPO}/pulls/21`, [200, pull({ number: 21, draft: true, title: "Issue batch (in progress)", updated_at: hoursAgo(5) })]);
     const result = await run([{ op: "pr_close", pr: 21 }]);
     expect(result).toMatchObject({ code: 0, stderr: "" });
-    expect(seen()).toEqual(["GET /pulls/21", "PATCH /pulls/21"]);
-    expect(calls[1]?.body).toEqual({ state: "closed" });
-    expect(calls[1]?.auth).toBe(`Bearer ${TOKEN}`);
+    expect(seen()).toEqual(["GET /pulls/21", "GET /pulls/21/files", "PATCH /pulls/21"]);
+    expect(calls[2]?.body).toEqual({ state: "closed" });
+    expect(calls[2]?.auth).toBe(`Bearer ${TOKEN}`);
     expect(result.summary).toContain("PR #21");
     expect(result.summary).toContain("closed");
     expect(leaked(result)).toEqual([]);
@@ -339,7 +341,7 @@ describe("agent-write", () => {
       answers.set(`GET /repos/${REPO}/pulls/21`, [200, pull({ number: 21, draft: true, title: "Issue batch (in progress)", updated_at })]);
       const result = await run([{ op: "pr_close", pr: 21 }]);
       expect(result.code, name).toBe(code);
-      expect(seen(), name).toEqual(code === 1 ? ["GET /pulls/21"] : ["GET /pulls/21", "PATCH /pulls/21"]);
+      expect(seen(), name).toEqual(code === 1 ? ["GET /pulls/21"] : ["GET /pulls/21", "GET /pulls/21/files", "PATCH /pulls/21"]);
       if (code === 1) expect(result.summary, name).toContain("refused");
     }
   });
@@ -353,8 +355,119 @@ describe("agent-write", () => {
     answers.set(`PATCH /repos/${REPO}/pulls/21`, [403, { message: "Resource not accessible" }]);
     const result = await run([{ op: "pr_close", pr: 21 }, { op: "comment", issue: 12, body: "later" }]);
     expect(result.code).toBe(1);
-    expect(seen()).toEqual(["GET /pulls/21", "PATCH /pulls/21"]);
+    expect(seen()).toEqual(["GET /pulls/21", "GET /pulls/21/files", "PATCH /pulls/21"]);
     expect(result.summary).toContain("Stopped at operation 1 of 2");
+  });
+
+  describe("PR_CLOSE with built tickets (ticket 3.21 b)", () => {
+    const OLD_SHA = "1".repeat(40);
+    const NEW_SHA = "2".repeat(40);
+    const planPath = (name: string) => `_bmad-output/initiative-x/epic-y/${name}-plan.md`;
+    const planText = (status: string) => `---\ntitle: 'x'\nstatus: ${status}\nreview: 'quick'\n---\n\nbody\n`;
+    const contentsKey = (path: string) => `GET /repos/${REPO}/contents/${path}@${OLD_SHA}`;
+    const idle = () => answers.set(`GET /repos/${REPO}/pulls/21`, [200, pull({ number: 21, draft: true, title: "Issue batch (in progress)", updated_at: hoursAgo(5), head: { ref: "claude/old", sha: OLD_SHA, repo: { full_name: REPO } } })]);
+    const files = (...names: string[]) => answers.set(`GET /repos/${REPO}/pulls/21/files`, [200, names.map((filename) => ({ filename, status: "added" }))]);
+    const serve = (path: string, status: string) => answers.set(`GET /repos/${REPO}/contents/${path}`, [200, { content: Buffer.from(planText(status)).toString("base64"), encoding: "base64" }]);
+    const carrier = (overrides: Record<string, unknown> = {}) => pull({ number: 31, draft: true, title: "Issue batch (in progress)", head: { ref: "claude/new", sha: NEW_SHA, repo: { full_name: REPO } }, ...overrides });
+
+    it("a plan at done or built refuses the close, names the plan, and patches nothing", async () => {
+      for (const status of ["done", "built", "'done'"]) {
+        calls = [];
+        idle();
+        files("src/x.ts", planPath("a"), planPath("b"));
+        serve(planPath("a"), "ready-for-dev");
+        serve(planPath("b"), status);
+        const result = await run([{ op: "pr_close", pr: 21 }]);
+        expect(result.code, status).toBe(1);
+        expect(result.summary, status).toContain("holds built tickets");
+        expect(result.summary, status).toContain("b-plan.md");
+        expect(seen().filter((entry) => entry.startsWith("PATCH")), status).toEqual([]);
+      }
+    });
+
+    it("plans that are still in progress, drafts, blocked, or removed (and files that are not plans) do not hold the close", async () => {
+      idle();
+      answers.set(`GET /repos/${REPO}/pulls/21/files`, [200, [{ filename: planPath("a"), status: "added" }, { filename: planPath("b"), status: "added" }, { filename: planPath("gone"), status: "removed" }, { filename: "docs/done-plan.md", status: "added" }, { filename: "_bmad-output/x/notes.md", status: "added" }]]);
+      serve(planPath("a"), "in-progress");
+      serve(planPath("b"), "blocked");
+      serve(planPath("gone"), "done");
+      const result = await run([{ op: "pr_close", pr: 21 }]);
+      expect(result.code).toBe(0);
+      expect(seen().filter((entry) => entry.includes("/contents/"))).toEqual([`GET /contents/${planPath("a")}`, `GET /contents/${planPath("b")}`]);
+      expect(seen().at(-1)).toBe("PATCH /pulls/21");
+    });
+
+    it("another open batch PR of the app that contains the draft's head carries the work: the close is allowed", async () => {
+      idle();
+      files(planPath("a"));
+      serve(planPath("a"), "done");
+      answers.set(`GET /repos/${REPO}/pulls`, [200, [pull({ number: 21, draft: true }), carrier()]]);
+      answers.set(`GET /repos/${REPO}/compare/${OLD_SHA}...${NEW_SHA}`, [200, { status: "ahead" }]);
+      const result = await run([{ op: "pr_close", pr: 21 }]);
+      expect(result).toMatchObject({ code: 0, stderr: "" });
+      expect(seen()).toEqual(["GET /pulls/21", "GET /pulls/21/files", `GET /contents/${planPath("a")}`, "GET /pulls", `GET /compare/${OLD_SHA}...${NEW_SHA}`, "PATCH /pulls/21"]);
+      calls = [];
+      answers.set(`GET /repos/${REPO}/compare/${OLD_SHA}...${NEW_SHA}`, [200, { status: "identical" }]);
+      expect((await run([{ op: "pr_close", pr: 21 }])).code).toBe(0);
+    });
+
+    it("a branch that does not contain the head, or a carrier of another author, branch, or repository, does not count", async () => {
+      const cases: Array<[string, Record<string, unknown>, string]> = [
+        ["diverged", {}, "diverged"],
+        ["behind", {}, "behind"],
+        ["owner's PR", { user: { login: "xtimor" } }, "ahead"],
+        ["non-claude branch", { head: { ref: "feature/x", sha: NEW_SHA, repo: { full_name: REPO } } }, "ahead"],
+        ["fork", { head: { ref: "claude/new", sha: NEW_SHA, repo: { full_name: "evil/openclaw-all-cli" } } }, "ahead"],
+        ["no sha", { head: { ref: "claude/new", repo: { full_name: REPO } } }, "ahead"],
+      ];
+      for (const [name, override, compare] of cases) {
+        calls = [];
+        idle();
+        files(planPath("a"));
+        serve(planPath("a"), "done");
+        answers.set(`GET /repos/${REPO}/pulls`, [200, [carrier(override)]]);
+        answers.set(`GET /repos/${REPO}/compare/${OLD_SHA}...${NEW_SHA}`, [200, { status: compare }]);
+        const result = await run([{ op: "pr_close", pr: 21 }]);
+        expect(result.code, name).toBe(1);
+        expect(result.summary, name).toContain("holds built tickets");
+        expect(seen().filter((entry) => entry.startsWith("PATCH")), name).toEqual([]);
+      }
+    });
+
+    it("creating the new draft and closing the old one in one list works in order: the carrier is seen at apply time", async () => {
+      idle();
+      files(planPath("a"));
+      serve(planPath("a"), "done");
+      answers.set(`GET /repos/${REPO}/compare/${OLD_SHA}...${NEW_SHA}`, [200, { status: "ahead" }]);
+      // The guard reads the open list when pr_close applies, after pr_create has run.
+      answers.set(`GET /repos/${REPO}/pulls`, [200, [carrier()]]);
+      const result = await run([{ op: "pr_create", head: "claude/new", title: "Issue batch (in progress)", draft: true }, { op: "pr_close", pr: 21 }]);
+      expect(result.code).toBe(0);
+      expect(seen()[0]).toBe("POST /pulls");
+      expect(seen().at(-1)).toBe("PATCH /pulls/21");
+    });
+
+    it("an unreadable file list, an unreadable plan, too many plans, or a failed compare refuses or fails closed: nothing is patched", async () => {
+      idle();
+      answers.set(`GET /repos/${REPO}/pulls/21/files`, [200, { not: "a list" }]);
+      expect((await run([{ op: "pr_close", pr: 21 }])).code).toBe(1);
+
+      files(planPath("a"));
+      answers.set(`GET /repos/${REPO}/contents/${planPath("a")}`, [404, { message: "Not Found" }]);
+      expect((await run([{ op: "pr_close", pr: 21 }])).code).toBe(1);
+      answers.set(`GET /repos/${REPO}/contents/${planPath("a")}`, [200, { content: 5 }]);
+      expect((await run([{ op: "pr_close", pr: 21 }])).code).toBe(1);
+
+      answers.set(`GET /repos/${REPO}/pulls/21/files`, [200, Array.from({ length: 101 }, (_, i) => ({ filename: planPath(`p${i}`), status: "added" }))]);
+      expect((await run([{ op: "pr_close", pr: 21 }])).code).toBe(1);
+
+      files(planPath("a"));
+      serve(planPath("a"), "done");
+      answers.set(`GET /repos/${REPO}/pulls`, [200, [carrier()]]);
+      answers.set(`GET /repos/${REPO}/compare/${OLD_SHA}...${NEW_SHA}`, [500, { message: "boom" }]);
+      expect((await run([{ op: "pr_close", pr: 21 }])).code).toBe(1);
+      expect(calls.filter((call) => call.method === "PATCH")).toEqual([]);
+    });
   });
 
   it("MERGE: merges the agent's own ready batch PR with method merge and the sha", async () => {
