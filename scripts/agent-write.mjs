@@ -21,7 +21,9 @@
 //   {op:"pr_close", pr}                                    closes only an open draft titled `Issue batch (in progress)` by AGENT_LOGIN from a `claude/` branch of this repository,
 //                                                          not updated for 2 hours (runs refresh their draft at least every 30 minutes), and only when its
 //                                                          branch holds no built ticket (a plan at `done`/`built`) or another open batch PR of the app
-//                                                          already contains its head (the work is resumed there, never lost: see checkBuiltWork)
+//                                                          already contains its head (the work is resumed there, never lost: see builtPlans and requireCarried).
+//                                                          Every pr_close target is read and checked (idle, author, title, built work) before ANY operation of the list is applied: the
+//                                                          comment and pr_edit that precede it in the same list refresh `updated_at`, which would otherwise make the idle check fail.
 // Everything is validated first; nothing is applied when anything is refused. Applying stops at the first failure.
 //
 // Environment: AGENT_WRITE_OPS, GH_TOKEN (the app's installation token), GITHUB_REPOSITORY, GITHUB_ACTOR (the dispatcher),
@@ -230,12 +232,10 @@ export function checkClosable(pr, op, { repo, login, now = Date.now }) {
 }
 
 /**
- * An idle draft that holds built tickets is resumed, never closed (ticket 3.21: the run that found draft #41 with six done tickets
- * set out to close it and rebuild them). Reads the PR's plan files at its head: any at `done` or `built` refuses the close, unless
- * another open batch PR of the app (a `claude/` branch of this repository) already contains the draft's head, so the work lives on.
- * Fails closed: an unreadable file list or plan refuses.
+ * The plan files (a ticket's `_bmad-output/**\/*-plan.md`) a pull request changes whose status at its head is `done` or `built`: the
+ * built tickets of an idle draft. Part of the pre-apply check of `pr_close`; fails closed (an unreadable list or plan refuses).
  */
-export async function checkBuiltWork(client, pr, op, { repo, login }) {
+export async function builtPlans(client, pr, op, { repo }) {
   const base = `/repos/${repo}`;
   const sha = typeof pr.head?.sha === "string" ? pr.head.sha.toLowerCase() : "";
   if (!/^[0-9a-f]{40}$/.test(sha)) throw refuse(`PR #${op.pr}: its head sha could not be read`);
@@ -254,7 +254,17 @@ export async function checkBuiltWork(client, pr, op, { repo, login }) {
     if (!isObject(data) || typeof data.content !== "string") throw refuse(`PR #${op.pr}: the plan ${path} could not be read`);
     if (BUILT_STATUSES.has(planStatus(Buffer.from(data.content, "base64").toString("utf8")))) built.push(path);
   }
-  if (built.length === 0) return;
+  return built;
+}
+
+/**
+ * An idle draft that holds built tickets is resumed, never closed (ticket 3.21: the run that found draft #41 with six done tickets
+ * set out to close it and rebuild them). Run at apply time, right before the close: another open batch PR of the app (a `claude/`
+ * branch of this repository) must already contain the draft's head `sha` (the one checked before the list was applied), so the work
+ * lives on. It is read now because the PR that carries it may be created by an earlier operation of the same list.
+ */
+export async function requireCarried(client, sha, built, op, { repo, login }) {
+  const base = `/repos/${repo}`;
   const listed = (await client.rest("GET", `${base}/pulls?state=open&per_page=100`)).data;
   const carriers = (Array.isArray(listed) ? listed : [])
     .filter((other) => other?.number !== op.pr && lower(other?.user?.login) === lower(login) && typeof other?.head?.ref === "string" && other.head.ref.startsWith(HEAD_PREFIX) && lower(other.head.repo?.full_name) === lower(repo) && /^[0-9a-f]{40}$/i.test(String(other.head.sha)))
@@ -367,8 +377,19 @@ function handlers(config, client) {
     if (data.pull_request !== undefined) throw refuse(`#${number} is a pull request; the agents never close or reopen one`);
   };
   const readPull = async (number) => (await client.rest("GET", `${base}/pulls/${number}`)).data ?? {};
+  /** pr number -> {sha, built}: what `prepare` found before anything was applied. */
+  const closing = new Map();
 
   return {
+    /** Reads and checks every `pr_close` target before the first operation is applied; a refusal here applies nothing. */
+    async prepare(ops) {
+      for (const op of ops) {
+        if (op.op !== "pr_close" || closing.has(op.pr)) continue;
+        const pr = await readPull(op.pr);
+        checkClosable(pr, op, config);
+        closing.set(op.pr, { sha: lower(pr.head?.sha), built: await builtPlans(client, pr, op, config) });
+      }
+    },
     async comment(op) {
       const { data } = await client.rest("POST", `${base}/issues/${op.issue}/comments`, { body: op.body });
       return { target: `#${op.issue}`, result: `comment ${data?.id ?? "?"} created` };
@@ -433,9 +454,13 @@ function handlers(config, client) {
       return { target: `PR #${op.pr}`, result: `edited ${Object.keys(body).join(" and ")}` };
     },
     async pr_close(op) {
+      // The idle, author, title, and built-work checks ran before the list was applied (`prepare`): operations before this one in
+      // the list (a comment, a pr_edit) refresh `updated_at`. Here only that the PR is still the one that was checked.
+      const checked = closing.get(op.pr);
+      if (checked === undefined) throw new WriteError(`PR #${op.pr}: it was not checked before the list was applied`);
       const pr = await readPull(op.pr);
-      checkClosable(pr, op, config);
-      await checkBuiltWork(client, pr, op, config);
+      if (pr.state !== "open" || pr.draft !== true || lower(pr.head?.sha) !== checked.sha) throw refuse(`PR #${op.pr}: it changed since it was checked (closed, ready, or a new push)`);
+      if (checked.built.length > 0) await requireCarried(client, checked.sha, checked.built, op, config);
       await client.rest("PATCH", `${base}/pulls/${op.pr}`, { state: "closed" });
       return { target: `PR #${op.pr}`, result: "closed" };
     },
@@ -500,6 +525,13 @@ export async function run(env, log = () => {}, now = Date.now) {
     rows.push(row);
     log(`${row.op} ${row.target}: ${row.result}`);
   };
+  try {
+    await handle.prepare(ops);
+  } catch (error) {
+    const safe = error instanceof WriteError;
+    const reason = safe ? client.clean(error.message) : "unexpected error";
+    return finish(1, safe && error.refused ? "Refused, nothing applied" : "Failed before applying anything", reason);
+  }
   for (const [i, op] of ops.entries()) {
     try {
       add({ op: op.op, ...(await handle[op.op](op)) });
