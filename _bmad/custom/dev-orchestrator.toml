@@ -1,3 +1,8 @@
 [agent]
 # Unattended batches (docs/agents/implement.md): a blocked ticket must not stop the rest of the batch.
 blocked_policy = "continue"
+
+# A ticket is closed done only when its plan really is finished and reviewed (ticket 3.21 e).
+persistent_facts = [
+  "Done gate: before `close` runs `tickets.py mark <ref> done`, run `node scripts/plan-gate.mjs <plan_file>`. Exit 1 means the plan says it is blocked, or that its review did not run (an empty `review`, `Status: blocked`, a blocking condition, `Review not run`). Then do not mark the ticket done: leave it at its plan status (`built`, or `blocked` when the plan says so), write the printed reason in the run log journal, and treat it as blocked under `blocked_policy`. Never close a ticket as done on your own diff read when the worker could not run the review; report it.",
+]
