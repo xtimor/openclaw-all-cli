@@ -54,7 +54,7 @@ describe("plan-gate", () => {
   });
 
   it("BACKLOG_CLASH: a review named quick in the frontmatter but 'Review: not run' / 'no review ran' in the result is refused", () => {
-    for (const result of ["Status: blocked. Blocking condition: `no subagents`. No review ran, no findings.", "- Review: not run. Deferred: none.", "Review not run.", "- The quick review itself is still owed.", "- review: skipped"]) {
+    for (const result of ["Status: blocked. Blocking condition: `no subagents`. No review ran, no findings.", "- Review: not run. Deferred: none.", "Review not run.", "- Review: not run (no subagents).", "- review: skipped"]) {
       expect(gate.planProblems(plan({}, result)), result).not.toEqual([]);
     }
   });
@@ -62,6 +62,19 @@ describe("plan-gate", () => {
   it("CRLF: a plan saved with Windows line endings reads the same", () => {
     expect(gate.planProblems(plan().replaceAll("\n", "\r\n"))).toEqual([]);
     expect(gate.planProblems(plan({ review: "''" }, "Status: blocked").replaceAll("\n", "\r\n")).length).toBeGreaterThan(0);
+  });
+
+  it("SECTIONS: only the last Auto Run Result section counts, and in it the latest status line; a retry that finished clears an earlier block", () => {
+    const blocked = "## Auto Run Result\n\nStatus: blocked. Blocking condition: `no subagents`.\nReview not run.\n";
+    const retried = "## Auto Run Result (review pass 1)\n\n- Review: thorough, 9 findings.\n";
+    const base = plan({}, "x").split("## Auto Run Result")[0];
+    expect(gate.planProblems(`${base}${blocked}\n${retried}`)).toEqual([]);
+    expect(gate.planProblems(`${base}${retried}\n${blocked}`).join(" ")).toContain("says the status is blocked");
+    // Same section: the blocked line first, the finished status after it.
+    expect(gate.planProblems(plan({}, "Status: blocked. Blocking condition: `no subagents`.\nStatus: built. Review: inline, 3 findings."))).toEqual([]);
+    expect(gate.planProblems(plan({}, "Status: built. Review: inline.\nStatus: blocked after the rebase."))).not.toEqual([]);
+    // A blocking condition that is a real condition still counts when there is no later finished status.
+    expect(gate.planProblems(plan({}, "Blocking condition: `no subagents`")).join(" ")).toContain("blocking condition");
   });
 
   it("REVIEW_NONE: a review skipped on purpose (review: none) may say so; a blocked status still fails", () => {
@@ -84,6 +97,11 @@ describe("plan-gate", () => {
       "Status: built. Reviewed inline; the owner's review of the PR is still ahead.",
       "- Follow-up review recommended: false.",
       "- Unblocked earlier: status was blocked in the first attempt.",
+      "Status: built.\nBlocking condition: none.",
+      "- Blocking condition: `none`",
+      "- Edge-case lens review skipped (diff too small); blind review ran.",
+      "- Review: 4 findings. A follow-up review is still owed for the live Control UI render.",
+      "- The quick review itself is still owed after the live check.",
     ];
     for (const result of fine) expect(gate.planProblems(plan({}, result)), result).toEqual([]);
   });
@@ -138,14 +156,14 @@ describe("plan-gate", () => {
       return dir;
     }
 
-    it("nothing changed: ok; old bad plans are not flagged; in-progress plans are ignored even if bad", async () => {
+    it("nothing changed: nothing to say; in-progress plans are ignored even if bad", async () => {
       const dir = await repo();
-      expect(await gate(dir, ["--changed", "base"])).toEqual({ code: 0, stdout: "plan-gate: no finished plan changed since base\n" });
+      expect(await gate(dir, ["--changed", "base"])).toEqual({ code: 0, stdout: "plan-gate: no plan became finished (done or built) since base\n" });
       put(dir, "wip-plan.md", plan({ status: "in-progress", review: "''" }, "Status: blocked"));
       expect((await gate(dir, ["--changed", "base"])).code).toBe(0);
     });
 
-    it("a committed, a staged-and-edited, and an untracked finished plan are each checked; a bad one makes the run exit 1", async () => {
+    it("a committed and an untracked new finished plan are each checked; a bad one makes the run exit 1", async () => {
       const dir = await repo();
       put(dir, "new-good-plan.md", plan());
       await git(dir, "add", "-A");
@@ -159,21 +177,37 @@ describe("plan-gate", () => {
       out = await gate(dir, ["--changed", "base"]);
       expect(out.code).toBe(1);
       expect(out.stdout).toMatch(/ticket10-plan\.md: not ok: review is empty/);
-
-      rmSync(join(dir, "_bmad-output", "backlog", "ticket10-plan.md"));
-      put(dir, "old-bad-plan.md", `${BAD}\nedited\n`); // an old bad plan that a batch touches is checked
-      out = await gate(dir, ["--changed", "base"]);
-      expect(out.code).toBe(1);
-      expect(out.stdout).toContain("old-bad-plan.md: not ok");
     });
 
-    it("a finished plan that is only moved to a new name is still checked (a rename is not a way around the gate)", async () => {
+    it("HISTORY: a plan already done or built at the base that keeps its status is never newly red, edited or renamed; an old bad plan not touched is not looked at", async () => {
       const dir = await repo();
-      await git(dir, "mv", "_bmad-output/backlog/old-bad-plan.md", "_bmad-output/backlog/moved-plan.md");
+      put(dir, "old-bad-plan.md", `${BAD}\nedited\n`); // edited, still done: history stays as it is
+      await git(dir, "add", "-A");
+      await git(dir, "commit", "-q", "-m", "edit");
+      await git(dir, "mv", "_bmad-output/backlog/old-good-plan.md", "_bmad-output/backlog/moved-good-plan.md");
+      await git(dir, "mv", "_bmad-output/backlog/old-bad-plan.md", "_bmad-output/backlog/moved-bad-plan.md"); // renamed (and edited), still done
       await git(dir, "commit", "-q", "-m", "move");
       const out = await gate(dir, ["--changed", "base"]);
+      expect(out).toEqual({ code: 0, stdout: "plan-gate: no plan became finished (done or built) since base\n" });
+    });
+
+    it("BECOMES_FINISHED: a plan that was in progress at the base and is done and bad now is red, also when it was renamed; problems the base already had are not repeated", async () => {
+      const dir = await repo();
+      put(dir, "wip-plan.md", plan({ status: "in-progress", review: "''" }, "Status: blocked"));
+      put(dir, "built-bad-plan.md", plan({ status: "built", review: "''" }, "Status: blocked")); // built at the base, with its problems
+      await git(dir, "add", "-A");
+      await git(dir, "commit", "-q", "-m", "wip");
+      await git(dir, "branch", "-f", "base");
+      put(dir, "wip-plan.md", BAD); // becomes done
+      put(dir, "built-bad-plan.md", plan({ status: "done", review: "''" }, "Status: blocked\nReview not run.")); // built -> done: only the new problem counts
+      await git(dir, "add", "-A");
+      await git(dir, "mv", "_bmad-output/backlog/wip-plan.md", "_bmad-output/backlog/renamed-plan.md");
+      await git(dir, "commit", "-q", "-m", "finish");
+      const out = await gate(dir, ["--changed", "base"]);
       expect(out.code).toBe(1);
-      expect(out.stdout).toContain("moved-plan.md: not ok");
+      expect(out.stdout).toMatch(/renamed-plan\.md: not ok: review is empty/);
+      expect(out.stdout).toMatch(/built-bad-plan\.md: not ok: the Auto Run Result says the review did not run\n/);
+      expect(out.stdout).not.toMatch(/built-bad-plan\.md: not ok: .*review is empty/);
     });
 
     it("an unknown base exits 2 in CI and is skipped with a note elsewhere; a missing base argument is a usage error", async () => {
