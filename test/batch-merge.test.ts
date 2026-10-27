@@ -140,7 +140,8 @@ function run(env: Record<string, string | undefined> = {}): Promise<Run> {
     GITHUB_REPOSITORY: REPO,
     GITHUB_API_URL: base,
     GITHUB_STEP_SUMMARY: summaryFile,
-    BATCH_MERGE_UNKNOWN_DELAY_MS: "10",
+    BATCH_MERGE_WAIT_MS: "30",
+    BATCH_MERGE_POLL_MS: "10",
     ...env,
   };
   for (const key of Object.keys(merged)) if (merged[key] === undefined) delete merged[key];
@@ -228,11 +229,9 @@ describe("batch-merge", () => {
 
   it.each([
     ["unknown", /mergeable state is "unknown"/],
-    ["blocked", /mergeable state is "blocked"/],
     ["dirty", /mergeable state is "dirty"/],
     ["behind", /mergeable state is "behind"/],
-    ["unstable", /mergeable state is "unstable"/],
-  ])("NOT_CLEAN: mergeable state %s is skipped without a merge", async (state, reason) => {
+  ])("NOT_CLEAN: mergeable state %s is skipped without a merge and without reading the checks", async (state, reason) => {
     pulls = [pull(20, { mergeable_state: state })];
     const result = await run();
     expect(result).toMatchObject({ code: 0, stderr: "" });
@@ -240,6 +239,19 @@ describe("batch-merge", () => {
     expect(result.stdout).toMatch(/^batch-merge: #20 skipped: /);
     expect(merges()).toEqual([]);
     expect(seen()).not.toContain(`GET /commits/${shaOf(20)}/check-runs`);
+  });
+
+  it.each([
+    ["blocked", /mergeable state is "blocked"/],
+    ["unstable", /mergeable state is "unstable"/],
+  ])("NOT_CLEAN: mergeable state %s with green final checks is skipped at once (read once, no wait)", async (state, reason) => {
+    pulls = [pull(20, { mergeable_state: state })];
+    const result = await run();
+    expect(result).toMatchObject({ code: 0, stderr: "" });
+    expect(result.stdout).toMatch(reason);
+    expect(result.stdout).not.toContain("not final");
+    expect(merges()).toEqual([]);
+    expect(seen().filter((entry) => entry === "GET /pulls/20")).toHaveLength(1);
   });
 
   it("UNKNOWN: a missing mergeable state counts as unknown", async () => {
@@ -275,8 +287,98 @@ describe("batch-merge", () => {
     await run();
     expect(seen().filter((entry) => entry === "GET /pulls/20")).toHaveLength(1);
     calls = [];
-    expect((await run({ BATCH_MERGE_UNKNOWN_DELAY_MS: "soon" })).code).toBe(2);
+    expect((await run({ BATCH_MERGE_POLL_MS: "soon" })).code).toBe(2);
     expect(calls).toEqual([]);
+  });
+
+  describe("FINAL STATE (ticket 3.21 d): a ready or CI trigger waits, within a bound, until the state and the checks are final", () => {
+    const running = { total_count: 1, check_runs: [{ name: "check", app: { slug: "github-actions" }, status: "in_progress", conclusion: null }] };
+    const reads = () => seen().filter((entry) => entry === "GET /pulls/20").length;
+
+    it("READY_RACE: draft false but the state still says draft, then unknown, then clean with CI running, then green is merged in that one run", async () => {
+      pulls = [pull(20)];
+      sequences.set(`GET /repos/${REPO}/pulls/20`, [[200, pull(20, { mergeable_state: "draft" })], [200, pull(20, { mergeable_state: "unknown" })], [200, pull(20)]]);
+      sequences.set(checkPath(20), [[200, running], [200, green]]);
+      const result = await run({ BATCH_MERGE_WAIT_MS: "100" });
+      expect(result).toMatchObject({ code: 0, stderr: "" });
+      expect(result.stdout).toContain("batch-merge: #20 merged: at fedcba9");
+      expect(merges()).toHaveLength(1);
+      expect(reads()).toBeGreaterThanOrEqual(4);
+    });
+
+    it("STALE_DRAFT: draft false with the state draft that never settles is skipped after the bound, naming the re-reads", async () => {
+      pulls = [pull(20, { mergeable_state: "draft" })];
+      const result = await run();
+      expect(result).toMatchObject({ code: 0, stderr: "" });
+      expect(result.stdout).toMatch(/^batch-merge: #20 skipped: .*"draft".* \(not final after 3 re-reads\)/);
+      expect(reads()).toBe(4);
+      expect(merges()).toEqual([]);
+    });
+
+    it("A real draft (draft true) is skipped at once, not waited for", async () => {
+      pulls = [pull(20, { draft: true, mergeable_state: "draft" })];
+      const result = await run();
+      expect(result.stdout).toMatch(/^batch-merge: #20 skipped: draft/);
+      expect(reads()).toBe(1);
+    });
+
+    it("CHECK_NOT_STARTED: no check run yet, then the check running, then green, is merged", async () => {
+      pulls = [pull(20)];
+      sequences.set(checkPath(20), [[200, { total_count: 0, check_runs: [] }], [200, running], [200, green]]);
+      const result = await run();
+      expect(result.stdout).toBe("batch-merge: #20 merged: at fedcba9\n");
+    });
+
+    it("STATUS_PENDING: a pending commit status that turns success is merged; one that stays pending is skipped after the bound", async () => {
+      pulls = [pull(20)];
+      const pending = { state: "pending", total_count: 1, statuses: [{ state: "pending" }] };
+      const ok = { state: "success", total_count: 1, statuses: [{ state: "success" }] };
+      sequences.set(statusPath(20), [[200, pending], [200, ok]]);
+      expect((await run()).stdout).toBe("batch-merge: #20 merged: at fedcba9\n");
+      calls = [];
+      sequences.set(statusPath(20), [[200, pending]]);
+      const stuck = await run();
+      expect(stuck.stdout).toMatch(/commit status is "pending".*not final after 3 re-reads/);
+      expect(merges()).toEqual([]);
+    });
+
+    it("BLOCKED_BY_PENDING: the state blocked while a check runs is waited for; clean and green then merges", async () => {
+      pulls = [pull(20)];
+      sequences.set(`GET /repos/${REPO}/pulls/20`, [[200, pull(20, { mergeable_state: "blocked" })], [200, pull(20)]]);
+      sequences.set(checkPath(20), [[200, running], [200, green]]);
+      expect((await run()).stdout).toBe("batch-merge: #20 merged: at fedcba9\n");
+    });
+
+    it("FINAL_RED: a failed check, a failed status, or another red run is skipped at once, with no re-read", async () => {
+      pulls = [pull(20)];
+      answers.set(checkPath(20), [200, { total_count: 1, check_runs: [{ name: "check", app: { slug: "github-actions" }, status: "completed", conclusion: "failure" }] }]);
+      const result = await run();
+      expect(result.stdout).toMatch(/concluded "failure"/);
+      expect(result.stdout).not.toContain("not final");
+      expect(reads()).toBe(1);
+    });
+
+    it("BOUND: the wait is a budget of re-reads for the whole run, shared by every pull request; a bad setting exits 2 before any request", async () => {
+      pulls = [pull(20, { mergeable_state: "unknown" }), pull(21, { mergeable_state: "unknown" })];
+      const result = await run();
+      expect(result.code).toBe(0);
+      expect(reads()).toBe(4); // 1 read + 3 re-reads for #20
+      expect(seen().filter((entry) => entry === "GET /pulls/21")).toHaveLength(1); // #21 gets the one read, the budget is spent
+      expect(merges()).toEqual([]);
+      calls = [];
+      for (const env of [{ BATCH_MERGE_WAIT_MS: "soon" }, { BATCH_MERGE_POLL_MS: "-1" }]) expect((await run(env)).code).toBe(2);
+      expect(calls).toEqual([]);
+      calls = [];
+      pulls = [pull(20, { mergeable_state: "unknown" })];
+      await run({ BATCH_MERGE_WAIT_MS: "0", BATCH_MERGE_POLL_MS: "0" });
+      expect(reads()).toBe(1);
+    });
+
+    it("GUARDS_FIRST: a pull request that fails a structural guard (here a fork head) makes no check calls even with a clean state", async () => {
+      pulls = [pull(20, { head: { ref: "claude/x", sha: shaOf(20), repo: { full_name: "evil/openclaw-all-cli" } } })];
+      await run({ BATCH_PR: "20" });
+      expect(seen().filter((entry) => entry.includes("/commits/"))).toEqual([]);
+    });
   });
 
   const checkCases: [string, unknown, unknown, RegExp][] = [

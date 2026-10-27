@@ -12,11 +12,15 @@
 // first), reads each fresh, and merges it only when every guard holds (method `merge`, expected head sha = the head read). A PR
 // that fails a guard is skipped, also one that changes a protected file (.github/, scripts/, _bmad/, .claude/, .agents/, docs/agents/,
 // AGENTS.md, SECURITY.md, or the scripts, publishConfig, name, bin, or a lost `files` entry of package.json): it stays open for the
-// owner. GitHub computes `mergeable_state` lazily: an `unknown` PR is re-read up to 3 more times, 10 s apart
-// (BATCH_MERGE_UNKNOWN_DELAY_MS, for tests), then skipped; the next trigger retries.
+// owner. A PR whose state is not final yet is re-read until it is, within a bound (ticket 3.21 d): GitHub computes `mergeable_state`
+// lazily and can still answer `unknown`, or `draft` for a PR that was just marked ready (batch PR #41's `ready_for_review` run found
+// that and merged nothing), and CI may still be running. Not final: that mergeable state, no `check` run yet, a run that is not
+// completed, a commit status `pending`. The wait is a budget of re-reads for the whole run (BATCH_MERGE_WAIT_MS / BATCH_MERGE_POLL_MS,
+// default 300000 / 15000, so about 5 minutes); when it is spent the PR is skipped with "after N re-reads" and the next trigger retries.
+// A final state that is not clean or green (dirty, behind, a red check) is skipped at once.
 //
 // Environment: GH_TOKEN (the app's installation token), AGENT_LOGIN (`<app-slug>[bot]`), GITHUB_REPOSITORY, BATCH_PR (optional),
-// BATCH_MERGE_UNKNOWN_DELAY_MS (test knob, default 10000), GITHUB_API_URL (default https://api.github.com), GITHUB_GRAPHQL_URL (unused), GITHUB_STEP_SUMMARY (the Markdown summary).
+// BATCH_MERGE_WAIT_MS / BATCH_MERGE_POLL_MS (the wait budget and the pause between re-reads; test knobs), GITHUB_API_URL (default https://api.github.com), GITHUB_GRAPHQL_URL (unused), GITHUB_STEP_SUMMARY (the Markdown summary).
 //
 // Output: one line per PR, `batch-merge: #N merged|skipped|failed: <reason>`. The token is never printed (every message goes
 // through the client's `clean`); the summary and the log hold no PR title or body. Exit 0 unless a merge call failed or the list
@@ -27,8 +31,8 @@ import { checkGreen, checkMergeable, makeClient, WriteError } from "./agent-writ
 
 const DEFAULT_API = "https://api.github.com";
 const BATCH_TITLE = "Issue batch";
-const UNKNOWN_RETRIES = 3; // re-reads of a PR whose mergeable state GitHub has not computed yet
-const UNKNOWN_DELAY_MS = 10_000;
+const WAIT_MS = 300_000; // the whole run's budget for re-reading PRs that are not final yet
+const POLL_MS = 15_000;
 
 const MAX_LIST_PAGES = 20; // 2000 open pull requests
 const MAX_FILE_PAGES = 30; // GitHub lists at most 3000 files of a pull request
@@ -49,9 +53,13 @@ function readConfig(env) {
   const api = ((env.GITHUB_API_URL ?? "").trim() || DEFAULT_API).replace(/\/+$/, "");
   const rawPr = (env.BATCH_PR ?? "").trim();
   if (rawPr !== "" && !/^[1-9]\d{0,9}$/.test(rawPr)) throw new WriteError("BATCH_PR must be a pull request number", { code: 2 });
-  const delay = (env.BATCH_MERGE_UNKNOWN_DELAY_MS ?? "").trim();
-  if (delay !== "" && !/^\d{1,6}$/.test(delay)) throw new WriteError("BATCH_MERGE_UNKNOWN_DELAY_MS must be a number of milliseconds", { code: 2 });
-  return { unknownDelayMs: delay === "" ? UNKNOWN_DELAY_MS : Number(delay), token: env.GH_TOKEN.trim(), repo, login, api, graphql: `${api}/graphql`, hint: rawPr === "" ? null : Number(rawPr) };
+  const times = {};
+  for (const [name, key, fallback] of [["BATCH_MERGE_WAIT_MS", "waitMs", WAIT_MS], ["BATCH_MERGE_POLL_MS", "pollMs", POLL_MS]]) {
+    const value = (env[name] ?? "").trim();
+    if (value !== "" && !/^\d{1,7}$/.test(value)) throw new WriteError(`${name} must be a number of milliseconds`, { code: 2 });
+    times[key] = value === "" ? fallback : Number(value);
+  }
+  return { ...times, token: env.GH_TOKEN.trim(), repo, login, api, graphql: `${api}/graphql`, hint: rawPr === "" ? null : Number(rawPr) };
 }
 
 /** The refusal's text without its `PR #N` lead, so a line reads `#N skipped: <reason>`. */
@@ -70,6 +78,34 @@ function changedPackageFields(before, after) {
   const kept = new Set((Array.isArray(after.files) ? after.files : []).map(stable));
   if ((Array.isArray(before.files) ? before.files : []).some((entry) => !kept.has(stable(entry)))) changed.push("files");
   return changed;
+}
+
+/**
+ * Whether GitHub has not settled the pull request's own state yet: `mergeable_state` missing or `unknown` (computed lazily), or
+ * `draft` on a PR that is no longer a draft (right after `ready_for_review` the old value can linger).
+ */
+const stateUnsettled = (pr) => pr.draft !== true && (!pr.mergeable_state || pr.mergeable_state === "unknown" || pr.mergeable_state === "draft");
+
+/**
+ * Whether the checks of the head can still change: no `check` run from GitHub Actions yet (CI has not started), a run that is not
+ * completed, or a pending commit status. A shape this cannot read is not "unsettled": the guards refuse it.
+ */
+function checksUnsettled(runs, status) {
+  if (!Array.isArray(runs?.check_runs) || !Number.isSafeInteger(runs.total_count) || runs.total_count > runs.check_runs.length) return false;
+  if (!runs.check_runs.some((run) => run?.name === "check" && run.app?.slug === "github-actions")) return true;
+  if (runs.check_runs.some((run) => run?.status !== "completed")) return true;
+  return status !== null && typeof status === "object" && Number.isSafeInteger(status.total_count) && status.total_count > 0 && status.state === "pending";
+}
+
+/** Every guard of checkMergeable except the mergeable state (a PR that fails one is final: its checks are not worth reading). */
+function passesStructure(pr, number, sha, config) {
+  try {
+    checkMergeable({ ...pr, mergeable_state: "clean" }, { pr: number, sha }, config);
+    return true;
+  } catch (error) {
+    if (error instanceof WriteError && error.refused) return false;
+    throw error;
+  }
 }
 
 /** Whether a pull request is an open `Issue batch` PR of the app (the list filter, also used for the hinted one). */
@@ -150,16 +186,37 @@ export async function run(env, log = () => {}) {
     }
   }
 
+  // The re-read budget is shared by the whole run: a few PRs never stretch it, and the job's timeout stays out of reach.
+  let rereads = config.pollMs > 0 ? Math.floor(config.waitMs / config.pollMs) : 0;
+  const sleep = (ms) => new Promise((done) => setTimeout(done, ms));
   for (const number of order) {
     let merging = false; // set at the merge call: an error there leaves the outcome unknown
+    let waited = 0;
+    let settling = false;
     try {
-      let pr = (await client.rest("GET", `${base}/pulls/${number}`)).data;
-      // GitHub computes the mergeable state lazily (right after CI it is often `unknown`): ask again a few times before skipping.
-      for (let retry = 0; retry < UNKNOWN_RETRIES && pr?.mergeable_state === "unknown" && pr.draft !== true; retry++) {
-        await new Promise((done) => setTimeout(done, config.unknownDelayMs));
+      let pr;
+      let runs = null;
+      let status = null;
+      for (;;) {
         pr = (await client.rest("GET", `${base}/pulls/${number}`)).data;
+        if (pr === null || typeof pr !== "object" || Array.isArray(pr)) throw new WriteError(`PR #${number}: GitHub's answer could not be read`, { refused: true });
+        if (pr.draft === true) break;
+        runs = null;
+        status = null;
+        settling = stateUnsettled(pr);
+        const sha = typeof pr.head?.sha === "string" ? pr.head.sha.toLowerCase() : "";
+        // The checks are read only for a PR that passes every guard but the mergeable state, and only where they can still decide it:
+        // `clean`, or `blocked`/`unstable` (pending checks give those). `dirty`, `behind`, and the like are final without them.
+        if (!settling && /^[0-9a-f]{40}$/.test(sha) && ["clean", "blocked", "unstable"].includes(pr.mergeable_state) && passesStructure(pr, number, sha, config)) {
+          runs = (await client.rest("GET", `${base}/commits/${sha}/check-runs?per_page=100`)).data;
+          status = (await client.rest("GET", `${base}/commits/${sha}/status`)).data;
+          settling = checksUnsettled(runs, status);
+        }
+        if (!settling || rereads <= 0) break;
+        rereads--;
+        waited++;
+        await sleep(config.pollMs);
       }
-      if (pr === null || typeof pr !== "object" || Array.isArray(pr)) throw new WriteError(`PR #${number}: GitHub's answer could not be read`, { refused: true });
       if (pr.draft === true) {
         add(number, "skipped", "draft");
         continue;
@@ -167,10 +224,18 @@ export async function run(env, log = () => {}) {
       const sha = typeof pr.head?.sha === "string" ? pr.head.sha.toLowerCase() : "";
       if (!/^[0-9a-f]{40}$/.test(sha)) throw new WriteError(`PR #${number}: its head sha could not be read`, { refused: true });
       const op = { pr: number, sha };
-      checkMergeable(pr, op, config);
-      const runs = (await client.rest("GET", `${base}/commits/${sha}/check-runs?per_page=100`)).data;
-      const status = (await client.rest("GET", `${base}/commits/${sha}/status`)).data;
-      checkGreen(runs, status, op);
+      try {
+        checkMergeable(pr, op, config);
+        if (runs === null) {
+          runs = (await client.rest("GET", `${base}/commits/${sha}/check-runs?per_page=100`)).data;
+          status = (await client.rest("GET", `${base}/commits/${sha}/status`)).data;
+        }
+        checkGreen(runs, status, op);
+      } catch (error) {
+        // Say that the wait ran out, so a log reader knows the state was not final rather than wrong.
+        if (error instanceof WriteError && error.refused && settling && waited > 0) error.message += ` (not final after ${waited} re-read${waited === 1 ? "" : "s"})`;
+        throw error;
+      }
       await checkUnprotected(client, base, pr, number, sha);
       merging = true;
       const { data } = await client.rest("PUT", `${base}/pulls/${number}/merge`, { merge_method: "merge", sha });
