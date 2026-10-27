@@ -4,6 +4,8 @@ What changed for people who use the plugin, newest first. Format: [Keep a Change
 
 ## Unreleased
 
+## 0.1.4 - 2026-10-27
+
 ### Changed
 
 - Cursor models show as "OAC / <name>" (for example "OAC / GPT-5.3 Codex") in the model picker and model lists, so they stand apart from another provider's models. Model IDs and refs such as `cursor-cli/auto` are unchanged. ([#37](https://github.com/xtimor/openclaw-all-cli/issues/37))
