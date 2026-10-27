@@ -19,7 +19,11 @@
 //   {op:"pr_edit", pr, title?, body?}                      only a pull request by AGENT_LOGIN
 //   {op:"merge", pr, sha}                                  method merge; see checkMergeable and checkGreen
 //   {op:"pr_close", pr}                                    closes only an open draft titled `Issue batch (in progress)` by AGENT_LOGIN from a `claude/` branch of this repository,
-//                                                          not updated for 2 hours (runs refresh their draft at least every 30 minutes)
+//                                                          not updated for 2 hours (runs refresh their draft at least every 30 minutes), and only when its
+//                                                          branch holds no built ticket (a plan at `done`/`built`) or another open batch PR of the app
+//                                                          already contains its head (the work is resumed there, never lost: see builtPlans and requireCarried).
+//                                                          Every pr_close target is read and checked (idle, author, title, built work) before ANY operation of the list is applied: the
+//                                                          comment and pr_edit that precede it in the same list refresh `updated_at`, which would otherwise make the idle check fail.
 // Everything is validated first; nothing is applied when anything is refused. Applying stops at the first failure.
 //
 // Environment: AGENT_WRITE_OPS, GH_TOKEN (the app's installation token), GITHUB_REPOSITORY, GITHUB_ACTOR (the dispatcher),
@@ -33,6 +37,7 @@
 import { appendFileSync, realpathSync } from "node:fs";
 import { pathToFileURL } from "node:url";
 import { parseOwners } from "./issue-flow/transitions.mjs";
+import { planStatus } from "./plan-gate.mjs";
 
 const DEFAULT_API = "https://api.github.com";
 const REQUEST_TIMEOUT_MS = 30_000;
@@ -44,6 +49,11 @@ const BATCH_TITLE = "Issue batch";
 const CLAIM_TITLE = "Issue batch (in progress)"; // a run's draft before it finishes; an owner-paused batch has another title
 const BASE_BRANCH = "main";
 const IDLE_MS = 2 * 60 * 60 * 1000; // a draft batch PR untouched this long counts as interrupted
+const PLAN_PATH = /^_bmad-output\/.+-plan\.md$/; // a ticket's plan; its frontmatter `status` is the ticket's status of record
+const BUILT_STATUSES = new Set(["done", "built"]);
+const MAX_FILE_PAGES = 30; // GitHub lists at most 3000 files of a pull request
+const MAX_PLAN_READS = 100;
+const MAX_CARRIERS = 10; // other open batch PRs compared with an idle draft
 const CLOSE_REASONS = new Set(["completed", "not_planned", "duplicate"]);
 const FORBIDDEN_LABEL = "status:approved";
 // Only the project's own label families: a typo or a lookalike never creates a label, and "." or ".." never reaches a URL.
@@ -221,6 +231,52 @@ export function checkClosable(pr, op, { repo, login, now = Date.now }) {
   if (now() - updated < IDLE_MS) throw refuse(`PR #${op.pr}: updated less than 2 hours ago; it may still be in use`);
 }
 
+/**
+ * The plan files (a ticket's `_bmad-output/**\/*-plan.md`) a pull request changes whose status at its head is `done` or `built`: the
+ * built tickets of an idle draft. Part of the pre-apply check of `pr_close`; fails closed (an unreadable list or plan refuses).
+ */
+export async function builtPlans(client, pr, op, { repo }) {
+  const base = `/repos/${repo}`;
+  const sha = typeof pr.head?.sha === "string" ? pr.head.sha.toLowerCase() : "";
+  if (!/^[0-9a-f]{40}$/.test(sha)) throw refuse(`PR #${op.pr}: its head sha could not be read`);
+  const plans = [];
+  for (let page = 1; ; page++) {
+    const files = (await client.rest("GET", `${base}/pulls/${op.pr}/files?per_page=100&page=${page}`)).data;
+    if (!Array.isArray(files)) throw refuse(`PR #${op.pr}: its changed files could not be read`);
+    for (const file of files) if (typeof file?.filename === "string" && file.status !== "removed" && PLAN_PATH.test(file.filename)) plans.push(file.filename);
+    if (files.length < 100) break;
+    if (page >= MAX_FILE_PAGES) throw refuse(`PR #${op.pr}: too many changed files to verify`);
+  }
+  if (plans.length > MAX_PLAN_READS) throw refuse(`PR #${op.pr}: too many plan files to verify (${plans.length})`);
+  const built = [];
+  for (const path of plans) {
+    const { data } = await client.rest("GET", `${base}/contents/${path.split("/").map(encodeURIComponent).join("/")}?ref=${sha}`);
+    if (!isObject(data) || typeof data.content !== "string") throw refuse(`PR #${op.pr}: the plan ${path} could not be read`);
+    if (BUILT_STATUSES.has(planStatus(Buffer.from(data.content, "base64").toString("utf8")))) built.push(path);
+  }
+  return built;
+}
+
+/**
+ * An idle draft that holds built tickets is resumed, never closed (ticket 3.21: the run that found draft #41 with six done tickets
+ * set out to close it and rebuild them). Run at apply time, right before the close: another open batch PR of the app (a `claude/`
+ * branch of this repository) must already contain the draft's head `sha` (the one checked before the list was applied), so the work
+ * lives on. It is read now because the PR that carries it may be created by an earlier operation of the same list.
+ */
+export async function requireCarried(client, sha, built, op, { repo, login }) {
+  const base = `/repos/${repo}`;
+  const listed = (await client.rest("GET", `${base}/pulls?state=open&per_page=100`)).data;
+  const carriers = (Array.isArray(listed) ? listed : [])
+    .filter((other) => other?.number !== op.pr && lower(other?.user?.login) === lower(login) && typeof other?.head?.ref === "string" && other.head.ref.startsWith(HEAD_PREFIX) && lower(other.head.repo?.full_name) === lower(repo) && /^[0-9a-f]{40}$/i.test(String(other.head.sha)))
+    .slice(0, MAX_CARRIERS);
+  for (const other of carriers) {
+    const { data } = await client.rest("GET", `${base}/compare/${sha}...${String(other.head.sha).toLowerCase()}`);
+    if (data?.status === "ahead" || data?.status === "identical") return;
+  }
+  const names = built.slice(0, 3).join(", ");
+  throw refuse(`PR #${op.pr}: its branch holds built tickets (${names}${built.length > 3 ? `, and ${built.length - 3} more` : ""}) and no other open batch PR contains it; resume it on your own branch instead of closing it (docs/agents/implement.md)`);
+}
+
 const PASSING = new Set(["success", "skipped", "neutral"]);
 
 /**
@@ -321,8 +377,19 @@ function handlers(config, client) {
     if (data.pull_request !== undefined) throw refuse(`#${number} is a pull request; the agents never close or reopen one`);
   };
   const readPull = async (number) => (await client.rest("GET", `${base}/pulls/${number}`)).data ?? {};
+  /** pr number -> {sha, built}: what `prepare` found before anything was applied. */
+  const closing = new Map();
 
   return {
+    /** Reads and checks every `pr_close` target before the first operation is applied; a refusal here applies nothing. */
+    async prepare(ops) {
+      for (const op of ops) {
+        if (op.op !== "pr_close" || closing.has(op.pr)) continue;
+        const pr = await readPull(op.pr);
+        checkClosable(pr, op, config);
+        closing.set(op.pr, { sha: lower(pr.head?.sha), built: await builtPlans(client, pr, op, config) });
+      }
+    },
     async comment(op) {
       const { data } = await client.rest("POST", `${base}/issues/${op.issue}/comments`, { body: op.body });
       return { target: `#${op.issue}`, result: `comment ${data?.id ?? "?"} created` };
@@ -387,7 +454,13 @@ function handlers(config, client) {
       return { target: `PR #${op.pr}`, result: `edited ${Object.keys(body).join(" and ")}` };
     },
     async pr_close(op) {
-      checkClosable(await readPull(op.pr), op, config);
+      // The idle, author, title, and built-work checks ran before the list was applied (`prepare`): operations before this one in
+      // the list (a comment, a pr_edit) refresh `updated_at`. Here only that the PR is still the one that was checked.
+      const checked = closing.get(op.pr);
+      if (checked === undefined) throw new WriteError(`PR #${op.pr}: it was not checked before the list was applied`);
+      const pr = await readPull(op.pr);
+      if (pr.state !== "open" || pr.draft !== true || lower(pr.head?.sha) !== checked.sha) throw refuse(`PR #${op.pr}: it changed since it was checked (closed, ready, or a new push)`);
+      if (checked.built.length > 0) await requireCarried(client, checked.sha, checked.built, op, config);
       await client.rest("PATCH", `${base}/pulls/${op.pr}`, { state: "closed" });
       return { target: `PR #${op.pr}`, result: "closed" };
     },
@@ -452,6 +525,13 @@ export async function run(env, log = () => {}, now = Date.now) {
     rows.push(row);
     log(`${row.op} ${row.target}: ${row.result}`);
   };
+  try {
+    await handle.prepare(ops);
+  } catch (error) {
+    const safe = error instanceof WriteError;
+    const reason = safe ? client.clean(error.message) : "unexpected error";
+    return finish(1, safe && error.refused ? "Refused, nothing applied" : "Failed before applying anything", reason);
+  }
   for (const [i, op] of ops.entries()) {
     try {
       add({ op: op.op, ...(await handle[op.op](op)) });

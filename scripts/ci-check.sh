@@ -2,7 +2,7 @@
 # Every check a pull request must pass, in one place: `npm run ci` locally, the same script in GitHub Actions.
 # Agent-neutral and fail-fast. Needs no Cursor login; live tests (`npm run test:live`) are not part of it.
 #
-#   isolated Node 24 + OpenClaw in .spike/, npm ci, typecheck, unit tests, build,
+#   isolated Node 24 + OpenClaw in .spike/, npm ci, the plan gate, typecheck, unit tests, build,
 #   the package allowlist test (with dist/), npm pack --dry-run, and an install smoke check of the packed tarball in a throwaway OpenClaw state.
 set -euo pipefail
 
@@ -20,6 +20,11 @@ OPENCLAW_BIN="$ROOT/.spike/openclaw/node_modules/.bin/openclaw"
 
 step "Install dependencies (npm ci)"
 npm ci --no-audit --no-fund
+
+# A plan that claims done or built must not say blocked or review not run (ticket 3.21 e). Compares with origin/main; CI checks out
+# the whole history so the base exists. Locally without origin/main it prints a note and passes.
+step "Plan gate (finished plans changed since origin/main)"
+node scripts/plan-gate.mjs --changed origin/main
 
 step "Typecheck"
 npm run typecheck

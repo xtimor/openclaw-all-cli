@@ -6,7 +6,8 @@ name: Batch merge
 # scripts/agent-write.mjs): open, ready, by the app, a `claude/` head in this repository, base main, title `Issue batch...`,
 # mergeable state clean, the `check` run succeeded, every other run and the commit status green, merged at the head sha it read.
 # It only merges: no comment, label, close, or edit. Design: docs/agents/implement.md, docs/agents/identity.md.
-# Triggers: CI completed, a pull request marked ready, hourly (a trigger that came too early is retried), and by hand.
+# Triggers: CI completed, a pull request marked ready, hourly (the backstop), and by hand. A trigger that comes before GitHub has settled
+# the pull request (mergeable state still unknown or draft, CI still running) waits for it inside the script, about 5 minutes at most.
 # `workflow_run` and `schedule` run from the default branch; `pull_request_target` runs the workflow file of the pull request's
 # base branch. So a pull request cannot change what runs; the `main`-only `if` and the Environment `agent` (deployment branches:
 # only `main`) that holds the app's key are what stop other bases. Anyone can open a fork pull request that triggers
