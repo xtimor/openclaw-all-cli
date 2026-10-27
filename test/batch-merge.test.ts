@@ -342,6 +342,15 @@ describe("batch-merge", () => {
       expect(merges()).toEqual([]);
     });
 
+    it("RED_AND_RUNNING: a run that already failed makes the answer final even while another run is still going: no wait", async () => {
+      pulls = [pull(20)];
+      answers.set(checkPath(20), [200, { total_count: 2, check_runs: [{ name: "check", app: { slug: "github-actions" }, status: "completed", conclusion: "failure" }, { name: "lint", status: "in_progress", conclusion: null }] }]);
+      const result = await run();
+      expect(result.stdout).toMatch(/concluded "failure"/);
+      expect(result.stdout).not.toContain("not final");
+      expect(reads()).toBe(1);
+    });
+
     it("BLOCKED_BY_PENDING: the state blocked while a check runs is waited for; clean and green then merges", async () => {
       pulls = [pull(20)];
       sequences.set(`GET /repos/${REPO}/pulls/20`, [[200, pull(20, { mergeable_state: "blocked" })], [200, pull(20)]]);

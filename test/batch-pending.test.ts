@@ -32,6 +32,7 @@ function run(args: string[], input = "{}"): Promise<Out> {
     const child = execFile("bash", [SCRIPT, ...args], { env: { ...process.env, OAC_BATCH_MARKER: marker }, timeout: 20_000 }, (error, stdout, stderr) => {
       done({ code: error ? (typeof error.code === "number" ? error.code : 1) : 0, stdout, stderr });
     });
+    child.stdin?.on("error", () => {}); // a command that exits without reading the hook input closes the pipe
     child.stdin?.end(input);
   });
 }

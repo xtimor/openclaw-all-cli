@@ -59,6 +59,11 @@ describe("plan-gate", () => {
     }
   });
 
+  it("REVIEW_NONE: a review skipped on purpose (review: none) may say so; a blocked status still fails", () => {
+    expect(gate.planProblems(plan({ review: "'none'" }, "Status: built. Review: skipped (none was asked for)."))).toEqual([]);
+    expect(gate.planProblems(plan({ review: "'none'" }, "Status: blocked\nReview: skipped")).join(" ")).toContain("says the status is blocked");
+  });
+
   it("STATUS: a plan that is not done or built, or carries blocked_at / blocked_reason (a HALT wrote them), is refused", () => {
     for (const status of ["blocked", "in-progress", "in-review", "ready-for-dev", "draft", "dropped", "''"]) {
       expect(gate.planProblems(plan({ status })).join(" "), status).toContain("not done or built");

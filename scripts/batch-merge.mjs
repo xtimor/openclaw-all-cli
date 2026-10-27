@@ -88,10 +88,12 @@ const stateUnsettled = (pr) => pr.draft !== true && (!pr.mergeable_state || pr.m
 
 /**
  * Whether the checks of the head can still change: no `check` run from GitHub Actions yet (CI has not started), a run that is not
- * completed, or a pending commit status. A shape this cannot read is not "unsettled": the guards refuse it.
+ * completed, or a pending commit status. A shape this cannot read is not "unsettled": the guards refuse it. A run that already
+ * failed makes the answer final (red stays red; the guards say which run), so a red PR is never waited for.
  */
 function checksUnsettled(runs, status) {
   if (!Array.isArray(runs?.check_runs) || !Number.isSafeInteger(runs.total_count) || runs.total_count > runs.check_runs.length) return false;
+  if (runs.check_runs.some((run) => run?.status === "completed" && !["success", "skipped", "neutral"].includes(run.conclusion))) return false;
   if (!runs.check_runs.some((run) => run?.name === "check" && run.app?.slug === "github-actions")) return true;
   if (runs.check_runs.some((run) => run?.status !== "completed")) return true;
   return status !== null && typeof status === "object" && Number.isSafeInteger(status.total_count) && status.total_count > 0 && status.state === "pending";

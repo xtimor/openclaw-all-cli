@@ -9,7 +9,7 @@
 // One line per plan on stdout: `plan-gate: <path>: ok (<status>)` or `plan-gate: <path>: not ok: <reason>; <reason>`.
 // Exit 0 when every plan is ok, 1 when any is not, 2 on bad usage or an unreadable file. A plan is not ok when:
 //   - its status is not `done` or `built`, or `blocked_at`/`blocked_reason` are set (a HALT wrote them);
-//   - `review` is empty (the review step never started);
+//   - `review` is empty (the review step never started; `none`, asked for on purpose, is fine);
 //   - its `## Auto Run Result` says the status is blocked, names a blocking condition, or says the review did not run.
 // A review run in the build's own session (no subagents) counts as run when the plan says so. Plans are not scanned for
 // anything else: the gate answers "may this ticket be closed", not "is it good".
@@ -46,9 +46,10 @@ export function planProblems(text) {
   if (field(front, "blocked_reason") !== "" || field(front, "blocked_at") !== "") problems.push("the plan carries a blocked_reason or blocked_at");
   if (field(front, "review") === "") problems.push("review is empty: the review step never started");
   const result = autoRunResult(text);
+  const reviewSkippedOnPurpose = field(front, "review") === "none"; // `none` was asked for; the text then rightly says no review ran
   if (/^[\s>*_-]*status\W*blocked\b/im.test(result)) problems.push("the Auto Run Result says the status is blocked");
   if (/^[\s>*_-]*blocking condition\b/im.test(result)) problems.push("the Auto Run Result names a blocking condition");
-  if (REVIEW_NOT_RUN.some((pattern) => pattern.test(result))) problems.push("the Auto Run Result says the review did not run");
+  if (!reviewSkippedOnPurpose && REVIEW_NOT_RUN.some((pattern) => pattern.test(result))) problems.push("the Auto Run Result says the review did not run");
   return problems;
 }
 
