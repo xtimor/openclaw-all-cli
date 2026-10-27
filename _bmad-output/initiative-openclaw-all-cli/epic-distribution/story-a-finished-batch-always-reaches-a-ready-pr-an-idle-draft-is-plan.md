@@ -136,6 +136,19 @@ Decisions:
   - `[medium]` `[defer]` (a) wants the routine prompt to say the run ends only after the PR steps — only the owner can edit the routine; text given in `docs/issues.md`.
   - `[low]` `[reject]` (b) "closed only after merging its useful commits is not possible" could mean a nothing-built draft is also closed at once — implemented as merge first, close only on a conflict with nothing built; the ticket's wording allows this reading.
 
+### 2026-10-27 — Independent review of 9444917..HEAD (coordinator), all patched
+- verdicts: 9 findings — high 2, medium 3, low 4
+- findings:
+  - `[high]` `[patch]` the one-dispatch retire could never succeed: `pr_close` re-read the PR, whose `updated_at` the `comment` and `pr_edit` before it had refreshed, so the idle check refused — every `pr_close` target (idle, author, title, built plans) is now read and checked in `prepare` before any operation is applied; at the close only the carrier (made by the earlier `pr_create`) and an unchanged head are checked. Tests: `RETIRE_IN_ONE_DISPATCH` (the stub bumps `updated_at` after a write), a list refused whole when the pre-apply read is not idle, a changed head refused; mutation (idle re-check at the close) fails them.
+  - `[high]` `[patch]` plan-gate permanently failed a ticket blocked once and finished later: it read the first `## Auto Run Result` — now the last section whose heading starts with it, and in it the latest status line. Tests `SECTIONS` (two sections, and a block then a finished status in one section).
+  - `[medium]` `[patch]` false red CI on a PR that edits or renames a plan already done on `main`: `--changed` now uses rename detection, skips a plan finished at the merge base (same path or rename source) that keeps its status, and subtracts the problems a finished base already had; an unfinished base is judged in full. Tests `HISTORY`, `BECOMES_FINISHED`.
+  - `[medium]` `[patch]` over-broad phrases: `Blocking condition: none`, "Edge-case lens review skipped (diff too small); blind review ran", and "a follow-up review is still owed for ..." now pass; the gate trips on a sentence-level "Review not run/skipped", `no review ran`, `Status: blocked` as the latest status, or a real blocking condition. Tests in `NO_FALSE_POSITIVES` and `BACKLOG_CLASH`.
+  - `[low]` `[patch]` the docs gave two actions for a resumed plan at `done` that fails the gate — one now: block that issue for the owner with the printed reason (Before the batch 2.3, Built (resumed), Existing ticket); pinned in `agent-flow-docs`.
+  - `[low]` `[patch]` tests that did not test what they claimed: the `/pulls` mock returns the carrier only after the `POST` (`@created` answers), plan contents are asserted at `?ref=<head sha>`, the unused `contentsKey` is gone.
+  - `[low]` `[patch]` the Batch merge wait counted re-reads: now one `Date.now()` deadline (300 s default, under the 10-minute job timeout), a protected-file batch is skipped before waiting, and a PR with no check run at all waits only `BATCH_MERGE_NO_CHECKS_MS` (60 s). Tests `DEADLINE`, `PROTECTED_FIRST`, `NO_CHECKS`.
+  - `[low]` `[patch]` the resume steps used `FETCH_HEAD` and `origin/<head>`: one ref, `git fetch origin <head>:refs/remotes/origin/<head>` then `origin/<head>`; pinned.
+  - `[low]` `[patch]` "step 5" in Open the pull request step 1 pointed at the wrong step: now "step 3"; pinned.
+
 ## Design Notes
 
 - Resume merges the old branch into the session branch (`git merge --no-edit origin/<old>`): a run pushes only its session branch, so the old branch cannot be continued in place. Fast-forward when `main` did not move, a merge commit when it did; never a rebase or force-push. A conflict aborts: no built ticket on the old branch means close and rebuild as before, else report for the owner.
@@ -168,3 +181,10 @@ Decisions:
 **Not run:** any live check (a routine run with the checklist, a resumed idle draft through the real relay, the stop hook in a cloud session, the `Batch merge` wait on a runner); these need a real GitHub run.
 
 **Residual risks:** the stop hook is not enabled until the owner applies the snippet in `docs/issues.md`; the routine prompt is the owner's to edit; `Batch merge` still merges nothing for a batch that changes a protected file (this one does), so the owner merges this change.
+
+## Auto Run Result (independent review fixes)
+
+- Status: built. Nine findings of the coordinator's independent review are fixed, each with a test (see the triage log): the relay checks every `pr_close` target before applying any operation; `plan-gate` reads the last result section and its latest status, uses narrow sentence-level phrases, and in `--changed` flags only what a branch makes newly true; Batch merge waits on a clock deadline, skips a protected batch first, and bounds the no-check-runs wait; the resume docs use one ref and one action.
+- Follow-up review recommended: true (two high patches, a follow-up pass rule). The unverified risk: the new `prepare`/`requireCarried` split in `scripts/agent-write.mjs` and the `--changed` rename/base logic in `scripts/plan-gate.mjs` were written after the independent review and have had no independent re-read; each is pinned by tests that fail without it.
+- Verification: focused vitest files and `npm run ci`; the six done plans on `main` that fail the gate when named directly are not red under `--changed`.
+- Still unverified live: a routine run with the checklist, a resumed draft through the real relay, the stop hook, the Batch merge wait on a runner.
