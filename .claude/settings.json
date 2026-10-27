@@ -5,7 +5,9 @@
       "Bash(uv run */_bmad/scripts/*)",
       "Bash(scripts/agent-relay.sh *)",
       "Bash(bash scripts/agent-relay.sh *)",
-      "Bash(./scripts/agent-relay.sh *)"
+      "Bash(./scripts/agent-relay.sh *)",
+      "Bash(scripts/batch-pending.sh set *)",
+      "Bash(scripts/batch-pending.sh clear)"
     ]
   },
   "hooks": {
@@ -15,6 +17,16 @@
           {
             "type": "command",
             "command": "$CLAUDE_PROJECT_DIR/.claude/hooks/session-start.sh"
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "$CLAUDE_PROJECT_DIR/scripts/batch-pending.sh stop-hook"
           }
         ]
       }
