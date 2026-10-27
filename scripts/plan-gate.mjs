@@ -31,7 +31,7 @@ const PLAN_PATH = /^_bmad-output\/.+-plan\.md$/;
 // A sentence of its own: the start of a line (after a bullet or bold marks) or of a sentence.
 const SENTENCE = String.raw`(?:^|[.;]\s+)[\s>*_-]*`;
 const REVIEW_NOT_RUN = [
-  new RegExp(String.raw`${SENTENCE}review(?: step)?\W{0,4}(?:was |is |did )?not run\b(?=\s*(?:[.;,(]|$))`, "im"),
+  new RegExp(String.raw`${SENTENCE}review(?: step)?\W{0,4}(?:was |is |did |has )?not run\b(?=\s*(?:[.;,(]|$))`, "im"),
   new RegExp(String.raw`${SENTENCE}review\W{0,4}skipped(?=\s*(?:[.;]|$))`, "im"),
   new RegExp(String.raw`${SENTENCE}no review (?:ran|was run)\b`, "im"),
 ];
@@ -60,7 +60,7 @@ function autoRunResult(text) {
 /** The latest status word in a result section ("Status: built." gives "built"), or "" when it has no status line. */
 function latestStatus(result) {
   let word = "";
-  for (const match of result.matchAll(/^[\s>*_-]*status\W+([a-z][a-z-]*)/gim)) word = match[1].toLowerCase();
+  for (const match of result.matchAll(/^[\s>*_-]*status\s*:[\s*_`]*([a-z][a-z-]*)/gim)) word = match[1].toLowerCase();
   return word;
 }
 

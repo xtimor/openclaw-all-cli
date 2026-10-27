@@ -75,6 +75,11 @@ describe("plan-gate", () => {
     expect(gate.planProblems(plan({}, "Status: built. Review: inline.\nStatus: blocked after the rebase."))).not.toEqual([]);
     // A blocking condition that is a real condition still counts when there is no later finished status.
     expect(gate.planProblems(plan({}, "Blocking condition: `no subagents`")).join(" ")).toContain("blocking condition");
+    // Only "Status:" lines are status lines: a later "Status of the live check" does not hide a block.
+    expect(gate.planProblems(plan({}, "Status: blocked. Blocking condition: `no subagents`.\n- Status of the live check: not run.")).join(" ")).toContain("says the status is blocked");
+    expect(gate.planProblems(plan({}, "**Status:** `built`. Review: inline."))).toEqual([]);
+    // "has not run" is the review-not-run wording too.
+    expect(gate.planProblems(plan({}, "Status: built. Review has not run.")).join(" ")).toMatch(/review/i);
   });
 
   it("REVIEW_NONE: a review skipped on purpose (review: none) may say so; a blocked status still fails", () => {
