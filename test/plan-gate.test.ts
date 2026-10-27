@@ -59,6 +59,11 @@ describe("plan-gate", () => {
     }
   });
 
+  it("CRLF: a plan saved with Windows line endings reads the same", () => {
+    expect(gate.planProblems(plan().replaceAll("\n", "\r\n"))).toEqual([]);
+    expect(gate.planProblems(plan({ review: "''" }, "Status: blocked").replaceAll("\n", "\r\n")).length).toBeGreaterThan(0);
+  });
+
   it("REVIEW_NONE: a review skipped on purpose (review: none) may say so; a blocked status still fails", () => {
     expect(gate.planProblems(plan({ review: "'none'" }, "Status: built. Review: skipped (none was asked for)."))).toEqual([]);
     expect(gate.planProblems(plan({ review: "'none'" }, "Status: blocked\nReview: skipped")).join(" ")).toContain("says the status is blocked");
@@ -160,6 +165,15 @@ describe("plan-gate", () => {
       out = await gate(dir, ["--changed", "base"]);
       expect(out.code).toBe(1);
       expect(out.stdout).toContain("old-bad-plan.md: not ok");
+    });
+
+    it("a finished plan that is only moved to a new name is still checked (a rename is not a way around the gate)", async () => {
+      const dir = await repo();
+      await git(dir, "mv", "_bmad-output/backlog/old-bad-plan.md", "_bmad-output/backlog/moved-plan.md");
+      await git(dir, "commit", "-q", "-m", "move");
+      const out = await gate(dir, ["--changed", "base"]);
+      expect(out.code).toBe(1);
+      expect(out.stdout).toContain("moved-plan.md: not ok");
     });
 
     it("an unknown base exits 2 in CI and is skipped with a note elsewhere; a missing base argument is a usage error", async () => {

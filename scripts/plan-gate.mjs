@@ -72,7 +72,7 @@ function changedFinishedPlans(base) {
   } catch {
     return null;
   }
-  const names = new Set([...git("diff", "--name-only", "--diff-filter=AM", mergeBase, "--").split("\n"), ...git("ls-files", "--others", "--exclude-standard").split("\n")]);
+  const names = new Set([...git("diff", "--name-only", "--no-renames", "--diff-filter=AM", mergeBase, "--").split("\n"), ...git("ls-files", "--others", "--exclude-standard").split("\n")]);
   return [...names].filter((path) => PLAN_PATH.test(path)).filter((path) => {
     try {
       return FINISHED.has(planStatus(readFileSync(path, "utf8")));
