@@ -803,7 +803,7 @@ describe("agent-write", () => {
 
   it("a redirect is not followed (the token stays with the API host)", async () => {
     const moved = createServer((req, res) => {
-      calls.push({ method: req.method ?? "GET", path: req.url ?? "", body: null, auth: req.headers.authorization });
+      calls.push({ method: req.method ?? "GET", path: req.url ?? "", search: "", body: null, auth: req.headers.authorization });
       res.writeHead(302, { location: req.url ?? "/" });
       res.end();
     });
