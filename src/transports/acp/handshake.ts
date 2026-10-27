@@ -108,8 +108,8 @@ function resumeError(error: unknown, sessionId: string): CliError {
   return toCliError(error, "server_error", "The CLI could not resume the session");
 }
 
-/** What the handshake hands back to the session. */
-export type Handshake = { sessionId: string; models: AcpModelInfo[]; capabilities: ReadonlySet<CliCapability> };
+/** What the handshake hands back to the session. `modelId`: the exact model ID the session runs, when the agent says. */
+export type Handshake = { sessionId: string; models: AcpModelInfo[]; modelId?: string; capabilities: ReadonlySet<CliCapability> };
 
 /** The ACP handshake: initialize, log in, then start or resume a session in the right mode and model. */
 export async function setup(connection: acp.ClientSideConnection, options: AcpSessionOptions): Promise<Handshake> {
@@ -143,8 +143,8 @@ export async function setup(connection: acp.ClientSideConnection, options: AcpSe
   }
 
   const facts = readModelFacts(modelState, configOptions);
-  if (options.selectModel || options.modelId) await switchModel(connection, sessionId, facts, options);
-  return { sessionId, models: facts.offered, capabilities };
+  const modelId = options.selectModel || options.modelId ? await switchModel(connection, sessionId, facts, options) : facts.currentId;
+  return { sessionId, models: facts.offered, ...(modelId ? { modelId } : {}), capabilities };
 }
 
 /**
@@ -233,16 +233,17 @@ async function login(connection: acp.ClientSideConnection, methodId: string): Pr
  * Switches the session to the wanted model. A `model` select in `configOptions` is the standard
  * way; an agent that only reports the `models` state is switched with `session/set_model`. The
  * wanted ID must be one the agent offered, so a stale or unknown name fails as `model_not_found`.
+ * Resolves the ID the session runs afterwards (the agent's current one when the choice is to keep it).
  */
 async function switchModel(
   connection: acp.ClientSideConnection,
   sessionId: string,
   facts: ReturnType<typeof readModelFacts>,
   options: AcpSessionOptions,
-): Promise<void> {
+): Promise<string | undefined> {
   const { offered, currentId, option } = facts;
   const wanted = options.selectModel ? options.selectModel(offered, currentId) : options.modelId;
-  if (wanted === null) return;
+  if (wanted === null) return currentId;
   if (wanted === undefined || !offered.some((model) => model.id === wanted)) {
     const asked = wanted ?? options.modelId ?? "";
     throw new CliError(
@@ -254,7 +255,7 @@ async function switchModel(
         : { code: "model_not_found", message: `The CLI has no model${asked ? ` "${asked}"` : ""} for this account.` },
     );
   }
-  if (wanted === currentId) return;
+  if (wanted === currentId) return wanted;
   try {
     if (option) await connection.setSessionConfigOption({ sessionId, configId: option.id, value: wanted });
     else await connection.extMethod("session/set_model", { sessionId, modelId: wanted });
@@ -263,4 +264,5 @@ async function switchModel(
     const refused = error instanceof Error && /\b(invalid|unknown|not found|no such)\b/i.test(error.message);
     throw toCliError(error, refused ? "model_not_found" : "server_error", `The CLI could not switch to model "${wanted}"`);
   }
+  return wanted;
 }

@@ -42,7 +42,7 @@ describe("listings in other threads (OpenClaw runs the provider catalog in a wor
     expect(Atomics.load(flags, 2)).toBe(1);
     expect(Date.now() - startedAt).toBeGreaterThanOrEqual(350);
     // As a failed listing: the default row.
-    expect(await result).toEqual({ rows: [{ id: "auto", name: "auto" }] });
+    expect(await result).toEqual({ rows: [{ id: "auto", name: "OAC / auto" }] });
   }, 30_000);
 
   it("gives up after the wait for a listing whose process does not exit", async () => {

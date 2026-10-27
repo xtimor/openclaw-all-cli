@@ -52,17 +52,20 @@ export type ModelCatalogOptions = {
 const DEFAULT_CATALOG_TTL_MS = 60_000;
 const DEFAULT_CATALOG_FAILURE_TTL_MS = 30_000;
 
+/** Every row name starts with this, so the plugin's models stand apart from another plugin's in a picker. Ids and refs stay. */
+export const ROW_NAME_PREFIX = "OAC / ";
+
 /** The model every account has: the default model of the adapter, as a catalog row. */
 export function defaultCatalogRow(adapter: CliAdapter): CatalogRow {
   const prefix = `${backendIdFor(adapter)}/`;
   const id = adapter.defaultModel.startsWith(prefix) ? adapter.defaultModel.slice(prefix.length) : adapter.defaultModel;
-  return { id, name: id };
+  return { id, name: `${ROW_NAME_PREFIX}${id}` };
 }
 
 function toRow(model: CliModel): CatalogRow {
   return {
     id: model.name,
-    name: model.label,
+    name: `${ROW_NAME_PREFIX}${model.label}`,
     ...(model.reasoning ? { reasoning: true } : {}),
     ...(model.contextWindow !== undefined ? { contextWindow: model.contextWindow } : {}),
   };

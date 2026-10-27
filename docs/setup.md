@@ -98,7 +98,7 @@ It prints `Auth profile: cursor-cli:manual (cursor-cli/api_key)`; remove it with
 
 ### Sign in from the Control UI or the CLI
 
-After [step 2](#2-install-the-plugin) (and a Gateway start), the provider is in the Control UI list: Models, **Connect provider**, group **Cursor CLI**. It has two methods (the same two work from `openclaw models auth login --provider cursor-cli --method <id>`):
+After [step 2](#2-install-the-plugin) (and a Gateway start), the provider is in the Control UI list: Models, **Connect provider**, group **OAC / Cursor-CLI**. It has two methods (the same two work from `openclaw models auth login --provider cursor-cli --method <id>`):
 
 | Method (ID) | What it does |
 | --- | --- |
@@ -106,6 +106,8 @@ After [step 2](#2-install-the-plugin) (and a Gateway start), the provider is in 
 | **Cursor CLI API key (CURSOR_API_KEY)** (`api-key-env`) | Asks for a key (hidden) and writes it to the plugin config, `plugins.entries.openclaw-all-cli.config.cursor-cli.env.CURSOR_API_KEY`, which is [option 2 of The API key](#the-api-key) done for you: the key reaches the `cursor-agent` process, the probes, and the usage reader only. Other settings under `cursor-cli` are kept. The key is never logged or shown again; the config file and its rotated copies hold it, like any other way of setting it. It does not create an OpenClaw auth profile. |
 
 In OpenClaw 2026.10.3 the Control UI dialog ends with `<method> did not return a credential profile.` after both methods, because neither saves an OpenClaw auth profile (the report or the saved key is shown just before; the CLI path ends cleanly). That message is OpenClaw's, and nothing is wrong: for the key method the config is already written (OpenClaw hot-reloads plugin config; if usage still shows 0 after a turn, restart the Gateway).
+
+**The provider card says "Not configured".** With only the `cursor-agent` login, the Control UI card for the provider (Models, provider cards) reads **Credentials: Not configured** and offers **Connect**, although every model answers. This is OpenClaw 2026.10.3, and the plugin cannot change it honestly: the card is built from saved auth profiles, a key in config, or a key in the environment, and from nothing else. A login kept by the CLI is none of those, and OpenClaw reads a plugin's `syntheticAuthRefs` and `nonSecretAuthMarkers` only for its own bundled plugins (reported upstream as [openclaw/openclaw#184700](https://github.com/openclaw/openclaw/issues/184700)). The only ways to turn the card green would be a placeholder key in config or a fake auth profile, and this plugin does neither; a broken login must keep failing as unauthorized. To check the login, use `cursor-agent status`, **Use the cursor-agent login** above, or `openclaw models list --provider cursor-cli`. A `CURSOR_API_KEY` in the environment of the Gateway makes the card read "API key from environment"; a key saved with the second method does not, because it reaches only the Cursor process. Details: [Cursor provider](providers/cursor.md#provider-list-and-sign-in-methods).
 
 ## 2. Install the plugin
 

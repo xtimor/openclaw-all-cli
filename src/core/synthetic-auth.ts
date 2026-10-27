@@ -65,7 +65,7 @@ export function createSyntheticAuthProvider(adapter: CliAdapter, catalog?: Model
   });
   return {
     id: backendId,
-    label: adapter.displayName,
+    label: adapter.providerLabel ?? adapter.displayName,
     docsPath: "/providers/models",
     auth: [] as never[],
     ...(catalog && flags.models

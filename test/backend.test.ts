@@ -967,6 +967,11 @@ describe("synthetic auth provider entry", () => {
     expect((provider as unknown as { id: string }[]).map((p) => p.id)).toEqual(ADAPTERS.map(backendIdFor));
   });
 
+  it("labels the provider OAC / Cursor-CLI and keeps its ID", () => {
+    const row = provider as unknown as { id: string; label: string }[];
+    expect(row.map((p) => [p.id, p.label])).toEqual([["cursor-cli", "OAC / Cursor-CLI"]]);
+  });
+
   it("returns the native-auth marker when the CLI login works", async () => {
     await expect(
       entry.prepareSyntheticAuth({ provider: "cursor-cli", config: config(FAKE_CURSOR_AGENT), env: fakeEnv() }),
@@ -1065,7 +1070,7 @@ describe("provider catalog entry", () => {
     expect(catalog.order).toBe("late");
     const result = await catalog.run({ config, env: fakeEnv(), providerIds: ["cursor-cli"] });
     expect(ids(result)).toEqual(["auto", "fake-fast", "fake-slow", "twin", "twin-high"]);
-    expect(result?.provider.models[0]).toMatchObject({ id: "auto", name: "Auto", reasoning: false, input: ["text", "image"] });
+    expect(result?.provider.models[0]).toMatchObject({ id: "auto", name: "OAC / Auto", reasoning: false, input: ["text", "image"] });
     // A model whose Cursor ID carries an effort parameter is published as a reasoning model.
     expect(result?.provider.models.map((model) => [model.id, model.reasoning])).toEqual([
       ["auto", false],

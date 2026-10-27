@@ -20,7 +20,7 @@ import {
   type OpenParams,
 } from "../../core/ports.ts";
 import { CURSOR_MIN_VERSION, cursorManifest } from "./manifest.ts";
-import { buildCursorCatalog, selectCursorModel } from "./models.ts";
+import { buildCursorCatalog, cursorContextCeiling, selectCursorModel } from "./models.ts";
 import { CURSOR_ALWAYS_ON_NATIVE_TOOLS, toCanonicalRequest } from "./permissions.ts";
 import { classifyCursorReplyError } from "./errors.ts";
 import { describeCursorToolCall } from "./tool-display.ts";
@@ -215,6 +215,8 @@ function modeFor(executionMode: ExecutionMode, hostShell: boolean): string {
 }
 
 const DISPLAY_NAME = "Cursor CLI";
+// Distinct from the older `@jeehou/openclaw-cursor-cli` plugin, which is also listed as "Cursor CLI".
+const PROVIDER_LABEL = "OAC / Cursor-CLI";
 
 function open(params: OpenParams): Promise<CliSession> {
   const executionMode = params.executionMode ?? "agent";
@@ -245,6 +247,7 @@ function open(params: OpenParams): Promise<CliSession> {
       }
       return id;
     },
+    contextCeilingOf: cursorContextCeiling,
     ...(params.onProcessStart ? { onProcessStart: params.onProcessStart } : {}),
     ...(params.resumeSessionId && !sideQuestion ? { resumeSessionId: params.resumeSessionId } : {}),
     ...(params.mcpServers?.length && !sideQuestion ? { mcpServers: params.mcpServers.map(toAcpMcpServer) } : {}),
@@ -325,6 +328,7 @@ const usageReader = createCursorUsageReader();
 export const cursorAdapter: CliAdapter = {
   id: "cursor",
   displayName: DISPLAY_NAME,
+  providerLabel: PROVIDER_LABEL,
   command: "cursor-agent",
   launchArgs: ["acp"],
   defaultModel: "cursor-cli/auto",

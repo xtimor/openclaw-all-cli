@@ -47,7 +47,7 @@ describe("auth methods of the cursor-cli provider", () => {
 
   it("is the provider OpenClaw's login flows read: the backend ID, a label, and the methods", () => {
     const provider = createAuthProvider(cursorAdapter, PLUGIN_ID);
-    expect(provider).toMatchObject({ id: "cursor-cli", label: "Cursor CLI" });
+    expect(provider).toMatchObject({ id: "cursor-cli", label: "OAC / Cursor-CLI" });
     expect(provider.auth.map((method) => method.id)).toEqual([LOGIN_METHOD_ID, API_KEY_METHOD_ID]);
   });
 
@@ -246,6 +246,20 @@ describe("manifest providerAuthChoices", () => {
       expect(choice.appGuidedAuth !== undefined || choice.appGuidedSecret === true, String(choice.choiceId)).toBe(true);
       expect(typeof choice.choiceLabel).toBe("string");
     }
+  });
+
+  it("shows the provider as OAC / Cursor-CLI in the group label and the settings hint, with the provider ID unchanged", () => {
+    const label = createAuthProvider(cursorAdapter, PLUGIN_ID).label;
+    expect(label).toBe("OAC / Cursor-CLI");
+    expect(choices.map((choice) => choice.groupLabel)).toEqual([label, label]);
+    expect(manifest.uiHints["cursor-cli"].label).toBe(label);
+    expect(manifest.providers).toEqual(["cursor-cli"]);
+    expect(choices.every((choice) => choice.provider === "cursor-cli" && choice.groupId === "cursor-cli")).toBe(true);
+  });
+
+  it("falls back to the display name when an adapter has no provider label", () => {
+    const { providerLabel: _gone, ...without } = cursorAdapter;
+    expect(createAuthProvider(without, PLUGIN_ID).label).toBe("Cursor CLI");
   });
 
   it("gives the login the adapter's label", () => {
