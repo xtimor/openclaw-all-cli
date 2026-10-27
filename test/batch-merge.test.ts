@@ -140,7 +140,7 @@ function run(env: Record<string, string | undefined> = {}): Promise<Run> {
     GITHUB_REPOSITORY: REPO,
     GITHUB_API_URL: base,
     GITHUB_STEP_SUMMARY: summaryFile,
-    BATCH_MERGE_WAIT_MS: "30",
+    BATCH_MERGE_WAIT_MS: "1500", // room for a few re-reads on a loaded CI runner; tests of the bound set their own
     BATCH_MERGE_POLL_MS: "10",
     ...env,
   };
