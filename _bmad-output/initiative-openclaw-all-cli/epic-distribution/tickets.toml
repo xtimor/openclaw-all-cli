@@ -237,3 +237,15 @@ after = [19]
 hitl = false
 risk = "high"
 references = ["epic-distribution.md", "issue-flow.md"]
+
+[[entry]]
+id = 21
+type = "story"
+title = "A finished batch always reaches a ready PR; an idle draft is resumed, never rebuilt"
+description = "Live 2026-10-26/27, batch PR #41 (issues #35-#40): the run built and closed all six tickets (run log `status: completed`, CI green) and then ended without the 'Open the pull request' steps (no ready PR, no Fixes lines, issues left `status:in-progress`). The next run treated the idle draft as interrupted and set out to close it and rebuild all six issues; only a permission refusal stopped it (it chained the relay call with another command, which the allow rule does not cover). The owner finished #41 by hand on 2026-10-27 and asked that this never happen again. (a) Prevention: the run's last step is not dev-orchestrator's completion; implement.md makes 'Open the pull request' a step the run cannot skip (a written checklist in the session, re-read after dev-orchestrator returns, and the final report states the batch PR's ready state), and the routine prompt says the run ends only after it. (b) Recovery: an idle draft batch is resumed, never rebuilt: the next run takes its branch, keeps every ticket whose plan is `done` (its issue goes into the batch as built without rebuilding), builds only issues not done, and finishes the batch (ready PR with Fixes lines, issue comments and `in-review`). A draft is closed only when its branch holds nothing done, and then only after merging its useful commits is not possible. (c) The relay is always called alone, exactly `scripts/agent-relay.sh /tmp/agent-ops-<n>.json`, nothing chained before or after; triage.md and implement.md say it where they call it. (d) Batch merge: the `ready_for_review` run of #41 did not merge (state read too early); a ready trigger re-checks until the mergeable state and checks are final (bounded), so a green batch merges within minutes, not the next hour. (e) A ticket whose plan says review not run or blocked is not closed as done by the run; it is reported."
+verify = "Docs read as one procedure with no path from 'tickets done' to 'run ended' that skips the ready PR; tests for any changed script (`test/batch-merge.test.ts` for the ready re-check, `test/agent-write.test.ts` if a relay guard changes); `npm run ci` passes; live: the next batch run ends with a ready PR merged by the bot, and a simulated idle draft with done tickets is resumed, not closed."
+covers = []
+after = [20]
+hitl = false
+risk = "high"
+references = ["epic-distribution.md", "issue-flow.md"]
