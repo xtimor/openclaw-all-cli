@@ -170,7 +170,7 @@ describe("batch-merge", () => {
     pulls = [pull(20, { title: `Issue batch: #1, #2 ${TITLE_MARK}` })];
     const result = await run();
     expect(result).toMatchObject({ code: 0, stderr: "" });
-    expect(seen()).toEqual(["GET /pulls", "GET /pulls/20", `GET /commits/${shaOf(20)}/check-runs`, `GET /commits/${shaOf(20)}/status`, "GET /pulls/20/files", "PUT /pulls/20/merge"]);
+    expect(seen()).toEqual(["GET /pulls", "GET /pulls/20", "GET /pulls/20/files", `GET /commits/${shaOf(20)}/check-runs`, `GET /commits/${shaOf(20)}/status`, "PUT /pulls/20/merge"]);
     expect(calls[0]?.search).toContain("state=open");
     expect(calls[0]?.search).toContain("per_page=100");
     expect(calls[0]?.search).toContain("page=1");
@@ -277,7 +277,7 @@ describe("batch-merge", () => {
     const result = await run();
     expect(result).toMatchObject({ code: 0, stderr: "" });
     expect(result.stdout).toMatch(/^batch-merge: #20 skipped: .*"unknown"/);
-    expect(seen().filter((entry) => entry === "GET /pulls/20")).toHaveLength(4);
+    expect(seen().filter((entry) => entry === "GET /pulls/20").length).toBeGreaterThanOrEqual(3); // re-read until the deadline (30 ms here)
     expect(seen()).not.toContain(`GET /commits/${shaOf(20)}/check-runs`);
     expect(merges()).toEqual([]);
   });
@@ -310,8 +310,8 @@ describe("batch-merge", () => {
       pulls = [pull(20, { mergeable_state: "draft" })];
       const result = await run();
       expect(result).toMatchObject({ code: 0, stderr: "" });
-      expect(result.stdout).toMatch(/^batch-merge: #20 skipped: .*"draft".* \(not final after 3 re-reads\)/);
-      expect(reads()).toBe(4);
+      expect(result.stdout).toMatch(/^batch-merge: #20 skipped: .*"draft".* \(not final after \d+ (?:ms|s)\)/);
+      expect(reads()).toBeGreaterThanOrEqual(3);
       expect(merges()).toEqual([]);
     });
 
@@ -338,7 +338,7 @@ describe("batch-merge", () => {
       calls = [];
       sequences.set(statusPath(20), [[200, pending]]);
       const stuck = await run();
-      expect(stuck.stdout).toMatch(/commit status is "pending".*not final after 3 re-reads/);
+      expect(stuck.stdout).toMatch(/commit status is "pending".*not final after \d+ (?:ms|s)\)/);
       expect(merges()).toEqual([]);
     });
 
@@ -367,20 +367,56 @@ describe("batch-merge", () => {
       expect(reads()).toBe(1);
     });
 
-    it("BOUND: the wait is a budget of re-reads for the whole run, shared by every pull request; a bad setting exits 2 before any request", async () => {
+    it("BOUND: the wait is one deadline on the clock for the whole run, shared by every pull request; a bad setting exits 2 before any request", async () => {
       pulls = [pull(20, { mergeable_state: "unknown" }), pull(21, { mergeable_state: "unknown" })];
       const result = await run();
       expect(result.code).toBe(0);
-      expect(reads()).toBe(4); // 1 read + 3 re-reads for #20
+      expect(reads()).toBeGreaterThanOrEqual(3); // #20 re-reads until the run's deadline
       expect(seen().filter((entry) => entry === "GET /pulls/21")).toHaveLength(1); // #21 gets the one read, the budget is spent
       expect(merges()).toEqual([]);
       calls = [];
-      for (const env of [{ BATCH_MERGE_WAIT_MS: "soon" }, { BATCH_MERGE_POLL_MS: "-1" }]) expect((await run(env)).code).toBe(2);
+      for (const env of [{ BATCH_MERGE_WAIT_MS: "soon" }, { BATCH_MERGE_POLL_MS: "-1" }, { BATCH_MERGE_NO_CHECKS_MS: "x" }]) expect((await run(env)).code).toBe(2);
       expect(calls).toEqual([]);
       calls = [];
       pulls = [pull(20, { mergeable_state: "unknown" })];
       await run({ BATCH_MERGE_WAIT_MS: "0", BATCH_MERGE_POLL_MS: "0" });
       expect(reads()).toBe(1);
+    });
+
+    it("DEADLINE: the wait ends on the clock (here 120 ms), not after a number of reads, and the pause between reads is respected", async () => {
+      pulls = [pull(20, { mergeable_state: "unknown" })];
+      const t0 = Date.now();
+      const result = await run({ BATCH_MERGE_WAIT_MS: "120", BATCH_MERGE_POLL_MS: "40" });
+      const took = Date.now() - t0;
+      expect(result.stdout).toMatch(/not final after \d+ (?:ms|s)\)/);
+      expect(reads()).toBeGreaterThanOrEqual(3);
+      expect(reads()).toBeLessThanOrEqual(5); // 40 ms apart inside 120 ms (plus the last read), not a read per millisecond
+      expect(took).toBeGreaterThanOrEqual(120);
+    });
+
+    it("PROTECTED_FIRST: a batch that changes a protected file is skipped before any waiting, even while its state is unknown", async () => {
+      pulls = [pull(20, { mergeable_state: "unknown" })];
+      answers.set(`GET /repos/${REPO}/pulls/20/files`, [200, [{ filename: ".github/workflows/ci.yml", status: "modified" }]]);
+      const result = await run({ BATCH_MERGE_WAIT_MS: "400", BATCH_MERGE_POLL_MS: "10" });
+      expect(result.stdout).toMatch(/touches protected files/);
+      expect(reads()).toBe(1);
+      expect(merges()).toEqual([]);
+    });
+
+    it("NO_CHECKS: a PR with no check run at all waits only the short no-checks time, not the whole deadline; one whose CI shows up in time is merged", async () => {
+      pulls = [pull(20)];
+      answers.set(checkPath(20), [200, { total_count: 0, check_runs: [] }]);
+      const env = { BATCH_MERGE_WAIT_MS: "2000", BATCH_MERGE_POLL_MS: "20", BATCH_MERGE_NO_CHECKS_MS: "60" };
+      const t0 = Date.now();
+      const stuck = await run(env);
+      expect(Date.now() - t0).toBeLessThan(1500);
+      expect(stuck.stdout).toMatch(/"check" run is missing/);
+      expect(reads()).toBeGreaterThanOrEqual(2);
+      expect(reads()).toBeLessThanOrEqual(8);
+      calls = [];
+      answers.delete(checkPath(20));
+      sequences.set(checkPath(20), [[200, { total_count: 0, check_runs: [] }], [200, running], [200, green]]);
+      expect((await run(env)).stdout).toBe("batch-merge: #20 merged: at fedcba9\n");
     });
 
     it("GUARDS_FIRST: a pull request that fails a structural guard (here a fork head) makes no check calls even with a clean state", async () => {

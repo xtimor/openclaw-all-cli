@@ -15,12 +15,14 @@
 // owner. A PR whose state is not final yet is re-read until it is, within a bound (ticket 3.21 d): GitHub computes `mergeable_state`
 // lazily and can still answer `unknown`, or `draft` for a PR that was just marked ready (batch PR #41's `ready_for_review` run found
 // that and merged nothing), and CI may still be running. Not final: that mergeable state, no `check` run yet, a run that is not
-// completed, a commit status `pending`. The wait is a budget of re-reads for the whole run (BATCH_MERGE_WAIT_MS / BATCH_MERGE_POLL_MS,
-// default 300000 / 15000, so about 5 minutes); when it is spent the PR is skipped with "after N re-reads" and the next trigger retries.
+// completed, a commit status `pending`. The wait is a deadline for the whole run, measured on the clock (BATCH_MERGE_WAIT_MS / BATCH_MERGE_POLL_MS,
+// default 300000 / 15000, so about 5 minutes, under the job's timeout); a PR with no check run at all waits at most BATCH_MERGE_NO_CHECKS_MS
+// (default 60000) for CI to appear. A batch that changes a protected file is skipped before any waiting. When the time is spent the PR is
+// skipped with "not final after N s" and the next trigger retries.
 // A final state that is not clean or green (dirty, behind, a red check) is skipped at once.
 //
 // Environment: GH_TOKEN (the app's installation token), AGENT_LOGIN (`<app-slug>[bot]`), GITHUB_REPOSITORY, BATCH_PR (optional),
-// BATCH_MERGE_WAIT_MS / BATCH_MERGE_POLL_MS (the wait budget and the pause between re-reads; test knobs), GITHUB_API_URL (default https://api.github.com), GITHUB_GRAPHQL_URL (unused), GITHUB_STEP_SUMMARY (the Markdown summary).
+// BATCH_MERGE_WAIT_MS / BATCH_MERGE_POLL_MS / BATCH_MERGE_NO_CHECKS_MS (the wait, the pause between re-reads, the wait for CI to appear; test knobs), GITHUB_API_URL (default https://api.github.com), GITHUB_GRAPHQL_URL (unused), GITHUB_STEP_SUMMARY (the Markdown summary).
 //
 // Output: one line per PR, `batch-merge: #N merged|skipped|failed: <reason>`. The token is never printed (every message goes
 // through the client's `clean`); the summary and the log hold no PR title or body. Exit 0 unless a merge call failed or the list
@@ -31,8 +33,9 @@ import { checkGreen, checkMergeable, makeClient, WriteError } from "./agent-writ
 
 const DEFAULT_API = "https://api.github.com";
 const BATCH_TITLE = "Issue batch";
-const WAIT_MS = 300_000; // the whole run's budget for re-reading PRs that are not final yet
+const WAIT_MS = 300_000; // the whole run's time for re-reading PRs that are not final yet
 const POLL_MS = 15_000;
+const NO_CHECKS_MS = 60_000; // how long a PR with no check run at all is waited for (CI not started, or never will)
 
 const MAX_LIST_PAGES = 20; // 2000 open pull requests
 const MAX_FILE_PAGES = 30; // GitHub lists at most 3000 files of a pull request
@@ -54,7 +57,7 @@ function readConfig(env) {
   const rawPr = (env.BATCH_PR ?? "").trim();
   if (rawPr !== "" && !/^[1-9]\d{0,9}$/.test(rawPr)) throw new WriteError("BATCH_PR must be a pull request number", { code: 2 });
   const times = {};
-  for (const [name, key, fallback] of [["BATCH_MERGE_WAIT_MS", "waitMs", WAIT_MS], ["BATCH_MERGE_POLL_MS", "pollMs", POLL_MS]]) {
+  for (const [name, key, fallback] of [["BATCH_MERGE_WAIT_MS", "waitMs", WAIT_MS], ["BATCH_MERGE_POLL_MS", "pollMs", POLL_MS], ["BATCH_MERGE_NO_CHECKS_MS", "noChecksMs", NO_CHECKS_MS]]) {
     const value = (env[name] ?? "").trim();
     if (value !== "" && !/^\d{1,7}$/.test(value)) throw new WriteError(`${name} must be a number of milliseconds`, { code: 2 });
     times[key] = value === "" ? fallback : Number(value);
@@ -188,17 +191,20 @@ export async function run(env, log = () => {}) {
     }
   }
 
-  // The re-read budget is shared by the whole run: a few PRs never stretch it, and the job's timeout stays out of reach.
-  let rereads = config.pollMs > 0 ? Math.floor(config.waitMs / config.pollMs) : 0;
+  // The wait is one deadline for the whole run, on the clock: a few PRs never stretch it, and it stays under the job's timeout.
+  const deadline = Date.now() + config.waitMs;
   const sleep = (ms) => new Promise((done) => setTimeout(done, ms));
   for (const number of order) {
     let merging = false; // set at the merge call: an error there leaves the outcome unknown
-    let waited = 0;
+    const started = Date.now();
+    let waited = false;
     let settling = false;
     try {
       let pr;
       let runs = null;
       let status = null;
+      let unprotected = ""; // the head sha already checked for protected files
+      let noChecksSince = null;
       for (;;) {
         pr = (await client.rest("GET", `${base}/pulls/${number}`)).data;
         if (pr === null || typeof pr !== "object" || Array.isArray(pr)) throw new WriteError(`PR #${number}: GitHub's answer could not be read`, { refused: true });
@@ -207,16 +213,26 @@ export async function run(env, log = () => {}) {
         status = null;
         settling = stateUnsettled(pr);
         const sha = typeof pr.head?.sha === "string" ? pr.head.sha.toLowerCase() : "";
+        const structural = /^[0-9a-f]{40}$/.test(sha) && passesStructure(pr, number, sha, config);
+        // A batch that changes a protected file is never merged: say so before any waiting.
+        if (structural && unprotected !== sha) {
+          await checkUnprotected(client, base, pr, number, sha);
+          unprotected = sha;
+        }
         // The checks are read only for a PR that passes every guard but the mergeable state, and only where they can still decide it:
         // `clean`, or `blocked`/`unstable` (pending checks give those). `dirty`, `behind`, and the like are final without them.
-        if (!settling && /^[0-9a-f]{40}$/.test(sha) && ["clean", "blocked", "unstable"].includes(pr.mergeable_state) && passesStructure(pr, number, sha, config)) {
+        if (!settling && structural && ["clean", "blocked", "unstable"].includes(pr.mergeable_state)) {
           runs = (await client.rest("GET", `${base}/commits/${sha}/check-runs?per_page=100`)).data;
           status = (await client.rest("GET", `${base}/commits/${sha}/status`)).data;
           settling = checksUnsettled(runs, status);
+          // No check run at all: CI may not have started yet, or never will. Wait a short while for it, not the whole deadline.
+          if (settling && Array.isArray(runs?.check_runs) && runs.check_runs.length === 0) {
+            noChecksSince ??= Date.now();
+            if (Date.now() - noChecksSince >= config.noChecksMs) settling = false;
+          } else noChecksSince = null;
         }
-        if (!settling || rereads <= 0) break;
-        rereads--;
-        waited++;
+        if (!settling || Date.now() >= deadline) break;
+        waited = true;
         await sleep(config.pollMs);
       }
       if (pr.draft === true) {
@@ -235,10 +251,12 @@ export async function run(env, log = () => {}) {
         checkGreen(runs, status, op);
       } catch (error) {
         // Say that the wait ran out, so a log reader knows the state was not final rather than wrong.
-        if (error instanceof WriteError && error.refused && settling && waited > 0) error.message += ` (not final after ${waited} re-read${waited === 1 ? "" : "s"})`;
+        if (error instanceof WriteError && error.refused && settling && waited) {
+          const took = Date.now() - started;
+          error.message += ` (not final after ${took < 1000 ? `${took} ms` : `${Math.round(took / 1000)} s`})`;
+        }
         throw error;
       }
-      await checkUnprotected(client, base, pr, number, sha);
       merging = true;
       const { data } = await client.rest("PUT", `${base}/pulls/${number}/merge`, { merge_method: "merge", sha });
       if (data?.merged !== true) throw new WriteError(`PUT /pulls/${number}/merge: GitHub did not merge it`);
