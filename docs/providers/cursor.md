@@ -341,6 +341,22 @@ Every model is declared to OpenClaw with `text` and `image` input, because the p
 
 A value that is not a number (`context=max`) is ignored. Effort variants of one model share their other parameters, so choosing an effort never changes the window. The window comes from the model list, so it follows Cursor's changes after the listing's one-minute cache (see above) and needs no setting. Live check (the numbers match the owner's Cursor account) not run: it needs a login.
 
+### 1M context variants
+
+Cursor sells some models with a 1M context: `cursor-agent --list-models` shows "Claude Opus 5.5 1M" and similar rows ([#46](https://github.com/xtimor/openclaw-all-cli/issues/46)). The plugin cannot offer them as `cursor-cli/...` models, because Cursor refuses them over ACP, the protocol the plugin talks. The 300k in `openclaw models list` is Cursor's ACP default for these models, not the models' limit.
+
+Checked live 2026-10-28 (cursor-agent 2026.10.22, `CURSOR_API_KEY`, a throwaway config directory):
+
+| Request | Answer |
+| --- | --- |
+| ACP `session/new` model list | 47 models; the Claude rows that carry a window have `context=300k` or `context=200k`, and none has `context=1m` |
+| `session/set_model` and `session/set_config_option` with `claude-opus-5-5[context=1m,effort=medium,fast=false]` (the listed row's ID with `context=1m`) | `Invalid params`: `Invalid model value` |
+| The same for `claude-opus-5[...]`, `claude-opus-4-8[...]`, `claude-sonnet-5-5[...]`, `gpt-5.6-sol[...]`, and spellings such as `context=1M`, `context=1000k`, `[1m]`, `claude-opus-5-5-1m`, the CLI's `claude-opus-5-5-medium` | All refused the same way |
+| `cursor-agent --model 'claude-opus-5-5[context=1m,effort=medium,fast=false]' acp`, then the session | Starts, but reports the 300k row as its model (`currentModelId`); the launch flag does not select a 1M model over ACP |
+| `cursor-agent -p --model 'claude-opus-5-5[context=1m,effort=medium,fast=false]'` (not ACP, not used by the plugin) | One turn ran and answered; `context=2m` is refused |
+
+So the plugin adds no 1M model, changes no existing name, ref, or alias, and a request for one (`cursor-cli/claude-opus-5-5-1m`, or the exact 1M ID) fails with `Cursor has no model "<name>" for this account` (error code `model_not_found`); the plugin never sends Cursor an ID it did not list. The Cursor billing for a 1M turn is not shown by `cursor-agent`; the one turn above printed token counts only, so what a 1M turn costs is not known here. If a later Cursor version lists a `context=1m` row in the ACP session, the plugin shows it as its own model next to the 300k one (the first row of a base keeps the bare name; the 1M row gets its parameter values as a suffix, as for any variant) with a 1,000,000 window read from its own ID, and a 1,000,000 context ceiling for the usage check, with no change to the plugin.
+
 ### Effort
 
 OpenClaw's Effort control (`/think`, the composer's effort picker) works for the models whose Cursor ID carries an effort setting: a `reasoning_effort=` or `effort=` parameter, as in `grok-4.7[context=256k,reasoning_effort=high,fast=true]`. Such a model is published as a reasoning model; every other model is published without reasoning, so the control does nothing there.
