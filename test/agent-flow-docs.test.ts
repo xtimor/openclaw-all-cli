@@ -189,3 +189,43 @@ describe("agents never close an issue (ticket 3.22)", () => {
     expect(issues).toMatch(/`status:needs-info` or `status:declined` issue as not planned once it has been in that status for 30 days/);
   });
 });
+
+describe("upstream issues (ticket 3.23)", () => {
+  const identity = read("docs", "agents", "identity.md");
+  const files = [...readdirSync(join(ROOT, "docs", "agents")).map((name) => join("docs", "agents", name)), join("docs", "issues.md")];
+  const SHAPE = /^scripts\/upstream-issue\.sh( (\/tmp\/upstream-issue-<n>\.json|<file>))?$/;
+
+  it("every code span or line that names scripts/upstream-issue.sh is the bare command, except the owner's allow-list lines", () => {
+    const seen: string[] = [];
+    for (const file of files) {
+      const text = read(file);
+      for (const [, span] of text.matchAll(/`([^`\n]*upstream-issue\.sh[^`\n]*)`/g)) seen.push(span ?? "");
+      let fenced = false;
+      for (const line of text.split("\n")) {
+        if (line.trimStart().startsWith("```")) fenced = !fenced;
+        else if (fenced && line.includes("upstream-issue.sh")) seen.push(line.trim());
+      }
+    }
+    const calls = seen.filter((entry) => !entry.startsWith('"Bash('));
+    expect(calls.length).toBeGreaterThanOrEqual(2);
+    for (const entry of calls) expect(entry).toMatch(SHAPE);
+  });
+
+  it("identity.md gives the owner the secret name, the environment, and the exact allow-list lines for .claude/settings.json", () => {
+    const part = section(identity, "## Upstream issues");
+    expect(part).toContain("GH_PUBLIC_TOKEN");
+    expect(part).toContain("gh secret set GH_PUBLIC_TOKEN --env agent");
+    for (const line of ['"Bash(scripts/upstream-issue.sh *)"', '"Bash(bash scripts/upstream-issue.sh *)"', '"Bash(./scripts/upstream-issue.sh *)"']) expect(part).toContain(line);
+    expect(part).toMatch(/agents must not edit it/);
+    expect(part).toContain("`openclaw/openclaw`");
+    expect(part).toMatch(/Filed for xtimor\/openclaw-all-cli#<n>/);
+  });
+
+  it("the agents may file one only for an approved issue or when the owner asks, and triage files none", () => {
+    expect(section(identity, "## Upstream issues")).toMatch(/owner approved that issue/);
+    expect(implement).toMatch(/\*\*Upstream issues\.\*\*[^\n]*approved/);
+    expect(implement).toContain("scripts/upstream-issue.sh /tmp/upstream-issue-<n>.json");
+    expect(triage).toMatch(/\*\*Upstream issues\.\*\* Triage files none/);
+    expect(issues).toContain("agents/identity.md#upstream-issues");
+  });
+});
