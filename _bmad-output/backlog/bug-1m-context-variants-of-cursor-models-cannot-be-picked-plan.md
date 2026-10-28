@@ -3,7 +3,7 @@ title: '1M context variants of Cursor models cannot be picked (ticket 17, issue 
 type: 'bugfix'
 ticket: '17'
 created: '2026-10-28'
-status: built
+status: done
 baseline_revision: '979250369f6d040cb0c8ea3f24490ba87792046e'
 route: 'oneshot'
 route_source: 'auto'
