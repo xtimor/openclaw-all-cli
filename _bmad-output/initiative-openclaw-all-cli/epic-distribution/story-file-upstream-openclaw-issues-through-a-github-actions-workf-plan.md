@@ -17,12 +17,12 @@ context: ['{project-root}/AGENTS.md', '{project-root}/MEMORY.md', '{project-root
 warnings: ['oversized']
 deferred:
   - summary: >-
-      Nothing technical ties an upstream-issue dispatch to an owner-approved issue of ours.
+      scripts/agent-relay.sh sends its dispatch and watch to the current-directory repository but its reads to REPO.
     evidence: |-
-      The workflow checks the dispatcher (an owner), the marker line, and the allow-listed repository, but not that issue #n carries an owner's status:approved (the rule also allows "the owner asks", which has no label). A session that read hostile issue text and has the helper in its allow list could file public issues in the owner's name, one per dispatch. Mitigations in place: the allow-list lines are the owner's opt-in and are not added here, one issue per dispatch, idempotency, and the docs rule.
+      Found by the independent security review of ticket 3.23 (finding 3). The same flaw was fixed in scripts/upstream-issue.sh (--repo on gh workflow run and gh run watch, hook renamed UPSTREAM_ISSUE_REPO); the relay helper was left unchanged because this ticket does not touch it.
     location: >-
-      scripts/upstream-issue.mjs
-    severity: medium
+      scripts/agent-relay.sh
+    severity: low
 ---
 
 <intent-contract>
@@ -101,6 +101,15 @@ No subagent tool was available to this worker, so the build was done in-session 
   - `[low]` `[reject]` A third dispatch replaces the pending one (cancelled) -- the helper reports `cancelled`; safer than a duplicate, and the docs say one dispatch at a time.
   - `[low]` `[reject]` Workflow tests are text pins, not a YAML or actionlint parse -- the repository's other workflow tests do the same and no linter is installed here.
 
+### 2026-10-28 -- Independent security review (after the build)
+- verdicts: 5 findings -- high 0, medium 1, low 4, false 0, maybe-false 0
+- findings: (from an independent reviewer of `052e927..HEAD`; fixed on the same branch by the build worker, in-session)
+  - `[medium]` `[patch]` The "approved issue only" rule lived only in the docs; changing the marker number could file any number of issues -- the script now reads the marker's issue of ours and its events with the job's own `GITHUB_TOKEN` (job permission `issues: read`, never logged, never sent upstream; the owner's token never goes to our repository) and refuses unless it exists, is not a pull request, and an owner (`ISSUE_FLOW_OWNERS`) labeled `status:approved` at some point; a new issue is also refused when 3 or more by the token's user were created in the target in the last 24 hours (an existing match is still returned). Tests: `APPROVED_ISSUES_ONLY` and `DAILY_CAP` in `test/upstream-issue.test.ts`; mutation checks (approval removed, cap removed, owner test removed) fail them. This resolves the earlier `defer` of the same gap (removed from `deferred`).
+  - `[low]` `[patch]` The annotation unescapes `%0A`, `%0D`, `%25` -- the report step now escapes `%` first (`RESULT="${RESULT//%/%25}"`); a test runs the step's block with a hostile result and pins the output; removing the line fails it.
+  - `[low]` `[patch]` The helper dispatched and watched in the current-directory repository but read from `REPO` -- `--repo "$REPO"` on `gh workflow run` and `gh run watch`, hook renamed `UPSTREAM_ISSUE_REPO` (the old name moves nothing, tested). `scripts/agent-relay.sh` has the same mismatch and stays unchanged here: `deferred` (low).
+  - `[low]` `[patch]` Workflow-level concurrency let a dispatch on another branch cancel a pending main run -- the group moved under `jobs.file`, below the `main` condition; pinned by the workflow test.
+  - `[low]` `[patch]` The owner-setup check filed a real issue with marker `#1` -- `identity.md` now says to test only with a real approved issue and its real marker; a doc pin forbids the throwaway marker.
+
 ## Design Notes
 
 Why list by creator, not search: the search index lags minutes, so an immediate re-dispatch would duplicate; the issues list is consistent. Why a result annotation: sessions cannot read run logs, but check-run annotations are plain REST. Labels: GitHub drops labels a non-triager sets without error, so the script reports which were applied. The body should follow the target's form headings; docs list the usual ones (the forms cannot be read from this sandbox).
@@ -131,3 +140,21 @@ Status: built. Blocking condition: none.
 **Not run:** the live run (the owner has not added `GH_PUBLIC_TOKEN` yet); the real-runner behavior of `GITHUB_OUTPUT`, the annotation, and `gh run view --log`; OpenClaw's issue-form headings (unreadable from this sandbox).
 
 **Residual risks:** the deferred finding above; the issue is authored by the owner's account; an `existing` answer by title can be a different, older issue.
+
+## Auto Run Result (security review fixes)
+
+Status: built. Blocking condition: none.
+
+**Summary:** The five findings of the independent security review are fixed. Filing now needs an owner-approved issue of ours (checked by the workflow, not by docs) and is capped at 3 new issues per 24 hours (a new one is refused once 3 exist); the annotation escapes `%`; the helper uses one repository for dispatch, watch, and reads; the concurrency group sits on the job; the owner-setup check no longer files a throwaway issue.
+
+**Files changed:** `scripts/upstream-issue.mjs` (`checkApproved`, `findExisting` returns the recent count, `DAILY_CAP`, `GITHUB_TOKEN`), `.github/workflows/upstream-issue.yml`, `scripts/upstream-issue.sh`, `test/upstream-issue.test.ts`, `test/upstream-issue-sh.test.ts`, `test/agent-flow-docs.test.ts`, `docs/agents/{identity,implement}.md`, `MEMORY.md`, this plan.
+
+**Review:** 5 findings from the independent review, all patched (1 medium, 4 low); 0 new deferrals except the low `agent-relay.sh` one; the earlier deferred medium is resolved by finding 1.
+
+**Follow-up review recommended: false.** Patched: high 0, medium 1, low 4. Each fix has a test and a mutation check.
+
+**Verification:** `npm run ci` passed (see the commit); `test/upstream-issue.test.ts` and `test/upstream-issue-sh.test.ts` pass.
+
+**Not run:** the live run (secret not set); whether `secrets.GITHUB_TOKEN` with `issues: read` returns events in the `agent` environment (documented REST behavior for a public repository; not exercised here).
+
+**Residual risks:** "approved at some point" is by design: a later removal of the label does not stop a dispatch; the events API can lag right after the owner labels the issue (dispatch again); a changed marker number to another approved issue of ours still files, capped at 3 per 24 hours.
