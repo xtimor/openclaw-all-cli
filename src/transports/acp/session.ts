@@ -7,12 +7,13 @@ import {
   type CliSession,
   type NormalizedEvent,
   type NormalizedUsage,
+  type OpenPhase,
   type PermissionDecision,
   type ProcessStartInfo,
   type PromptImage,
   type RequiredCapability,
 } from "../../core/ports.ts";
-import { setup, toCliError } from "./handshake.ts";
+import { reportPhase, setup, toCliError } from "./handshake.ts";
 import {
   KILL_GRACE_MS,
   assertDirectory,
@@ -91,6 +92,8 @@ export type AcpSessionOptions = {
   resumeSessionId?: string;
   /** Called once with the process ID right after the spawn, before the handshake. */
   onProcessStart?: (pid: number, info: ProcessStartInfo) => void;
+  /** Called when an open phase ends, with the milliseconds it took (see `OpenParams.onPhase`). */
+  onPhase?: (phase: OpenPhase, ms: number) => void;
   /** Answers a permission request. Throwing counts as `cancelled`. */
   onPermissionRequest: (request: AcpPermissionRequest) => Promise<PermissionDecision>;
   /**
@@ -148,8 +151,11 @@ export class AcpSession implements CliSession {
   static async open(options: AcpSessionOptions): Promise<AcpSession> {
     options.signal?.throwIfAborted();
     assertDirectory(options.cwd);
+    const spawnStart = performance.now();
     const runtime = spawnRuntime(options);
     const { child } = runtime;
+    // Reported once the process exists; a process that cannot start has no spawn phase.
+    child.once("spawn", () => reportPhase(options, "spawn", spawnStart));
 
     const clientHandler = createClient(runtime, options.onPermissionRequest);
     const stream = acp.ndJsonStream(

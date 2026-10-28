@@ -42,7 +42,8 @@
 // as a `tool_call` update, like Cursor does), "[[hang]]" never
 // finishes until cancelled, "[[refuse]]" ends with stopReason refusal, "[[crash]]" exits, "say:<text>" replies with <text>.
 // "[[error]]<text>" sends <text> as the one and only reply chunk (a failed Cursor turn: "\n\nError: ...") and ends with end_turn.
-// "[[sleep:<ms>]]" waits <ms> before the reply (a turn that takes a while), then answers like any other prompt.
+// "[[sleep:<ms>]]" waits <ms> before the reply (a turn that takes a while), then answers like any other prompt. Every turn
+// sends one thought chunk first, so the wait comes between the first thought and the first text; "[[no-think]]" sends no thought.
 // "[[images]]" replies "images:<n>:<mime>/<bytes>,..." for the image blocks of the prompt. The log's `session/prompt` line shows each
 // image block as {type, mimeType, bytes, sha256}, never its data, and the history keeps text only.
 // "[[recall]]" replies with the prompts the session has seen before this one ("recall:a|b"), including those from before a
@@ -197,7 +198,7 @@ async function runPrompt(id, params) {
   const before = [...session.history];
   session.history.push(text);
   saveSession(params.sessionId, session);
-  update(params.sessionId, { sessionUpdate: "agent_thought_chunk", content: { type: "text", text: "thinking" } });
+  if (!text.includes("[[no-think]]")) update(params.sessionId, { sessionUpdate: "agent_thought_chunk", content: { type: "text", text: "thinking" } });
   const sleep = /\[\[sleep:(\d+)\]\]/.exec(text);
   if (sleep) await new Promise((resolve) => setTimeout(resolve, Number(sleep[1])));
   if (text.includes("[[crash]]")) process.exit(3);
