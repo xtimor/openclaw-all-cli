@@ -1197,6 +1197,14 @@ describe("runStale", () => {
       expect(unreadable.state(1)).toBe("open");
     });
 
+    it("STALE: an issue that carries both stale labels is listed once, handled as needs-info, and closed once", async () => {
+      const both: FakeIssue = { number: 7, state: "open", labels: ["status:needs-info", "status:declined"], updated_at: daysAgo(40), user: { login: "alice" } };
+      const fake = fakeGithub([both]);
+      expect(await apply.runStale({ github: fake.github, context: ctx("schedule", {}), core: fakeCore(), dryRun: false, now: NOW, env })).toEqual([7]);
+      expect(fake.comments(7)).toEqual([t.staleComment("alice")]);
+      expect(fake.calls.filter((call) => call.startsWith("update"))).toEqual(["update 7 closed not_planned"]);
+    });
+
     it("STALE: a dry run names the status and changes nothing; with no owner list only the author is mentioned", async () => {
       const dry = fakeGithub(list(), { events: { 1: [declinedEvent(1, 31)], 2: [declinedEvent(2, 29)] } });
       const core = fakeCore();
