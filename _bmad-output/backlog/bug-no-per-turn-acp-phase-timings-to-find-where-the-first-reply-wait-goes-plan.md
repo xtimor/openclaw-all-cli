@@ -3,7 +3,7 @@ title: 'Per-turn phase timings in the debug log (ticket 16, issue #44)'
 type: 'bugfix'
 ticket: '16'
 created: '2026-10-28'
-status: 'built'
+status: done
 baseline_revision: '7178269be9f668f729ad99cdbc343db5eaa1f2d8'
 route: 'full'
 route_source: 'auto'
