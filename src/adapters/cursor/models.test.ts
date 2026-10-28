@@ -256,3 +256,45 @@ describe("cursorContextCeiling (issue #40)", () => {
     expect(cursorContextCeiling("default[]", [])).toBeUndefined();
   });
 });
+
+// Issue #46. Probed live 2026-10-28 (cursor-agent 2026.10.22): the ACP session lists only 300k rows for the
+// Opus family, and `session/set_model` / `session/set_config_option` answer `Invalid model value` for every
+// `context=1m` spelling (also for the listed row's own ID with `context=1m`). `cursor-agent -p --model` accepts
+// the 1M ID, so the refusal is ACP's. The plugin therefore lists no 1M variant of its own making.
+describe("1M variants (issue #46)", () => {
+  const OPUS_300K = "claude-opus-5-5[context=300k,effort=medium,fast=false]";
+  const OPUS_1M = "claude-opus-5-5[context=1m,effort=medium,fast=false]";
+
+  it("does not invent a 1M row: a 1M name or ID Cursor did not list resolves to nothing", () => {
+    const catalog = buildCursorCatalog(REAL);
+    expect(catalog.map((model) => model.id)).not.toContain(OPUS_1M);
+    expect(catalog.some((model) => model.name.includes("1m"))).toBe(false);
+    for (const asked of ["claude-opus-5-5-1m", OPUS_1M, "claude-opus-5-5[context=1m]"]) {
+      expect(resolveCursorModel(asked, catalog)).toBeUndefined();
+      expect(selectCursorModel(asked, REAL)).toBeUndefined();
+    }
+    // The existing name keeps running the listed 300k row.
+    expect(selectCursorModel("claude-opus-5-5", REAL)).toBe(OPUS_300K);
+  });
+
+  it("uses the window in a listed 1M ID, never the family's, and keeps every existing name", () => {
+    const listed = [...REAL, { id: OPUS_1M, name: "claude-opus-5-5" }];
+    const before = buildCursorCatalog(REAL);
+    const after = buildCursorCatalog(listed);
+    // A variant appended after the first leaves every earlier name, ID, and window alone.
+    expect(after.slice(0, before.length).map(({ name, id, contextWindow }) => ({ name, id, contextWindow }))).toEqual(
+      before.map(({ name, id, contextWindow }) => ({ name, id, contextWindow })),
+    );
+    const variant = after[after.length - 1]!;
+    expect(variant.id).toBe(OPUS_1M);
+    expect(variant.name).not.toBe("claude-opus-5-5");
+    expect(variant.contextWindow).toBe(1_000_000);
+    expect(after.find((model) => model.name === "claude-opus-5-5")?.contextWindow).toBe(300_000);
+  });
+
+  it("gives a 1M row a 1,000,000 ceiling and leaves the 300k row at 300,000", () => {
+    const listed = [...REAL, { id: OPUS_1M, name: "claude-opus-5-5" }];
+    expect(cursorContextCeiling(OPUS_1M, listed)).toBe(1_000_000);
+    expect(cursorContextCeiling(OPUS_300K, listed)).toBe(300_000);
+  });
+});
