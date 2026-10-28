@@ -223,6 +223,12 @@ describe("upstream issues (ticket 3.23)", () => {
 
   it("the agents may file one only for an approved issue or when the owner asks, and triage files none", () => {
     expect(section(identity, "## Upstream issues")).toMatch(/owner approved that issue/);
+    // The rule is enforced by the workflow, and the setup check never files a throwaway issue.
+    const part = section(identity, "## Upstream issues");
+    expect(part).toMatch(/`issues: read`/);
+    expect(part).toMatch(/3 or more issues by the token's user/);
+    expect(part).toMatch(/Check it only with a real case/);
+    expect(part).not.toMatch(/"title": "test"|#1"/);
     expect(implement).toMatch(/\*\*Upstream issues\.\*\*[^\n]*approved/);
     expect(implement).toContain("scripts/upstream-issue.sh /tmp/upstream-issue-<n>.json");
     expect(triage).toMatch(/\*\*Upstream issues\.\*\* Triage files none/);

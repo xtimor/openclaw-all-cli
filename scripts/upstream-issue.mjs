@@ -12,11 +12,15 @@
 // Input (one JSON object, at most 40 000 characters): title (one line, at most 256), body (at most 30 000; exactly one line
 // `Filed for <this repository>#<n>`, the issue of ours it serves), labels? (at most 5), repo? (only an ALLOWED_REPOS entry, default
 // the first). Nothing else. Everything is validated before the first request; a refusal sends nothing.
+// Approved issues only (ticket 3.23, security review): the marker's issue of ours must exist, be an issue, and have had `status:approved`
+// labeled by an owner (ISSUE_FLOW_OWNERS; read with GITHUB_TOKEN, `issues: read`, from the repository's own events). "The owner asks"
+// means the owner approves that issue first. A cap refuses a third new issue in 24 hours by the token's user in the target.
 // Idempotent: before creating, it lists the issues the token's owner created in the target (`GET /user`, then `GET /issues?creator=`,
 // which is consistent at once, unlike search) and returns the one with the same marker line or the same title instead of creating.
 // Labels: GitHub drops, without an error, labels that a user without triage rights sets; the log says which were applied.
 //
-// Environment: UPSTREAM_ISSUE, GH_PUBLIC_TOKEN, GITHUB_REPOSITORY, GITHUB_ACTOR, GITHUB_TRIGGERING_ACTOR, GITHUB_RUN_ATTEMPT (must be
+// Environment: UPSTREAM_ISSUE, GH_PUBLIC_TOKEN (the owner's token, upstream only), GITHUB_TOKEN (the workflow's, this repository only, read),
+// GITHUB_REPOSITORY, GITHUB_ACTOR, GITHUB_TRIGGERING_ACTOR, GITHUB_RUN_ATTEMPT (must be
 // "1"), ISSUE_FLOW_OWNERS (both actors must be in it), GITHUB_API_URL (default https://api.github.com), GITHUB_STEP_SUMMARY,
 // GITHUB_OUTPUT (gets `result=<the final line>`; the workflow turns it into an annotation a session can read by REST).
 //
@@ -37,6 +41,10 @@ export const MAX_BODY = 30_000;
 export const MAX_LABELS = 5;
 const MAX_LABEL = 50;
 const MAX_LIST_PAGES = 10; // 1000 issues of the token's owner in the target
+const MAX_EVENT_PAGES = 10; // 1000 events of one issue of ours
+export const DAILY_CAP = 3; // new issues by the token's user in the target within DAY_MS; the next one is refused
+const DAY_MS = 24 * 60 * 60 * 1000;
+const APPROVED = "status:approved";
 const CONTROL = /[\u0000-\u001f\u007f-\u009f\u2028\u2029]/; // a title or a label
 const BODY_CONTROL = /[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/; // a body may hold newlines and tabs
 const MARKER_LINE = /^Filed for ([A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+)#([1-9]\d{0,8})[ \t\r]*$/gm;
@@ -45,16 +53,19 @@ const refuse = (message) => new WriteError(message, { refused: true });
 const isObject = (value) => value !== null && typeof value === "object" && !Array.isArray(value);
 
 function readConfig(env) {
-  const missing = ["UPSTREAM_ISSUE", "GH_PUBLIC_TOKEN", "GITHUB_REPOSITORY"].filter((name) => typeof env[name] !== "string" || env[name].trim() === "");
+  const missing = ["UPSTREAM_ISSUE", "GH_PUBLIC_TOKEN", "GITHUB_TOKEN", "GITHUB_REPOSITORY"].filter((name) => typeof env[name] !== "string" || env[name].trim() === "");
   if (missing.length > 0) throw new WriteError(`missing environment variable: ${missing.join(", ")}`, { code: 2 });
   const repo = env.GITHUB_REPOSITORY.trim();
   if (!/^[\w.-]+\/[\w.-]+$/.test(repo)) throw new WriteError("GITHUB_REPOSITORY must look like owner/repo", { code: 2 });
   const token = env.GH_PUBLIC_TOKEN.trim();
   if (!/^\S{8,}$/.test(token)) throw new WriteError("GH_PUBLIC_TOKEN does not look like a token", { code: 2 });
+  const ours = env.GITHUB_TOKEN.trim();
+  if (!/^\S{8,}$/.test(ours)) throw new WriteError("GITHUB_TOKEN does not look like a token", { code: 2 });
   const api = ((env.GITHUB_API_URL ?? "").trim() || DEFAULT_API).replace(/\/+$/, "");
   return {
     inputText: env.UPSTREAM_ISSUE,
     token,
+    ourToken: ours,
     repo,
     api,
     graphql: `${api}/graphql`, // makeClient wants it; this script sends no GraphQL
@@ -112,13 +123,37 @@ export function validate(text, ourRepo) {
 const issueUrl = (repo, number) => `https://github.com/${repo}/issues/${number}`;
 
 /**
- * The issue the token's owner already filed in the target for the same marker line or with the same title (any state, a pull
- * request never), or null. Fails closed: an unreadable answer, or more issues than MAX_LIST_PAGES pages, refuses.
+ * Reads the issue of ours that the marker names and refuses unless it exists, is an issue (never a pull request), and an owner
+ * labeled it `status:approved` at some point (its events, oldest first). `ours` is the client for this repository (GITHUB_TOKEN,
+ * read only). An unreadable answer refuses too. Sends no write.
  */
-export async function findExisting(client, issue) {
+export async function checkApproved(ours, config, number) {
+  const path = `/repos/${config.repo}/issues/${number}`;
+  const answer = await ours.rest("GET", path, undefined, [404]);
+  if (answer.status === 404) throw refuse(`${config.repo}#${number} does not exist`);
+  if (!isObject(answer.data) || answer.data.pull_request !== undefined) throw refuse(`${config.repo}#${number} is not an issue`);
+  for (let page = 1; page <= MAX_EVENT_PAGES; page++) {
+    const events = (await ours.rest("GET", `${path}/events?per_page=100&page=${page}`)).data;
+    if (!Array.isArray(events)) throw new WriteError(`GET /issues/${number}/events: the events could not be read`);
+    for (const event of events) {
+      if (event?.event === "labeled" && event.label?.name === APPROVED && config.owners.includes(lower(event.actor?.login))) return;
+    }
+    if (events.length < 100) break;
+  }
+  throw refuse(`${config.repo}#${number} has no ${APPROVED} label set by an owner (ISSUE_FLOW_OWNERS); the owner approves the issue first`);
+}
+
+/**
+ * The issue the token's owner already filed in the target for the same marker line or with the same title (any state, a pull
+ * request never), or null; with the count of that owner's issues created there within the last 24 hours (newest first, pull
+ * requests excluded) for the daily cap. Fails closed: an unreadable answer, or more issues than MAX_LIST_PAGES pages, refuses.
+ */
+export async function findExisting(client, issue, now = Date.now) {
   const user = (await client.rest("GET", "/user")).data;
   if (!isObject(user) || typeof user.login !== "string" || !/^[A-Za-z0-9][\w.-]*(\[bot\])?$/.test(user.login)) throw new WriteError("GET /user: the token owner could not be read");
   const wantedTitle = issue.title.toLowerCase();
+  const since = now() - DAY_MS;
+  let recent = 0;
   for (let page = 1; page <= MAX_LIST_PAGES; page++) {
     const list = (await client.rest("GET", `/repos/${issue.repo}/issues?creator=${encodeURIComponent(user.login)}&state=all&sort=created&direction=desc&per_page=100&page=${page}`)).data;
     if (!Array.isArray(list)) throw new WriteError(`GET /issues: the list of ${issue.repo} could not be read`);
@@ -126,9 +161,11 @@ export async function findExisting(client, issue) {
       if (!isObject(item) || item.pull_request !== undefined || !Number.isSafeInteger(item.number) || item.number <= 0) continue;
       const sameTitle = typeof item.title === "string" && item.title.trim().toLowerCase() === wantedTitle;
       const sameMarker = markers(item.body).some((found) => lower(found.repo) === lower(issue.marker.repo) && found.number === issue.marker.number);
-      if (sameTitle || sameMarker) return { number: item.number, why: sameMarker ? "same marker line" : "same title" };
+      if (sameTitle || sameMarker) return { existing: { number: item.number, why: sameMarker ? "same marker line" : "same title" }, recent };
+      const created = typeof item.created_at === "string" ? Date.parse(item.created_at) : Number.NaN;
+      if (Number.isFinite(created) && created >= since) recent += 1;
     }
-    if (list.length < 100) return null;
+    if (list.length < 100) return { existing: null, recent };
   }
   throw refuse(`the token owner has more than ${MAX_LIST_PAGES * 100} issues in ${issue.repo}; cannot rule out a duplicate`);
 }
@@ -146,7 +183,7 @@ async function create(client, issue) {
  * Runs the whole input. `log(line)` is called with each progress line. Returns `{code, outcome, message, url, number, repo, ...}`;
  * it writes nothing itself. A missing or malformed variable throws a WriteError with code 2.
  */
-export async function run(env, log = () => {}) {
+export async function run(env, log = () => {}, now = Date.now) {
   const config = readConfig(env);
   const base = { repo: config.repo, actor: config.actor, target: "", url: "", number: 0 };
   const finish = (code, outcome, message = "", extra = {}) => ({ code, outcome, message, ...base, ...extra });
@@ -164,17 +201,23 @@ export async function run(env, log = () => {}) {
   }
   base.target = issue.repo;
   const client = makeClient(config);
+  // Our own repository is read with the workflow's token; the owner's token never goes there, and neither token goes to the other API.
+  const ours = makeClient({ ...config, token: config.ourToken });
+  const clean = (text) => client.clean(ours.clean(text));
   const fail = (error, stage) => {
     // Only our own errors carry a safe message; anything else is reported without its text.
     const safe = error instanceof WriteError;
-    return finish(1, safe && error.refused ? "Refused, nothing created" : stage, safe ? client.clean(error.message) : "unexpected error", { target: issue.repo });
+    return finish(1, safe && error.refused ? "Refused, nothing created" : stage, safe ? clean(error.message) : "unexpected error", { target: issue.repo });
   };
-  let existing;
+  let found;
   try {
-    existing = await findExisting(client, issue);
+    await checkApproved(ours, config, issue.marker.number);
+    found = await findExisting(client, issue, now);
   } catch (error) {
     return fail(error, "Failed before creating anything");
   }
+  const { existing, recent } = found;
+  if (existing === null && recent >= DAILY_CAP) return refused(`${recent} issues by the token's user were created in ${issue.repo} in the last 24 hours (${DAILY_CAP} or more are refused); wait, or file it by hand`);
   if (existing !== null) {
     const url = issueUrl(issue.repo, existing.number);
     log(`existing ${url} (${existing.why}); nothing created`);

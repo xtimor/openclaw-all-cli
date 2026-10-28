@@ -87,8 +87,8 @@ describe("upstream-issue.sh", () => {
     expect(result).toMatchObject({ status: 0, stdout: `${ISSUE}\n` });
     expect(result.stderr).toContain("created");
     expect(result.calls).toEqual([
-      `workflow run upstream-issue.yml --ref main -f issue=${JSON_OBJECT}`,
-      "run watch 515151 --exit-status",
+      `workflow run upstream-issue.yml --repo xtimor/openclaw-all-cli --ref main -f issue=${JSON_OBJECT}`,
+      "run watch 515151 --repo xtimor/openclaw-all-cli --exit-status",
       "api repos/xtimor/openclaw-all-cli/actions/runs/515151 --jq .status",
       "api repos/xtimor/openclaw-all-cli/actions/runs/515151 --jq .conclusion",
       "api repos/xtimor/openclaw-all-cli/actions/runs/515151/jobs --jq .jobs[0].id",
@@ -97,10 +97,15 @@ describe("upstream-issue.sh", () => {
   });
 
   it("EXISTING: an `existing` result prints the URL and says so on stderr; REPO moves the reads", () => {
-    const result = helper(JSON_OBJECT, { STUB_ANNOTATION: `upstream-issue: existing ${ISSUE}`, REPO: "o/r" });
+    const result = helper(JSON_OBJECT, { STUB_ANNOTATION: `upstream-issue: existing ${ISSUE}`, UPSTREAM_ISSUE_REPO: "o/r" });
     expect(result).toMatchObject({ status: 0, stdout: `${ISSUE}\n` });
     expect(result.stderr).toContain("existing");
+    // Dispatch, watch, and reads all name the same repository: never the current directory's.
+    expect(result.calls[0]).toContain("--repo o/r ");
+    expect(result.calls[1]).toBe("run watch 515151 --repo o/r --exit-status");
     expect(result.calls[2]).toBe("api repos/o/r/actions/runs/515151 --jq .status");
+    // The old hook name no longer moves anything.
+    expect(helper(JSON_OBJECT, { REPO: "o/r" }).calls[0]).toContain("--repo xtimor/openclaw-all-cli ");
   });
 
   it("LOG_FALLBACK: no annotation falls back to the run log, whose timestamps are stripped", () => {

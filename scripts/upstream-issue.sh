@@ -6,19 +6,19 @@
 #
 # The file is one JSON object: {"title": "...", "body": "...\nFiled for xtimor/openclaw-all-cli#<n>", "labels": ["..."]} (labels
 # optional; see scripts/upstream-issue.mjs for every rule). It only runs `gh workflow run upstream-issue.yml --ref main`,
-# `gh run watch`, and `gh api` reads of the run, its jobs, and the job's annotations (`gh run view --log` as a fallback). It never
+# `gh run watch` (both with `--repo`, the same repository the reads use, never the current directory's), and `gh api` reads of the run, its jobs, and the job's annotations (`gh run view --log` as a fallback). It never
 # touches the proxy variables and holds no secret: the token stays in GitHub. After `gh run watch` (which can return early) it polls
 # the run's status until `completed`. The result is the run's `notice` annotation, written by the workflow.
 # Exit 0: the run concluded success and the issue's URL is on stdout (stderr says `created` or `existing`). Exit 1: the dispatch, run
 # id, or run conclusion failed, the run is still going after the wait, or the result could not be read (one-line reason on stderr;
 # dispatching the same file again is safe, the script returns the issue it already filed instead of a second one). Exit 2: bad
 # usage, or the file is missing, over 40000 bytes, or not a JSON object (nothing dispatched).
-# Test hooks: UPSTREAM_ISSUE_GH (the gh binary, default `gh`), REPO (default xtimor/openclaw-all-cli), UPSTREAM_ISSUE_POLL_SECONDS
+# Test hooks: UPSTREAM_ISSUE_GH (the gh binary, default `gh`), UPSTREAM_ISSUE_REPO (default xtimor/openclaw-all-cli), UPSTREAM_ISSUE_POLL_SECONDS
 # (default 10), UPSTREAM_ISSUE_MAX_POLLS (default 120, about 20 minutes).
 set -euo pipefail
 
 GH="${UPSTREAM_ISSUE_GH:-gh}"
-REPO="${REPO:-xtimor/openclaw-all-cli}"
+REPO="${UPSTREAM_ISSUE_REPO:-xtimor/openclaw-all-cli}"
 POLL_SECONDS="${UPSTREAM_ISSUE_POLL_SECONDS:-10}"
 MAX_POLLS="${UPSTREAM_ISSUE_MAX_POLLS:-120}"
 MAX_BYTES=40000
@@ -38,12 +38,12 @@ else
   fail "neither node nor jq is available to check the issue file" 2
 fi
 
-URL="$("$GH" workflow run upstream-issue.yml --ref main -f issue="$(cat "$FILE")")" || fail "dispatch failed"
+URL="$("$GH" workflow run upstream-issue.yml --repo "$REPO" --ref main -f issue="$(cat "$FILE")")" || fail "dispatch failed"
 URL="$(printf '%s\n' "$URL" | tail -n 1)"
 ID="${URL##*/}"
 case "$ID" in ''|*[!0-9]*) fail "no run id" ;; esac
 
-"$GH" run watch "$ID" --exit-status >&2 || true
+"$GH" run watch "$ID" --repo "$REPO" --exit-status >&2 || true
 # `gh run watch` can return early (network drop) while the run is still going: wait for it, never judge a running run.
 STATUS=""
 for ((i = 0; i < MAX_POLLS; i++)); do

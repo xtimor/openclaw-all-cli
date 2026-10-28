@@ -1,4 +1,4 @@
-import { execFile } from "node:child_process";
+import { execFile, spawnSync } from "node:child_process";
 import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { createServer, type IncomingMessage, type Server } from "node:http";
 import type { AddressInfo } from "node:net";
@@ -19,6 +19,8 @@ const SCRIPT = join(ROOT, "scripts", "upstream-issue.mjs");
 const OURS = "xtimor/openclaw-all-cli";
 const TARGET = "openclaw/openclaw";
 const TOKEN = "ghp_STUB_PERSONAL_TOKEN_0123456789";
+const OUR_TOKEN = "ghs_STUB_WORKFLOW_TOKEN_9876543210";
+const OURS_API = `/repos/${OURS}`;
 const TITLE_MARK = "TITLE_MARKER_must_not_be_echoed_5521";
 const BODY_MARK = "BODY_MARKER_must_not_be_echoed_7731";
 const MARKER = `Filed for ${OURS}#45`;
@@ -44,9 +46,13 @@ async function readBody(req: IncomingMessage): Promise<Record<string, unknown> |
   return text ? (JSON.parse(text) as Record<string, unknown>) : null;
 }
 
+const approval = (login = "xtimor", label = "status:approved") => ({ event: "labeled", label: { name: label }, actor: { login } });
 const issue = (overrides: Record<string, unknown> = {}) => ({ title: `Plugin icon is not read ${TITLE_MARK}`, body: `### Summary\n\n${BODY_MARK}\n\n${MARKER}\n`, ...overrides });
 
 function defaults(method: string, path: string): Answer {
+  // Our repository: issue 45 is an issue that the owner approved.
+  if (method === "GET" && path === `${OURS_API}/issues/45`) return [200, { number: 45 }];
+  if (method === "GET" && path === `${OURS_API}/issues/45/events`) return [200, [approval(), { event: "labeled", label: { name: "type:bug" }, actor: { login: "xtimor" } }]];
   if (method === "GET" && path === "/user") return [200, { login: "xtimor" }];
   if (method === "GET" && path === `/repos/${TARGET}/issues`) return [200, []];
   if (method === "POST" && path === `/repos/${TARGET}/issues`) return [201, { number: 777, labels: [] }];
@@ -90,7 +96,7 @@ interface Run {
 }
 
 const stripped = () =>
-  Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.startsWith("VITEST") && !key.startsWith("GITHUB_") && !key.startsWith("UPSTREAM_") && !key.startsWith("ISSUE_FLOW") && !/proxy/i.test(key) && key !== "GH_PUBLIC_TOKEN"));
+  Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.startsWith("VITEST") && !key.startsWith("GITHUB_") && !key.startsWith("UPSTREAM_") && !key.startsWith("ISSUE_FLOW") && !/proxy/i.test(key) && key !== "GH_PUBLIC_TOKEN" && key !== "GH_TOKEN"));
 
 function run(input: unknown, env: Record<string, string | undefined> = {}, raw?: string): Promise<Run> {
   const dir = mkdtempSync(join(tmpdir(), "upstream-issue-"));
@@ -101,6 +107,7 @@ function run(input: unknown, env: Record<string, string | undefined> = {}, raw?:
     ...stripped(),
     UPSTREAM_ISSUE: raw ?? JSON.stringify(input),
     GH_PUBLIC_TOKEN: TOKEN,
+    GITHUB_TOKEN: OUR_TOKEN,
     GITHUB_REPOSITORY: OURS,
     GITHUB_ACTOR: "xtimor",
     GITHUB_TRIGGERING_ACTOR: "xtimor",
@@ -129,18 +136,19 @@ function run(input: unknown, env: Record<string, string | undefined> = {}, raw?:
 const seen = () => calls.map((call) => `${call.method} ${call.path}`);
 const writes = () => calls.filter((call) => call.method !== "GET");
 const everything = (result: Run) => `${result.stdout}\n${result.stderr}\n${result.summary}\n${result.output}`;
-const leaked = (result: Run, extra: string[] = []) => [TOKEN, TITLE_MARK, BODY_MARK, ...extra].filter((secret) => everything(result).includes(secret));
+const leaked = (result: Run, extra: string[] = []) => [TOKEN, OUR_TOKEN, TITLE_MARK, BODY_MARK, ...extra].filter((secret) => everything(result).includes(secret));
 const URL_777 = `https://github.com/${TARGET}/issues/777`;
 
 describe("upstream-issue", () => {
   it("CREATE: reads the token's owner, finds nothing, posts the issue to the allowed repository with the token, prints the URL", async () => {
     const result = await run(issue());
     expect(result.code, result.stderr).toBe(0);
-    expect(seen()).toEqual(["GET /user", `GET /repos/${TARGET}/issues`, `POST /repos/${TARGET}/issues`]);
-    expect(calls[1]?.search).toContain("creator=xtimor");
-    expect(calls[1]?.search).toContain("state=all");
-    expect(calls[2]?.body).toEqual({ title: `Plugin icon is not read ${TITLE_MARK}`, body: `### Summary\n\n${BODY_MARK}\n\n${MARKER}\n` });
-    for (const call of calls) expect(call.auth).toBe(`Bearer ${TOKEN}`);
+    expect(seen()).toEqual([`GET ${OURS_API}/issues/45`, `GET ${OURS_API}/issues/45/events`, "GET /user", `GET /repos/${TARGET}/issues`, `POST /repos/${TARGET}/issues`]);
+    expect(calls[3]?.search).toContain("creator=xtimor");
+    expect(calls[3]?.search).toContain("state=all");
+    expect(calls[4]?.body).toEqual({ title: `Plugin icon is not read ${TITLE_MARK}`, body: `### Summary\n\n${BODY_MARK}\n\n${MARKER}\n` });
+    // Each token goes only to its own repository: the workflow's to ours (reads), the owner's upstream.
+    for (const call of calls) expect(call.auth, `${call.method} ${call.path}`).toBe(`Bearer ${call.path.startsWith(OURS_API) ? OUR_TOKEN : TOKEN}`);
     expect(result.stdout).toContain(`upstream-issue: created ${URL_777}`);
     expect(result.output).toBe(`result=upstream-issue: created ${URL_777}\n`);
     expect(result.summary).toContain("Upstream issue");
@@ -315,6 +323,115 @@ describe("upstream-issue", () => {
     expect(result.output.trimEnd().split("\n")).toHaveLength(1);
   });
 
+  describe("APPROVED_ISSUES_ONLY: the issue of ours that the marker names (security review, finding 1)", () => {
+    const eventsPath = `GET ${OURS_API}/issues/45/events`;
+    const upstream = () => calls.filter((call) => !call.path.startsWith(OURS_API));
+
+    it("an issue that does not exist, a pull request, or an unreadable answer is refused, nothing sent upstream", async () => {
+      answers.set(`GET ${OURS_API}/issues/45`, [404, { message: "Not Found" }]);
+      const missing = await run(issue());
+      expect(missing.code).toBe(1);
+      expect(missing.stderr).toContain("does not exist");
+      answers.set(`GET ${OURS_API}/issues/45`, [200, { number: 45, pull_request: { url: "x" } }]);
+      const pull = await run(issue());
+      expect(pull.code).toBe(1);
+      expect(pull.stderr).toContain("is not an issue");
+      answers.set(`GET ${OURS_API}/issues/45`, [200, "text"]);
+      expect((await run(issue())).code).toBe(1);
+      answers.set(`GET ${OURS_API}/issues/45`, [500, { message: "boom" }]);
+      const down = await run(issue());
+      expect(down.code).toBe(1);
+      expect(down.stderr).toContain("GitHub answered 500");
+      expect(upstream()).toEqual([]);
+      expect(leaked(down)).toEqual([]);
+    });
+
+    it("no status:approved label event by an owner is refused: none at all, another label, a non-owner actor, a removal only, an unreadable list", async () => {
+      const refusals: unknown[] = [
+        [],
+        [approval("xtimor", "type:bug")],
+        [approval("mallory")],
+        [approval("xtimor-not"), { event: "unlabeled", label: { name: "status:approved" }, actor: { login: "xtimor" } }],
+        [{ event: "labeled", label: { name: "status:approved" } }],
+        [{ event: "labeled", label: { name: "status:approved" }, actor: null }],
+      ];
+      for (const events of refusals) {
+        answers.set(eventsPath, [200, events]);
+        const result = await run(issue());
+        expect(result.code, JSON.stringify(events)).toBe(1);
+        expect(result.stderr).toContain("Refused, nothing created");
+        expect(result.stderr).toContain("status:approved");
+        expect(upstream()).toEqual([]);
+        calls = [];
+      }
+      answers.set(eventsPath, [200, { not: "a list" }]);
+      expect((await run(issue())).code).toBe(1);
+      expect(upstream()).toEqual([]);
+    });
+
+    it("an owner's approval counts at any position, in any case of the login, and on a later page of the events", async () => {
+      const filler = Array.from({ length: 100 }, () => ({ event: "commented", actor: { login: "someone" } }));
+      answers.set(`${eventsPath}?page=1`, [200, filler]);
+      answers.set(`${eventsPath}?page=2`, [200, [approval("XTimor")]]);
+      const result = await run(issue());
+      expect(result.code, result.stderr).toBe(0);
+      expect(upstream().map((call) => call.method)).toEqual(["GET", "GET", "POST"]);
+      // Approved by an owner who is not the dispatcher still counts: the list is ISSUE_FLOW_OWNERS.
+      answers = new Map([[eventsPath, [200, [approval("second-owner")]]]]);
+      expect((await run(issue(), { ISSUE_FLOW_OWNERS: "xtimor, second-owner" })).code).toBe(0);
+    });
+
+    it("the marker's number picks the issue: a different number reads a different issue, and the same text cannot approve itself", async () => {
+      answers.set(`GET ${OURS_API}/issues/46/events`, [200, []]);
+      answers.set(`GET ${OURS_API}/issues/46`, [200, { number: 46 }]);
+      const result = await run(issue({ body: `x\nFiled for ${OURS}#46` }));
+      expect(result.code).toBe(1);
+      expect(seen().slice(0, 2)).toEqual([`GET ${OURS_API}/issues/46`, `GET ${OURS_API}/issues/46/events`]);
+      expect(upstream()).toEqual([]);
+    });
+
+    it("the approval is checked before anything upstream, including the token owner's lookup", async () => {
+      answers.set(eventsPath, [200, []]);
+      await run(issue());
+      expect(seen()).toEqual([`GET ${OURS_API}/issues/45`, `GET ${OURS_API}/issues/45/events`]);
+    });
+  });
+
+  describe("DAILY_CAP: three new issues in 24 hours by the token's user are the limit (security review, finding 1)", () => {
+    const ago = (hours: number) => new Date(Date.now() - hours * 3_600_000).toISOString();
+    const mine = (number: number, hours: number, extra: Record<string, unknown> = {}) => ({ number, title: `other ${number}`, body: "", created_at: ago(hours), ...extra });
+
+    it("three issues created in the last 24 hours refuse a new one, nothing posted; two pass", async () => {
+      answers.set(`GET /repos/${TARGET}/issues`, [200, [mine(3, 1), mine(2, 5), mine(1, 23)]]);
+      const refused = await run(issue());
+      expect(refused.code).toBe(1);
+      expect(refused.stderr).toContain("Refused, nothing created");
+      expect(refused.stderr).toContain("3 issues");
+      expect(writes()).toEqual([]);
+      answers.set(`GET /repos/${TARGET}/issues`, [200, [mine(3, 1), mine(2, 5)]]);
+      expect((await run(issue())).code).toBe(0);
+    });
+
+    it("older issues, pull requests, and an unreadable date do not count; the count spans pages", async () => {
+      answers.set(`GET /repos/${TARGET}/issues`, [200, [mine(5, 25), mine(4, 30), mine(3, 1, { pull_request: { url: "x" } }), mine(2, 2, { created_at: "garbage" }), mine(1, 3)]]);
+      expect((await run(issue())).code).toBe(0);
+      const page = (from: number, hours: number) => Array.from({ length: 100 }, (_, i) => mine(from + i, hours));
+      answers = new Map([[`GET /repos/${TARGET}/issues?page=1`, [200, [mine(1, 1), mine(2, 2), ...page(100, 30).slice(2)]]], [`GET /repos/${TARGET}/issues?page=2`, [200, [mine(9, 3)]]]]);
+      calls = [];
+      const spanning = await run(issue());
+      expect(spanning.code).toBe(1);
+      expect(writes()).toEqual([]);
+    });
+
+    it("an issue already filed is returned even when the cap is reached (a retry must still work)", async () => {
+      answers.set(`GET /repos/${TARGET}/issues`, [200, [mine(3, 1), mine(2, 2), mine(1, 3, { body: MARKER })]]);
+      const result = await run(issue());
+      expect(result.code, result.stderr).toBe(0);
+      expect(result.stdout).toContain("existing");
+      expect(writes()).toEqual([]);
+    });
+  });
+
   it("a redirect is not followed (the token stays with the API host)", async () => {
     const moved = createServer((req, res) => {
       calls.push({ method: req.method ?? "GET", path: req.url ?? "", search: "", body: null, auth: req.headers.authorization });
@@ -336,7 +453,7 @@ describe("upstream-issue", () => {
   });
 
   it("MISSING_VARS: a missing or malformed variable exits 2 with no request and the token never printed", async () => {
-    for (const name of ["GH_PUBLIC_TOKEN", "GITHUB_REPOSITORY", "UPSTREAM_ISSUE"]) {
+    for (const name of ["GH_PUBLIC_TOKEN", "GITHUB_TOKEN", "GITHUB_REPOSITORY", "UPSTREAM_ISSUE"]) {
       const result = await run(issue(), { [name]: undefined });
       expect(result.code, name).toBe(2);
       expect(result.stderr).toContain(name);
@@ -344,6 +461,7 @@ describe("upstream-issue", () => {
     }
     expect((await run(issue(), { GITHUB_REPOSITORY: "nope" })).code).toBe(2);
     expect((await run(issue(), { GH_PUBLIC_TOKEN: "short" })).code).toBe(2);
+    expect((await run(issue(), { GITHUB_TOKEN: "short" })).code).toBe(2);
     expect((await run(issue(), { GH_PUBLIC_TOKEN: "has a space inside it" })).code).toBe(2);
     expect(calls).toEqual([]);
     const noToken = await run(issue(), { GH_PUBLIC_TOKEN: undefined });
@@ -362,7 +480,8 @@ describe("upstream-issue workflow file", () => {
     expect(uses(text).map((m) => m[1])).toEqual(uses(relay).map((m) => m[1]));
     for (const [, , rest] of uses(text)) expect(rest).toMatch(/# v\d/);
     expect(text).toMatch(/^permissions: \{\}$/m);
-    expect(text.match(/^\s+permissions:\n\s+contents: read$/gm)).toHaveLength(1);
+    // The job reads this repository's issues and events (the approval check); nothing writes.
+    expect(text.match(/^\s+permissions:\n\s+contents: read\n\s+issues: read$/gm)).toHaveLength(1);
     expect(text).not.toMatch(/: (write|admin)\b/);
     expect(text).toMatch(/NODE_VERSION: 24\.22\.0/);
   });
@@ -374,7 +493,9 @@ describe("upstream-issue workflow file", () => {
     expect(text).toMatch(/^ {4}environment: agent$/m);
     expect(text).toMatch(/ref: refs\/heads\/main\n\s+persist-credentials: false/);
     expect(text).not.toMatch(/github\.event\.pull_request|head_ref|head\.sha|pull_request_target/);
-    expect(text).toMatch(/concurrency:\n {2}group: upstream-issue\n {2}cancel-in-progress: false/);
+    // The group is on the job (under the main condition), not on the workflow: a dispatch on another branch must not cancel a pending main run.
+    expect(text).not.toMatch(/^concurrency:/m);
+    expect(text).toMatch(/^ {4}concurrency:\n {6}group: upstream-issue\n {6}cancel-in-progress: false$/m);
   });
 
   it("passes the secret and the input through env only, masks the token before the script, and never writes it anywhere", () => {
@@ -389,11 +510,13 @@ describe("upstream-issue workflow file", () => {
     expect(text.match(/secrets\.GH_PUBLIC_TOKEN/g)).toHaveLength(1);
     expect(text).toContain("GH_PUBLIC_TOKEN: ${{ secrets.GH_PUBLIC_TOKEN }}");
     expect(text).toContain("UPSTREAM_ISSUE: ${{ inputs.issue }}");
+    expect(text).toContain("GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}");
     expect(text).toContain("GITHUB_TRIGGERING_ACTOR: ${{ github.triggering_actor }}");
     expect(text).toContain("GITHUB_RUN_ATTEMPT: ${{ github.run_attempt }}");
     // The step that reports the result never sees the secret.
     const report = text.slice(text.indexOf("name: Report the result"));
     expect(report).not.toContain("GH_PUBLIC_TOKEN");
+    expect(report).not.toContain("GITHUB_TOKEN");
     expect(report).toContain("RESULT: ${{ steps.file.outputs.result }}");
   });
 
@@ -402,5 +525,20 @@ describe("upstream-issue workflow file", () => {
     expect(owners(text)).toBeDefined();
     expect(owners(text)).toBe(owners(flow));
     expect(owners(text)).toBe(owners(relay));
+  });
+
+  it("the report step escapes % before it echoes, so a result cannot inject a line break or a command into the annotation", () => {
+    const report = text.slice(text.indexOf("name: Report the result"));
+    const block = report.match(/ {8}run: \|\n((?: {10}.*\n?)+)/)?.[1] ?? "";
+    expect(block.indexOf('RESULT="${RESULT//%/%25}"')).toBeGreaterThanOrEqual(0);
+    expect(block.indexOf('RESULT="${RESULT//%/%25}"')).toBeLessThan(block.indexOf("echo "));
+    const hostile = "upstream-issue: x%0A::error::injected %0D %25 100%";
+    const ran = spawnSync("bash", ["-c", block], { encoding: "utf8", env: { PATH: process.env.PATH ?? "", RESULT: hostile, OUTCOME: "failure" } });
+    expect(ran.status).toBe(0);
+    // Every % of the result is now %25, so the runner decodes it back to the original text and no %0A or %0D stays a control character.
+    expect(ran.stdout).toBe("::error title=Upstream issue::upstream-issue: x%250A::error::injected %250D %2525 100%25\n");
+    expect(ran.stdout.trimEnd().split("\n")).toHaveLength(1);
+    const ok = spawnSync("bash", ["-c", block], { encoding: "utf8", env: { PATH: process.env.PATH ?? "", RESULT: "upstream-issue: created https://github.com/openclaw/openclaw/issues/1", OUTCOME: "success" } });
+    expect(ok.stdout).toBe("::notice title=Upstream issue::upstream-issue: created https://github.com/openclaw/openclaw/issues/1\n");
   });
 });
