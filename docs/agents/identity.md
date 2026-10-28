@@ -44,7 +44,7 @@ At the start of a run, before any GitHub write.
    | `comment` | `issue`, `body` | none |
    | `edit_comment` | `comment_id`, `body` | the comment's author must be the app |
    | `labels` | `issue`, `add`?, `remove`? | only `status:`, `type:`, `priority:`, `source:` names in lowercase (`status:[a-z0-9-]`); `status:approved` is never added; no name in both lists; adds first, then removes; removing a label that is not set is fine |
-   | `close` | `issue`, `reason` (`completed`, `not_planned`, `duplicate`) | an issue, never a pull request |
+   | `close` | `issue`, `reason` (only `not_planned`) | agents never close an issue (owner decision 2026-10-28; they use `status:declined` or `status:needs-info`). The one exception is a security report: the same list must post the exact `SECURITY_CLOSE_COMMENT` (printed in [triage.md](triage.md#security-report)) on that issue, in a `comment` before the `close`. Otherwise the whole list is refused, nothing applied. An issue, never a pull request |
    | `reopen` | `issue` | an issue, never a pull request |
    | `pr_create` | `head`, `title`, `body`?, `draft`? | `head` must be a `claude/` branch of this repository; base is `main` |
    | `pr_ready` | `pr` | the pull request's author must be the app |

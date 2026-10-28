@@ -1,6 +1,6 @@
 import { readFileSync, readdirSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import { describe, expect, it } from "vitest";
 
 /**
@@ -13,6 +13,9 @@ const read = (...parts: string[]) => readFileSync(join(ROOT, ...parts), "utf8");
 const implement = read("docs", "agents", "implement.md");
 const triage = read("docs", "agents", "triage.md");
 const issues = read("docs", "issues.md");
+const SECURITY_CLOSE_COMMENT = (
+  (await import(pathToFileURL(join(ROOT, "scripts", "agent-write.mjs")).href)) as { SECURITY_CLOSE_COMMENT: string }
+).SECURITY_CLOSE_COMMENT;
 
 /** The text between a heading and the next heading of the same or a higher level. */
 function section(text: string, heading: string): string {
@@ -148,5 +151,41 @@ describe("Batch merge waits for a final state (d)", () => {
     expect(implement).toMatch(/waits for it, about 5 minutes at most/);
     expect(read(".github", "workflows", "batch-merge.yml")).toMatch(/waits for it inside the script, about 5 minutes at most/);
     expect(read("scripts", "batch-merge.mjs")).toContain("BATCH_MERGE_WAIT_MS");
+  });
+});
+
+describe("agents never close an issue (ticket 3.22)", () => {
+  /** Every line of the doc that talks about closing an issue, minus the ones that are about something else or forbid it. */
+  const closing = (text: string) =>
+    text
+      .split("\n")
+      .filter((line) => /\bclos(?:e|es|ed|ing)\b/i.test(line) && /\bissues?\b/i.test(line))
+      .filter((line) => !/never close|never closes|no closes|security|SECURITY\.md|pull request|draft|\bbatch\b|housekeeping|`closed`|reopened|owner|was closed|closes each ticket/i.test(line));
+
+  it("triage.md and implement.md allow no close but the security report: every other line that closes is a prohibition or about pull requests", () => {
+    // The security section is the one allowed close; the fixed comment and its dispatch are pinned in the next test.
+    expect(closing(triage.replace(section(triage, "## Security report"), ""))).toEqual([]);
+    expect(closing(implement)).toEqual([]);
+    for (const [name, text] of [["triage.md", triage], ["implement.md", implement]] as const) {
+      expect(text, name).toMatch(/never close/i);
+      expect(text, name).toContain("status:declined");
+      expect(text, name).not.toMatch(/close (?:it )?as (?:duplicate|completed)|close as not planned with the reason/i);
+    }
+  });
+
+  it("triage.md prints the relay's security comment word for word, and the relay doc names the guard", () => {
+    expect(triage).toContain(SECURITY_CLOSE_COMMENT);
+    expect(section(triage, "## Security report")).toContain("close the issue as `not_planned`");
+    const row = read("docs", "agents", "identity.md").split("\n").find((line) => line.trim().startsWith("| `close`")) ?? "";
+    expect(row).toMatch(/security report/);
+    expect(row).toContain("SECURITY_CLOSE_COMMENT");
+    expect(row).toMatch(/never close an issue/);
+  });
+
+  it("the comment shape and the user guide know the declined status", () => {
+    expect(read("docs", "agents", "comments.md")).toMatch(/\*\*Status:\*\* `status:declined`/);
+    expect(issues).toMatch(/^\| `status:declined` \|/m);
+    expect(issues).toMatch(/Agents never close an issue/);
+    expect(issues).toMatch(/`status:needs-info` or `status:declined` issue as not planned once it has been in that status for 30 days/);
   });
 });

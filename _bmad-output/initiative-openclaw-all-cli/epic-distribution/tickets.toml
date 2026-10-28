@@ -249,3 +249,15 @@ after = [20]
 hitl = false
 risk = "high"
 references = ["epic-distribution.md", "issue-flow.md"]
+
+[[entry]]
+id = 22
+type = "story"
+title = "Agents never close an issue; a declined issue waits for the owner or times out"
+description = "Live 2026-10-28: triage closed bug #45 as not planned (\"no plugin-side way exists\") on its own; the owner disagrees and decided (2026-10-28) that agents never close issues quietly. New rule: an agent that cannot or will not fix an issue either (1) asks the author for what it needs (`status:needs-info`, as today, when it cannot reproduce or lacks facts), or (2) sets a new status `status:declined` with the reason and evidence (cannot be fixed here, out of scope, duplicate of #N, already fixed by a done ticket, not planned), mentions the owner in `Waiting for`, and leaves the issue open. The owner then closes it, or adds information and moves it to another status (for example `status:new` for a re-triage, or `status:approved`). A `status:declined` issue that nobody touches closes as not planned after 30 days in that status, like `needs-info` (same daily job, counted from the label event, the author and the owner mentioned). Agents never close an issue in any path (triage reject, duplicate, done-ticket duplicate, implementation stop); the one exception stays: a security report is closed at once with a pointer to SECURITY.md and no detail. The relay keeps `close` only for that case (refuse an agent `close` op whose issue has no security marker, or drop the op if simpler and keep security closes as a labelled hide). Label added to `.github/labels.yml`; state automation knows the new status (latest status wins, reopen and owner moves work as for others); docs updated (triage.md, implement.md, comments.md example for declined, issues.md states table, issue-flow.md, MEMORY)."
+verify = "Tests: `test/issue-flow.test.ts` (declined is a status; the stale job closes a 30-day declined issue with the owner and author mentioned, and leaves a 29-day one), `test/agent-write.test.ts` if the relay `close` guard changes, a doc test that triage.md and implement.md have no close path except the security report; `npm run ci` passes; live: the next triage run that rejects an issue labels it `status:declined` and leaves it open."
+covers = []
+after = [21]
+hitl = false
+risk = "medium"
+references = ["epic-distribution.md", "issue-flow.md"]

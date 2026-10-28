@@ -4,7 +4,7 @@ import { createServer, type IncomingMessage, type Server } from "node:http";
 import type { AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from "vitest";
 
 /**
@@ -21,6 +21,12 @@ const BOT = "oac-issue-agents[bot]";
 const TOKEN = "ghs_STUB_INSTALLATION_TOKEN_0123456789";
 const SHA = "0123456789abcdef0123456789abcdef01234567";
 const BODY_MARK = "BODY_MARKER_must_not_be_echoed_7731";
+const { SECURITY_CLOSE_COMMENT } = (await import(pathToFileURL(SCRIPT).href)) as { SECURITY_CLOSE_COMMENT: string };
+/** The only close an agent has: the security pointer on the issue, then the close. */
+const securityClose = (issue: number, reason = "not_planned") => [
+  { op: "comment", issue, body: SECURITY_CLOSE_COMMENT },
+  { op: "close", issue, reason },
+];
 
 interface Call {
   method: string;
@@ -213,22 +219,49 @@ describe("agent-write", () => {
     expect(foreign.summary).toContain("refused");
   });
 
-  it("CLOSE: patches state closed with the reason; a bad reason or a pull request is refused", async () => {
-    const closed = await run([{ op: "close", issue: 12, reason: "not_planned" }]);
+  it("CLOSE: only a security report: the exact pointer comment on the same issue, then close as not planned", async () => {
+    const closed = await run(securityClose(12));
     expect(closed.code).toBe(0);
-    expect(seen()).toEqual(["GET /issues/12", "PATCH /issues/12"]);
-    expect(calls[1]?.body).toEqual({ state: "closed", state_reason: "not_planned" });
+    expect(seen()).toEqual(["POST /issues/12/comments", "GET /issues/12", "PATCH /issues/12"]);
+    expect(calls[0]?.body).toEqual({ body: SECURITY_CLOSE_COMMENT });
+    expect(calls[2]?.body).toEqual({ state: "closed", state_reason: "not_planned" });
 
+    // Surrounding whitespace is fine; the text is not allowed to differ otherwise.
     calls = [];
-    for (const reason of ["wontfix", "", undefined, "Completed"]) {
-      const bad = await run([{ op: "close", issue: 12, reason }]);
-      expect(bad.code).toBe(1);
-    }
-    expect(calls).toEqual([]);
+    expect((await run([{ op: "comment", issue: 12, body: `\n${SECURITY_CLOSE_COMMENT}\n` }, { op: "close", issue: 12, reason: "not_planned" }])).code).toBe(0);
+  });
 
-    const pr = await run([{ op: "close", issue: 20, reason: "completed" }]);
+  it("CLOSE: any other close is refused as a whole list, nothing sent", async () => {
+    const refusals: Array<[string, unknown[]]> = [
+      ["a bare close", [{ op: "close", issue: 12, reason: "not_planned" }]],
+      ["a close as completed", [{ op: "close", issue: 12, reason: "completed" }]],
+      ["a close as duplicate", [{ op: "close", issue: 12, reason: "duplicate" }]],
+      ["the pointer with another reason", securityClose(12, "completed")],
+      ["no reason", [{ op: "comment", issue: 12, body: SECURITY_CLOSE_COMMENT }, { op: "close", issue: 12 }]],
+      ["a pointer on another issue", [{ op: "comment", issue: 13, body: SECURITY_CLOSE_COMMENT }, { op: "close", issue: 12, reason: "not_planned" }]],
+      ["the pointer after the close", [{ op: "close", issue: 12, reason: "not_planned" }, { op: "comment", issue: 12, body: SECURITY_CLOSE_COMMENT }]],
+      ["a pointer with detail added", [{ op: "comment", issue: 12, body: `${SECURITY_CLOSE_COMMENT}\nThe token leaks in the log.` }, { op: "close", issue: 12, reason: "not_planned" }]],
+      ["a different comment", [{ op: "comment", issue: 12, body: "<!-- issue-triage -->\n**Status:** closed (not planned)\nOut of scope." }, { op: "close", issue: 12, reason: "not_planned" }]],
+      ["an edited comment instead of a new one", [{ op: "edit_comment", comment_id: 55, body: SECURITY_CLOSE_COMMENT }, { op: "close", issue: 12, reason: "not_planned" }]],
+      ["a pointer, then a close of a second issue", [...securityClose(12), { op: "close", issue: 13, reason: "not_planned" }]],
+    ];
+    for (const [name, ops] of refusals) {
+      calls = [];
+      const result = await run(ops);
+      expect(result.code, name).toBe(1);
+      expect(result.summary, name).toMatch(/Refused, nothing applied/);
+      expect(calls, name).toEqual([]);
+    }
+    const message = (await run([{ op: "close", issue: 12, reason: "not_planned" }])).summary;
+    expect(message).toMatch(/agents never close an issue except a security report/);
+    expect(message).toContain("status:declined");
+  });
+
+  it("CLOSE: a pull request is still refused", async () => {
+    answers.set(`POST /repos/${REPO}/issues/20/comments`, [201, { id: 9003 }]);
+    const pr = await run(securityClose(20));
     expect(pr.code).toBe(1);
-    expect(seen()).toEqual(["GET /issues/20"]);
+    expect(seen()).toEqual(["POST /issues/20/comments", "GET /issues/20"]);
     expect(pr.summary).toContain("pull request");
   });
 
@@ -629,8 +662,8 @@ describe("agent-write", () => {
     for (const payload of ["text", null, [], 5]) {
       calls = [];
       answers.set(`GET /repos/${REPO}/issues/12`, [200, payload]);
-      for (const op of [{ op: "close", issue: 12, reason: "completed" }, { op: "reopen", issue: 12 }]) {
-        const result = await run([op]);
+      for (const ops of [securityClose(12).slice(1), [{ op: "reopen", issue: 12 }]]) {
+        const result = await run(ops[0]?.op === "close" ? securityClose(12) : ops);
         expect(result.code, JSON.stringify(payload)).toBe(1);
         expect(result.summary).toContain("could not be read");
       }
@@ -663,10 +696,10 @@ describe("agent-write", () => {
 
   it("PROGRESS: each finished operation is on stdout before the next starts, and a failed run still shows what was applied", async () => {
     answers.set(`POST /repos/${REPO}/issues/12/labels`, [403, { message: "no" }]);
-    const result = await run([{ op: "comment", issue: 12, body: "hi" }, { op: "labels", issue: 12, add: ["status:triaged"] }, { op: "close", issue: 12, reason: "completed" }]);
+    const result = await run([{ op: "comment", issue: 12, body: "hi" }, { op: "labels", issue: 12, add: ["status:triaged"] }, { op: "reopen", issue: 12 }]);
     const lines = result.stdout.split("\n").filter((l) => l !== "");
     expect(lines.slice(0, 2)).toEqual([`agent-write: acting as ${BOT}`, "agent-write: comment #12: comment 9001 created"]);
-    expect(lines.slice(2)).toEqual(expect.arrayContaining([expect.stringContaining("labels : failed"), "agent-write: close : not applied"]));
+    expect(lines.slice(2)).toEqual(expect.arrayContaining([expect.stringContaining("labels : failed"), "agent-write: reopen : not applied"]));
   });
 
   it("APPROVAL: status:approved in any spelling refuses the whole input, nothing applied", async () => {
