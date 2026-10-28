@@ -21,6 +21,9 @@ function isEffortKey(key: string): boolean {
  * seen in a Cursor listing (cursor-agent 2026.10.16: `grok-4.7[context=256k,...]`,
  * `claude-opus-5-5[context=300k,...]`, `claude-opus-5[...context=300k...]`) are here. A family that
  * Cursor's listing never gave a window for (Auto, `composer-*`, `gemini-*`) stays out: no guess.
+ * These are the ACP session's defaults, not the models' limits: Cursor sells the Opus rows with a 1M
+ * window, but ACP refuses a `context=1m` ID (issue #46), so no 1M row is listed or built here. A row
+ * whose own ID carries `context` never reads this table.
  */
 const FAMILY_CONTEXT_WINDOWS: Readonly<Record<string, number>> = {
   "grok-4.7": 256_000,

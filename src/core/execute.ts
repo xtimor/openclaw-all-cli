@@ -2,6 +2,7 @@ import { attachSession, type AttachDeps } from "./attach-session.ts";
 import type { AgentHome } from "./home.ts";
 import { toRecord, type CoreRecord, type TurnSummary } from "./events.ts";
 import { IMAGE_FRESHNESS_MS, takeHostImages } from "./images.ts";
+import { TurnTimings } from "./turn-timings.ts";
 import { createLiveEntry, liveEntries, type LiveEntry, type LiveEntryDeps, type OpenEntry } from "./live-entry.ts";
 import { listToolNames, type McpProxy } from "./mcp-proxy.ts";
 import { readTurnTarget, type TurnTarget } from "./mcp-target.ts";
@@ -31,6 +32,8 @@ export type ExecuteOptions = {
   abortGraceMs?: number;
   /** Receives warnings. Never pass it a token, an auth header, or prompt text. */
   warn?: (message: string) => void;
+  /** Receives the debug log: one timing line per turn (issue #44). Never pass it prompt text or a key. */
+  debug?: (message: string) => void;
   /**
    * Whether OpenClaw's tools reach the CLI through the MCP proxy (parity row P7). When false the
    * core starts no proxy, hands the CLI no MCP server, and reads no MCP config file. Default true.
@@ -87,6 +90,11 @@ function reuseKey(ctx: ExecuteContext, home: AgentHome, authProfileId: string | 
   return JSON.stringify([ctx.modelId, modeOf(ctx), hostShell, ctx.cwd, home.dir, authProfileId ?? null, thinkingLevel ?? null]);
 }
 
+/** The error's core code, for the timing line. */
+function codeOf(error: unknown): string {
+  return error instanceof CliError ? error.code : "unknown";
+}
+
 export function errorRecord(error: unknown): CoreRecord {
   const info =
     error instanceof CliError
@@ -109,6 +117,7 @@ export function createExecute(adapter: CliAdapter, options: ExecuteOptions): Cli
   const abortGraceMs = options.abortGraceMs ?? DEFAULT_ABORT_GRACE_MS;
   const { home } = options;
   const warn = options.warn ?? (() => {});
+  const debug = options.debug;
   const mcp = options.mcp ?? true;
   // The proxy stops a tool call a little before the CLI's own MCP client gives up on it.
   const callDeadlineMs = options.callDeadlineMs ?? (adapter.mcpCallTimeoutMs ? Math.max(1_000, adapter.mcpCallTimeoutMs - MCP_DEADLINE_MARGIN_MS) : undefined);
@@ -197,6 +206,7 @@ export function createExecute(adapter: CliAdapter, options: ExecuteOptions): Cli
     withMcp: boolean,
     turnTarget: TurnTarget,
     shell: ReturnType<typeof splitHostShell>,
+    timings: TurnTimings,
   ): Promise<Fresh> {
     let fresh: LiveEntry;
     try {
@@ -206,6 +216,7 @@ export function createExecute(adapter: CliAdapter, options: ExecuteOptions): Cli
       if (ctx.abortSignal?.aborted) throw error;
       // A superseded run must throw, not turn into an error record.
       ctx.assertCurrent?.();
+      timings.markFailed(codeOf(error));
       return { record: errorRecord(error) };
     }
     try {
@@ -216,6 +227,7 @@ export function createExecute(adapter: CliAdapter, options: ExecuteOptions): Cli
     }
     // Closed while the proxy started (unload): never hand the host a closed handle.
     if (fresh.closed) {
+      timings.markFailed("server_error");
       return { record: errorRecord(new CliError({ code: "server_error", message: "The plugin is shutting down.", retryable: true })) };
     }
     // A host that tracks live sessions must know the process and activate its MCP grant before
@@ -251,7 +263,7 @@ export function createExecute(adapter: CliAdapter, options: ExecuteOptions): Cli
       // process opened in the restrictive mode. Never reuse it, so the next turn reads the list again.
       if (marked && listed === undefined) fresh.degraded = true;
       ctx.abortSignal?.throwIfAborted();
-      const opening = attachSession(attachDeps, fresh, ctx, hostShell, shell.args);
+      const opening = attachSession(attachDeps, fresh, ctx, hostShell, shell.args, (phase, ms) => timings.recordOpen(phase, ms));
       fresh.opening = opening;
       return { entry: await opening };
     } catch (error) {
@@ -259,6 +271,7 @@ export function createExecute(adapter: CliAdapter, options: ExecuteOptions): Cli
       if (ctx.abortSignal?.aborted) throw error;
       // A newer run's restart closes the handle during the open: that run is superseded.
       ctx.assertCurrent?.();
+      timings.markFailed(codeOf(error));
       return { record: errorRecord(error) };
     }
   }
@@ -272,9 +285,10 @@ export function createExecute(adapter: CliAdapter, options: ExecuteOptions): Cli
     opened: boolean;
     turnStart: number;
     sideQuestion: boolean;
+    timings: TurnTimings;
   };
 
-  async function* run(ctx: ExecuteContext, turnStart: number): ReturnType<CliBackendExecute> {
+  async function* run(ctx: ExecuteContext, turnStart: number, timings: TurnTimings): ReturnType<CliBackendExecute> {
     ctx.assertCurrent?.();
     ctx.abortSignal?.throwIfAborted();
     const sideQuestion = modeOf(ctx) === "side-question";
@@ -292,15 +306,16 @@ export function createExecute(adapter: CliAdapter, options: ExecuteOptions): Cli
     // A superseded run must throw, not turn into an error record.
     ctx.assertCurrent?.();
     const opened = !entry;
+    if (entry) timings.markReused();
     if (!entry) {
-      const fresh = await openFresh(ctx, live, withMcp, turnTarget, shell);
+      const fresh = await openFresh(ctx, live, withMcp, turnTarget, shell, timings);
       if ("record" in fresh) {
         yield fresh.record;
         return;
       }
       entry = fresh.entry;
     }
-    yield* runTurn({ ctx, live, turnTarget, opened, turnStart, sideQuestion }, entry);
+    yield* runTurn({ ctx, live, turnTarget, opened, turnStart, sideQuestion, timings }, entry);
   }
 
   /** The turn on an open process: abort handling, the prompt, and the cleanup that decides whether the process lives on. */
@@ -333,6 +348,7 @@ export function createExecute(adapter: CliAdapter, options: ExecuteOptions): Cli
     } catch (error) {
       state.failed = true;
       if (ctx.abortSignal?.aborted) throw error;
+      turnArgs.timings.markFailed(codeOf(error));
       for (const record of tools.closeOpen()) yield record;
       yield errorRecord(error);
     } finally {
@@ -355,7 +371,7 @@ export function createExecute(adapter: CliAdapter, options: ExecuteOptions): Cli
 
   /** The prompt of a turn and its events as host records. `state.failed` is set when the turn did not end well. */
   async function* promptTurn(
-    { ctx, turnStart, sideQuestion }: TurnArgs,
+    { ctx, turnStart, sideQuestion, timings }: TurnArgs,
     active: OpenEntry,
     tools: ToolLedger,
     state: { failed: boolean },
@@ -392,11 +408,12 @@ export function createExecute(adapter: CliAdapter, options: ExecuteOptions): Cli
       delivered,
     });
     const startedAt = Date.now();
+    const promptText = composePrompt(ctx, note, delivery.lead, deliversSystemPrompt, host?.text ?? ctx.prompt);
     ctx.abortSignal?.throwIfAborted();
-    for await (const event of active.session.prompt(
-      composePrompt(ctx, note, delivery.lead, deliversSystemPrompt, host?.text ?? ctx.prompt),
-      host?.images,
-    )) {
+    // The session sends the prompt when the loop below takes its first event.
+    timings.markPromptSent();
+    for await (const event of active.session.prompt(promptText, host?.images)) {
+      timings.markEvent(event.kind);
       if (event.kind === "usage") {
         summary.usage = event.usage;
         continue;
@@ -406,6 +423,8 @@ export function createExecute(adapter: CliAdapter, options: ExecuteOptions): Cli
       if (event.kind === "result") delivery.recordResult();
       if (event.kind === "result" || event.kind === "error") {
         closed = true;
+        if (event.kind === "result") timings.markEnd("ok");
+        else timings.markEnd("error", event.error.code);
         for (const record of tools.closeOpen()) yield record;
       }
       if (event.kind === "result" && readsUsage && !summary.usage) {
@@ -428,14 +447,25 @@ export function createExecute(adapter: CliAdapter, options: ExecuteOptions): Cli
     ctx.abortSignal?.throwIfAborted();
     if (!closed) {
       state.failed = true;
+      timings.markFailed("empty_response");
       for (const record of tools.closeOpen()) yield record;
       yield errorRecord(new CliError({ code: "empty_response", message: "The CLI ended the turn without a result." }));
+    }
+  }
+
+  /** One debug line per turn; a failing log never fails the turn. */
+  function logTimings(ctx: ExecuteContext, timings: TurnTimings): void {
+    try {
+      debug?.(timings.line(adapter.id, ctx.modelId));
+    } catch {
+      // The line is only a log.
     }
   }
 
   return async function* execute(ctx) {
     // The host wrote the turn's image files just before it called us; the wait for a slot may be long.
     const turnStart = Date.now();
+    const timings = new TurnTimings();
     ctx.abortSignal?.throwIfAborted();
     // AD-14: the turn slot comes first and is held for the whole turn. The wait has no timer of
     // its own (AD-11): it ends on a free slot or on the host's abort.
@@ -446,13 +476,19 @@ export function createExecute(adapter: CliAdapter, options: ExecuteOptions): Cli
       if (ctx.abortSignal?.aborted) throw error;
       // A superseded run must throw, not turn into an error record.
       ctx.assertCurrent?.();
+      timings.markFailed(codeOf(error));
+      logTimings(ctx, timings);
       yield errorRecord(error);
       return;
     }
     try {
-      yield* run(ctx, turnStart);
+      yield* run(ctx, turnStart, timings);
+    } catch (error) {
+      if (!ctx.abortSignal?.aborted) timings.markFailed(codeOf(error));
+      throw error;
     } finally {
       slot.release();
+      logTimings(ctx, timings);
     }
   };
 }

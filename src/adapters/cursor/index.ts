@@ -249,6 +249,7 @@ function open(params: OpenParams): Promise<CliSession> {
     },
     contextCeilingOf: cursorContextCeiling,
     ...(params.onProcessStart ? { onProcessStart: params.onProcessStart } : {}),
+    ...(params.onPhase ? { onPhase: params.onPhase } : {}),
     ...(params.resumeSessionId && !sideQuestion ? { resumeSessionId: params.resumeSessionId } : {}),
     ...(params.mcpServers?.length && !sideQuestion ? { mcpServers: params.mcpServers.map(toAcpMcpServer) } : {}),
     describeToolCall: describeCursorToolCall,

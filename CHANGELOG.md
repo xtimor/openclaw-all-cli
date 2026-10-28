@@ -4,8 +4,13 @@ What changed for people who use the plugin, newest first. Format: [Keep a Change
 
 ## Unreleased
 
+### Added
+
+- Every Cursor turn writes one line to OpenClaw's debug log (`OPENCLAW_LOG_LEVEL=debug`, search `turn timings`) with how long the process start, the chat start or resume, the model switch, the wait for the first thought, the first text, and the end took, so a slow first reply can be traced to the step that causes it. The docs name the fields and give a live split for `grok-4.7` and `auto`. ([#44](https://github.com/xtimor/openclaw-all-cli/issues/44))
+
 ### Changed
 
+- Docs: Cursor's 1M context variants ("Claude Opus 5.5 1M" and similar) cannot be picked as `cursor-cli/...` models, because Cursor refuses a `context=1m` model ID over ACP (checked live: `Invalid model value`), so the plugin lists no 1M model and leaves every existing model name unchanged. The 300k shown for these models is Cursor's ACP default, not their limit. If Cursor starts listing a 1M row, the plugin shows it as its own model with a 1,000,000 window. Details in the [Cursor provider](https://github.com/xtimor/openclaw-all-cli/blob/main/docs/providers/cursor.md#1m-context-variants) docs. ([#46](https://github.com/xtimor/openclaw-all-cli/issues/46))
 - Issues: the triage and implementation agents no longer close an issue they cannot or will not fix. They give the reason and the evidence under the new `status:declined`, mention the maintainer, and leave the issue open; the maintainer closes it or moves it on, and an untouched declined issue closes as not planned after 30 days. Security reports are still closed at once with a pointer to the security policy. See [Issues](https://github.com/xtimor/openclaw-all-cli/blob/main/docs/issues.md).
 
 ## 0.1.4 - 2026-10-27

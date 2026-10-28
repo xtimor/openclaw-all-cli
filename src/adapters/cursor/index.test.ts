@@ -134,6 +134,13 @@ describe("cursor adapter", () => {
     });
   });
 
+  it("fails a 1M variant Cursor did not list with model_not_found, and never offers it to ACP (issue #46)", async () => {
+    // Real ACP refuses a `context=1m` ID it did not list (`Invalid model value`); the plugin does not even try one.
+    for (const asked of ["fake-slow-1m", "fake-fast[speed=fast,context=1m,fast=true]", "fake-fast-1m"]) {
+      await expect(openOn(asked)).rejects.toMatchObject({ code: "model_not_found", message: expect.stringContaining(`"${asked}"`) });
+    }
+  });
+
   it("runs `auto` and Cursor's own spellings of it on Auto", async () => {
     for (const name of ["auto", "default", "default[]"]) {
       expect(await replyOf(await openOn(name))).toMatchObject({ text: expect.stringContaining("model default[]") });

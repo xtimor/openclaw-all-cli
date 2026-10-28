@@ -5,7 +5,7 @@ import { OPENCLAW_MCP_SERVER } from "./mcp-target.ts";
 import { capabilityMismatch, missingCapabilities, requiredCapabilities } from "./manifest.ts";
 import { routePermission } from "./permissions.ts";
 import { recordProcess, type ProcessLock } from "./pid-locks.ts";
-import { CliError, type CliAdapter, type CliSession, type ExecutionMode } from "./ports.ts";
+import { CliError, type CliAdapter, type CliSession, type ExecutionMode, type OpenParams } from "./ports.ts";
 import type { ExecuteContext } from "./sdk-types.ts";
 import { modeOf } from "./turn-prompt.ts";
 
@@ -36,6 +36,7 @@ export async function attachSession(
   ctx: ExecuteContext,
   hostShell: boolean,
   args: string[],
+  onPhase?: OpenParams["onPhase"],
 ): Promise<OpenEntry> {
   // Closed (unload, eviction, the host) before the open: no process may start.
   if (entry.closed) throw closedError();
@@ -44,7 +45,7 @@ export async function attachSession(
   const resumeSessionId = mode === "agent" && ctx.useResume && ctx.sessionId ? ctx.sessionId : undefined;
   if (resumeSessionId) await claimChat(entry, deps.home, resumeSessionId, ctx.abortSignal, deps.abortGraceMs);
   if (entry.closed) throw closedError();
-  const session = await openProcess(deps, entry, ctx, mode, resumeSessionId, hostShell, args);
+  const session = await openProcess(deps, entry, ctx, mode, resumeSessionId, hostShell, args, onPhase);
   await settleOpened(deps, entry, ctx, session, mode, resumeSessionId);
   return entry as OpenEntry;
 }
@@ -58,6 +59,7 @@ async function openProcess(
   resumeSessionId: string | undefined,
   hostShell: boolean,
   args: string[],
+  onPhase: OpenParams["onPhase"] | undefined,
 ): Promise<CliSession> {
   const { proxy } = entry;
   // The process is recorded in the agent home from its spawn, so a killed Gateway leaves a trail (AD-14).
@@ -94,6 +96,7 @@ async function openProcess(
       onProcessStart: (pid, info) => {
         lock = recordProcess(home.dir, pid, warn, { group: info?.processGroup === true });
       },
+      ...(onPhase ? { onPhase } : {}),
       signal: ctx.abortSignal ? AbortSignal.any([ctx.abortSignal, entry.stopOpening.signal]) : entry.stopOpening.signal,
     });
   } catch (error) {

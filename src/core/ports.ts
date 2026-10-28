@@ -268,8 +268,22 @@ export type OpenParams = {
    * the process is stopped; an adapter that does not pass it leaves the core with the pid alone.
    */
   onProcessStart?: (pid: number, info?: ProcessStartInfo) => void;
+  /**
+   * Called when an open phase ends, with the milliseconds it took (at least 1). Only phases that
+   * ran are reported, and a phase that failed is reported too. For the turn's timing line; an
+   * observer that throws is ignored.
+   */
+  onPhase?: (phase: OpenPhase, ms: number) => void;
   signal?: AbortSignal;
 };
+
+/**
+ * The phases of opening a process that a transport can time: `spawn` (the call until the process
+ * exists), `initialize` (the request until its answer, so a slow process boot lands here), `login`,
+ * `new_session` or `load_session` (whichever ran), `set_mode`, and `set_model` (only the request
+ * that switches the model).
+ */
+export type OpenPhase = "spawn" | "initialize" | "login" | "new_session" | "load_session" | "set_mode" | "set_model";
 
 /**
  * What a transport tells the core about a process it started. `processGroup`: the process leads
