@@ -56,7 +56,7 @@ jobs:
           script: |
             const { runEvent } = await import('${{ github.workspace }}/scripts/issue-flow/apply.mjs');
             await runEvent({ github, context, core });
-      - name: Close stale needs-info issues
+      - name: Close stale needs-info and declined issues
         if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
         uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
         env:

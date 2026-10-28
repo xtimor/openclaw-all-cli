@@ -5,7 +5,7 @@
 // Issue and PR text is data. Only two things are read from it: the link keywords (`linkedIssues`) and, from the
 // payload, the author login. Nothing is evaluated, and no text is copied into a comment.
 
-/** The 8 states of .github/labels.yml, in lifecycle order. Exactly one is set on an open issue. */
+/** The 9 states of .github/labels.yml, in lifecycle order. Exactly one is set on an open issue. */
 export const STATUS_LABELS = Object.freeze([
   "status:new",
   "status:needs-info",
@@ -15,6 +15,7 @@ export const STATUS_LABELS = Object.freeze([
   "status:in-progress",
   "status:in-review",
   "status:blocked",
+  "status:declined",
 ]);
 
 export const NEW = "status:new";
@@ -24,8 +25,12 @@ export const IN_PROGRESS = "status:in-progress";
 export const PLANNED = "status:planned";
 export const IN_REVIEW = "status:in-review";
 export const BLOCKED = "status:blocked";
+export const DECLINED = "status:declined";
 
-/** Days a `needs-info` issue may stay in that status (counted from the latest time the label was added) before the daily job closes it. */
+/** The statuses the daily job closes when an issue stays in one of them: waiting for the author, or for the owner after an agent declined it. */
+export const STALE_STATUSES = Object.freeze([NEEDS_INFO, DECLINED]);
+
+/** Days an issue may stay in a stale status (counted from the latest time the label was added) before the daily job closes it. */
 export const STALE_DAYS = 30;
 
 /** The actor whose events the workflow itself causes; never handled again (no loops). */
@@ -54,6 +59,21 @@ export function staleComment(login) {
   const author = typeof login === "string" && LOGIN_RE.test(login) ? login : null;
   const subject = author === null ? "This issue has" : `@${author}, this issue has`;
   return `${MARKER}\n${subject} been in \`${NEEDS_INFO}\` for ${STALE_DAYS} days without a reply, so it is closed as not planned. Reopen it to continue; it returns to \`${NEW}\`.`;
+}
+
+/**
+ * The stale-close comment for a `declined` issue: the author and every owner are mentioned (a valid login each, once), so GitHub
+ * notifies them. The owner decides; an untouched issue is closed after STALE_DAYS. Logins are checked against LOGIN_RE.
+ */
+export function declinedStaleComment(login, owners = []) {
+  const seen = new Set();
+  const people = [login, ...parseOwners(owners)].filter((name) => {
+    const ok = typeof name === "string" && LOGIN_RE.test(name) && !seen.has(name.toLowerCase());
+    if (ok) seen.add(name.toLowerCase());
+    return ok;
+  });
+  const who = people.length === 0 ? "This issue has" : `${people.map((name) => `@${name}`).join(", ")}: this issue has`;
+  return `${MARKER}\n${who} been in \`${DECLINED}\` for ${STALE_DAYS} days without a decision, so it is closed as not planned. Reopen it to continue; it returns to \`${NEW}\`.`;
 }
 
 const isStatus = (label) => STATUS_LABELS.includes(label);
@@ -255,9 +275,18 @@ function onPullRequest(event, issue, owners) {
   return issue.state === "open" && has(IN_REVIEW) ? setStatus(issue, BLOCKED) : [];
 }
 
-function onStale(issue) {
-  if (issue.state !== "open" || !issue.labels.includes(NEEDS_INFO)) return [];
-  return [comment(staleComment(issue.author)), ...clearStatus(issue), { op: "close", reason: "not_planned" }];
+/** The stale status an open issue carries (`needs-info` first), or null. */
+export function staleStatus(rawIssue) {
+  const issue = normalizeIssue(rawIssue);
+  if (issue.isPullRequest || issue.state !== "open") return null;
+  return STALE_STATUSES.find((label) => issue.labels.includes(label)) ?? null;
+}
+
+function onStale(issue, owners) {
+  const status = staleStatus(issue);
+  if (status === null) return [];
+  const body = status === DECLINED ? declinedStaleComment(issue.author, owners) : staleComment(issue.author);
+  return [comment(body), ...clearStatus(issue), { op: "close", reason: "not_planned" }];
 }
 
 /**
@@ -270,7 +299,7 @@ function onStale(issue) {
  *     issue); `merged`, `prState` open | closed; `repo` (this repository, `owner/repo`), `headRepo` (the PR's head
  *     repository), `author`: it counts only when `headRepo` is `repo` or `author` is an owner.
  *   - opened | reopened also carry `at`, the event time (ISO).
- *   - `stale`: the daily job found the issue.
+ *   - `stale`: the daily job found the issue (in `needs-info` or `declined`; `owners` are mentioned on a declined one).
  * issue: a REST issue or a normalized one (`normalizeIssue`), as read now.
  * options: `owners` (logins that may approve), `agents` (logins of the issue agents' GitHub App; their marker comments are
  *   not replies, and they are not owners), and `timeline` (the issue's label events, see `normalizeTimeline`; read it
@@ -288,7 +317,7 @@ export function decide(event, issue, { owners = [], agents = [], timeline = [] }
     case "pull_request":
       return onPullRequest(event, current, owners);
     case "stale":
-      return onStale(current);
+      return onStale(current, owners);
     default:
       return [];
   }
@@ -317,20 +346,23 @@ export function linkedIssues(body, repo) {
 }
 
 /**
- * When `status:needs-info` was last added: the latest `labeled` event for it in the issue's events (REST or normalized, see
- * `normalizeTimeline`), as epoch ms; null when there is none or its time is unreadable.
+ * When `label` (default `status:needs-info`) was last added: the latest `labeled` event for it in the issue's events (REST or
+ * normalized, see `normalizeTimeline`), as epoch ms; null when there is none or its time is unreadable.
  */
-export function needsInfoSince(events) {
+export function statusSince(events, label = NEEDS_INFO) {
   let since = null;
   for (const entry of normalizeTimeline(events)) {
-    if (entry.kind === "labeled" && entry.label === NEEDS_INFO && Number.isFinite(entry.time)) since = since === null ? entry.time : Math.max(since, entry.time);
+    if (entry.kind === "labeled" && entry.label === label && Number.isFinite(entry.time)) since = since === null ? entry.time : Math.max(since, entry.time);
   }
   return since;
 }
 
+/** `statusSince` for `status:needs-info`. */
+export const needsInfoSince = (events) => statusSince(events, NEEDS_INFO);
+
 /**
- * The open issues in `needs-info` that have been in that status for at least `days` days before `now` (a Date or epoch ms).
- * `since` maps an issue number to the time `needs-info` was last added (epoch ms, Date, or ISO string; a Map or a plain
+ * The open issues in `needs-info` or `declined` that have been in that status for at least `days` days before `now` (a Date or
+ * epoch ms). `since` maps an issue number to the time its status label was last added (epoch ms, Date, or ISO string; a Map or a plain
  * object); an issue with no readable entry falls back to its last update. Pull requests and issues with no readable time
  * are skipped. Returns the given objects, in the given order.
  */
@@ -341,7 +373,7 @@ export function staleIssues(issues, now, days = STALE_DAYS, since = new Map()) {
   const toMs = (value) => (value instanceof Date ? value.getTime() : typeof value === "string" ? Date.parse(value) : typeof value === "number" ? value : Number.NaN);
   return issues.filter((raw) => {
     const issue = normalizeIssue(raw);
-    if (issue.isPullRequest || issue.state !== "open" || !issue.labels.includes(NEEDS_INFO)) return false;
+    if (staleStatus(issue) === null) return false;
     const labeled = toMs(lookup(issue.number));
     const from = Number.isFinite(labeled) ? labeled : Date.parse(issue.updatedAt ?? "");
     return Number.isFinite(from) && at - from >= days * DAY_MS;

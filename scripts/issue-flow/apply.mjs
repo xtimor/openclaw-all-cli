@@ -1,7 +1,7 @@
 // Applies the decisions of transitions.mjs to GitHub. Entry points for .github/workflows/issue-flow.yml, which
 // calls them from actions/github-script (`github` is its octokit, `context` the event, `core` the logger).
 // No model, no text from an issue is evaluated; the owner list comes from the workflow's ISSUE_FLOW_OWNERS, the agent logins from ISSUE_FLOW_AGENTS.
-import { STALE_DAYS, decide, isBot, linkedIssues, needsInfoSince, needsTimeline, parseOwners, staleIssues, AGENT_MARKER_RE } from "./transitions.mjs";
+import { STALE_DAYS, STALE_STATUSES, decide, isBot, linkedIssues, needsTimeline, parseOwners, staleIssues, staleStatus, statusSince, AGENT_MARKER_RE } from "./transitions.mjs";
 
 /** Sending the label requests one by one keeps their order: the new status first, then the old ones go. */
 export async function applyActions(github, context, issueNumber, actions) {
@@ -151,19 +151,19 @@ export function isDryRun(eventName, input) {
 }
 
 /**
- * The daily job: close `needs-info` issues that have been in that status for STALE_DAYS days, counted from the latest time
- * the label was added (the issue's events; the last update when they cannot be read). With `dryRun` only lists them.
+ * The daily job: close `needs-info` and `declined` issues that have been in that status for STALE_DAYS days, counted from the
+ * latest time the label was added (the issue's events; the last update when they cannot be read). A declined issue's comment
+ * mentions the author and the owners (`ISSUE_FLOW_OWNERS`). With `dryRun` only lists them.
  * Returns the numbers of the issues it closed (or, in a dry run, would close).
  */
-export async function runStale({ github, context, core, dryRun = true, now = Date.now() }) {
+export async function runStale({ github, context, core, dryRun = true, now = Date.now(), env = process.env }) {
   const { owner, repo } = context.repo;
-  const open = await github.paginate(github.rest.issues.listForRepo, {
-    owner,
-    repo,
-    state: "open",
-    labels: "status:needs-info",
-    per_page: 100,
-  });
+  const owners = parseOwners(env.ISSUE_FLOW_OWNERS);
+  const open = [];
+  for (const label of STALE_STATUSES) {
+    const found = await github.paginate(github.rest.issues.listForRepo, { owner, repo, state: "open", labels: label, per_page: 100 });
+    for (const issue of found) if (!open.some((known) => known.number === issue.number)) open.push(issue);
+  }
   const since = new Map();
   for (const issue of open) {
     if (issue.pull_request) continue;
@@ -171,7 +171,7 @@ export async function runStale({ github, context, core, dryRun = true, now = Dat
     const updated = Date.parse(issue.updated_at ?? "");
     if (Number.isFinite(updated) && now - updated >= STALE_DAYS * 24 * 60 * 60 * 1000) continue;
     try {
-      const time = needsInfoSince(await readTimeline(github, context, issue.number));
+      const time = statusSince(await readTimeline(github, context, issue.number), staleStatus(issue));
       if (time !== null) since.set(issue.number, time);
     } catch (error) {
       // Unreadable events: the issue falls back to its last update (never earlier than the label, so never too early).
@@ -179,13 +179,13 @@ export async function runStale({ github, context, core, dryRun = true, now = Dat
     }
   }
   const stale = staleIssues(open, now, STALE_DAYS, since);
-  core.info(`issue-flow: ${stale.length} stale issue(s) of ${open.length} in needs-info${dryRun ? " (dry run, nothing changed)" : ""}`);
+  core.info(`issue-flow: ${stale.length} stale issue(s) of ${open.length} in ${STALE_STATUSES.join(" or ")}${dryRun ? " (dry run, nothing changed)" : ""}`);
   const handled = [];
   await eachSafely(stale, core, async (issue) => {
-    const actions = decide({ name: "stale" }, issue);
+    const actions = decide({ name: "stale" }, issue, { owners });
     if (actions.length === 0) return;
     if (dryRun) {
-      const from = since.has(issue.number) ? `needs-info since ${new Date(since.get(issue.number)).toISOString()}` : `last update ${issue.updated_at}`;
+      const from = since.has(issue.number) ? `${staleStatus(issue)} since ${new Date(since.get(issue.number)).toISOString()}` : `last update ${issue.updated_at}`;
       core.info(`issue-flow: would close #${issue.number} as not planned (${from})`);
     } else {
       await applyActions(github, context, issue.number, actions);

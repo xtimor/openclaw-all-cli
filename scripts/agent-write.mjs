@@ -12,7 +12,8 @@
 //   {op:"edit_comment", comment_id, body}                  only a comment whose author is AGENT_LOGIN
 //   {op:"labels", issue, add?:[...], remove?:[...]}        names like status:x, type:x, priority:x, source:x only; add first, then remove
 //                                                          (a label that is not there is fine); never add `status:approved`; no name in both lists
-//   {op:"close", issue, reason}                            reason: completed | not_planned | duplicate; an issue, never a pull request
+//   {op:"close", issue, reason}                            only a security report: reason not_planned, and SECURITY_CLOSE_COMMENT is posted on that issue by
+//                                                          an earlier `comment` of the same list (agents never close an issue otherwise, see closeGuard); an issue, never a pull request
 //   {op:"reopen", issue}                                   an issue, never a pull request
 //   {op:"pr_create", head, title, body?, draft?}           head must be a `claude/` branch of this repository; base is main
 //   {op:"pr_ready", pr}                                    only a pull request by AGENT_LOGIN
@@ -54,7 +55,23 @@ const BUILT_STATUSES = new Set(["done", "built"]);
 const MAX_FILE_PAGES = 30; // GitHub lists at most 3000 files of a pull request
 const MAX_PLAN_READS = 100;
 const MAX_CARRIERS = 10; // other open batch PRs compared with an idle draft
-const CLOSE_REASONS = new Set(["completed", "not_planned", "duplicate"]);
+const CLOSE_REASON = "not_planned";
+/**
+ * The agents never close an issue (owner decision 2026-10-28): they set `status:declined` or `status:needs-info` and the owner
+ * decides. The one exception is a security report, closed at once with a pointer to SECURITY.md and no detail. The relay cannot
+ * know that an issue is one, so the marker is this exact comment: a `close` is allowed only when an earlier `comment` of the same
+ * list posted it, word for word, on the same issue. It leaves no room for detail, and it says in public why the issue was closed.
+ * docs/agents/triage.md carries the same text (a test compares them).
+ */
+export const SECURITY_CLOSE_COMMENT = [
+  "<!-- issue-triage -->",
+  "**Status:** closed (not planned)",
+  "**Waiting for:** nothing",
+  "**Next:** report security issues privately as described in SECURITY.md; the owner can reopen this issue if it is not one",
+  "**What happened:** the report looks like a security issue, so it is closed without discussion here.",
+  "",
+  "— triage agent",
+].join("\n");
 const FORBIDDEN_LABEL = "status:approved";
 // Only the project's own label families: a typo or a lookalike never creates a label, and "." or ".." never reaches a URL.
 const LABEL_RE = /^(status|type|priority|source):[a-z0-9-]{1,40}$/;
@@ -141,6 +158,7 @@ export function validate(text) {
   }
   if (!Array.isArray(parsed) || parsed.length === 0) throw refuse("the input must be a non-empty JSON array of operations");
   if (parsed.length > MAX_OPS) throw refuse(`${parsed.length} operations; the limit is ${MAX_OPS}`);
+  const securityPointers = new Set(); // issues that an earlier comment of this list gave the SECURITY_CLOSE_COMMENT
   return parsed.map((raw, i) => {
     const index = i + 1;
     if (!isObject(raw) || typeof raw.op !== "string") throw refuse(`operation ${index}: not an object with an "op"`);
@@ -151,6 +169,7 @@ export function validate(text) {
       case "comment":
         if (!isId(raw.issue)) throw refuse(`${where}: issue must be a positive integer`);
         if (!isText(raw.body)) throw refuse(`${where}: body must be a non-empty string`);
+        if (raw.body.trim() === SECURITY_CLOSE_COMMENT) securityPointers.add(raw.issue);
         return { op: "comment", issue: raw.issue, body: raw.body };
       case "edit_comment":
         if (!isId(raw.comment_id)) throw refuse(`${where}: comment_id must be a positive integer`);
@@ -167,7 +186,10 @@ export function validate(text) {
       }
       case "close":
         if (!isId(raw.issue)) throw refuse(`${where}: issue must be a positive integer`);
-        if (typeof raw.reason !== "string" || !CLOSE_REASONS.has(raw.reason)) throw refuse(`${where}: reason must be one of ${[...CLOSE_REASONS].join(", ")}`);
+        if (raw.reason !== CLOSE_REASON) throw refuse(`${where}: reason must be ${CLOSE_REASON}`);
+        if (!securityPointers.has(raw.issue)) {
+          throw refuse(`${where}: agents never close an issue except a security report; set status:declined or status:needs-info instead (a security close follows a comment with the exact SECURITY_CLOSE_COMMENT text on the same issue)`);
+        }
         return { op: "close", issue: raw.issue, reason: raw.reason };
       case "reopen":
         if (!isId(raw.issue)) throw refuse(`${where}: issue must be a positive integer`);

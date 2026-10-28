@@ -38,9 +38,13 @@ interface Event {
 interface Transitions {
   STATUS_LABELS: string[];
   STALE_DAYS: number;
+  STALE_STATUSES: string[];
   AGENT_MARKER_RE: RegExp;
   NON_OWNER_APPROVAL_COMMENT: string;
   staleComment(login: unknown): string;
+  declinedStaleComment(login: unknown, owners?: unknown): string;
+  staleStatus(issue: IssueIn): string | null;
+  statusSince(events: unknown, label?: string): number | null;
   needsInfoSince(events: unknown): number | null;
   decide(event: Event, issue: IssueIn, options?: { owners?: string[]; agents?: string[]; timeline?: unknown[] }): Action[];
   approvalComment(eventId: unknown): Action;
@@ -82,10 +86,11 @@ const labeledAt = (label: string, actor: string, minutes: number, id: number): R
 const revert = (id: unknown): Action => t.approvalComment(id);
 
 describe("STATUS_LABELS", () => {
-  it("are the 8 states of .github/labels.yml, in order", () => {
+  it("are the 9 states of .github/labels.yml, in order", () => {
     const text = readFileSync(join(ROOT, ".github", "labels.yml"), "utf8");
     const fromFile = [...text.matchAll(/^- name: "(status:[^"]+)"/gm)].map((match) => match[1]);
-    expect(fromFile).toHaveLength(8);
+    expect(fromFile).toHaveLength(9);
+    expect(fromFile.at(-1)).toBe("status:declined");
     expect(t.STATUS_LABELS).toEqual(fromFile);
   });
 });
@@ -356,6 +361,34 @@ describe("decide: issues", () => {
 function parseOwnersOf(value: string): string[] {
   return t.parseOwners(value);
 }
+
+describe("decide: status:declined", () => {
+  const labeled = (label: string, actor: string) => ({ name: "issues", action: "labeled", actor, label });
+
+  it("DECLINED: is a status; the latest status wins over it in both directions", () => {
+    expect(t.STATUS_LABELS).toContain("status:declined");
+    // An agent declines a new issue: the old status goes.
+    expect(t.decide(labeled("status:declined", "agent[bot]"), issue(["status:new", "status:declined"]), { owners: OWNERS, timeline: [labeledAt("status:new", "x", 0, 1), labeledAt("status:declined", "agent[bot]", 5, 2)] })).toEqual([remove("status:new")]);
+    // The owner moves it to new for a re-triage: declined goes.
+    expect(t.decide(labeled("status:new", "xtimor"), issue(["status:declined", "status:new"]), { owners: OWNERS, timeline: [labeledAt("status:declined", "agent[bot]", 0, 1), labeledAt("status:new", "xtimor", 5, 2)] })).toEqual([remove("status:declined")]);
+    // The owner approves a declined issue: the approval stands and declined goes.
+    expect(t.decide(labeled("status:approved", "xtimor"), issue(["status:declined", "status:approved"]), { owners: OWNERS, timeline: [labeledAt("status:declined", "agent[bot]", 0, 1), labeledAt("status:approved", "xtimor", 5, 2)] })).toEqual([remove("status:declined")]);
+  });
+
+  it("DECLINED: a stranger's approval is reverted and the declined status comes back", () => {
+    const timeline = [labeledAt("status:declined", "agent[bot]", 0, 1), { ...labeledAt("status:declined", "x", 3, 2), event: "unlabeled" }, labeledAt("status:approved", "mallory", 4, 3)];
+    expect(t.decide(labeled("status:approved", "mallory"), issue(["status:approved"]), { owners: OWNERS, timeline })).toEqual([add("status:declined"), remove("status:approved"), revert(3)]);
+  });
+
+  it("DECLINED: closing the issue clears it, and a reopen sets new", () => {
+    expect(t.decide({ name: "issues", action: "closed", actor: "xtimor" }, issue(["status:declined", "type:bug"], { state: "closed" }))).toEqual([remove("status:declined")]);
+    expect(t.decide({ name: "issues", action: "reopened", actor: "xtimor" }, issue(["status:declined"]))).toEqual([add("status:new"), remove("status:declined")]);
+  });
+
+  it("DECLINED: the author's reply does not move it (only needs-info is moved by a reply); the owner decides", () => {
+    expect(t.decide({ name: "issue_comment", action: "created", actor: "alice" }, issue(["status:declined"]))).toEqual([]);
+  });
+});
 
 describe("decide: issue_comment", () => {
   const comment = (actor: string | null) => ({ name: "issue_comment", action: "created", actor });
@@ -651,6 +684,56 @@ describe("staleIssues and decide: stale", () => {
     }
     expect(t.staleComment("alice")).toMatch(/^<!-- issue-flow -->\n@alice, /);
     expect(t.staleComment("")).toContain("30 days");
+  });
+
+  const declined = (number: number, days: number, extra: IssueIn = {}): IssueIn => needsInfo(number, days, { labels: [{ name: "status:declined" }, { name: "type:bug" }], ...extra });
+
+  it("DECLINED: 31 days is stale, 29 days is not, exactly 30 days is; the label time wins over the last update", () => {
+    expect(t.STALE_STATUSES).toEqual(["status:needs-info", "status:declined"]);
+    const issues = [declined(1, 31), declined(2, 29), declined(3, 30), needsInfo(4, 31)];
+    expect(t.staleIssues(issues, NOW).map((i) => i.number)).toEqual([1, 3, 4]);
+    expect(t.staleIssues([declined(1, 1)], NOW)).toEqual([]);
+    expect(t.staleIssues([declined(1, 1)], NOW, 30, new Map([[1, NOW - 31 * DAY]])).map((i) => i.number)).toEqual([1]);
+    expect(t.staleIssues([declined(1, 60), declined(2, 60, { state: "closed" }), declined(3, 60, { pull_request: {} })], NOW).map((i) => i.number)).toEqual([1]);
+  });
+
+  it("DECLINED: statusSince reads the latest label event of the asked status only", () => {
+    const event = (label: string, kind: string, daysBefore: number, id: number) => ({ id, event: kind, label: { name: label }, created_at: daysAgo(daysBefore) });
+    const events = [event("status:declined", "labeled", 40, 1), event("status:declined", "unlabeled", 38, 2), event("status:declined", "labeled", 5, 3), event("status:needs-info", "labeled", 1, 4)];
+    expect(t.statusSince(events, "status:declined")).toBe(NOW - 5 * DAY);
+    expect(t.statusSince(events, "status:needs-info")).toBe(NOW - 1 * DAY);
+    expect(t.statusSince(events)).toBe(NOW - 1 * DAY);
+    expect(t.statusSince([event("status:declined", "unlabeled", 3, 1)], "status:declined")).toBeNull();
+    expect(t.staleStatus(declined(1, 1))).toBe("status:declined");
+    expect(t.staleStatus(needsInfo(1, 1))).toBe("status:needs-info");
+    expect(t.staleStatus(declined(1, 1, { state: "closed" }))).toBeNull();
+    expect(t.staleStatus(needsInfo(1, 1, { labels: ["status:triaged"] }))).toBeNull();
+  });
+
+  it("DECLINED: the stale close removes the status, closes as not planned, and mentions the author and the owner", () => {
+    expect(t.decide({ name: "stale" }, declined(1, 31), { owners: OWNERS })).toEqual([
+      { op: "comment", body: t.declinedStaleComment("alice", OWNERS) },
+      remove("status:declined"),
+      { op: "close", reason: "not_planned" },
+    ]);
+    const body = t.declinedStaleComment("alice", ["xtimor"]);
+    expect(body).toMatch(/^<!-- issue-flow -->\n@alice, @xtimor: this issue has been in `status:declined` for 30 days without a decision, so it is closed as not planned\./);
+    expect(body).toContain("Reopen it to continue; it returns to `status:new`.");
+  });
+
+  it("DECLINED: logins are checked and listed once; a bot author, no owners, or odd logins give no bad mention", () => {
+    expect(t.declinedStaleComment("xtimor", ["XTimor", "bob"])).toContain("\n@xtimor, @bob: this issue has");
+    expect(t.declinedStaleComment("dependabot[bot]", ["xtimor"])).toContain("\n@xtimor: this issue has");
+    expect(t.declinedStaleComment("alice")).toContain("\n@alice: this issue has");
+    const plain = t.declinedStaleComment("", []);
+    expect(plain).toMatch(/^<!-- issue-flow -->\nThis issue has been in `status:declined`/);
+    for (const login of [undefined, null, "a b", "@evil", "a\nb", 5]) expect(t.declinedStaleComment(login, ["-bad", "a b", "@x"])).toBe(plain);
+    expect(t.declinedStaleComment("alice", "xtimor, bob")).toContain("@alice, @xtimor, @bob: this issue");
+    expect(plain).not.toMatch(/\$\{|@\w/);
+  });
+
+  it("DECLINED: a needs-info stale close still mentions only the author", () => {
+    expect(t.decide({ name: "stale" }, needsInfo(1, 31), { owners: OWNERS })[0]).toEqual({ op: "comment", body: t.staleComment("alice") });
   });
 });
 
@@ -1031,7 +1114,7 @@ describe("runStale", () => {
     const fake = fakeGithub(issues(), { events: events() });
     const core = fakeCore();
     expect(await apply.runStale({ github: fake.github, context: ctx("schedule", {}), core, dryRun: false, now: NOW })).toEqual([1]);
-    expect(fake.calls).toEqual(["paginate open status:needs-info", "events 1", "events 2", "comment 1 @alice, this issue h", "remove 1 status:needs-info", "update 1 closed not_planned"]);
+    expect(fake.calls).toEqual(["paginate open status:needs-info", "paginate open status:declined", "events 1", "events 2", "comment 1 @alice, this issue h", "remove 1 status:needs-info", "update 1 closed not_planned"]);
     expect(fake.comments(1)).toEqual([t.staleComment("alice")]);
     expect(fake.state(1)).toBe("closed");
     expect(fake.labelsOf(1)).toEqual([]);
@@ -1056,7 +1139,7 @@ describe("runStale", () => {
   it("STALE: an issue not updated for 30 days is closed without reading its events", async () => {
     const fake = fakeGithub([{ number: 1, state: "open", labels: ["status:needs-info"], updated_at: daysAgo(31), user: { login: "alice" } }]);
     expect(await apply.runStale({ github: fake.github, context: ctx("schedule", {}), core: fakeCore(), dryRun: false, now: NOW })).toEqual([1]);
-    expect(fake.calls).toEqual(["paginate open status:needs-info", "comment 1 @alice, this issue h", "remove 1 status:needs-info", "update 1 closed not_planned"]);
+    expect(fake.calls).toEqual(["paginate open status:needs-info", "paginate open status:declined", "comment 1 @alice, this issue h", "remove 1 status:needs-info", "update 1 closed not_planned"]);
   });
 
   it("STALE: unreadable or missing label events fall back to the last update (still open)", async () => {
@@ -1079,16 +1162,57 @@ describe("runStale", () => {
     const fake = fakeGithub(issues(), { events: events() });
     const core = fakeCore();
     expect(await apply.runStale({ github: fake.github, context: ctx("workflow_dispatch", {}), core, dryRun: true, now: NOW })).toEqual([1]);
-    expect(fake.calls).toEqual(["paginate open status:needs-info", "events 1", "events 2"]);
+    expect(fake.calls).toEqual(["paginate open status:needs-info", "paginate open status:declined", "events 1", "events 2"]);
     expect(core.lines.join("\n")).toContain("would close #1");
     expect(fake.state(1)).toBe("open");
     expect(fake.comments(1)).toEqual([]);
   });
 
+  describe("declined", () => {
+    const env = { ISSUE_FLOW_OWNERS: "xtimor" };
+    const declinedEvent = (id: number, days: number) => ({ ...labeledAt("status:declined", "agent[bot]", 0, id), created_at: daysAgo(days) });
+    const list = (): FakeIssue[] => [
+      { number: 1, state: "open", labels: ["status:declined", "type:bug"], updated_at: daysAgo(1), user: { login: "alice" } },
+      { number: 2, state: "open", labels: ["status:declined"], updated_at: daysAgo(29), user: { login: "bob" } },
+      { number: 3, state: "open", labels: ["status:needs-info"], updated_at: daysAgo(40), user: { login: "carol" } },
+    ];
+
+    it("STALE: closes the issue declined 31 days ago (updated yesterday) mentioning the author and the owner, leaves the 29-day one", async () => {
+      const fake = fakeGithub(list(), { events: { 1: [declinedEvent(1, 31)], 2: [declinedEvent(2, 29)] } });
+      expect(await apply.runStale({ github: fake.github, context: ctx("schedule", {}), core: fakeCore(), dryRun: false, now: NOW, env })).toEqual([3, 1]);
+      expect(fake.comments(1)).toEqual([t.declinedStaleComment("alice", ["xtimor"])]);
+      expect(fake.comments(1)[0]).toContain("@alice, @xtimor: this issue");
+      expect(fake.comments(3)).toEqual([t.staleComment("carol")]);
+      expect(fake.state(1)).toBe("closed");
+      expect(fake.labelsOf(1)).toEqual(["type:bug"]);
+      expect(fake.state(2)).toBe("open");
+      expect(fake.labelsOf(2)).toEqual(["status:declined"]);
+    });
+
+    it("STALE: re-declined after a status change counts from the latest declined label; unreadable events fall back to the last update", async () => {
+      const relabeled = fakeGithub([list()[0]!], { events: { 1: [declinedEvent(1, 40), { id: 2, event: "unlabeled", created_at: daysAgo(38), label: { name: "status:declined" } }, declinedEvent(3, 5)] } });
+      expect(await apply.runStale({ github: relabeled.github, context: ctx("schedule", {}), core: fakeCore(), dryRun: false, now: NOW, env })).toEqual([]);
+      const unreadable = fakeGithub([list()[0]!], { failOn: (call) => (call === "events 1" ? new Error("down") : undefined) });
+      expect(await apply.runStale({ github: unreadable.github, context: ctx("schedule", {}), core: fakeCore(), dryRun: false, now: NOW, env })).toEqual([]);
+      expect(unreadable.state(1)).toBe("open");
+    });
+
+    it("STALE: a dry run names the status and changes nothing; with no owner list only the author is mentioned", async () => {
+      const dry = fakeGithub(list(), { events: { 1: [declinedEvent(1, 31)], 2: [declinedEvent(2, 29)] } });
+      const core = fakeCore();
+      expect(await apply.runStale({ github: dry.github, context: ctx("workflow_dispatch", {}), core, dryRun: true, now: NOW, env })).toEqual([3, 1]);
+      expect(core.lines.join("\n")).toContain("would close #1 as not planned (status:declined since");
+      expect(dry.state(1)).toBe("open");
+      const none = fakeGithub(list(), { events: { 1: [declinedEvent(1, 31)] } });
+      await apply.runStale({ github: none.github, context: ctx("schedule", {}), core: fakeCore(), dryRun: false, now: NOW, env: {} });
+      expect(none.comments(1)).toEqual([t.declinedStaleComment("alice", [])]);
+    });
+  });
+
   it("is a dry run unless asked otherwise", async () => {
     const fake = fakeGithub(issues(), { events: events() });
     await apply.runStale({ github: fake.github, context: ctx("workflow_dispatch", {}), core: fakeCore(), now: NOW });
-    expect(fake.calls).toEqual(["paginate open status:needs-info", "events 1", "events 2"]);
+    expect(fake.calls).toEqual(["paginate open status:needs-info", "paginate open status:declined", "events 1", "events 2"]);
   });
 
   it("isDryRun: dispatch defaults to a dry run, the schedule never is", () => {
