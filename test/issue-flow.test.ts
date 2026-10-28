@@ -58,7 +58,7 @@ interface Transitions {
 interface Apply {
   applyActions(github: unknown, context: unknown, issueNumber: number, actions: Action[]): Promise<Action[]>;
   runEvent(args: { github: unknown; context: unknown; core: unknown; env?: Record<string, string> }): Promise<Array<{ issue: number; actions: Action[] }>>;
-  runStale(args: { github: unknown; context: unknown; core: unknown; dryRun?: boolean; now?: number }): Promise<number[]>;
+  runStale(args: { github: unknown; context: unknown; core: unknown; dryRun?: boolean; now?: number; env?: Record<string, string> }): Promise<number[]>;
   isDryRun(eventName: string, input: unknown): boolean;
 }
 

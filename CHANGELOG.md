@@ -4,6 +4,10 @@ What changed for people who use the plugin, newest first. Format: [Keep a Change
 
 ## Unreleased
 
+### Changed
+
+- Issues: the triage and implementation agents no longer close an issue they cannot or will not fix. They give the reason and the evidence under the new `status:declined`, mention the maintainer, and leave the issue open; the maintainer closes it or moves it on, and an untouched declined issue closes as not planned after 30 days. Security reports are still closed at once with a pointer to the security policy. See [Issues](https://github.com/xtimor/openclaw-all-cli/blob/main/docs/issues.md).
+
 ## 0.1.4 - 2026-10-27
 
 ### Changed

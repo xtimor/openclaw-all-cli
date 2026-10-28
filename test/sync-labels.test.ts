@@ -150,8 +150,8 @@ describe("labels file", () => {
     const named = [...new Set([...flow.matchAll(/`((?:status|type|priority|source):[a-z0-9-]+)`/g)].map((match) => match[1] as string))].sort();
     const entries = fileLabels();
     expect(entries.map((entry) => entry.name).sort()).toEqual(named);
-    // The design lists 8 states, 2 types, 4 priorities, and the agent source.
-    expect(named).toHaveLength(15);
+    // The design lists 9 states, 2 types, 4 priorities, and the agent source.
+    expect(named).toHaveLength(16);
     for (const entry of entries) {
       expect(entry.color).toMatch(/^[0-9a-f]{6}$/);
       expect(entry.description.length).toBeGreaterThan(0);
@@ -162,7 +162,7 @@ describe("labels file", () => {
   it("passes the script's own validation (dry run)", async () => {
     const result = await run(["--dry-run"]);
     expect(result.code).toBe(0);
-    expect(result.stdout).toContain("15 to create");
+    expect(result.stdout).toContain("16 to create");
   });
 });
 
@@ -216,7 +216,7 @@ describe("sync-labels.mjs", () => {
     const second = await run();
     expect(second.code, second.stderr).toBe(0);
     expect(writes()).toEqual([]);
-    expect(second.stdout).toContain("0 to create, 0 to update, 15 unchanged");
+    expect(second.stdout).toContain("0 to create, 0 to update, 16 unchanged");
   });
 
   it("SECOND_SYNC: a label GitHub reports with an upper-case color is still equal", async () => {
