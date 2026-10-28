@@ -146,6 +146,10 @@ GITHUB_TOKEN=... GITHUB_REPOSITORY=xtimor/openclaw-all-cli node scripts/sync-lab
 
 `--dry-run` prints what would be created or updated without writing. `--file <path>` reads another labels file.
 
+## Issues for OpenClaw
+
+When an approved issue needs a change in OpenClaw itself, an agent can file one issue in `openclaw/openclaw` for it. A session cannot write there, so the `Upstream issue` workflow does it with your token (the secret `GH_PUBLIC_TOKEN` of the environment `agent`); the issue shows your login. Only for an issue you approved, or when you ask; one issue per need; it is linked back in our issue (`Upstream: <url>`), and its body ends with the line `Filed for xtimor/openclaw-all-cli#<n>`. Setup and rules: [agents/identity.md](agents/identity.md#upstream-issues).
+
 ## Security reports
 
 Do not file vulnerabilities as issues. Use a [private security advisory](https://github.com/xtimor/openclaw-all-cli/security/advisories/new); [SECURITY.md](https://github.com/xtimor/openclaw-all-cli/blob/main/SECURITY.md) says what to include and which versions are supported.

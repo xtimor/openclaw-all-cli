@@ -261,3 +261,15 @@ after = [21]
 hitl = false
 risk = "medium"
 references = ["epic-distribution.md", "issue-flow.md"]
+
+[[entry]]
+id = 23
+type = "story"
+title = "File upstream OpenClaw issues through a GitHub Actions workflow with the owner's token"
+description = "Sessions cannot write to openclaw/openclaw: the session proxy swaps every api.github.com request to the owner's session credentials, which are scoped to this repository, and add_repo push access was refused. The owner (2026-10-28) put a personal token as the secret `GH_PUBLIC_TOKEN` and asked for a workflow that files upstream issues with it, like the agent-write relay. Build `.github/workflows/upstream-issue.yml` (workflow_dispatch only, runs from `main` only, environment `agent` or its own environment holding the secret; `permissions: {}`; actions pinned by SHA like the others; input `issue` = one JSON object) and a tested script `scripts/upstream-issue.mjs` that creates one issue in an allow-listed repository (only `openclaw/openclaw`) with `title`, `body` and optional `labels` that the target allows, and prints only the new issue's URL and number (never the token: `::add-mask::`, passed via env, never interpolated). Guards: dispatcher and triggering actor are owners (`ISSUE_FLOW_OWNERS`), run attempt 1; title and body length limits; the body must carry a line `Filed for xtimor/openclaw-all-cli#<n>` (our issue it serves); before creating, search the target for an open or closed issue with that marker or the same title and, if found, return it instead of creating a duplicate (idempotent); one issue per dispatch. A local helper `scripts/upstream-issue.sh <file.json>` dispatches it, watches the run, and prints the URL (the same allowed-call shape as `scripts/agent-relay.sh`; add it to `.claude/settings.json` allow list only if the owner approves: write the exact lines in the docs, do not edit settings). Docs: `docs/agents/identity.md` (how and when), `docs/agents/implement.md` and `triage.md` (an agent may file one upstream issue when an issue's outcome needs an OpenClaw change and the owner approved that issue, or when the owner asks; it links it in our issue), `docs/issues.md`, MEMORY (the token is a secret in GitHub, not in the session; sessions still cannot use it directly)."
+verify = "Tests: `test/upstream-issue.test.ts` against a local API stub (creates in the allowed repo; refuses another repo, missing marker, oversize, non-owner dispatcher, re-run attempt; returns the existing issue instead of a duplicate; token never in stdout or stderr), workflow file test (dispatch only, main only, pins, permissions, secret only via env); `npm run ci` passes; live: the owner's session files the prepared OpenClaw icon issue for #45 through the workflow and links it in #45."
+covers = []
+after = [22]
+hitl = false
+risk = "high"
+references = ["epic-distribution.md", "issue-flow.md"]

@@ -1,0 +1,85 @@
+name: Upstream issue
+
+# Files one issue in an allow-listed upstream repository (only openclaw/openclaw) with the owner's personal token. A cloud session's
+# proxy swaps the owner's session credentials, which are scoped to this repository, into every api.github.com request, so a session
+# cannot write there. It dispatches this workflow instead (scripts/upstream-issue.sh); scripts/upstream-issue.mjs (tested) checks the
+# input and creates the issue, idempotently. Design and the agents' side: docs/agents/identity.md ("Upstream issues").
+# Setup: the secret GH_PUBLIC_TOKEN in the GitHub Environment `agent` (deployment branches: only `main`), the same environment as the
+# agent relay. The environment is what keeps the token from a copy of this file on another branch.
+# Only for an approved issue of ours: the script reads the issue named by the body's `Filed for` line and its events with the job's own
+# GITHUB_TOKEN (`issues: read`) and refuses unless an owner labeled it `status:approved`; it also refuses a third new issue in 24 hours.
+# The tokens and the input reach the script only through env, never into the script text. The owner's token lives in the one step that
+# runs the script; no other step sees it, and nothing is written to the job environment file. The job never checks out pull request code.
+# Runs only on main: a dispatch on another ref does nothing. One run at a time (a second dispatch waits; a third replaces the pending
+# one, which is then cancelled and reported as such, so a duplicate is never created in a race). The concurrency group is on the job,
+# under the `main` condition: a dispatch on another ref skips the job and never takes a place in the group.
+on:
+  workflow_dispatch:
+    inputs:
+      issue:
+        description: 'One JSON object: title, body (with the line "Filed for xtimor/openclaw-all-cli#<n>"), labels?; see scripts/upstream-issue.mjs'
+        required: true
+        type: string
+
+permissions: {}
+
+env:
+  # Same default as ci.yml and agent-write.yml.
+  NODE_VERSION: 24.22.0
+  # Logins (comma separated) allowed to dispatch. Keep in sync with ISSUE_FLOW_OWNERS in issue-flow.yml.
+  ISSUE_FLOW_OWNERS: xtimor
+
+jobs:
+  file:
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    environment: agent
+    concurrency:
+      group: upstream-issue
+      cancel-in-progress: false
+    permissions:
+      contents: read
+      issues: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: refs/heads/main
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+      - name: File the issue with the owner's token
+        id: file
+        env:
+          GH_PUBLIC_TOKEN: ${{ secrets.GH_PUBLIC_TOKEN }}
+          # This repository's read-only token, for the approval check only; never sent upstream.
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          UPSTREAM_ISSUE: ${{ inputs.issue }}
+          # Who started this run (differs from the actor on a re-run); the script requires an owner and attempt 1.
+          GITHUB_TRIGGERING_ACTOR: ${{ github.triggering_actor }}
+          GITHUB_RUN_ATTEMPT: ${{ github.run_attempt }}
+        run: |
+          set -euo pipefail
+          if [ -z "$GH_PUBLIC_TOKEN" ]; then
+            echo "result=upstream-issue: the secret GH_PUBLIC_TOKEN is not set in the agent environment" >> "$GITHUB_OUTPUT"
+            echo "the secret GH_PUBLIC_TOKEN is not set in the agent environment" >&2
+            exit 1
+          fi
+          echo "::add-mask::$GH_PUBLIC_TOKEN"
+          node scripts/upstream-issue.mjs
+      # A session cannot read run logs but can read check-run annotations by REST: scripts/upstream-issue.sh reads this one.
+      # The result is one line the script built (the issue's URL or a refusal reason); it reaches this step only through env.
+      - name: Report the result
+        if: always()
+        env:
+          RESULT: ${{ steps.file.outputs.result }}
+          OUTCOME: ${{ steps.file.outcome }}
+        run: |
+          # A workflow command unescapes %0A, %0D and %25 in its message: escape % first, so no text can inject a line break or a command.
+          RESULT="${RESULT//%/%25}"
+          if [ -n "$RESULT" ]; then
+            if [ "$OUTCOME" = success ]; then echo "::notice title=Upstream issue::$RESULT"; else echo "::error title=Upstream issue::$RESULT"; fi
+          else
+            echo "::error title=Upstream issue::upstream-issue: no result (the step did not run to the end)"
+          fi

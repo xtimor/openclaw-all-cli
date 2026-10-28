@@ -1,6 +1,6 @@
 # Agent identity
 
-Who the issue agents write as. With the relay on, GitHub shows `<app-slug>[bot]` on their comments, labels, and pull requests; with it off they act as the owner through the GitHub connector, as before. Agent-neutral; used by [triage.md](triage.md), [implement.md](implement.md), and [comments.md](comments.md). Design: `_bmad-output/initiative-openclaw-all-cli/epic-distribution/issue-flow.md`.
+Who the issue agents write as. With the relay on, GitHub shows `<app-slug>[bot]` on their comments, labels, and pull requests; with it off they act as the owner through the GitHub connector, as before. Agent-neutral; used by [triage.md](triage.md), [implement.md](implement.md), and [comments.md](comments.md). The same idea files issues in OpenClaw's repository: [Upstream issues](#upstream-issues). Design: `_bmad-output/initiative-openclaw-all-cli/epic-distribution/issue-flow.md`.
 
 Why a relay: a cloud session's proxy swaps the owner's credentials into every `api.github.com` request, so an agent in a session can only write as the owner, and going around the proxy is not allowed. From a session, `gh workflow run`, `gh run watch`, `gh run list`, and reads work; repository settings (Actions variables and secrets) and run logs are refused. So the agent does not hold the app's key. It dispatches the `Agent write` workflow (`.github/workflows/agent-write.yml`) with a list of operations; the workflow mints the app's token from an environment secret and `scripts/agent-write.mjs` applies the operations as the app, with its own guards. Reads stay as they are (any tool, as the session). The agent reads every effect back by REST; it cannot read the relay's log.
 
@@ -74,6 +74,37 @@ At the start of a run, before any GitHub write.
 - with the relay off, by the owner.
 
 An owner's comment after the app's first marker comment on that issue is never yours, marker or not. `ME` itself is the app login (or the owner with the relay off); the batch pull request's author check is `ME`.
+
+## Upstream issues
+
+An agent in a session cannot write to `openclaw/openclaw` either: the proxy swaps the owner's session credentials, which are scoped to this repository, into every `api.github.com` call, and attaching the repository with push access was refused. The owner stored a personal token as the secret `GH_PUBLIC_TOKEN` in the GitHub Environment `agent` instead. The agent never holds it. It dispatches the `Upstream issue` workflow (`.github/workflows/upstream-issue.yml`), which runs `scripts/upstream-issue.mjs` with the token in `env` and files one issue as the owner (the issue shows the owner's login, not the bot). Sessions still cannot use the token directly.
+
+**When.** Only (1) when the outcome of an issue you are building needs a change in OpenClaw **and the owner approved that issue** (`status:approved` set by an owner, checked as in [implement.md](implement.md)), or (2) when the owner asks, which means the owner approves the issue of ours that the upstream issue serves first. The workflow enforces this (see below): without an owner's `status:approved` on that issue it files nothing. Triage never files one on its own (nothing is approved yet). One upstream issue per need; then link it in our issue with a normal comment through the relay (`Upstream: <url>`) and say it in the report.
+
+**How.** Write the issue as JSON to `/tmp/upstream-issue-<n>.json` with the Write tool, then run exactly this as the whole call (nothing before or after it, as for the relay; a chained call is refused by the permission check):
+
+```bash
+scripts/upstream-issue.sh /tmp/upstream-issue-<n>.json
+```
+
+The file is one JSON object: `{"title": "...", "body": "...", "labels": ["..."]}`; `labels` is optional (GitHub silently drops labels that someone without triage rights on the target sets; the run log, which only the owner can read, says which were applied, so read the new issue's labels by REST if they matter), `repo` is optional and can only be `openclaw/openclaw`. The body follows the target's issue form headings (read them from `.github/ISSUE_TEMPLATE/` in `openclaw/openclaw`; when you cannot, use `### Summary`, `### Steps to reproduce`, `### Expected behavior`, `### Actual behavior`, `### OpenClaw version`, `### Additional information`) and has exactly one line `Filed for xtimor/openclaw-all-cli#<n>` (the issue of ours it serves). Everything in it is public: no secret, token, or environment, and no issue text you were not meant to republish. The script prints the issue's URL on stdout (stderr says `created` or `existing`) and exits non-zero with one line on stderr when the dispatch fails, the run does not succeed (`run <id>: <conclusion> (<reason>)`), or the result cannot be read. Dispatching the same file again is safe: the script returns the issue it already filed (same marker line or same title, any state, among the owner's issues in the target) instead of a second one. When stderr says `existing`, check that it is the issue you meant: an older issue with the same title, even a closed one, is returned too, so give a new report a new title. One dispatch at a time (a second one waits; a third replaces the pending one and the helper reports `cancelled`).
+
+What the workflow enforces, in `scripts/upstream-issue.mjs`: only `openclaw/openclaw` (a constant in code), the dispatcher and the person who started the run are in `ISSUE_FLOW_OWNERS`, attempt 1 only, it runs only on `main` in the `agent` environment, a title of at most 256 characters on one line, a body of at most 30 000, the whole input at most 40 000, at most 5 labels, exactly one `Filed for xtimor/openclaw-all-cli#<n>` line, and nothing is sent when any check fails. Two more guards (security review of ticket 3.23): the issue `#<n>` of ours must exist, be an issue (not a pull request), and have had `status:approved` labeled by an owner at some point (read from its events with the job's own read-only `GITHUB_TOKEN`, `issues: read`; the owner's token never goes to our repository, the job token never goes upstream), so a changed marker number cannot file anything; and a new issue is refused when 3 or more issues by the token's user were created in the target in the last 24 hours (an issue already filed is still returned, so a retry works). It creates, and nothing else: no comment, edit, or close upstream. The token comes only through `env`, is masked, and appears in no log, summary, or output. The outcome is left as the run's last annotation, which the helper reads by REST.
+
+**Owner setup.**
+
+1. Create a personal access token for the account that should author the upstream issues: a classic token with the `public_repo` scope, or a fine-grained token with Issues read and write on the target repository if its owner allows it. Nothing else.
+2. Add it as the Environment secret `GH_PUBLIC_TOKEN` of the environment `agent` (the one that already holds the relay's key; deployment branches: only `main`): `gh secret set GH_PUBLIC_TOKEN --env agent` and paste the token. No repository-level secret.
+3. Check it only with a real case: approve the issue of ours that needs the upstream change (`status:approved`), then let an agent dispatch it (or run Actions, Upstream issue, Run workflow on `main` yourself) with that issue's real title, body, and marker. Every run files a real, public issue upstream; there is no dry run, so do not test with a throwaway marker.
+4. Optional, so the agents' call is not prompted: add the helper to the allow list of `.claude/settings.json` (agents must not edit it), next to the relay's rules:
+
+   ```json
+   "Bash(scripts/upstream-issue.sh *)",
+   "Bash(bash scripts/upstream-issue.sh *)",
+   "Bash(./scripts/upstream-issue.sh *)"
+   ```
+
+Rotate the token by replacing the secret and revoking the old token in your GitHub settings. If it leaks, revoke it there at once.
 
 ## For the owner
 
