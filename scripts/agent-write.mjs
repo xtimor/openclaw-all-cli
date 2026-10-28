@@ -98,7 +98,7 @@ export class WriteError extends Error {
 }
 
 const refuse = (message) => new WriteError(message, { refused: true });
-const lower = (value) => (typeof value === "string" ? value.trim().toLowerCase() : "");
+export const lower = (value) => (typeof value === "string" ? value.trim().toLowerCase() : "");
 const isObject = (value) => value !== null && typeof value === "object" && !Array.isArray(value);
 const isId = (value) => Number.isSafeInteger(value) && value > 0;
 const isText = (value) => typeof value === "string" && value.trim() !== "";
@@ -498,7 +498,7 @@ function handlers(config, client) {
 
 // ---- running and reporting ----
 
-const cell = (text) => String(text).replaceAll("|", "\\|").replace(/\s+/g, " ").trim();
+export const cell = (text) => String(text).replaceAll("|", "\\|").replace(/\s+/g, " ").trim();
 
 /** The Markdown summary. It holds targets, results, and ids only: never an operation's body. */
 export function formatSummary({ login, repo, actor, outcome, message, rows }) {
@@ -572,7 +572,7 @@ export async function run(env, log = () => {}, now = Date.now) {
 /** One line, always starting with `agent-write:`: newlines in a message cannot start a fake log line or a `::` command. */
 const logLine = (text) => `agent-write: ${String(text).replace(/[\r\n\u0085\u2028\u2029]+/g, " ")}\n`;
 
-function writeSummary(env, text) {
+export function writeSummary(env, text) {
   const file = env.GITHUB_STEP_SUMMARY;
   if (typeof file !== "string" || file === "") return;
   try {
