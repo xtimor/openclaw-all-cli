@@ -26,13 +26,15 @@ function configuredAgentIds(config: unknown): string[] {
  */
 export function registerAdapters(api: OpenClawPluginApi, adapters: readonly CliAdapter[]): void {
   const warn = (message: string) => api.logger.warn(message);
+  // Hosts without a debug channel drop the per-turn timing line.
+  const debug = (message: string) => api.logger.debug?.(message);
   const pools: ProcessPool[] = [];
   for (const adapter of adapters) {
     const backendId = backendIdFor(adapter);
     const settings = readBackendConfig(api.pluginConfig, backendId, warn);
     const pool = new ProcessPool(capsOf(settings));
     pools.push(pool);
-    api.registerCliBackend(buildCliBackend(adapter, { settings, warn, pool }));
+    api.registerCliBackend(buildCliBackend(adapter, { settings, warn, debug, pool }));
     // The Control UI's provider list and `models auth login` read the provider's auth methods.
     api.registerProvider(createAuthProvider(adapter, PLUGIN_ID));
     if (api.registrationMode === "full") {

@@ -70,6 +70,46 @@ The biggest part is the model's own thinking over the agent's instructions on th
 - **A spare process per agent.** It would save at most process start and `session/new` (about 4 s of 22 to 29 s). It costs memory while idle: about 170 MB after `initialize`, about 870 MB after `session/new` (sum over the process group: the agent, `worker-server`, a TypeScript language server; shared pages counted twice). `session/new` already binds the chat's working directory and OpenClaw's tools (the MCP server), which exist only once OpenClaw starts the turn, and Cursor drops a server it could not reach for the life of the process. OpenClaw also owns which process serves a session (its live-session registry, checked by a fingerprint of the run), and a new session never has a live process to reuse. A spare process would need a change of the plugin's architecture; it is not built.
 - **Resume.** Loading a chat (`session/load`) costs as much as a new one (2.6 to 3.0 s), so a resumed prepared chat saves nothing.
 
+### Per-turn timing line
+
+Every turn writes one line to OpenClaw's debug log ([#44](https://github.com/xtimor/openclaw-all-cli/issues/44)), so the next measurement is exact and silence can be told from thinking. The plugin logger's debug channel is off at OpenClaw's default level: start the Gateway (or the `openclaw agent --local` run) with `OPENCLAW_LOG_LEVEL=debug`, then search the log for `turn timings`. Checked on OpenClaw 2026.10.3: the line shows at `debug` under `[plugins]` and not at `info`.
+
+```text
+turn timings (cursor): model=grok-4.7 process=new outcome=ok spawn=9ms initialize=660ms new_session=3639ms set_mode=5ms set_model=877ms prompt_sent=5712ms first_thought=1800ms first_text=3218ms end=3481ms
+```
+
+| Field | Meaning |
+| --- | --- |
+| `model` | The model name OpenClaw asked for. |
+| `process` | `new` (this turn started `cursor-agent`) or `reused` (a warm process; follow-ups). |
+| `outcome` | `ok` (the turn ended with a result), `error` (with `code=<error code>`, also for a chat that could not start or load), or `aborted` (the host stopped the turn). |
+| `spawn` | From the start call until the process exists. |
+| `initialize` | From the `initialize` request until its answer. The process boots inside it, so this is the process start. |
+| `login` | `authenticate`, only without `CURSOR_API_KEY`. |
+| `new_session` or `load_session` | Whichever ran: a new chat, or the resume of an existing one. |
+| `set_mode` | Only when the session had to be switched to the plugin's mode. |
+| `set_model` | Only when the model had to be switched (Auto needs none on a fresh session). |
+| `prompt_sent` | Milliseconds from the start of the turn (the wait for a turn slot, the version check, the MCP proxy, and the open all come first) until the prompt was sent. What the phases above do not add up to is that other work. |
+| `first_thought`, `first_text`, `end` | Milliseconds after the prompt was sent: the first reasoning chunk, the first reply text, the closing result. `first_thought` is absent when the model sent no reasoning. `end` is the result reaching the plugin, before the usage lookup. |
+
+The open phases are durations; the last four fields are positions on the turn's clock. A phase that did not happen has no field, never `0`; a phase that ran counts at least 1 ms. A turn that fails still writes its line with the phases it reached. The line holds no prompt text, key, or path. The marks come from the plugin's own clock: `first_text` is when the plugin sees the chunk, which can be later than Cursor sent it by a few milliseconds.
+
+**Where the wait goes, live.** Measured 2026-10-28 (cursor-agent 2026.10.22, `CURSOR_API_KEY`, the plugin's backend driving the real `cursor-agent` directly with a new agent home per turn and the prompt "Reply with the single word OK."; three turns per model, ranges). This run has no OpenClaw around it, so it lacks OpenClaw's own 3 to 5 s before the plugin and the 42 KB system prompt, and the model thinks far less than in the table above:
+
+| Field | `grok-4.7` | `auto` |
+| --- | --- | --- |
+| `spawn` | 9 to 23 ms | 9 to 10 ms |
+| `initialize` | 612 to 836 ms | 635 to 760 ms |
+| `new_session` | 3344 to 4446 ms | 3091 to 3611 ms |
+| `set_mode` | 5 to 22 ms | 4 to 9 ms |
+| `set_model` | 846 to 1412 ms | none (Auto is the session's model) |
+| `prompt_sent` | 5712 to 6701 ms | 4451 to 4842 ms |
+| `first_thought` | 1675 to 1860 ms | 1605 to 1867 ms |
+| `first_text` | 2897 to 3448 ms | 1609 to 1913 ms |
+| `end` | 3116 to 3704 ms | 1769 to 2119 ms |
+
+Before the prompt, `new_session` is the largest part (3.1 to 4.4 s), then the model switch on `grok-4.7` (0.85 to 1.4 s) and the process start (about 0.7 s). The 0.5 to 1.2 s that `prompt_sent` has beyond those phases is the plugin's other work before the open (the first-process version check, the MCP proxy). Model selection stays after `session/new`/`session/load` on purpose: the exact model ID (brackets included) is read from the list that call returns, so the switch cannot be sent beside it.
+
 ## Chat continuity across a model switch
 
 When you switch an OpenClaw chat from an API model to `cursor-cli`, Cursor starts a fresh chat and does not see the earlier turns: OpenClaw 2026.10.3 sends only the new prompt (log: `historyPrompt=none`, `cli session history refused across auth boundary: reason=auth-unknown`). It refuses on purpose, because it copies history only into a CLI chat written by the same credential from the start. A Cursor API-key profile does not change this for a switch.
@@ -300,6 +340,22 @@ Every model is declared to OpenClaw with `text` and `image` input, because the p
 | Anything else (Auto, `composer-*`, `gemini-*`, other models) | None published: OpenClaw's default applies. The plugin does not guess a window Cursor did not state |
 
 A value that is not a number (`context=max`) is ignored. Effort variants of one model share their other parameters, so choosing an effort never changes the window. The window comes from the model list, so it follows Cursor's changes after the listing's one-minute cache (see above) and needs no setting. Live check (the numbers match the owner's Cursor account) not run: it needs a login.
+
+### 1M context variants
+
+Cursor sells some models with a 1M context: `cursor-agent --list-models` shows "Claude Opus 5.5 1M" and similar rows ([#46](https://github.com/xtimor/openclaw-all-cli/issues/46)). The plugin cannot offer them as `cursor-cli/...` models, because Cursor refuses them over ACP, the protocol the plugin talks. The 300k in `openclaw models list` is Cursor's ACP default for these models, not the models' limit.
+
+Checked live 2026-10-28 (cursor-agent 2026.10.22, `CURSOR_API_KEY`, a throwaway config directory):
+
+| Request | Answer |
+| --- | --- |
+| ACP `session/new` model list | 47 models; the Claude rows that carry a window have `context=300k` or `context=200k`, and none has `context=1m` |
+| `session/set_model` and `session/set_config_option` with `claude-opus-5-5[context=1m,effort=medium,fast=false]` (the listed row's ID with `context=1m`) | `Invalid params`: `Invalid model value` |
+| The same for `claude-opus-5[...]`, `claude-opus-4-8[...]`, `claude-sonnet-5-5[...]`, `gpt-5.6-sol[...]`, and spellings such as `context=1M`, `context=1000k`, `[1m]`, `claude-opus-5-5-1m`, the CLI's `claude-opus-5-5-medium` | All refused the same way |
+| `cursor-agent --model 'claude-opus-5-5[context=1m,effort=medium,fast=false]' acp`, then the session | Starts, but reports the 300k row as its model (`currentModelId`); the launch flag does not select a 1M model over ACP |
+| `cursor-agent -p --model 'claude-opus-5-5[context=1m,effort=medium,fast=false]'` (not ACP, not used by the plugin) | One turn ran and answered; `context=2m` is refused |
+
+So the plugin adds no 1M model, changes no existing name, ref, or alias, and a request for one (`cursor-cli/claude-opus-5-5-1m`, or the exact 1M ID) fails with `Cursor has no model "<name>" for this account` (error code `model_not_found`); the plugin never sends Cursor an ID it did not list. The Cursor billing for a 1M turn is not shown by `cursor-agent`; the one turn above printed token counts only, so what a 1M turn costs is not known here. If a later Cursor version lists a `context=1m` row in the ACP session, the plugin shows it as its own model next to the 300k one (the first row of a base keeps the bare name; the 1M row gets its parameter values as a suffix, as for any variant) with a 1,000,000 window read from its own ID, and a 1,000,000 context ceiling for the usage check, with no change to the plugin.
 
 ### Effort
 

@@ -1,5 +1,5 @@
 import * as acp from "@agentclientprotocol/sdk";
-import { CliError, capabilityMismatch, type CliCapability, type CliErrorCode } from "../../core/ports.ts";
+import { CliError, capabilityMismatch, type CliCapability, type CliErrorCode, type OpenPhase } from "../../core/ports.ts";
 import type { AcpModelInfo, AcpSessionOptions } from "./session.ts";
 import { isRecord } from "./tool-calls.ts";
 
@@ -7,6 +7,29 @@ import { isRecord } from "./tool-calls.ts";
  * The ACP handshake: initialize, log in, then start or resume a session in the right mode and
  * model. It knows no CLI; the options the adapter passes decide everything CLI-specific.
  */
+
+/**
+ * Runs one open phase and reports how long it took (at least 1 ms), also when it fails. A throwing
+ * observer is ignored: timing must never fail an open.
+ */
+export async function timePhase<T>(options: AcpSessionOptions, phase: OpenPhase, run: () => Promise<T>): Promise<T> {
+  if (!options.onPhase) return run();
+  const start = performance.now();
+  try {
+    return await run();
+  } finally {
+    reportPhase(options, phase, start);
+  }
+}
+
+/** Reports a phase that started at `start` (a `performance.now()` reading) and ends now. */
+export function reportPhase(options: AcpSessionOptions, phase: OpenPhase, start: number): void {
+  try {
+    options.onPhase?.(phase, Math.max(1, Math.ceil(performance.now() - start)));
+  } catch {
+    // Timing is only a log line.
+  }
+}
 
 export function toCliError(error: unknown, fallback: CliErrorCode, context: string): CliError {
   if (error instanceof CliError) return error;
@@ -113,11 +136,13 @@ export type Handshake = { sessionId: string; models: AcpModelInfo[]; modelId?: s
 
 /** The ACP handshake: initialize, log in, then start or resume a session in the right mode and model. */
 export async function setup(connection: acp.ClientSideConnection, options: AcpSessionOptions): Promise<Handshake> {
-  const init = await connection.initialize({
-    protocolVersion: acp.PROTOCOL_VERSION,
-    clientCapabilities: {},
-    clientInfo: { name: options.clientName ?? "openclaw-all-cli", version: options.clientVersion ?? "0.0.0" },
-  });
+  const init = await timePhase(options, "initialize", () =>
+    connection.initialize({
+      protocolVersion: acp.PROTOCOL_VERSION,
+      clientCapabilities: {},
+      clientInfo: { name: options.clientName ?? "openclaw-all-cli", version: options.clientVersion ?? "0.0.0" },
+    }),
+  );
   if (init.protocolVersion !== acp.PROTOCOL_VERSION) {
     throw new CliError({
       code: "unsupported_version",
@@ -125,7 +150,7 @@ export async function setup(connection: acp.ClientSideConnection, options: AcpSe
     });
   }
   const capabilities = checkCapabilities(init, options);
-  if (options.authMethodId) await authenticate(connection, init.authMethods, options.authMethodId);
+  if (options.authMethodId) await authenticate(connection, init.authMethods, options.authMethodId, options);
 
   const { sessionId, modes, modelState, configOptions } = await startSession(connection, options);
 
@@ -138,7 +163,7 @@ export async function setup(connection: acp.ClientSideConnection, options: AcpSe
       });
     }
     if (modes.currentModeId !== wanted) {
-      await connection.setSessionMode({ sessionId, modeId: wanted });
+      await timePhase(options, "set_mode", () => connection.setSessionMode({ sessionId, modeId: wanted }));
     }
   }
 
@@ -166,11 +191,16 @@ function checkCapabilities(init: acp.InitializeResponse, options: AcpSessionOpti
   return capabilities;
 }
 
-async function authenticate(connection: acp.ClientSideConnection, methods: acp.AuthMethod[] | undefined, methodId: string): Promise<void> {
+async function authenticate(
+  connection: acp.ClientSideConnection,
+  methods: acp.AuthMethod[] | undefined,
+  methodId: string,
+  options: AcpSessionOptions,
+): Promise<void> {
   // An absent list is today's behavior: log in. An empty list needs no login. A list without
   // the adapter's method means the login the adapter relies on is gone.
   if (!methods) {
-    await login(connection, methodId);
+    await login(connection, methodId, options);
   } else if (methods.length > 0) {
     if (!methods.some((method) => method.id === methodId)) {
       throw new CliError({
@@ -178,7 +208,7 @@ async function authenticate(connection: acp.ClientSideConnection, methods: acp.A
         message: `The CLI offered no "${methodId}" login method (it lists ${methods.map((method) => `"${method.id}"`).join(", ")}). Update the CLI.`,
       });
     }
-    await login(connection, methodId);
+    await login(connection, methodId, options);
   }
 }
 
@@ -195,7 +225,9 @@ async function startSession(
   const base = { cwd: options.cwd, mcpServers: options.mcpServers ?? [] };
   if (options.resumeSessionId) {
     try {
-      const loaded = await connection.loadSession({ sessionId: options.resumeSessionId, ...base });
+      const loaded = await timePhase(options, "load_session", () =>
+        connection.loadSession({ sessionId: options.resumeSessionId!, ...base }),
+      );
       // ACP's load answers for the ID it was given; an agent that moves the chat to another ID
       // says so in an extra `sessionId` field. The new ID is the one the host must keep.
       return {
@@ -209,7 +241,7 @@ async function startSession(
     }
   }
   try {
-    const created = await connection.newSession(base);
+    const created = await timePhase(options, "new_session", () => connection.newSession(base));
     return {
       sessionId: created.sessionId,
       modes: created.modes,
@@ -221,9 +253,9 @@ async function startSession(
   }
 }
 
-async function login(connection: acp.ClientSideConnection, methodId: string): Promise<void> {
+async function login(connection: acp.ClientSideConnection, methodId: string, options: AcpSessionOptions): Promise<void> {
   try {
-    await connection.authenticate({ methodId });
+    await timePhase(options, "login", () => connection.authenticate({ methodId }));
   } catch (error) {
     throw toCliError(error, "auth", "The CLI rejected its login");
   }
@@ -257,8 +289,10 @@ async function switchModel(
   }
   if (wanted === currentId) return wanted;
   try {
-    if (option) await connection.setSessionConfigOption({ sessionId, configId: option.id, value: wanted });
-    else await connection.extMethod("session/set_model", { sessionId, modelId: wanted });
+    await timePhase(options, "set_model", async () => {
+      if (option) await connection.setSessionConfigOption({ sessionId, configId: option.id, value: wanted });
+      else await connection.extMethod("session/set_model", { sessionId, modelId: wanted });
+    });
   } catch (error) {
     // An agent that refuses the value says so as invalid params; anything else is a failed process.
     const refused = error instanceof Error && /\b(invalid|unknown|not found|no such)\b/i.test(error.message);

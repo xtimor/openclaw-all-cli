@@ -55,6 +55,46 @@ function requests(file: string): { method: string; params: Record<string, unknow
     .map((line) => JSON.parse(line));
 }
 
+describe("AcpSession open phases (issue #44)", () => {
+  it("reports the phases that ran, each at least 1 ms, in the order they ran", async () => {
+    const seen: Array<[string, number]> = [];
+    await start({ modelId: "fake-fast[speed=fast,fast=true]", onPhase: (phase, ms) => seen.push([phase, ms]) });
+    expect(seen.map(([phase]) => phase)).toEqual(["spawn", "initialize", "login", "new_session", "set_mode", "set_model"]);
+    for (const [phase, ms] of seen) expect(Number.isInteger(ms) && ms >= 1, phase).toBe(true);
+  });
+
+  it("reports load_session instead of new_session on a resume, and no login or model switch when none is needed", async () => {
+    const store = mkdtempSync(join(tmpdir(), "oac-acp-store-"));
+    dirs.push(store);
+    const first = await start({ env: { FAKE_CURSOR_STORE: store } });
+    const seen: string[] = [];
+    await start({ env: { FAKE_CURSOR_STORE: store }, resumeSessionId: first.sessionId, onPhase: (phase) => seen.push(phase) });
+    expect(seen).toContain("load_session");
+    expect(seen).not.toContain("new_session");
+    expect(seen).not.toContain("set_model");
+  });
+
+  it("reports the phase that failed, and nothing after it", async () => {
+    const seen: string[] = [];
+    await expect(
+      start({
+        env: { FAKE_CURSOR_NEW_ERROR: JSON.stringify({ code: -32603, message: "Internal error" }) },
+        onPhase: (phase) => seen.push(phase),
+      }),
+    ).rejects.toBeInstanceOf(CliError);
+    expect(seen).toEqual(["spawn", "initialize", "login", "new_session"]);
+  });
+
+  it("does not fail the open when the observer throws", async () => {
+    const session = await start({
+      onPhase: () => {
+        throw new Error("observer");
+      },
+    });
+    expect(session.alive).toBe(true);
+  });
+});
+
 describe("AcpSession", () => {
   it("negotiates, logs in, selects the required mode, and streams one turn", async () => {
     const file = logFile();

@@ -24,6 +24,8 @@ export type BuildBackendOptions = {
   execute?: Pick<ExecuteOptions, "idleMs" | "abortGraceMs" | "callDeadlineMs" | "imageRoots">;
   /** Receives warnings, for example a turn that runs without OpenClaw tools. */
   warn?: (message: string) => void;
+  /** Receives the debug log: one timing line per turn. Never pass it prompt text or a key. */
+  debug?: (message: string) => void;
   /** The backend's limits (AD-14). Absent: a pool sized from `settings`. The registrar passes its own to close it on unload. */
   pool?: ProcessPool;
 };
@@ -169,6 +171,7 @@ function prepareExecutionFor(
           ...(ctx.authProfileId ? { authProfileId: ctx.authProfileId } : {}),
           ...(ctx.thinkingLevel ? { thinkingLevel: ctx.thinkingLevel } : {}),
           ...(options.warn ? { warn: options.warn } : {}),
+          ...(options.debug ? { debug: options.debug } : {}),
         }),
       };
     } catch (error) {
