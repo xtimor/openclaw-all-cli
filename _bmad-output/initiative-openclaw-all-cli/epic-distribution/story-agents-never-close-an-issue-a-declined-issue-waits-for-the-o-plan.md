@@ -3,7 +3,7 @@ title: 'Agents never close an issue; a declined issue waits for the owner or tim
 type: 'feature'
 ticket: 22
 created: '2026-10-28'
-status: 'built'
+status: done
 baseline_revision: '13e6bcc4b8cc2894766929dcba499c8185183dcf'
 route: 'full'
 route_source: 'auto'
