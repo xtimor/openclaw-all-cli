@@ -3,7 +3,7 @@ title: 'File upstream OpenClaw issues through a GitHub Actions workflow with the
 type: 'feature'
 ticket: 23
 created: '2026-10-28'
-status: built
+status: done
 baseline_revision: '052e9271b1e3beef91a988150c03d46074f90838'
 route: 'full'
 route_source: 'auto'
