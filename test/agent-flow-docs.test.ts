@@ -230,8 +230,10 @@ describe("upstream issues (ticket 3.23)", () => {
     expect(part).toMatch(/Check it only with a real case/);
     expect(part).not.toMatch(/"title": "test"|#1"/);
     expect(implement).toMatch(/\*\*Upstream issues\.\*\*[^\n]*approved/);
-    expect(implement).toContain("scripts/upstream-issue.sh /tmp/upstream-issue-<n>.json");
-    expect(triage).toMatch(/\*\*Upstream issues\.\*\* Triage files none/);
+    // Ticket 3.25: agents write a draft and never call the helper (the routine's permission check refuses it).
+    expect(implement).not.toContain("scripts/upstream-issue.sh /tmp/upstream-issue-<n>.json");
+    expect(implement).toMatch(/never call `scripts\/upstream-issue\.sh`/);
+    expect(triage).toMatch(/\*\*Upstream issues\.\*\* Triage writes no upstream draft and publishes nothing/);
     expect(issues).toContain("agents/identity.md#upstream-issues");
   });
 
@@ -249,10 +251,55 @@ describe("upstream issues (ticket 3.23)", () => {
     expect(part).toMatch(/never edits, closes, reopens, or labels/);
     expect(part).not.toMatch(/no comment, edit, or close upstream/);
     const bullet = implement.split("\n").find((line) => line.startsWith("- **Upstream follow-up.**")) ?? "";
-    expect(bullet).toContain('{"op": "comment", ...}');
+    expect(bullet).toContain("`op=comment`");
+    expect(bullet).toContain("`target=openclaw/openclaw#<n>`");
     expect(bullet).toMatch(/none of `Fixes`, `Closes`, `Resolves`, or `Refs`/);
     expect(bullet).toMatch(/`status:blocked`/);
     expect(bullet).toMatch(/You never close it; the owner does/);
-    expect(issues).toMatch(/comment once on an issue you opened there/);
+    expect(issues).toMatch(/a comment on your own issue \(`op=comment`\)/);
+  });
+});
+
+describe("upstream drafts and the upstream:post label (ticket 3.25)", () => {
+  const identity = read("docs", "agents", "identity.md");
+  const part = section(identity, "## Upstream issues");
+  const labels = read(".github", "labels.yml");
+
+  it("identity.md prints the two draft forms, and the parser accepts exactly what the docs print", async () => {
+    const parser = (await import(pathToFileURL(join(ROOT, "scripts", "upstream-post.mjs")).href)) as { parseDraft: (text: string) => Record<string, unknown> };
+    const fences = [...part.matchAll(/```\n(<!-- upstream-draft[\s\S]*?)```/g)].map((match) => (match[1] ?? "").replaceAll("<n>", "172969"));
+    expect(fences).toHaveLength(2);
+    expect(parser.parseDraft(fences[0] as string)).toMatchObject({ op: "comment", repo: "openclaw/openclaw", issue: 172969 });
+    expect(parser.parseDraft(fences[1] as string)).toMatchObject({ op: "create", repo: "openclaw/openclaw", title: "one line, at most 256 characters" });
+    expect(part).toContain("<!-- upstream-draft target=openclaw/openclaw#<n> op=comment -->");
+    expect(part).toContain("<!-- upstream-draft target=openclaw/openclaw op=create -->");
+    expect(part).toContain("<!-- /upstream-draft -->");
+  });
+
+  it("identity.md says who labels, what the workflow checks, and the rules an agent must write for", () => {
+    expect(part).toMatch(/the owner's label `upstream:post` on our issue is the approval/);
+    expect(part).toMatch(/you never publish it and never add the label/);
+    expect(part).toMatch(/\*\*latest\*\* `<!-- issue-impl -->` comment by the app/);
+    expect(part).toMatch(/not edited after the owner adds the label/);
+    expect(part).toMatch(/an owner \(`ISSUE_FLOW_OWNERS`\), is a person and not a bot, and is the run's actor/);
+    expect(part).toMatch(/runs that script's own `run\(\)` with `GH_PUBLIC_TOKEN`, so every guard below applies unchanged/);
+    expect(part).toMatch(/`<!-- upstream-post -->`/);
+    expect(part).toMatch(/Agents never add this label \(the relay refuses it/);
+    expect(part).toContain("Waiting for: @<owner-login>: review the draft and add the label upstream:post");
+  });
+
+  it("implement.md and triage.md forbid the agents to add the label and to call the helper; issues.md tells the owner what to do", () => {
+    expect(implement).toMatch(/Never add `upstream:post` yourself/);
+    expect(implement).toContain("`status:blocked`");
+    expect(implement).toContain("Waiting for: @<owner-login>: review the draft and add the label upstream:post");
+    expect(triage).toMatch(/Never add the label `upstream:post`/);
+    expect(issues).toMatch(/add the label `upstream:post` to our issue/);
+    expect(issues).toMatch(/agents and the relay never add it/);
+  });
+
+  it("labels.yml defines upstream:post and the relay's label rule cannot name it", () => {
+    expect(labels).toContain('- name: "upstream:post"');
+    const writer = read("scripts", "agent-write.mjs");
+    expect(writer).toContain("const LABEL_RE = /^(status|type|priority|source):[a-z0-9-]{1,40}$/;");
   });
 });

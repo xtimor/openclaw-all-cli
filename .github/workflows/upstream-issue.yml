@@ -5,6 +5,9 @@ name: Upstream issue
 # proxy swaps the owner's session credentials, which are scoped to this repository, into every api.github.com request, so a session
 # cannot write there. It dispatches this workflow instead (scripts/upstream-issue.sh); scripts/upstream-issue.mjs (tested) checks the
 # input and creates the issue, idempotently. Design and the agents' side: docs/agents/identity.md ("Upstream issues").
+# Since ticket 3.25 the agents do not dispatch this (the routine's permission check refuses a public write under the owner's name): they
+# write a draft and the owner's label `upstream:post` runs `Upstream post` (upstream-post.yml), which calls the same script. This stays for
+# the owner's interactive sessions.
 # Setup: the secret GH_PUBLIC_TOKEN in the GitHub Environment `agent` (deployment branches: only `main`), the same environment as the
 # agent relay. The environment is what keeps the token from a copy of this file on another branch.
 # Only for an approved issue of ours: the script reads the issue named by the body's `Filed for` line and its events with the job's own
