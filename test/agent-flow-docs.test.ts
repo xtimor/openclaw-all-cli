@@ -243,6 +243,9 @@ describe("upstream issues (ticket 3.23)", () => {
     expect(part).toMatch(/is not a pull request/);
     expect(part).toMatch(/already carries the same `Filed for` line is returned, not repeated/);
     expect(part).toMatch(/sixth comment in 24 hours/);
+    expect(part).toMatch(/title or body names the target issue as `openclaw\/openclaw#<issue>` or `https:\/\/github\.com\/openclaw\/openclaw\/issues\/<issue>`/);
+    expect(part).toMatch(/`#1729` is not `#172969`/);
+    expect(implement).toMatch(/title or body must name the target/);
     expect(part).toMatch(/never edits, closes, reopens, or labels/);
     expect(part).not.toMatch(/no comment, edit, or close upstream/);
     const bullet = implement.split("\n").find((line) => line.startsWith("- **Upstream follow-up.**")) ?? "";

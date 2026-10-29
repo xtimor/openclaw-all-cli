@@ -52,7 +52,7 @@ const issue = (overrides: Record<string, unknown> = {}) => ({ title: `Plugin ico
 
 function defaults(method: string, path: string): Answer {
   // Our repository: issue 45 is an issue that the owner approved.
-  if (method === "GET" && path === `${OURS_API}/issues/45`) return [200, { number: 45 }];
+  if (method === "GET" && path === `${OURS_API}/issues/45`) return [200, { number: 45, title: "Retest the stale reports", body: `Comment on openclaw/openclaw#${NOTE_ISSUE} and https://github.com/openclaw/openclaw/issues/173057.` }];
   if (method === "GET" && path === `${OURS_API}/issues/45/events`) return [200, [approval(), { event: "labeled", label: { name: "type:bug" }, actor: { login: "xtimor" } }]];
   if (method === "GET" && path === "/user") return [200, { login: "xtimor" }];
   // The target of a comment: an issue the token's user opened, with no comments yet, and nothing recent by them.
@@ -567,7 +567,29 @@ describe("upstream-issue: comment on the owner's own issue (ticket 3.24)", () =>
     for (const env of [{ GITHUB_ACTOR: "mallory" }, { GITHUB_TRIGGERING_ACTOR: "mallory" }, { GITHUB_ACTOR: undefined }, { GITHUB_RUN_ATTEMPT: "2" }]) {
       const result = await run(note(), env);
       expect(result.code, JSON.stringify(env)).toBe(1);
-      expect(result.stderr).toContain("Refused");
+      expect(result.stderr).toContain("Refused, nothing posted");
+      expect(result.output).toContain("upstream-issue: Refused, nothing posted");
+    }
+    expect(calls).toEqual([]);
+  });
+
+  it("WORDING: every refusal of a comment (actors, attempt, shape, size, unparsable op) says nothing was posted; a create still says nothing was created", async () => {
+    const asComment = [
+      await run(note(), { GITHUB_RUN_ATTEMPT: "2" }),
+      await run(note({ issue: 0 })),
+      await run(note({ title: "x" })),
+      await run(note({ body: "no marker" })),
+      await run(null, {}, JSON.stringify({ ...note(), pad: "x".repeat(40_001) })),
+    ];
+    for (const result of asComment) {
+      expect(result.code).toBe(1);
+      expect(result.stderr).toContain("Refused, nothing posted");
+      expect(result.stderr).not.toContain("nothing created");
+    }
+    // Not a comment (create, another op, text that is not JSON): the create wording.
+    for (const result of [await run(issue(), { GITHUB_RUN_ATTEMPT: "2" }), await run(issue({ title: 5 })), await run(note({ op: "close" })), await run(null, {}, "{not json")]) {
+      expect(result.code).toBe(1);
+      expect(result.stderr).toContain("Refused, nothing created");
     }
     expect(calls).toEqual([]);
   });
@@ -598,6 +620,67 @@ describe("upstream-issue: comment on the owner's own issue (ticket 3.24)", () =>
       expect(result.code).toBe(1);
       expect(seen().slice(0, 2)).toEqual([`GET ${OURS_API}/issues/46`, `GET ${OURS_API}/issues/46/events`]);
       expect(upstream()).toEqual([]);
+    });
+  });
+
+  describe("the approved issue must name the target (one approval is not a licence for every issue of the owner)", () => {
+    const ours = (fields: Record<string, unknown>) => answers.set(`GET ${OURS_API}/issues/45`, [200, { number: 45, ...fields }]);
+
+    it("a title or body that names the target as repo#n or as the issue URL passes, in any case, in a link or after punctuation", async () => {
+      for (const fields of [
+        { title: `Retest ${TARGET}#${NOTE_ISSUE}`, body: null },
+        { title: "x", body: `see https://github.com/${TARGET}/issues/${NOTE_ISSUE}.` },
+        { title: "x", body: `(https://github.com/${TARGET}/issues/${NOTE_ISSUE}#issuecomment-5)` },
+        { title: "x", body: `[a](https://github.com/OpenClaw/OpenClaw/issues/${NOTE_ISSUE})` },
+        { title: "x", body: `first\nOpenClaw/OpenClaw#${NOTE_ISSUE}, then more` },
+        { body: `${TARGET}#${NOTE_ISSUE}` },
+      ]) {
+        ours(fields);
+        const result = await run(note());
+        expect(result.code, JSON.stringify(fields)).toBe(0);
+        calls = [];
+      }
+    });
+
+    it("another number, a prefix or suffix of the number, a bare #n, another repository, or no mention at all is refused before anything upstream", async () => {
+      for (const fields of [
+        { title: "x", body: "no mention" },
+        { title: "x", body: null },
+        {},
+        { title: "x", body: `${TARGET}#${String(NOTE_ISSUE).slice(0, 4)}` },
+        { title: "x", body: `${TARGET}#${NOTE_ISSUE}0` },
+        { title: "x", body: `${TARGET}#1${NOTE_ISSUE}` },
+        { title: "x", body: `https://github.com/${TARGET}/issues/${NOTE_ISSUE}9` },
+        { title: "x", body: `https://github.com/${TARGET}/pull/${NOTE_ISSUE}` },
+        { title: "x", body: `#${NOTE_ISSUE}` },
+        { title: "x", body: `other/repo#${NOTE_ISSUE} and https://github.com/other/repo/issues/${NOTE_ISSUE}` },
+        { title: "x", body: `xopenclaw/openclaw#${NOTE_ISSUE} and openclaw/openclaw-evil#${NOTE_ISSUE}` },
+        { title: 5, body: { text: `${TARGET}#${NOTE_ISSUE}` } },
+      ]) {
+        ours(fields);
+        const result = await run(note());
+        expect(result.code, JSON.stringify(fields)).toBe(1);
+        expect(result.stderr).toContain("Refused, nothing posted");
+        expect(result.stderr).toContain("does not name");
+        expect(upstream()).toEqual([]);
+        calls = [];
+      }
+    });
+
+    it("the other target of the same approved issue is refused when it is not named; the named one passes; an existing comment is checked too", async () => {
+      ours({ title: "x", body: `${TARGET}#173057` });
+      expect((await run(note())).code).toBe(1);
+      expect(upstream()).toEqual([]);
+      calls = [];
+      answers.set(`GET /repos/${TARGET}/issues/173057`, [200, { number: 173057, user: { login: "xtimor" } }]);
+      answers.set(`GET /repos/${TARGET}/issues/173057/comments`, [200, [entry(77, 30, "xtimor", MARKER)]]);
+      const ok = await run(note({ issue: 173057 }));
+      expect(ok.code, ok.stderr).toBe(0);
+      expect(ok.stdout).toContain("existing");
+      // The same existing comment on a target the issue does not name is refused, not returned.
+      answers.set(`GET ${OURS_API}/issues/45`, [200, { number: 45, title: "x", body: "nothing" }]);
+      expect((await run(note({ issue: 173057 }))).code).toBe(1);
+      noPost();
     });
   });
 
@@ -752,9 +835,10 @@ describe("upstream-issue: comment on the owner's own issue (ticket 3.24)", () =>
       expect(seen().filter((line) => line.endsWith("/issues/200/comments"))).toHaveLength(2);
       noPost();
       calls = [];
-      // At the cap on the first issue, the second one is never read.
+      // At the cap on the first issue, the second one is never read (a fresh set of answers: nothing is left over from above).
+      answers = new Map();
       listIssues([200, 5], [201, 5]);
-      answers = new Map([...answers, [`GET /repos/${TARGET}/issues/200/comments`, [200, [entry(1, 1), entry(2, 1), entry(3, 1), entry(4, 1), entry(5, 1)]]]]);
+      answers.set(`GET /repos/${TARGET}/issues/200/comments`, [200, [entry(1, 1), entry(2, 1), entry(3, 1), entry(4, 1), entry(5, 1)]]);
       expect((await run(note())).code).toBe(1);
       expect(seen().some((line) => line.endsWith("/issues/201/comments"))).toBe(false);
     });

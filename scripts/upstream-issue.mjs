@@ -147,7 +147,7 @@ const issueUrl = (repo, number) => `https://github.com/${repo}/issues/${number}`
 /**
  * Reads the issue of ours that the marker names and refuses unless it exists, is an issue (never a pull request), and an owner
  * labeled it `status:approved` at some point (its events, oldest first). `ours` is the client for this repository (GITHUB_TOKEN,
- * read only). An unreadable answer refuses too. Sends no write.
+ * read only). An unreadable answer refuses too. Sends no write. Returns the issue as fetched (title, body).
  */
 export async function checkApproved(ours, config, number) {
   const path = `/repos/${config.repo}/issues/${number}`;
@@ -158,7 +158,7 @@ export async function checkApproved(ours, config, number) {
     const events = (await ours.rest("GET", `${path}/events?per_page=100&page=${page}`)).data;
     if (!Array.isArray(events)) throw new WriteError(`GET /issues/${number}/events: the events could not be read`);
     for (const event of events) {
-      if (event?.event === "labeled" && event.label?.name === APPROVED && config.owners.includes(lower(event.actor?.login))) return;
+      if (event?.event === "labeled" && event.label?.name === APPROVED && config.owners.includes(lower(event.actor?.login))) return answer.data;
     }
     if (events.length < 100) break;
   }
@@ -279,6 +279,18 @@ export async function countRecentComments(client, request, login, now = Date.now
   throw refuse(`the token user has more than ${MAX_LIST_PAGES * 100} recently updated issues in ${request.repo}; cannot count their comments`);
 }
 
+/**
+ * A comment is tied to the issue of ours it serves: that issue's title or body must name the target, as `<repo>#<n>` or as
+ * `https://github.com/<repo>/issues/<n>`, with the number matched exactly (`#1729` is not `#172969`). So one approved issue allows
+ * comments only on the upstream issues it names, not on every issue of the owner. Refuses otherwise; sends no write.
+ */
+export function checkNamesTarget(ourIssue, config, request) {
+  const escaped = request.repo.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const names = new RegExp(`(?<![\\w./-])(?:${escaped}#|https://github\\.com/${escaped}/issues/)${request.issue}(?!\\d)`, "i");
+  const text = `${typeof ourIssue?.title === "string" ? ourIssue.title : ""}\n${typeof ourIssue?.body === "string" ? ourIssue.body : ""}`;
+  if (!names.test(text)) throw refuse(`${config.repo}#${request.marker.number} does not name ${request.repo}#${request.issue} in its title or body; the approved issue must name the issue it comments on`);
+}
+
 async function postComment(client, request) {
   const { data } = await client.rest("POST", `/repos/${request.repo}/issues/${request.issue}/comments`, { body: request.body });
   if (!isObject(data) || !Number.isSafeInteger(data.id) || data.id <= 0) throw new WriteError("POST /comments: no comment id in the answer");
@@ -290,7 +302,7 @@ async function runComment({ config, issue, client, ours, log, now, finish, fail,
   let login;
   let existing;
   try {
-    await checkApproved(ours, config, issue.marker.number);
+    checkNamesTarget(await checkApproved(ours, config, issue.marker.number), config, issue);
     login = await readUser(client);
     await checkTarget(client, issue, login);
     existing = await findExistingComment(client, issue, login);
@@ -317,6 +329,15 @@ async function runComment({ config, issue, client, ours, log, now, finish, fail,
   return finish(0, `commented ${url}`, "", { target, url, number: made.id, kind: "commented" });
 }
 
+/** Whether the input asks for a comment, judged before any check, so a refusal for the actors or the shape says the right thing. */
+const asksForComment = (text) => {
+  try {
+    return isObject(JSON.parse(text)) && JSON.parse(text).op === "comment";
+  } catch {
+    return false;
+  }
+};
+
 /**
  * Runs the whole input. `log(line)` is called with each progress line. Returns `{code, outcome, message, url, number, repo, ...}`;
  * it writes nothing itself. A missing or malformed variable throws a WriteError with code 2.
@@ -325,7 +346,8 @@ export async function run(env, log = () => {}, now = Date.now) {
   const config = readConfig(env);
   const base = { repo: config.repo, actor: config.actor, target: "", url: "", number: 0 };
   const finish = (code, outcome, message = "", extra = {}) => ({ code, outcome, message, ...base, ...extra });
-  const refused = (message) => finish(1, "Refused, nothing created", message);
+  const nothing = asksForComment(config.inputText) ? "Refused, nothing posted" : "Refused, nothing created";
+  const refused = (message) => finish(1, nothing, message);
   if (config.attempt !== "1") return refused("this is a re-run (GITHUB_RUN_ATTEMPT is not 1); dispatch again instead");
   for (const [who, name] of [[config.actor, "dispatcher"], [config.triggering, "triggering actor"]]) {
     if (lower(who) === "" || !config.owners.includes(lower(who))) return refused(`the ${name} is not an owner (ISSUE_FLOW_OWNERS)`);
@@ -335,11 +357,10 @@ export async function run(env, log = () => {}, now = Date.now) {
     issue = validate(config.inputText, config.repo);
   } catch (error) {
     if (!(error instanceof WriteError)) throw error;
-    return finish(error.code, "Refused, nothing created", error.message);
+    return finish(error.code, nothing, error.message);
   }
   base.target = issue.repo;
   const comment = issue.op === "comment";
-  const nothing = comment ? "Refused, nothing posted" : "Refused, nothing created";
   const client = makeClient(config);
   // Our own repository is read with the workflow's token; the owner's token never goes there, and neither token goes to the other API.
   const ours = makeClient({ ...config, token: config.ourToken });
