@@ -3,7 +3,7 @@ title: 'The owner''s `upstream:post` label publishes an agent''s upstream draft 
 type: 'feature'
 ticket: 25
 created: '2026-10-29'
-status: 'built'
+status: done
 baseline_revision: 'eb7072f1836e3cadefda465928c08ff5d350d188'
 route: 'full'
 route_source: 'auto'
