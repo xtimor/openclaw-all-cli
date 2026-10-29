@@ -63,3 +63,9 @@
 - name: "source:agent"
   color: "ededed"
   description: "Filed by an agent"
+
+# The owner's approval to publish an agent's upstream draft (docs/agents/identity.md, "Upstream issues"). Only the owner adds it;
+# the relay refuses it for agents. The Upstream post workflow removes it after it acts.
+- name: "upstream:post"
+  color: "6f42c1"
+  description: "Owner only: publish the agent's draft in openclaw/openclaw"

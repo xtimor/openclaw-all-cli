@@ -731,6 +731,19 @@ describe("agent-write", () => {
     }
   });
 
+  it("UPSTREAM_POST: the owner's upstream:post label is never added or removed by the relay, in any spelling (ticket 3.25)", async () => {
+    for (const name of ["upstream:post", "Upstream:Post", " upstream:post ", "UPSTREAM:POST", "upstream:post\n", "upstream%3Apost"]) {
+      for (const key of ["add", "remove"]) {
+        const result = await run([{ op: "labels", issue: 12, [key]: [name] }]);
+        expect(result.code, `${key} ${JSON.stringify(name)}`).toBe(1);
+        expect(result.summary).toContain("Refused, nothing applied");
+      }
+    }
+    // Nor beside an allowed label in the same list: the whole list is refused.
+    expect((await run([{ op: "comment", issue: 12, body: "hi" }, { op: "labels", issue: 12, add: ["status:blocked", "upstream:post"] }])).code).toBe(1);
+    expect(calls).toEqual([]);
+  });
+
   it("DISPATCHER: an actor or triggering actor outside ISSUE_FLOW_OWNERS (or none) is refused, nothing applied; the comparison ignores case", async () => {
     const ops = [{ op: "comment", issue: 12, body: "hi" }];
     const cases = [
