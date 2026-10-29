@@ -28,7 +28,7 @@ const BODY_MARK = "BODY_MARKER_must_not_be_echoed_7731";
 const BOT = "openclaw-all-cli-agent[bot]";
 const MARKER = `Filed for ${OURS}#45`;
 const NOTE_ISSUE = 172969;
-const LABELED_AT = "2026-10-29T10:00:00Z";
+const LABELED_AT = "2026-10-29T10:00:00Z"; // the time of the label event in the stub
 const EDITED_AT = "2026-10-29T09:00:00Z";
 const COMMENT_URL = `https://github.com/${TARGET}/issues/${NOTE_ISSUE}#issuecomment-9001`;
 const ISSUE_URL = `https://github.com/${TARGET}/issues/777`;
@@ -46,6 +46,8 @@ let server: Server;
 let base = "";
 let calls: Call[] = [];
 let answers = new Map<string, Answer>();
+/** Answers handed out one per call (the last one repeats): for an events list that lags and then catches up. */
+let sequences = new Map<string, Answer[]>();
 
 async function readBody(req: IncomingMessage): Promise<Record<string, unknown> | null> {
   const chunks: Buffer[] = [];
@@ -54,7 +56,9 @@ async function readBody(req: IncomingMessage): Promise<Record<string, unknown> |
   return text ? (JSON.parse(text) as Record<string, unknown>) : null;
 }
 
-const approval = (login = "xtimor", label = "status:approved") => ({ event: "labeled", label: { name: label }, actor: { login } });
+const approval = (login = "xtimor", label = "status:approved") => ({ event: "labeled", label: { name: label }, actor: { login, type: "User" }, performed_via_github_app: null });
+const labelEvent = (overrides: Record<string, unknown> = {}) => ({ event: "labeled", label: { name: "upstream:post" }, actor: { login: "xtimor", type: "User" }, created_at: LABELED_AT, performed_via_github_app: null, ...overrides });
+const APP = { id: 1, slug: "claude" };
 const block = (attributes: string, text: string) => `<!-- upstream-draft ${attributes} -->\n${text}\n<!-- /upstream-draft -->`;
 const impl = (draft: string, names = `${TARGET}#${NOTE_ISSUE}`) => `<!-- issue-impl -->\n**Status:** \`status:blocked\`: the draft waits for the owner\n**Waiting for:** @xtimor: review the draft and add upstream:post\n**Draft for:** ${names}\n\n${draft}\n\n— implementation agent`;
 const botComment = (body: string, overrides: Record<string, unknown> = {}) => ({ id: 3001, user: { login: BOT, type: "Bot" }, body, created_at: "2026-10-29T08:00:00Z", updated_at: EDITED_AT, ...overrides });
@@ -65,7 +69,7 @@ const ourIssue = (overrides: Record<string, unknown> = {}) => ({ number: 45, tit
 function defaults(method: string, path: string): Answer {
   // Our repository: issue 45 is an issue the owner approved, labeled upstream:post, with the agent's draft in its comments.
   if (method === "GET" && path === `${OURS_API}/issues/45`) return [200, ourIssue()];
-  if (method === "GET" && path === `${OURS_API}/issues/45/events`) return [200, [approval(), { event: "labeled", label: { name: "type:bug" }, actor: { login: "xtimor" } }]];
+  if (method === "GET" && path === `${OURS_API}/issues/45/events`) return [200, [approval(), { event: "labeled", label: { name: "type:bug" }, actor: { login: "xtimor" } }, labelEvent()]];
   if (method === "GET" && path === `${OURS_API}/issues/45/comments`) return [200, [botComment(impl(COMMENT_DRAFT))]];
   if (method === "POST" && path === `${OURS_API}/issues/45/comments`) return [201, { id: 5001 }];
   if (method === "DELETE" && path === `${OURS_API}/issues/45/labels/upstream:post`) return [200, []];
@@ -85,7 +89,8 @@ beforeAll(async () => {
     const path = decodeURIComponent(url.pathname);
     const method = req.method ?? "GET";
     calls.push({ method, path, search: url.search, body: await readBody(req), auth: req.headers.authorization });
-    const [status, payload] = answers.get(`${method} ${path}${method === "GET" && url.searchParams.has("page") ? `?page=${url.searchParams.get("page")}` : ""}`) ?? answers.get(`${method} ${path}`) ?? defaults(method, path);
+    const queued = sequences.get(`${method} ${path}${method === "GET" && url.searchParams.has("page") ? `?page=${url.searchParams.get("page")}` : ""}`) ?? sequences.get(`${method} ${path}`);
+    const [status, payload] = (queued ? (queued.length > 1 ? queued.shift() : queued[0]) : undefined) ?? answers.get(`${method} ${path}${method === "GET" && url.searchParams.has("page") ? `?page=${url.searchParams.get("page")}` : ""}`) ?? answers.get(`${method} ${path}`) ?? defaults(method, path);
     res.writeHead(status, { "content-type": "application/json" });
     res.end(JSON.stringify(payload));
   });
@@ -100,6 +105,7 @@ afterAll(async () => {
 beforeEach(() => {
   calls = [];
   answers = new Map();
+  sequences = new Map();
 });
 
 const dirs: string[] = [];
@@ -138,7 +144,7 @@ function run(env: Record<string, string | undefined> = {}, identity: string | nu
     LABEL_NAME: "upstream:post",
     LABELER: "xtimor",
     LABELER_TYPE: "User",
-    LABELED_AT,
+    UPSTREAM_POST_EVENT_DELAY_MS: "1",
     UPSTREAM_POST_IDENTITY_FILE: identityFile,
     GITHUB_API_URL: base,
     GITHUB_STEP_SUMMARY: summaryFile,
@@ -183,6 +189,7 @@ describe("upstream-post: the published path", () => {
     expect(result.code, result.stderr).toBe(0);
     expect(seen()).toEqual([
       `GET ${OURS_API}/issues/45`, // the label is still on the issue
+      `GET ${OURS_API}/issues/45/events`, // the label event: the owner's own click
       `GET ${OURS_API}/issues/45/comments`,
       `GET ${OURS_API}/issues/45`, // run() of upstream-issue.mjs: the marker's issue
       `GET ${OURS_API}/issues/45/events`,
@@ -247,7 +254,9 @@ describe("upstream-post: the published path", () => {
     expect(upstreamWrites()).toEqual([]);
     settled();
     expect(posted()).toContain(`https://github.com/${TARGET}/issues/${NOTE_ISSUE}#issuecomment-8123`);
-    expect(posted()).toContain("already published");
+    expect(posted()).toContain("nothing new was posted");
+    expect(posted()).toContain("**Existing:**");
+    expect(posted()).toContain("a new note on the same target needs a new issue of ours");
     expect(result.output).toContain("upstream-post: existing ");
   });
 
@@ -290,6 +299,111 @@ describe("upstream-post: who may publish", () => {
 
   it("LABELER: the owner list compares ignoring case", async () => {
     expect((await run({ LABELER: "XTimor", GITHUB_ACTOR: "xtimor", GITHUB_TRIGGERING_ACTOR: "xTIMOR" })).code).toBe(0);
+  });
+});
+
+describe("upstream-post: the label must be the owner's own click (security review of ticket 3.25, finding 1)", () => {
+  const eventsPath = `GET ${OURS_API}/issues/45/events`;
+  const withEvents = (...events: unknown[]) => answers.set(eventsPath, [200, [approval(), ...events]]);
+  const refusedClick = async (text = "not the owner's own click") => {
+    const result = await run();
+    expect(result.code).toBe(1);
+    expect(upstream()).toEqual([]);
+    // The draft is never read for a label that was not the owner's click; the label is removed and the reason posted.
+    expect(seen().filter((entry) => entry.startsWith("GET") && entry.endsWith("/comments"))).toEqual([]);
+    settled();
+    expect(posted()).toContain(text);
+    expect(leaked(result)).toEqual([]);
+    return result;
+  };
+
+  it("APP: the owner's login on a label event made through a GitHub App (a Claude session acting as the owner) publishes nothing", async () => {
+    withEvents(labelEvent({ performed_via_github_app: APP }));
+    await refusedClick();
+    for (const other of [{ performed_via_github_app: { id: 9 } }, { actor: { login: "xtimor", type: "Bot" } }, { actor: { login: "xtimor" }, performed_via_github_app: { slug: "x" } }]) {
+      calls = [];
+      withEvents(labelEvent(other));
+      await refusedClick();
+    }
+  });
+
+  it("ACTOR: the event's actor must be the person the payload names, and an owner", async () => {
+    withEvents(labelEvent({ actor: { login: "other-owner", type: "User" } }));
+    await refusedClick();
+    // Another owner's click is not the labeler's even when both are owners (the payload says who labeled).
+    calls = [];
+    answers.set(eventsPath, [200, [approval(), labelEvent({ actor: { login: "other-owner", type: "User" } })]]);
+    const second = await run({ ISSUE_FLOW_OWNERS: "xtimor, other-owner" });
+    expect(second.code).toBe(1);
+    expect(posted()).toContain("not the owner's own click");
+    expect(upstream()).toEqual([]);
+    calls = [];
+    withEvents(labelEvent({ actor: { login: "mallory", type: "User" } }));
+    await refusedClick();
+    calls = [];
+    withEvents(labelEvent({ actor: null }));
+    await refusedClick();
+  });
+
+  it("LATEST: the latest label event decides: an older app event does not matter, a later one does", async () => {
+    withEvents(labelEvent({ performed_via_github_app: APP, created_at: "2026-10-29T08:00:00Z" }), { ...labelEvent({ created_at: "2026-10-29T09:00:00Z" }), event: "unlabeled" }, labelEvent());
+    expect((await run()).code).toBe(0);
+    calls = [];
+    withEvents(labelEvent({ created_at: "2026-10-29T08:00:00Z" }), { ...labelEvent({ created_at: "2026-10-29T09:00:00Z" }), event: "unlabeled" }, labelEvent({ performed_via_github_app: APP }));
+    await refusedClick();
+  });
+
+  it("LAG: when the newest label event is not listed yet it is read again; an old click is never taken for the new label", async () => {
+    // The old labeled event was followed by the workflow's own unlabeled one: the new labeled event has not shown up.
+    const old = [labelEvent({ created_at: "2026-10-28T08:00:00Z" }), { ...labelEvent({ created_at: "2026-10-28T08:05:00Z" }), event: "unlabeled" }];
+    sequences.set(eventsPath, [
+      [200, [approval(), ...old]],
+      [200, [approval(), ...old]],
+      [200, [approval(), ...old, labelEvent()]],
+    ]);
+    const caught = await run();
+    expect(caught.code, caught.stderr).toBe(0);
+    expect(calls.filter((call) => call.path === `${OURS_API}/issues/45/events` && call.search.includes("per_page=100&page=1"))).toHaveLength(4); // 3 label reads + the approval check
+    // It never catches up: refused after the attempts, nothing upstream, label removed.
+    calls = [];
+    sequences = new Map();
+    answers.set(eventsPath, [200, [approval(), ...old]]);
+    const stale = await refusedClick("was not found in the issue's events");
+    expect(calls.filter((call) => call.path === `${OURS_API}/issues/45/events`)).toHaveLength(4);
+    expect(stale.code).toBe(1);
+  });
+
+  it("NO_EVENT: no label event at all, an unreadable list, or an unreadable time is refused", async () => {
+    answers.set(eventsPath, [200, [approval()]]);
+    await refusedClick("was not found in the issue's events");
+    calls = [];
+    withEvents(labelEvent({ created_at: "soon" }));
+    await refusedClick("time of the label event could not be read");
+    calls = [];
+    answers.set(eventsPath, [200, { not: "a list" }]);
+    await refusedClick("the events could not be read");
+  });
+
+  it("TIME: the label time is the event's time, so a draft edited within 60 seconds of it is refused", async () => {
+    withEvents(labelEvent({ created_at: "2026-10-29T09:00:30Z" }));
+    setComments(botComment(impl(COMMENT_DRAFT), { updated_at: "2026-10-29T09:00:00Z" }));
+    const quick = await run();
+    expect(quick.code).toBe(1);
+    expect(upstream()).toEqual([]);
+    expect(posted()).toContain("less than 60 seconds before the label");
+    settled();
+    withEvents(labelEvent({ created_at: "2026-10-29T09:01:00Z" }));
+    calls = [];
+    expect((await run()).code).toBe(0);
+  });
+
+  it("APPROVAL: the issue of ours must be approved by the owner's own click too (the shared check)", async () => {
+    answers.set(eventsPath, [200, [{ ...approval(), performed_via_github_app: APP }, labelEvent()]]);
+    const result = await run();
+    expect(result.code).toBe(1);
+    expect(upstreamWrites()).toEqual([]);
+    expect(posted()).toContain("with their own click, not through an app or an agent session");
+    settled();
   });
 });
 
@@ -339,7 +453,7 @@ describe("upstream-post: replay and withdrawal change nothing", () => {
   });
 
   it("CONFIG: a missing or malformed variable exits 2 and sends nothing", async () => {
-    for (const env of [{ ISSUE_NUMBER: undefined }, { ISSUE_NUMBER: "0" }, { ISSUE_NUMBER: "4x" }, { LABELER: undefined }, { LABELER_TYPE: undefined }, { LABELED_AT: undefined }, { GITHUB_TOKEN: undefined }, { GITHUB_TOKEN: "x" }, { GITHUB_REPOSITORY: "nope" }, { LABEL_NAME: undefined }]) {
+    for (const env of [{ ISSUE_NUMBER: undefined }, { ISSUE_NUMBER: "0" }, { ISSUE_NUMBER: "4x" }, { LABELER: undefined }, { LABELER_TYPE: undefined }, { GITHUB_TOKEN: undefined }, { GITHUB_TOKEN: "x" }, { GITHUB_REPOSITORY: "nope" }, { LABEL_NAME: undefined }]) {
       calls = [];
       const result = await run(env);
       expect(result.code, JSON.stringify(env)).toBe(2);
@@ -421,6 +535,57 @@ describe("upstream-post: the draft", () => {
     expect((await run()).code).toBe(0);
   });
 
+  it("COMMENT_HIDES_TARGET: a name inside an HTML comment outside the block is not visible, so it does not satisfy the visible-target rule (review finding 2)", async () => {
+    const draft = block(`target=${TARGET}#${NOTE_ISSUE} op=comment`, "### Retest\n\nno reference here");
+    const text = "must name openclaw/openclaw#172969";
+    await refusedDraft([botComment(impl(draft, `<!-- ${TARGET}#${NOTE_ISSUE} -->`))], text);
+    await refusedDraft([botComment(impl(draft, `<!-- closed -->  <!-- ${TARGET}#${NOTE_ISSUE} -->`))], text);
+    await refusedDraft([botComment(impl(draft, `<!-- ${TARGET}#${NOTE_ISSUE}`))], text); // never closed: runs to the end
+    await refusedDraft([botComment(`${impl(draft, "nothing")}\n<!-- ${TARGET}#${NOTE_ISSUE} -->`)], text);
+    setComments(botComment(impl(draft, `<!-- hidden --> ${TARGET}#${NOTE_ISSUE}`)));
+    calls = [];
+    expect((await run()).code).toBe(0);
+  });
+
+  it("MARKDOWN_HIDING: link reference definitions and raw HTML outside code are refused; code spans and fences, comparisons, and plain Markdown pass (review finding 3)", async () => {
+    const comment = `target=${TARGET}#${NOTE_ISSUE} op=comment`;
+    const wrap = (text: string) => [botComment(impl(block(comment, text)))];
+    for (const text of ["See [the docs][1]\n\n[1]: https://evil.example", "[x]: https://evil.example", "  [x]: <https://evil.example> \"t\"", "text\n   [^note]: footnote hidden"]) {
+      await refusedDraft(wrap(text), "link reference definition");
+    }
+    for (const text of ["<img src=x>", "a <details><summary>s</summary>t</details>", "x </div>", "<?php echo 1 ?>", "<!DOCTYPE html>", "see <https://example.com>", "<span style=\"display:none\">hide</span>", "text `ok` then <b>bold</b>", "`a\n\n<img>\n\n`", "```js\n<a>\n```\n\n````\n```\n<b>\n````\n<i>"]) {
+      await refusedDraft(wrap(text), "raw HTML");
+    }
+    for (const text of ["Use `Array<string>` and `<div>` here.", "```html\n<div>\n<img src=x>\n```\n\nfine", "~~~\n<b>\n~~~", "if a < b and 3<4 then x <= y; a<-b", "``a ` <b> ``", "[link](https://example.com/a:b) and [ref]: not at line start", "&lt;b&gt; escaped"]) {
+      setComments(...wrap(text));
+      calls = [];
+      const result = await run();
+      expect(result.code, `${text}\n${result.stderr}`).toBe(0);
+    }
+  });
+
+  it("INVISIBLE_WIDE: every format character, variation selector, and invisible filler is refused (review finding 3)", async () => {
+    const comment = `target=${TARGET}#${NOTE_ISSUE} op=comment`;
+    for (const code of [0x200c, 0x0600, 0x061c, 0x06dd, 0x180e, 0xfff9, 0xfe00, 0xfe0f, 0xe0100, 0xe01ef, 0x3164, 0x115f, 0x1160, 0xffa0, 0x034f, 0xe0001, 0x110bd]) {
+      await refusedDraft([botComment(impl(block(comment, `plain${String.fromCodePoint(code)}text`)))], "invisible or direction-changing");
+    }
+  });
+
+  it("PERFORMANCE: adversarial drafts (many backtick runs, brackets, whitespace, angle brackets) parse in linear time", async () => {
+    const mod = (await import(pathToFileURL(SCRIPT).href)) as { parseDraft: (text: string) => Record<string, unknown> };
+    const wrap = (text: string) => `<!-- upstream-draft target=${TARGET}#${NOTE_ISSUE} op=comment -->\n${text}\n<!-- /upstream-draft -->`;
+    const inputs = ["`a``b```c````d".repeat(4500), `${"[".repeat(30_000)}x`, `x${" ".repeat(60_000)}y`, "<".repeat(30_000), `${"`\n".repeat(20_000)}`, `${"a ".repeat(30_000)}`];
+    const started = Date.now();
+    for (const text of inputs) {
+      try {
+        mod.parseDraft(wrap(text));
+      } catch {
+        // refused or parsed: only the time matters
+      }
+    }
+    expect(Date.now() - started).toBeLessThan(3000);
+  });
+
   it("DEFAULT_IDENTITY: without the test hook the repository's own .github/agent-identity.json names the agent app", async () => {
     const login = (JSON.parse(readFileSync(join(ROOT, ".github", "agent-identity.json"), "utf8")) as { login: string }).login;
     setComments(botComment(impl(COMMENT_DRAFT), { user: { login, type: "Bot" } }));
@@ -458,14 +623,19 @@ describe("upstream-post: the draft", () => {
     expect(upstreamWrites()[0]?.body).toEqual({ body: `### Retest\n\n${BODY_MARK}\n\n${MARKER}\n` });
   });
 
-  it("EDITED_AFTER_LABEL: a draft edited after the label was added is refused; the same second passes", async () => {
-    await refusedDraft([botComment(impl(COMMENT_DRAFT), { updated_at: "2026-10-29T10:00:01Z" })], "edited after the label was added");
+  it("EDITED_RECENTLY: a draft edited less than 60 seconds before the label, in the same second, or after it is refused; 60 seconds before passes", async () => {
+    const at = Date.parse(LABELED_AT);
+    const iso = (offsetMs: number) => new Date(at + offsetMs).toISOString();
+    for (const offset of [1000, 0, -1000, -30_000, -59_000, -59_999]) {
+      await refusedDraft([botComment(impl(COMMENT_DRAFT), { updated_at: iso(offset) })], "less than 60 seconds before the label was added, or after it");
+    }
     await refusedDraft([botComment(impl(COMMENT_DRAFT), { updated_at: undefined })], "no readable edit time");
     await refusedDraft([botComment(impl(COMMENT_DRAFT), { updated_at: "not a date" })], "no readable edit time");
-    await refusedDraft([botComment(impl(COMMENT_DRAFT))], "the time the label was added could not be read", { LABELED_AT: "yesterday" });
-    setComments(botComment(impl(COMMENT_DRAFT), { updated_at: LABELED_AT }));
-    calls = [];
-    expect((await run()).code).toBe(0);
+    for (const offset of [-60_000, -61_000, -3_600_000]) {
+      setComments(botComment(impl(COMMENT_DRAFT), { updated_at: iso(offset) }));
+      calls = [];
+      expect((await run()).code, String(offset)).toBe(0);
+    }
   });
 
   it("IDENTITY: without an agent app login in .github/agent-identity.json (no file, no login, a login that is not a bot) nothing is trusted", async () => {
@@ -506,7 +676,7 @@ describe("upstream-post: the guards of tickets 3.23 and 3.24 still apply (same c
   };
 
   it("APPROVAL: an issue of ours that no owner approved publishes nothing", async () => {
-    answers.set(`GET ${OURS_API}/issues/45/events`, [200, [approval("mallory"), approval("xtimor", "status:triaged")]]);
+    answers.set(`GET ${OURS_API}/issues/45/events`, [200, [approval("mallory"), approval("xtimor", "status:triaged"), labelEvent()]]);
     await refused("has no status:approved label set by an owner");
     expect(upstream()).toEqual([]);
   });
@@ -553,7 +723,7 @@ describe("upstream-post: the guards of tickets 3.23 and 3.24 still apply (same c
     expect(text).toMatch(/await runUpstream\(\{ \.\.\.env, UPSTREAM_ISSUE: JSON\.stringify\(input\) \}, log, now\)/);
     // It may import a check (the visible-target rule reuses checkNamesTarget); it defines none and sends nothing upstream itself.
     for (const name of ["checkApproved", "checkNamesTarget", "checkTarget", "findExisting", "findExistingComment", "countRecentComments", "DAILY_CAP", "COMMENT_CAP", "ALLOWED_REPOS"]) expect(text, name).not.toMatch(new RegExp(`(function|const|let|class)\\s+${name}\\b`));
-    expect(text).toContain('import { checkNamesTarget, run as runUpstream } from "./upstream-issue.mjs";');
+    expect(text).toContain('import { checkNamesTarget, isOwnersOwnClick, run as runUpstream } from "./upstream-issue.mjs";');
     expect(text).not.toContain("POST /repos");
     // The only write upstream is the one inside runUpstream; this script writes to its own repository only.
     expect([...text.matchAll(/ours\.rest\("(POST|DELETE)"/g)].map((match) => match[1])).toEqual(["POST", "DELETE"]);
@@ -684,8 +854,9 @@ describe("upstream-post workflow file", () => {
       "LABEL_NAME: ${{ github.event.label.name }}",
       "LABELER: ${{ github.event.sender.login }}",
       "LABELER_TYPE: ${{ github.event.sender.type }}",
-      "LABELED_AT: ${{ github.event.issue.updated_at }}",
     ]) expect(text).toContain(line);
+    // The label time and the click's author come from the issue's events, read by the script, not from the payload.
+    expect(text).not.toMatch(/LABELED_AT|issue\.updated_at/);
     // Text an outsider writes never enters the workflow: not the issue's title or body, no comment, no PR field.
     expect(text).not.toMatch(/github\.event\.(issue\.(title|body|user|labels)|comment|pull_request|head_commit)/);
     const report = text.slice(text.indexOf("name: Report the result"));

@@ -32,8 +32,8 @@
 //
 // Environment: GITHUB_TOKEN (this repository, `issues: write`), GH_PUBLIC_TOKEN (the owner's token, upstream only; handed to run()),
 // GITHUB_REPOSITORY, GITHUB_ACTOR, GITHUB_TRIGGERING_ACTOR, GITHUB_RUN_ATTEMPT, ISSUE_FLOW_OWNERS, ISSUE_NUMBER (our issue), LABEL_NAME,
-// LABELER and LABELER_TYPE (`github.event.sender`), LABELED_AT (`github.event.issue.updated_at` of the labeled event), GITHUB_API_URL,
-// GITHUB_STEP_SUMMARY, GITHUB_OUTPUT, UPSTREAM_POST_IDENTITY_FILE (tests; default .github/agent-identity.json of this checkout).
+// LABELER and LABELER_TYPE (`github.event.sender`), GITHUB_API_URL,
+// GITHUB_STEP_SUMMARY, GITHUB_OUTPUT, UPSTREAM_POST_IDENTITY_FILE and UPSTREAM_POST_EVENT_DELAY_MS (tests; default .github/agent-identity.json of this checkout, 3000).
 //
 // Neither token is printed. No stream, summary, output, or result comment holds a draft's title or body; the upstream issue is named
 // by its URL. Every log line starts with `upstream-post:` and holds one line. Exit 0 created, commented, or existing; 1 refused or
@@ -42,11 +42,14 @@ import { appendFileSync, readFileSync, realpathSync } from "node:fs";
 import { pathToFileURL } from "node:url";
 import { cell, lower, makeClient, WriteError, writeSummary } from "./agent-write.mjs";
 import { parseOwners } from "./issue-flow/transitions.mjs";
-import { checkNamesTarget, run as runUpstream } from "./upstream-issue.mjs";
+import { checkNamesTarget, isOwnersOwnClick, run as runUpstream } from "./upstream-issue.mjs";
 
 export const LABEL = "upstream:post";
 export const RESULT_MARKER = "<!-- upstream-post -->";
 const MAX_COMMENT_PAGES = 20; // 2000 comments on one issue of ours
+const MAX_EVENT_PAGES = 10; // 1000 events of one issue of ours
+const EVENT_ATTEMPTS = 4; // the events list can lag a moment behind the event that started the run
+export const SETTLE_MS = 60_000; // the draft comment must be this much older than the label: a quick edit before the click is not read
 const MAX_NUMBER = 999_999_999;
 const IMPL_MARKER = /^\s*<!--\s*issue-impl\s*-->/;
 const OPEN_TAG = /^<!--[ \t]+upstream-draft[ \t]+([^>]*?)[ \t]+-->[ \t]*$/;
@@ -55,14 +58,63 @@ const ANY_TAG = /<!--[ \t]*\/?[ \t]*upstream-draft/i;
 const ATTRIBUTE = /^(target|op)=([A-Za-z0-9_.#/-]+)$/;
 const REPO_PART = "[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+";
 // What the owner cannot see when they read the draft as rendered text: HTML comments, and characters that are invisible or change the
-// reading direction (soft hyphen, zero-width and direction marks, embeddings and isolates, word joiners, BOM, the Unicode tag block).
-const INVISIBLE = /[\u00AD\u200B-\u200F\u202A-\u202E\u2060-\u2064\u2066-\u2069\uFEFF\u{E0000}-\u{E007F}]/u;
+// reading direction: every format character (Unicode Cf: soft hyphen, zero-width and direction marks, embeddings and isolates, word joiners,
+// BOM, the tag block), variation selectors, and the invisible fillers (Hangul and combining grapheme joiners, Mongolian vowel separator).
+const INVISIBLE = /[\p{Cf}\uFE00-\uFE0F\u{E0100}-\u{E01EF}\u3164\u115F\u1160\uFFA0\u034F\u180E]/u;
 const LOGIN = /^[A-Za-z0-9][\w.-]*(?:\[bot\])?$/;
 const RESULT_URL = /^https:\/\/github\.com\/[\w.-]+\/[\w.-]+\/issues\/\d+(?:#issuecomment-\d+)?$/;
 
 const refuse = (message) => new WriteError(message, { refused: true });
 const isObject = (value) => value !== null && typeof value === "object" && !Array.isArray(value);
-const trimBlank = (text) => text.replace(/^(?:[ \t]*\n)+/, "").replace(/\s+$/, "");
+const trimBlank = (text) => text.replace(/^(?:[ \t]*\n)+/, "").trimEnd();
+
+/**
+ * The text without fenced code blocks and inline code spans (a fence runs to its closing line or to the end; a span does not cross a
+ * blank line). What is left is what a Markdown renderer could turn into HTML. Anything this misjudges as code leaves more text in, not less.
+ */
+export function withoutCode(text) {
+  const kept = [];
+  let fence = null;
+  for (const line of String(text).split("\n")) {
+    if (fence !== null) {
+      const close = /^ {0,3}(`{3,}|~{3,})[ \t]*$/.exec(line);
+      if (close && close[1][0] === fence.char && close[1].length >= fence.length) fence = null;
+      continue;
+    }
+    const open = /^ {0,3}(`{3,}|~{3,})/.exec(line);
+    // A backtick fence's info string may not hold a backtick (then it is an inline span, not a fence).
+    if (open && !(open[1][0] === "`" && line.slice(open[0].length).includes("`"))) {
+      fence = { char: open[1][0], length: open[1].length };
+      continue;
+    }
+    kept.push(line);
+  }
+  return kept.join("\n").split(/\n[ \t]*\n/).map(withoutSpans).join("\n\n");
+}
+
+/** One paragraph without its inline code spans: a run of N backticks closes at the next run of exactly N (linear, no backtracking). */
+function withoutSpans(paragraph) {
+  const runs = [...paragraph.matchAll(/`+/g)].map((match) => ({ length: match[0].length, start: match.index, end: match.index + match[0].length }));
+  const next = new Array(runs.length).fill(-1);
+  const lastSeen = new Map();
+  for (let i = runs.length - 1; i >= 0; i--) {
+    next[i] = lastSeen.get(runs[i].length) ?? -1;
+    lastSeen.set(runs[i].length, i);
+  }
+  let out = "";
+  let from = 0;
+  for (let i = 0; i < runs.length; ) {
+    const close = next[i];
+    if (close === -1) {
+      i += 1;
+      continue;
+    }
+    out += `${paragraph.slice(from, runs[i].start)} `;
+    from = runs[close].end;
+    i = close + 1;
+  }
+  return out + paragraph.slice(from);
+}
 
 /**
  * Parses the one draft block of a comment body: `{op, repo, issue?, title?, body}`. Returns `visible` too: the comment's text except the two tag lines, which is what the owner sees when it is rendered. Throws a refusal for no block, a second block,
@@ -93,10 +145,14 @@ export function parseDraft(text) {
   const target = attributes.get("target");
   const inner = trimBlank(lines.slice(opens[0] + 1, closes[0]).join("\n"));
   // Everything but the two tag lines is what the owner sees when the comment is rendered (the tags are HTML comments).
-  const visible = lines.filter((_, index) => index !== opens[0] && index !== closes[0]).join("\n");
+  // HTML comments (closed or not) are cut out: they are invisible too, so a name inside one is not seen.
+  const visible = lines.filter((_, index) => index !== opens[0] && index !== closes[0]).join("\n").replace(/<!--[\s\S]*?(-->|$)/g, "");
   // The owner approves what they read: nothing hidden may travel with the text (the comment is read rendered, not as source).
   if (inner.includes("<!--")) throw refuse("the draft text holds an HTML comment (<!--), which the owner cannot see when reading it");
   if (INVISIBLE.test(inner)) throw refuse("the draft text holds invisible or direction-changing characters, which the owner cannot see when reading it");
+  // Markdown that renders as nothing or as something other than the source: a link reference definition hides a link target, raw HTML can hide or restyle text.
+  if (/^ {0,3}\[[^\]]+\]:/m.test(inner)) throw refuse("the draft text holds a link reference definition ([label]: url), which renders as nothing and hides a link target; write the link inline");
+  if (/<\/?[A-Za-z!?]/.test(withoutCode(inner))) throw refuse("the draft text holds raw HTML (a < followed by a letter, !, or ?) outside code, which the owner may not see as written; use Markdown, or put it in a code span or fence");
   if (op === "comment") {
     const match = new RegExp(`^(${REPO_PART})#([1-9]\\d{0,8})$`).exec(target);
     if (!match) throw refuse("op=comment needs target=<repo>#<issue number>");
@@ -118,7 +174,8 @@ export function parseDraft(text) {
 /**
  * The draft of our issue from its comments (oldest first): the latest comment whose first line is the implementation marker and whose
  * author is the agent app. A comment by anyone else, with or without a block, is ignored. Refuses when there is none, when it was
- * edited after `labeledAtMs`, or when its block does not parse.
+ * edited less than SETTLE_MS before `labeledAtMs` (or after it: the owner approves what they read, so a late edit is not read), or when
+ * its block does not parse.
  */
 export function findDraft(comments, { login, labeledAtMs }) {
   const mine = comments.filter((comment) => isObject(comment) && isObject(comment.user) && lower(comment.user.login) === lower(login) && comment.user.type === "Bot" && IMPL_MARKER.test(String(comment.body ?? "").replace(/^\uFEFF/, "")));
@@ -126,7 +183,7 @@ export function findDraft(comments, { login, labeledAtMs }) {
   if (latest === undefined) throw refuse(`no <!-- issue-impl --> comment by ${login} on this issue`);
   const edited = typeof latest.updated_at === "string" ? Date.parse(latest.updated_at) : Number.NaN;
   if (!Number.isFinite(edited)) throw refuse("the draft comment has no readable edit time");
-  if (edited > labeledAtMs) throw refuse("the draft comment was edited after the label was added; read it again, then add the label again");
+  if (labeledAtMs - edited < SETTLE_MS) throw refuse(`the draft comment was edited less than ${SETTLE_MS / 1000} seconds before the label was added, or after it; wait a minute after the last edit, read the draft, then add the label again`);
   return parseDraft(latest.body);
 }
 
@@ -137,7 +194,7 @@ export function buildInput(draft, ourRepo, number) {
 }
 
 function readConfig(env) {
-  const need = ["GITHUB_TOKEN", "GITHUB_REPOSITORY", "ISSUE_NUMBER", "LABEL_NAME", "LABELER", "LABELER_TYPE", "LABELED_AT"];
+  const need = ["GITHUB_TOKEN", "GITHUB_REPOSITORY", "ISSUE_NUMBER", "LABEL_NAME", "LABELER", "LABELER_TYPE"];
   const missing = need.filter((name) => typeof env[name] !== "string" || env[name].trim() === "");
   if (missing.length > 0) throw new WriteError(`missing environment variable: ${missing.join(", ")}`, { code: 2 });
   const repo = env.GITHUB_REPOSITORY.trim();
@@ -156,7 +213,7 @@ function readConfig(env) {
     label: env.LABEL_NAME.trim(),
     labeler: env.LABELER.trim(),
     labelerType: env.LABELER_TYPE.trim(),
-    labeledAt: env.LABELED_AT.trim(),
+    eventDelayMs: Number.isInteger(Number(env.UPSTREAM_POST_EVENT_DELAY_MS)) && Number(env.UPSTREAM_POST_EVENT_DELAY_MS) >= 0 && Number(env.UPSTREAM_POST_EVENT_DELAY_MS) <= 60_000 && (env.UPSTREAM_POST_EVENT_DELAY_MS ?? "") !== "" ? Number(env.UPSTREAM_POST_EVENT_DELAY_MS) : 3000,
     actor: (env.GITHUB_ACTOR ?? "").trim(),
     triggering: (env.GITHUB_TRIGGERING_ACTOR ?? "").trim(),
     attempt: (env.GITHUB_RUN_ATTEMPT ?? "").trim(),
@@ -186,15 +243,47 @@ const oneLine = (text) => String(text).replace(/[\u0000-\u001f\u007f-\u009f\u202
 function resultComment(result, config) {
   const requester = config.owners.includes(lower(config.labeler)) && config.labelerType === "User" && LOGIN.test(config.labeler) ? ` Requested by @${config.labeler}.` : "";
   const published = result.code === 0 && RESULT_URL.test(result.url);
-  const headline = published ? { created: "published as a new issue", commented: "published as a comment", existing: "already published; nothing new was posted" }[result.kind] ?? "published" : "not published";
+  const headline = published ? { created: "published as a new issue", commented: "published as a comment", existing: "nothing new was posted: this issue of ours already published for this target" }[result.kind] ?? "published" : "not published";
   return [
     RESULT_MARKER,
     `**Upstream post:** ${headline}.${requester}`,
-    published ? `**Result:** ${result.url}` : `**Reason:** \`${oneLine(result.message ? `${result.outcome}: ${result.message}` : result.outcome)}\``,
-    published ? `**Label:** \`${LABEL}\` removed.` : `**Label:** \`${LABEL}\` removed. Fix the cause, then add it again.`,
+    published ? `**${result.kind === "existing" ? "Existing" : "Result"}:** ${result.url}` : `**Reason:** \`${oneLine(result.message ? `${result.outcome}: ${result.message}` : result.outcome)}\``,
+    published ? `**Label:** \`${LABEL}\` removed.${result.kind === "existing" ? " One comment or issue per target per issue of ours: a new note on the same target needs a new issue of ours." : ""}` : `**Label:** \`${LABEL}\` removed. Fix the cause, then add it again.`,
     "",
     "— `Upstream post` workflow (GitHub Actions, no agent)",
   ].join("\n");
+}
+
+/**
+ * The label event that started this run, from the issue's events (oldest first): the latest `labeled` or `unlabeled` event of
+ * `upstream:post`. It must be a `labeled` one (an `unlabeled` one last means the new event has not shown up yet: the list can lag, so
+ * it is read again a few times) and the owner's own click: the actor is the labeler, an owner and a person, and the event carries no
+ * `performed_via_github_app`. A Claude session writes with the owner's credentials, so its label shows the owner's login but an app
+ * (ticket 3.25, security review). Returns the event's time in ms.
+ */
+async function checkLabelEvent(ours, config) {
+  for (let attempt = 1; attempt <= EVENT_ATTEMPTS; attempt++) {
+    let latest = null;
+    for (let page = 1; page <= MAX_EVENT_PAGES; page++) {
+      const events = (await ours.rest("GET", `/repos/${config.repo}/issues/${config.issue}/events?per_page=100&page=${page}`)).data;
+      if (!Array.isArray(events)) throw new WriteError(`GET /issues/${config.issue}/events: the events could not be read`);
+      for (const event of events) {
+        if (isObject(event) && (event.event === "labeled" || event.event === "unlabeled") && lower(event.label?.name) === lower(LABEL)) latest = event;
+      }
+      if (events.length < 100) break;
+      if (page === MAX_EVENT_PAGES) throw refuse(`${config.repo}#${config.issue} has more than ${MAX_EVENT_PAGES * 100} events; the label event cannot be found`);
+    }
+    if (latest?.event === "labeled") {
+      if (!isOwnersOwnClick(latest, config.owners, LABEL) || lower(latest.actor?.login) !== lower(config.labeler)) {
+        throw refuse(`the latest ${LABEL} label event is not the owner's own click (it must be by the person who added the label, an owner, a person, and not made through a GitHub App such as an agent session acting as the owner)`);
+      }
+      const at = typeof latest.created_at === "string" ? Date.parse(latest.created_at) : Number.NaN;
+      if (!Number.isFinite(at)) throw refuse("the time of the label event could not be read");
+      return at;
+    }
+    if (attempt < EVENT_ATTEMPTS) await new Promise((done) => setTimeout(done, config.eventDelayMs));
+  }
+  throw refuse(`the ${LABEL} label event was not found in the issue's events (they can lag); remove the label and add it again`);
 }
 
 async function readComments(ours, config) {
@@ -261,8 +350,7 @@ export async function run(env, log = () => {}, now = Date.now) {
   // 4. The draft.
   let input;
   try {
-    const labeledAtMs = Date.parse(config.labeledAt);
-    if (!Number.isFinite(labeledAtMs)) throw refuse("the time the label was added could not be read");
+    const labeledAtMs = await checkLabelEvent(ours, config);
     const login = readAgentLogin(config.identityFile);
     const draft = findDraft(await readComments(ours, config), { login, labeledAtMs });
     // The tag is invisible when the comment is rendered, so a comment draft must also name its target in the text the owner reads.

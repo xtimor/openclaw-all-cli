@@ -9,8 +9,9 @@ name: Upstream post
 # (or the refusal reason) on our issue and removes the label. Design and the agents' side: docs/agents/identity.md ("Upstream issues").
 # Setup: the same secret GH_PUBLIC_TOKEN in the GitHub Environment `agent` (deployment branches: only `main`) as `Upstream issue`.
 # A workflow of an `issues` event runs from the default branch, so a pull request cannot change what runs; the job never checks out or runs
-# pull request code. The label is filtered in the job `if` and again in the script. The owner's token lives in the one step that runs the
-# script. Everything the event carries reaches the script only through env, never into the script text. The job token writes only to this
+# pull request code. The label is filtered in the job `if` and again in the script. The script reads the label event itself from the issue's events
+# and accepts only the owner's own click (a person, no `performed_via_github_app`): a Claude session writes with the owner's login but shows an app.
+# The owner's token lives in the one step that runs the script. Everything the event carries reaches the script only through env, never into the script text. The job token writes only to this
 # repository (the result comment, the label removal); the owner's token is sent only upstream, by run() of upstream-issue.mjs.
 # One run at a time, shared with `Upstream issue`: the same group serialises both, so a duplicate cannot be created in a race between them.
 # A third labeled event replaces a pending one: the label stays and no result comment comes, so add the label again.
@@ -59,8 +60,6 @@ jobs:
           LABEL_NAME: ${{ github.event.label.name }}
           LABELER: ${{ github.event.sender.login }}
           LABELER_TYPE: ${{ github.event.sender.type }}
-          # The issue's update time in the labeled event: the draft comment must not have been edited after it.
-          LABELED_AT: ${{ github.event.issue.updated_at }}
         run: |
           set -euo pipefail
           if [ -n "$GH_PUBLIC_TOKEN" ]; then
