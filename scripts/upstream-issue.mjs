@@ -1,28 +1,36 @@
 #!/usr/bin/env node
-// Files one issue in an allow-listed upstream repository with the owner's personal token. It runs inside the `Upstream issue`
+// Files one issue in an allow-listed upstream repository, or comments once on the owner's own issue there, with the owner's personal token. It runs inside the `Upstream issue`
 // workflow (.github/workflows/upstream-issue.yml): a cloud session's proxy swaps the owner's session credentials, which are scoped
 // to this repository, into every api.github.com request, so a session cannot write to openclaw/openclaw. The owner stored a
 // personal token as the environment secret GH_PUBLIC_TOKEN instead; a session dispatches the workflow (scripts/upstream-issue.sh).
-// Agent-neutral and dependency-free. Design: docs/agents/identity.md ("Upstream issues"), ticket 3.23.
+// Agent-neutral and dependency-free. Design: docs/agents/identity.md ("Upstream issues"), tickets 3.23 and 3.24.
 //
 //   UPSTREAM_ISSUE='{"title":"...","body":"...\nFiled for xtimor/openclaw-all-cli#45"}' GH_PUBLIC_TOKEN=<token> \
 //     GITHUB_REPOSITORY=owner/repo GITHUB_ACTOR=<dispatcher> GITHUB_TRIGGERING_ACTOR=<who started the run> \
 //     ISSUE_FLOW_OWNERS=owner GITHUB_RUN_ATTEMPT=1 node scripts/upstream-issue.mjs
 //
-// Input (one JSON object, at most 40 000 characters): title (one line, at most 256), body (at most 30 000; exactly one line
-// `Filed for <this repository>#<n>`, the issue of ours it serves), labels? (at most 5), repo? (only an ALLOWED_REPOS entry, default
-// the first). Nothing else. Everything is validated before the first request; a refusal sends nothing.
+// Input (one JSON object, at most 40 000 characters). Create (the default; `op` absent or "create"): title (one line, at most 256),
+// body (at most 30 000; exactly one line `Filed for <this repository>#<n>`, the issue of ours it serves), labels? (at most 5), repo?
+// (only an ALLOWED_REPOS entry, default the first). Comment (ticket 3.24): {"op":"comment","issue":<number in the target>,"body":...}
+// with the same body rules and repo?. Nothing else. Everything is validated before the first request; a refusal sends nothing.
 // Approved issues only (ticket 3.23, security review): the marker's issue of ours must exist, be an issue, and have had `status:approved`
 // labeled by an owner (ISSUE_FLOW_OWNERS; read with GITHUB_TOKEN, `issues: read`, from the repository's own events). "The owner asks"
 // means the owner approves that issue first. A cap refuses a third new issue in 24 hours by the token's user in the target.
 // Idempotent: before creating, it lists the issues the token's owner created in the target (`GET /user`, then `GET /issues?creator=`,
 // which is consistent at once, unlike search) and returns the one with the same marker line or the same title instead of creating.
 // Labels: GitHub drops, without an error, labels that a user without triage rights sets; the log says which were applied.
+// Comment guards (ticket 3.24), on top of the above (same approval check of the marker's issue, same actors, attempt, and limits): the
+// target issue must exist, not be a pull request, and have been opened by the token's user (the owner commenting on their own report);
+// idempotent: a comment by the token's user on that issue that already carries the same `Filed for` line is returned, not repeated
+// (listed before anything is written, fail closed past MAX_COMMENT_PAGES pages); a cap refuses a sixth comment in 24 hours by the
+// token's user across the target (counted on the token user's own issues there, the only ones this operation can reach). The one
+// write is `POST /issues/<n>/comments`: it never edits, closes, reopens, or labels anything.
 //
 // Environment: UPSTREAM_ISSUE, GH_PUBLIC_TOKEN (the owner's token, upstream only), GITHUB_TOKEN (the workflow's, this repository only, read),
 // GITHUB_REPOSITORY, GITHUB_ACTOR, GITHUB_TRIGGERING_ACTOR, GITHUB_RUN_ATTEMPT (must be
 // "1"), ISSUE_FLOW_OWNERS (both actors must be in it), GITHUB_API_URL (default https://api.github.com), GITHUB_STEP_SUMMARY,
 // GITHUB_OUTPUT (gets `result=<the final line>`; the workflow turns it into an annotation a session can read by REST).
+// The final line is `created|commented|existing <url>` (a comment's URL ends in `#issuecomment-<id>`).
 //
 // The token is never printed: every message goes through `clean`. Neither the log, the summary, nor the output holds a title or a
 // body; the issue is named by its URL. Every line starts with `upstream-issue:` and holds one line, so no text can fake a log line or
@@ -43,6 +51,10 @@ const MAX_LABEL = 50;
 const MAX_LIST_PAGES = 10; // 1000 issues of the token's owner in the target
 const MAX_EVENT_PAGES = 10; // 1000 events of one issue of ours
 export const DAILY_CAP = 3; // new issues by the token's user in the target within DAY_MS; the next one is refused
+export const COMMENT_CAP = 5; // comments by the token's user in the target within DAY_MS; the next one is refused
+const MAX_COMMENT_PAGES = 10; // 1000 comments on one issue
+const MAX_CAP_READS = 60; // requests the cap count may spend; more refuses (cannot count)
+const MAX_NUMBER = 999_999_999; // the marker's limit too
 const DAY_MS = 24 * 60 * 60 * 1000;
 const APPROVED = "status:approved";
 const CONTROL = /[\u0000-\u001f\u007f-\u009f\u2028\u2029]/; // a title or a label
@@ -81,7 +93,9 @@ export function markers(body) {
   return [...String(body ?? "").matchAll(MARKER_LINE)].map((match) => ({ repo: match[1], number: Number(match[2]) }));
 }
 
-/** Parses and checks the whole input against this repository. Returns the normalized issue or throws a refusal; sends nothing. */
+const KEYS = { create: ["repo", "title", "body", "labels"], comment: ["repo", "issue", "body"] };
+
+/** Parses and checks the whole input against this repository. Returns the normalized request or throws a refusal; sends nothing. */
 export function validate(text, ourRepo) {
   if (text.length > MAX_INPUT) throw refuse(`the input is ${text.length} characters; the limit is ${MAX_INPUT}`);
   let raw;
@@ -91,24 +105,32 @@ export function validate(text, ourRepo) {
     throw refuse("the input is not valid JSON");
   }
   if (!isObject(raw)) throw refuse("the input must be one JSON object");
-  const unknown = Object.keys(raw).filter((key) => !["repo", "title", "body", "labels"].includes(key));
-  if (unknown.length > 0) throw refuse(`unknown field ${unknown.slice(0, 3).map((key) => JSON.stringify(key.slice(0, 40))).join(", ")}`);
+  const op = raw.op === undefined ? "create" : raw.op;
+  if (op !== "create" && op !== "comment") throw refuse('op must be "create" (the default) or "comment"');
+  const unknown = Object.keys(raw).filter((key) => key !== "op" && !KEYS[op].includes(key));
+  if (unknown.length > 0) throw refuse(`unknown field ${unknown.slice(0, 3).map((key) => JSON.stringify(key.slice(0, 40))).join(", ")}${op === "comment" ? " (a comment takes op, issue, body, repo)" : ""}`);
   let repo = ALLOWED_REPOS[0];
   if (raw.repo !== undefined) {
     const wanted = typeof raw.repo === "string" ? ALLOWED_REPOS.find((name) => name.toLowerCase() === raw.repo.trim().toLowerCase()) : undefined;
     if (wanted === undefined) throw refuse(`repo is not allowed; the allowed repositories are ${ALLOWED_REPOS.join(", ")}`);
     repo = wanted;
   }
-  if (typeof raw.title !== "string" || raw.title.trim() === "") throw refuse("title must be a non-empty string");
-  const title = raw.title.trim();
-  if (title.length > MAX_TITLE) throw refuse(`the title is ${title.length} characters; the limit is ${MAX_TITLE}`);
-  if (CONTROL.test(title)) throw refuse("the title must be one line without control characters");
+  let title = "";
+  if (op === "create") {
+    if (typeof raw.title !== "string" || raw.title.trim() === "") throw refuse("title must be a non-empty string");
+    title = raw.title.trim();
+    if (title.length > MAX_TITLE) throw refuse(`the title is ${title.length} characters; the limit is ${MAX_TITLE}`);
+    if (CONTROL.test(title)) throw refuse("the title must be one line without control characters");
+  } else if (!Number.isSafeInteger(raw.issue) || raw.issue <= 0 || raw.issue > MAX_NUMBER) {
+    throw refuse(`issue must be the number of an issue in ${repo} (a positive integer)`);
+  }
   if (typeof raw.body !== "string" || raw.body.trim() === "") throw refuse("body must be a non-empty string");
   if (raw.body.length > MAX_BODY) throw refuse(`the body is ${raw.body.length} characters; the limit is ${MAX_BODY}`);
   if (BODY_CONTROL.test(raw.body)) throw refuse("the body holds control characters");
   const found = markers(raw.body);
   if (found.length !== 1) throw refuse(`the body must hold exactly one line "Filed for ${ourRepo}#<n>" (found ${found.length})`);
   if (lower(found[0].repo) !== lower(ourRepo)) throw refuse(`the marker line must name ${ourRepo}, the issue this serves`);
+  if (op === "comment") return { op, repo, issue: raw.issue, body: raw.body, marker: found[0] };
   let labels = [];
   if (raw.labels !== undefined) {
     if (!Array.isArray(raw.labels) || raw.labels.length > MAX_LABELS) throw refuse(`labels must be a list of at most ${MAX_LABELS} names`);
@@ -117,7 +139,7 @@ export function validate(text, ourRepo) {
     }
     labels = [...new Set(raw.labels.map((name) => name.trim()))];
   }
-  return { repo, title, body: raw.body, labels, marker: found[0] };
+  return { op, repo, title, body: raw.body, labels, marker: found[0] };
 }
 
 const issueUrl = (repo, number) => `https://github.com/${repo}/issues/${number}`;
@@ -125,7 +147,7 @@ const issueUrl = (repo, number) => `https://github.com/${repo}/issues/${number}`
 /**
  * Reads the issue of ours that the marker names and refuses unless it exists, is an issue (never a pull request), and an owner
  * labeled it `status:approved` at some point (its events, oldest first). `ours` is the client for this repository (GITHUB_TOKEN,
- * read only). An unreadable answer refuses too. Sends no write.
+ * read only). An unreadable answer refuses too. Sends no write. Returns the issue as fetched (title, body).
  */
 export async function checkApproved(ours, config, number) {
   const path = `/repos/${config.repo}/issues/${number}`;
@@ -136,11 +158,18 @@ export async function checkApproved(ours, config, number) {
     const events = (await ours.rest("GET", `${path}/events?per_page=100&page=${page}`)).data;
     if (!Array.isArray(events)) throw new WriteError(`GET /issues/${number}/events: the events could not be read`);
     for (const event of events) {
-      if (event?.event === "labeled" && event.label?.name === APPROVED && config.owners.includes(lower(event.actor?.login))) return;
+      if (event?.event === "labeled" && event.label?.name === APPROVED && config.owners.includes(lower(event.actor?.login))) return answer.data;
     }
     if (events.length < 100) break;
   }
   throw refuse(`${config.repo}#${number} has no ${APPROVED} label set by an owner (ISSUE_FLOW_OWNERS); the owner approves the issue first`);
+}
+
+/** The login of the token's user (`GET /user`); an unreadable or odd answer fails closed. */
+export async function readUser(client) {
+  const user = (await client.rest("GET", "/user")).data;
+  if (!isObject(user) || typeof user.login !== "string" || !/^[A-Za-z0-9][\w.-]*(\[bot\])?$/.test(user.login)) throw new WriteError("GET /user: the token owner could not be read");
+  return user.login;
 }
 
 /**
@@ -149,8 +178,7 @@ export async function checkApproved(ours, config, number) {
  * requests excluded) for the daily cap. Fails closed: an unreadable answer, or more issues than MAX_LIST_PAGES pages, refuses.
  */
 export async function findExisting(client, issue, now = Date.now) {
-  const user = (await client.rest("GET", "/user")).data;
-  if (!isObject(user) || typeof user.login !== "string" || !/^[A-Za-z0-9][\w.-]*(\[bot\])?$/.test(user.login)) throw new WriteError("GET /user: the token owner could not be read");
+  const user = { login: await readUser(client) };
   const wantedTitle = issue.title.toLowerCase();
   const since = now() - DAY_MS;
   let recent = 0;
@@ -179,6 +207,137 @@ async function create(client, issue) {
   return { number: data.number, applied };
 }
 
+const sameMarker = (body, wanted) => markers(body).some((found) => lower(found.repo) === lower(wanted.repo) && found.number === wanted.number);
+const commentUrl = (repo, issue, id) => `${issueUrl(repo, issue)}#issuecomment-${id}`;
+
+/**
+ * Reads the target issue and refuses unless it exists, is an issue (never a pull request), and was opened by the token's user: the
+ * owner comments on their own report, never on someone else's issue. Sends no write.
+ */
+export async function checkTarget(client, request, login) {
+  const answer = await client.rest("GET", `/repos/${request.repo}/issues/${request.issue}`, undefined, [404, 410]);
+  if (answer.status === 404 || answer.status === 410) throw refuse(`${request.repo}#${request.issue} does not exist`);
+  const data = answer.data;
+  if (!isObject(data) || data.number !== request.issue) throw new WriteError(`GET /issues/${request.issue}: the issue could not be read`);
+  if (data.pull_request !== undefined) throw refuse(`${request.repo}#${request.issue} is a pull request, not an issue`);
+  const author = isObject(data.user) ? data.user.login : undefined;
+  if (typeof author !== "string" || lower(author) !== lower(login)) throw refuse(`${request.repo}#${request.issue} was not opened by the token's user; a comment goes only on the owner's own issues`);
+}
+
+/**
+ * The comment by the token's user on the target issue that already carries the request's marker line, or null. Comments are
+ * listed oldest first; fails closed on an unreadable answer or past MAX_COMMENT_PAGES pages.
+ */
+export async function findExistingComment(client, request, login) {
+  for (let page = 1; page <= MAX_COMMENT_PAGES; page++) {
+    const list = (await client.rest("GET", `/repos/${request.repo}/issues/${request.issue}/comments?per_page=100&page=${page}`)).data;
+    if (!Array.isArray(list)) throw new WriteError(`GET /issues/${request.issue}/comments: the comments could not be read`);
+    for (const item of list) {
+      if (!isObject(item) || !isObject(item.user) || lower(item.user.login) !== lower(login) || !Number.isSafeInteger(item.id) || item.id <= 0) continue;
+      if (sameMarker(item.body, request.marker)) return { id: item.id };
+    }
+    if (list.length < 100) return null;
+  }
+  throw refuse(`${request.repo}#${request.issue} has more than ${MAX_COMMENT_PAGES * 100} comments; cannot rule out a duplicate`);
+}
+
+/**
+ * Counts the comments by the token's user in the target within the last 24 hours, across the user's own issues there (the only ones
+ * this operation can comment on): the issues they opened and that were updated in that time, then each one's recent comments.
+ * Stops as soon as COMMENT_CAP is reached. Fails closed: an unreadable answer, or more pages or requests than the limits, refuses.
+ */
+export async function countRecentComments(client, request, login, now = Date.now) {
+  const since = now() - DAY_MS;
+  const stamp = encodeURIComponent(new Date(since).toISOString());
+  let reads = 0;
+  const read = async (path) => {
+    reads += 1;
+    if (reads > MAX_CAP_READS) throw refuse(`cannot count the token user's comments in ${request.repo}: more than ${MAX_CAP_READS} requests needed`);
+    const { data } = await client.rest("GET", path);
+    if (!Array.isArray(data)) throw new WriteError(`GET ${path.split("?")[0].replace(/^\/repos\/[^/]+\/[^/]+/, "")}: the list could not be read`);
+    return data;
+  };
+  let count = 0;
+  for (let page = 1; page <= MAX_LIST_PAGES; page++) {
+    const issues = await read(`/repos/${request.repo}/issues?creator=${encodeURIComponent(login)}&state=all&since=${stamp}&sort=updated&direction=desc&per_page=100&page=${page}`);
+    for (const item of issues) {
+      if (!isObject(item) || item.pull_request !== undefined || !Number.isSafeInteger(item.number) || item.number <= 0 || item.comments === 0) continue;
+      for (let at = 1; at <= MAX_COMMENT_PAGES; at++) {
+        const comments = await read(`/repos/${request.repo}/issues/${item.number}/comments?since=${stamp}&per_page=100&page=${at}`);
+        for (const comment of comments) {
+          if (!isObject(comment) || !isObject(comment.user) || lower(comment.user.login) !== lower(login)) continue;
+          const created = typeof comment.created_at === "string" ? Date.parse(comment.created_at) : Number.NaN;
+          if (Number.isFinite(created) && created >= since) count += 1;
+        }
+        if (count >= COMMENT_CAP) return count;
+        if (comments.length < 100) break;
+        if (at === MAX_COMMENT_PAGES) throw refuse(`${request.repo}#${item.number} has too many recent comments to count`);
+      }
+    }
+    if (issues.length < 100) return count;
+  }
+  throw refuse(`the token user has more than ${MAX_LIST_PAGES * 100} recently updated issues in ${request.repo}; cannot count their comments`);
+}
+
+/**
+ * A comment is tied to the issue of ours it serves: that issue's title or body must name the target, as `<repo>#<n>` or as
+ * `https://github.com/<repo>/issues/<n>`, with the number matched exactly (`#1729` is not `#172969`). So one approved issue allows
+ * comments only on the upstream issues it names, not on every issue of the owner. Refuses otherwise; sends no write.
+ */
+export function checkNamesTarget(ourIssue, config, request) {
+  const escaped = request.repo.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const names = new RegExp(`(?<![\\w./-])(?:${escaped}#|https://github\\.com/${escaped}/issues/)${request.issue}(?!\\d)`, "i");
+  const text = `${typeof ourIssue?.title === "string" ? ourIssue.title : ""}\n${typeof ourIssue?.body === "string" ? ourIssue.body : ""}`;
+  if (!names.test(text)) throw refuse(`${config.repo}#${request.marker.number} does not name ${request.repo}#${request.issue} in its title or body; the approved issue must name the issue it comments on`);
+}
+
+async function postComment(client, request) {
+  const { data } = await client.rest("POST", `/repos/${request.repo}/issues/${request.issue}/comments`, { body: request.body });
+  if (!isObject(data) || !Number.isSafeInteger(data.id) || data.id <= 0) throw new WriteError("POST /comments: no comment id in the answer");
+  return { id: data.id };
+}
+
+/** The comment operation: approval of the marker's issue, then the target issue, an existing comment, the daily cap, the one POST. */
+async function runComment({ config, issue, client, ours, log, now, finish, fail, nothing }) {
+  let login;
+  let existing;
+  try {
+    checkNamesTarget(await checkApproved(ours, config, issue.marker.number), config, issue);
+    login = await readUser(client);
+    await checkTarget(client, issue, login);
+    existing = await findExistingComment(client, issue, login);
+    if (existing === null) {
+      const recent = await countRecentComments(client, issue, login, now);
+      if (recent >= COMMENT_CAP) throw refuse(`${recent} comments by the token's user were posted in ${issue.repo} in the last 24 hours (${COMMENT_CAP} or more are refused); wait, or comment by hand`);
+    }
+  } catch (error) {
+    return fail(error, "Failed before commenting");
+  }
+  const target = issue.repo;
+  if (existing !== null) {
+    const url = commentUrl(target, issue.issue, existing.id);
+    log(`existing ${url} (same marker line); nothing posted`);
+    return finish(0, `existing ${url}`, "", { target, url, number: existing.id, kind: "existing" });
+  }
+  let made;
+  try {
+    made = await postComment(client, issue);
+  } catch (error) {
+    return fail(error, "Failed while commenting (read the issue before dispatching again)");
+  }
+  const url = commentUrl(target, issue.issue, made.id);
+  return finish(0, `commented ${url}`, "", { target, url, number: made.id, kind: "commented" });
+}
+
+/** Whether the input asks for a comment, judged before any check, so a refusal for the actors or the shape says the right thing. */
+const asksForComment = (text) => {
+  try {
+    return isObject(JSON.parse(text)) && JSON.parse(text).op === "comment";
+  } catch {
+    return false;
+  }
+};
+
 /**
  * Runs the whole input. `log(line)` is called with each progress line. Returns `{code, outcome, message, url, number, repo, ...}`;
  * it writes nothing itself. A missing or malformed variable throws a WriteError with code 2.
@@ -187,7 +346,8 @@ export async function run(env, log = () => {}, now = Date.now) {
   const config = readConfig(env);
   const base = { repo: config.repo, actor: config.actor, target: "", url: "", number: 0 };
   const finish = (code, outcome, message = "", extra = {}) => ({ code, outcome, message, ...base, ...extra });
-  const refused = (message) => finish(1, "Refused, nothing created", message);
+  const nothing = asksForComment(config.inputText) ? "Refused, nothing posted" : "Refused, nothing created";
+  const refused = (message) => finish(1, nothing, message);
   if (config.attempt !== "1") return refused("this is a re-run (GITHUB_RUN_ATTEMPT is not 1); dispatch again instead");
   for (const [who, name] of [[config.actor, "dispatcher"], [config.triggering, "triggering actor"]]) {
     if (lower(who) === "" || !config.owners.includes(lower(who))) return refused(`the ${name} is not an owner (ISSUE_FLOW_OWNERS)`);
@@ -197,9 +357,10 @@ export async function run(env, log = () => {}, now = Date.now) {
     issue = validate(config.inputText, config.repo);
   } catch (error) {
     if (!(error instanceof WriteError)) throw error;
-    return finish(error.code, "Refused, nothing created", error.message);
+    return finish(error.code, nothing, error.message);
   }
   base.target = issue.repo;
+  const comment = issue.op === "comment";
   const client = makeClient(config);
   // Our own repository is read with the workflow's token; the owner's token never goes there, and neither token goes to the other API.
   const ours = makeClient({ ...config, token: config.ourToken });
@@ -207,8 +368,9 @@ export async function run(env, log = () => {}, now = Date.now) {
   const fail = (error, stage) => {
     // Only our own errors carry a safe message; anything else is reported without its text.
     const safe = error instanceof WriteError;
-    return finish(1, safe && error.refused ? "Refused, nothing created" : stage, safe ? clean(error.message) : "unexpected error", { target: issue.repo });
+    return finish(1, safe && error.refused ? nothing : stage, safe ? clean(error.message) : "unexpected error", { target: issue.repo });
   };
+  if (comment) return runComment({ config, issue, client, ours, log, now, finish, fail, nothing });
   let found;
   try {
     await checkApproved(ours, config, issue.marker.number);

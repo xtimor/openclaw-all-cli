@@ -96,6 +96,24 @@ describe("upstream-issue.sh", () => {
     ]);
   });
 
+  it("COMMENT: a comment file is dispatched as it is, and the comment's URL (with its fragment) is printed; `existing` works the same", () => {
+    const comment = '{"op":"comment","issue":172969,"body":"b\\nFiled for xtimor/openclaw-all-cli#45"}';
+    const url = "https://github.com/openclaw/openclaw/issues/172969#issuecomment-9001";
+    const made = helper(comment, { STUB_ANNOTATION: `upstream-issue: commented ${url}` });
+    expect(made).toMatchObject({ status: 0, stdout: `${url}\n` });
+    expect(made.stderr).toContain("commented");
+    expect(made.calls[0]).toBe(`workflow run upstream-issue.yml --repo xtimor/openclaw-all-cli --ref main -f issue=${comment}`);
+    const again = helper(comment, { STUB_ANNOTATION: `upstream-issue: existing ${url}` });
+    expect(again).toMatchObject({ status: 0, stdout: `${url}\n` });
+    expect(again.stderr).toContain("existing");
+    // Only this repository's issue URLs, with at most a comment fragment, are accepted.
+    for (const line of [`commented ${url}x`, `commented ${url}#issuecomment-`, "commented https://github.com/evil/repo/issues/1#issuecomment-2", `commented ${url}#issuecomment-1#x`, `deleted ${url}`]) {
+      const result = helper(comment, { STUB_ANNOTATION: `upstream-issue: ${line}`, STUB_NO_LOG: "1" });
+      expect(result.status, line).toBe(1);
+      expect(result.stdout).toBe("");
+    }
+  });
+
   it("EXISTING: an `existing` result prints the URL and says so on stderr; REPO moves the reads", () => {
     const result = helper(JSON_OBJECT, { STUB_ANNOTATION: `upstream-issue: existing ${ISSUE}`, UPSTREAM_ISSUE_REPO: "o/r" });
     expect(result).toMatchObject({ status: 0, stdout: `${ISSUE}\n` });

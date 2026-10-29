@@ -148,7 +148,7 @@ GITHUB_TOKEN=... GITHUB_REPOSITORY=xtimor/openclaw-all-cli node scripts/sync-lab
 
 ## Issues for OpenClaw
 
-When an approved issue needs a change in OpenClaw itself, an agent can file one issue in `openclaw/openclaw` for it. A session cannot write there, so the `Upstream issue` workflow does it with your token (the secret `GH_PUBLIC_TOKEN` of the environment `agent`); the issue shows your login. Only for an issue you approved, or when you ask; one issue per need; it is linked back in our issue (`Upstream: <url>`), and its body ends with the line `Filed for xtimor/openclaw-all-cli#<n>`. Setup and rules: [agents/identity.md](agents/identity.md#upstream-issues).
+When an approved issue needs a change in OpenClaw itself, an agent can file one issue in `openclaw/openclaw` for it. A session cannot write there, so the `Upstream issue` workflow does it with your token (the secret `GH_PUBLIC_TOKEN` of the environment `agent`); the issue shows your login. Only for an issue you approved, or when you ask; one issue per need; it is linked back in our issue (`Upstream: <url>`), and its body ends with the line `Filed for xtimor/openclaw-all-cli#<n>`. The same workflow can comment once on an issue you opened there (a retest a stale report waits for), never on someone else's, and never edits or closes anything. Setup and rules: [agents/identity.md](agents/identity.md#upstream-issues).
 
 ## Security reports
 

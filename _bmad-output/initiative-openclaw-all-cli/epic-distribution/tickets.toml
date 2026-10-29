@@ -273,3 +273,15 @@ after = [22]
 hitl = false
 risk = "high"
 references = ["epic-distribution.md", "issue-flow.md"]
+
+[[entry]]
+id = 24
+type = "story"
+title = "The upstream workflow can also comment on the owner's own OpenClaw issues"
+description = "Owner decision 2026-10-29: several of the owner's open openclaw/openclaw issues wait for a repro or a retest from us (#172969, #173057, #173060 are marked stale and close about 2026-11-02; also #180927, #173058). Agents can reproduce them, but the upstream workflow (ticket 3.23) only creates issues. Add one more operation to `scripts/upstream-issue.mjs` / `.github/workflows/upstream-issue.yml`: comment on an existing issue in `openclaw/openclaw` (input `{op: \"comment\", issue: <number>, body}`; the existing create stays the default). Guards on top of 3.23's (owner dispatcher, attempt 1, main only, size limits, the `Filed for xtimor/openclaw-all-cli#<n>` line whose issue is owner-approved): the target issue's author is the token's user (the owner commenting on their own report), the issue exists and is not a pull request; idempotent (a comment by the token's user on that issue already carrying the same `Filed for` line is returned, not repeated); a cap of 5 comments per 24 hours across the target; never close, label, or edit. `scripts/upstream-issue.sh` takes the same file shape. Docs: identity.md (Upstream issues: comments), implement.md (an approved issue whose work is an upstream follow-up ends with one comment through this op and a `Refs`-free batch line; how its own issue closes), MEMORY."
+verify = "Tests in `test/upstream-issue.test.ts`: comment on an own issue; refused on someone else's issue, a PR, a missing issue, an unapproved or missing marker, over the cap; the repeat returns the existing comment; token never printed; `npm run ci` passes; live: the first upstream follow-up issue posts its comment through it."
+covers = []
+after = [23]
+hitl = false
+risk = "high"
+references = ["epic-distribution.md", "issue-flow.md"]
