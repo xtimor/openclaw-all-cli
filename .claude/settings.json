@@ -7,7 +7,10 @@
       "Bash(bash scripts/agent-relay.sh *)",
       "Bash(./scripts/agent-relay.sh *)",
       "Bash(scripts/batch-pending.sh set *)",
-      "Bash(scripts/batch-pending.sh clear)"
+      "Bash(scripts/batch-pending.sh clear)",
+      "Bash(scripts/upstream-issue.sh *)",
+      "Bash(bash scripts/upstream-issue.sh *)",
+      "Bash(./scripts/upstream-issue.sh *)"
     ]
   },
   "hooks": {
