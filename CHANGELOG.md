@@ -6,6 +6,7 @@ What changed for people who use the plugin, newest first. Format: [Keep a Change
 
 ### Added
 
+- The plugin icon now shows next to the OAC / Cursor-CLI choices on the model setup page of the Control UI, not a letter avatar. The chat picker, provider cards, and Connect dialog still show a letter avatar until OpenClaw changes. ([#45](https://github.com/xtimor/openclaw-all-cli/issues/45))
 - Every Cursor turn writes one line to OpenClaw's debug log (`OPENCLAW_LOG_LEVEL=debug`, search `turn timings`) with how long the process start, the chat start or resume, the model switch, the wait for the first thought, the first text, and the end took, so a slow first reply can be traced to the step that causes it. The docs name the fields and give a live split for `grok-4.7` and `auto`. ([#44](https://github.com/xtimor/openclaw-all-cli/issues/44))
 
 ### Changed

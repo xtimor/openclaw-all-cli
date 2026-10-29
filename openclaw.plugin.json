@@ -30,6 +30,7 @@
       "credentialOnly": true,
       "appGuidedAuth": "oauth",
       "assistantPriority": -10,
+      "icon": "https://raw.githubusercontent.com/xtimor/openclaw-all-cli/main/assets/icon.png",
       "groupId": "cursor-cli",
       "groupLabel": "OAC / Cursor-CLI",
       "groupHint": "cursor-agent login or API key"
@@ -43,6 +44,7 @@
       "credentialOnly": true,
       "appGuidedSecret": true,
       "assistantPriority": 10,
+      "icon": "https://raw.githubusercontent.com/xtimor/openclaw-all-cli/main/assets/icon.png",
       "groupId": "cursor-cli",
       "groupLabel": "OAC / Cursor-CLI",
       "groupHint": "cursor-agent login or API key"
