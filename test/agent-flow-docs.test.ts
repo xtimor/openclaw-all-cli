@@ -280,7 +280,6 @@ describe("upstream drafts and the upstream:post label (ticket 3.25)", () => {
     expect(part).toMatch(/the owner's label `upstream:post` on our issue is the approval/);
     expect(part).toMatch(/you never publish it and never add the label/);
     expect(part).toMatch(/\*\*latest\*\* `<!-- issue-impl -->` comment by the app/);
-    expect(part).toMatch(/not edited after the owner adds the label/);
     expect(part).toMatch(/\*\*nothing the owner cannot see\*\*: no HTML comment/);
     expect(part).toMatch(/\*\*names its target in the visible text\*\* of the same comment/);
     expect(implement).toContain("`**Draft for:** openclaw/openclaw#<n>`");
@@ -298,6 +297,33 @@ describe("upstream drafts and the upstream:post label (ticket 3.25)", () => {
     expect(triage).toMatch(/Never add the label `upstream:post`/);
     expect(issues).toMatch(/add the label `upstream:post` to our issue/);
     expect(issues).toMatch(/agents and the relay never add it/);
+  });
+
+  it("approvals and the upstream:post label must be the owner's own click, not made through an app (security review of ticket 3.25, finding 1)", () => {
+    expect(part).toMatch(/\*\*the owner's own click\*\*/);
+    expect(part).toMatch(/no `performed_via_github_app`/);
+    expect(part).toMatch(/an injected session cannot publish by adding the label/);
+    expect(part).toMatch(/as the owner's own click \(`actor\.type` `User`, no `performed_via_github_app`/);
+    expect(implement).toMatch(/be the owner's own click, not made through an app\*\*: `actor\.type` is `User` and `performed_via_github_app` is `null`/);
+    expect(implement).toContain("an approval made through an app: skip and name it in the report");
+    expect(implement).toContain("performed_via_github_app.slug");
+    expect(triage).toMatch(/`performed_via_github_app` is `null`, so an event made through an app such as a Claude session does not count/);
+    expect(issues).toMatch(/or when you set it through an app/);
+    expect(issues).toMatch(/by an owner through a GitHub App \(the event's `performed_via_github_app` is set/);
+    expect(issues).toMatch(/with your own click in GitHub \(not through an app or an agent session/);
+  });
+
+  it("the draft rules: 60 seconds after the last edit, one comment per target per issue of ours, no hidden Markdown (review findings 3, 4, 6)", () => {
+    expect(part).toMatch(/not edited within 60 seconds before the owner adds the label, or after it/);
+    expect(part).toMatch(/\*\*One comment \(or issue\) per target per issue of ours\.\*\*/);
+    expect(part).toMatch(/A second note on the same target needs a new, owner-approved issue of ours/);
+    expect(part).toContain("**Existing:**");
+    expect(part).toMatch(/no link reference definition line/);
+    expect(part).toMatch(/no raw HTML/);
+    expect(part).toMatch(/outside any HTML comment/);
+    expect(implement).toMatch(/One comment or issue per target per issue of ours: a second draft for the same target posts nothing new/);
+    expect(issues).toMatch(/One comment per target per issue of ours/);
+    expect(issues).toMatch(/Wait a minute after the agent's last edit of the draft before you label/);
   });
 
   it("labels.yml defines upstream:post and the relay's label rule cannot name it", () => {
