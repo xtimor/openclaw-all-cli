@@ -24,6 +24,7 @@ const OURS_API = `/repos/${OURS}`;
 const TITLE_MARK = "TITLE_MARKER_must_not_be_echoed_5521";
 const BODY_MARK = "BODY_MARKER_must_not_be_echoed_7731";
 const MARKER = `Filed for ${OURS}#45`;
+const NOTE_ISSUE = 172969;
 
 interface Call {
   method: string;
@@ -54,6 +55,10 @@ function defaults(method: string, path: string): Answer {
   if (method === "GET" && path === `${OURS_API}/issues/45`) return [200, { number: 45 }];
   if (method === "GET" && path === `${OURS_API}/issues/45/events`) return [200, [approval(), { event: "labeled", label: { name: "type:bug" }, actor: { login: "xtimor" } }]];
   if (method === "GET" && path === "/user") return [200, { login: "xtimor" }];
+  // The target of a comment: an issue the token's user opened, with no comments yet, and nothing recent by them.
+  if (method === "GET" && path === `/repos/${TARGET}/issues/${NOTE_ISSUE}`) return [200, { number: NOTE_ISSUE, user: { login: "xtimor" }, comments: 0 }];
+  if (method === "GET" && path === `/repos/${TARGET}/issues/${NOTE_ISSUE}/comments`) return [200, []];
+  if (method === "POST" && path === `/repos/${TARGET}/issues/${NOTE_ISSUE}/comments`) return [201, { id: 9001 }];
   if (method === "GET" && path === `/repos/${TARGET}/issues`) return [200, []];
   if (method === "POST" && path === `/repos/${TARGET}/issues`) return [201, { number: 777, labels: [] }];
   return [404, { message: "Not Found" }];
@@ -138,6 +143,8 @@ const writes = () => calls.filter((call) => call.method !== "GET");
 const everything = (result: Run) => `${result.stdout}\n${result.stderr}\n${result.summary}\n${result.output}`;
 const leaked = (result: Run, extra: string[] = []) => [TOKEN, OUR_TOKEN, TITLE_MARK, BODY_MARK, ...extra].filter((secret) => everything(result).includes(secret));
 const URL_777 = `https://github.com/${TARGET}/issues/777`;
+const note = (overrides: Record<string, unknown> = {}) => ({ op: "comment", issue: NOTE_ISSUE, body: `### Retest\n\n${BODY_MARK}\n\n${MARKER}\n`, ...overrides });
+const NOTE_URL = `https://github.com/${TARGET}/issues/${NOTE_ISSUE}#issuecomment-9001`;
 
 describe("upstream-issue", () => {
   it("CREATE: reads the token's owner, finds nothing, posts the issue to the allowed repository with the token, prints the URL", async () => {
@@ -467,6 +474,338 @@ describe("upstream-issue", () => {
     const noToken = await run(issue(), { GH_PUBLIC_TOKEN: undefined });
     expect(noToken.summary).toContain("Not run");
     expect(noToken.output).toContain("GH_PUBLIC_TOKEN");
+  });
+});
+
+describe("upstream-issue: comment on the owner's own issue (ticket 3.24)", () => {
+  const targetPath = `/repos/${TARGET}/issues/${NOTE_ISSUE}`;
+  const postPath = `${targetPath}/comments`;
+  const upstream = () => calls.filter((call) => !call.path.startsWith(OURS_API));
+  const ago = (hours: number) => new Date(Date.now() - hours * 3_600_000).toISOString();
+  const entry = (id: number, hours: number, login = "xtimor", body = "") => ({ id, user: { login }, created_at: ago(hours), body });
+  /** The token user's issue list for the cap: `issues` are `[number, comments]`; their comment lists are set by the caller. */
+  const listIssues = (...issues: Array<[number, number]>) => answers.set(`GET /repos/${TARGET}/issues`, [200, issues.map(([number, comments]) => ({ number, comments, title: `t${number}`, body: "" }))]);
+  const noPost = () => expect(calls.filter((call) => call.method === "POST")).toEqual([]);
+
+  it("COMMENT: approval of our issue, the token's user, the target issue, its comments, the 24-hour count, then the one POST of the body", async () => {
+    const result = await run(note());
+    expect(result.code, result.stderr).toBe(0);
+    expect(seen()).toEqual([`GET ${OURS_API}/issues/45`, `GET ${OURS_API}/issues/45/events`, "GET /user", `GET ${targetPath}`, `GET ${postPath}`, `GET /repos/${TARGET}/issues`, `POST ${postPath}`]);
+    expect(calls[5]?.search).toContain("creator=xtimor");
+    expect(calls[5]?.search).toMatch(/since=\d{4}-\d\d-\d\dT/);
+    expect(calls[6]?.body).toEqual({ body: `### Retest\n\n${BODY_MARK}\n\n${MARKER}\n` });
+    for (const call of calls) expect(call.auth, `${call.method} ${call.path}`).toBe(`Bearer ${call.path.startsWith(OURS_API) ? OUR_TOKEN : TOKEN}`);
+    expect(result.stdout).toContain(`upstream-issue: commented ${NOTE_URL}`);
+    expect(result.output).toBe(`result=upstream-issue: commented ${NOTE_URL}\n`);
+    expect(result.summary).toContain("Upstream issue");
+    expect(leaked(result)).toEqual([]);
+    for (const line of result.stdout.split("\n").filter(Boolean)) expect(line.startsWith("upstream-issue: ")).toBe(true);
+  });
+
+  it("COMMENT: the only write ever sent is a POST of a comment (never an edit, close, reopen, label, or issue), also for an explicit repo in any case", async () => {
+    expect((await run(note({ repo: "OpenClaw/OpenClaw" }))).code).toBe(0);
+    expect(writes().map((call) => `${call.method} ${call.path}`)).toEqual([`POST ${postPath}`]);
+    expect(Object.keys(writes()[0]?.body ?? {})).toEqual(["body"]);
+  });
+
+  it("DEFAULT_OP: no op, or op create, is still a create; any other op is refused with no request", async () => {
+    expect((await run(issue())).stdout).toContain(`created ${URL_777}`);
+    expect((await run(issue({ op: "create" }))).stdout).toContain(`created ${URL_777}`);
+    calls = [];
+    for (const op of ["close", "edit", "label", "labels", "reopen", "Comment", "", 5, null, ["comment"]]) {
+      const result = await run(note({ op }));
+      expect(result.code, JSON.stringify(op)).toBe(1);
+      expect(result.stderr).toContain('op must be "create"');
+    }
+    expect(calls).toEqual([]);
+  });
+
+  it("REFUSED_INPUT: fields of the other operation, a bad or missing issue number, another repo, a bad body: refused, no request of any kind", async () => {
+    const bad: unknown[] = [
+      note({ title: "x" }),
+      note({ labels: ["bug"] }),
+      note({ comment_id: 5 }),
+      note({ state: "closed" }),
+      issue({ issue: NOTE_ISSUE }),
+      { op: "comment", body: `x\n${MARKER}` },
+      note({ issue: 0 }),
+      note({ issue: -4 }),
+      note({ issue: 1.5 }),
+      note({ issue: "172969" }),
+      note({ issue: null }),
+      note({ issue: 1_000_000_000 }),
+      note({ issue: Number.MAX_SAFE_INTEGER + 2 }),
+      note({ repo: "xtimor/openclaw-all-cli" }),
+      note({ repo: 5 }),
+      note({ body: 5 }),
+      note({ body: "   " }),
+      note({ body: "no marker" }),
+      note({ body: `${MARKER}\n${MARKER}` }),
+      note({ body: `${MARKER}\nFiled for ${OURS}#46` }),
+      note({ body: "Filed for openclaw/openclaw#45" }),
+      note({ body: `see ${MARKER} inline` }),
+      note({ body: `${MARKER}\n${"b".repeat(30_000)}` }),
+      note({ body: `${MARKER}\u0000` }),
+    ];
+    for (const input of bad) {
+      const result = await run(input);
+      expect(result.code, JSON.stringify(input)?.slice(0, 90)).toBe(1);
+      expect(result.stderr).toContain("Refused, nothing");
+      expect(leaked(result)).toEqual([]);
+    }
+    const huge = await run(null, {}, JSON.stringify({ ...note(), pad: "x".repeat(40_001) }));
+    expect(huge.code).toBe(1);
+    expect(huge.stderr).toContain("the limit is 40000");
+    expect(calls).toEqual([]);
+    // A Windows line end and the largest body pass.
+    expect((await run(note({ body: `a\r\n${MARKER}  \r\n` }))).code).toBe(0);
+    const body = `${MARKER}\n${"b".repeat(30_000 - MARKER.length - 1)}`;
+    expect((await run(note({ body }))).code).toBe(0);
+  });
+
+  it("ACTORS: a dispatcher or triggering actor outside ISSUE_FLOW_OWNERS, or a re-run, is refused with no request", async () => {
+    for (const env of [{ GITHUB_ACTOR: "mallory" }, { GITHUB_TRIGGERING_ACTOR: "mallory" }, { GITHUB_ACTOR: undefined }, { GITHUB_RUN_ATTEMPT: "2" }]) {
+      const result = await run(note(), env);
+      expect(result.code, JSON.stringify(env)).toBe(1);
+      expect(result.stderr).toContain("Refused");
+    }
+    expect(calls).toEqual([]);
+  });
+
+  describe("approved issues only: the same check as a create, before anything upstream", () => {
+    it("an unapproved issue of ours, a missing one, a pull request, or an owner-less label is refused; nothing is sent upstream", async () => {
+      const eventsPath = `GET ${OURS_API}/issues/45/events`;
+      for (const events of [[], [approval("mallory")], [approval("xtimor", "type:bug")]]) {
+        answers.set(eventsPath, [200, events]);
+        const result = await run(note());
+        expect(result.code, JSON.stringify(events)).toBe(1);
+        expect(result.stderr).toContain("status:approved");
+        expect(result.stderr).toContain("Refused, nothing posted");
+        expect(upstream()).toEqual([]);
+        calls = [];
+      }
+      answers = new Map([[`GET ${OURS_API}/issues/45`, [404, { message: "Not Found" }]]]);
+      expect((await run(note())).stderr).toContain("does not exist");
+      answers = new Map([[`GET ${OURS_API}/issues/45`, [200, { number: 45, pull_request: { url: "x" } }]]]);
+      expect((await run(note())).stderr).toContain("is not an issue");
+      expect(upstream()).toEqual([]);
+    });
+
+    it("the marker's number picks the issue: approval of #45 does not cover a body that names #46", async () => {
+      answers.set(`GET ${OURS_API}/issues/46`, [200, { number: 46 }]);
+      answers.set(`GET ${OURS_API}/issues/46/events`, [200, []]);
+      const result = await run(note({ body: `x\nFiled for ${OURS}#46` }));
+      expect(result.code).toBe(1);
+      expect(seen().slice(0, 2)).toEqual([`GET ${OURS_API}/issues/46`, `GET ${OURS_API}/issues/46/events`]);
+      expect(upstream()).toEqual([]);
+    });
+  });
+
+  describe("the target issue", () => {
+    it("someone else's issue is refused, also when the author is unknown; the comparison ignores case; nothing is posted", async () => {
+      for (const user of [{ login: "mallory" }, { login: "xtimor-not" }, null, {}, { login: 5 }]) {
+        answers.set(`GET ${targetPath}`, [200, { number: NOTE_ISSUE, user }]);
+        const result = await run(note());
+        expect(result.code, JSON.stringify(user)).toBe(1);
+        expect(result.stderr).toContain("was not opened by the token's user");
+        expect(result.stderr).toContain("Refused, nothing posted");
+        noPost();
+        calls = [];
+      }
+      answers.set(`GET ${targetPath}`, [200, { number: NOTE_ISSUE, user: { login: "XTimor" } }]);
+      expect((await run(note())).code).toBe(0);
+    });
+
+    it("a pull request, a missing or deleted issue, another number in the answer, and an unreadable answer are refused; nothing is posted", async () => {
+      const cases: Array<[Answer, string]> = [
+        [[200, { number: NOTE_ISSUE, user: { login: "xtimor" }, pull_request: { url: "x" } }], "is a pull request"],
+        [[404, { message: "Not Found" }], "does not exist"],
+        [[410, { message: "Gone" }], "does not exist"],
+        [[200, { number: 5, user: { login: "xtimor" } }], "could not be read"],
+        [[200, "text"], "could not be read"],
+        [[500, { message: "boom" }], "GitHub answered 500"],
+      ];
+      for (const [answer, text] of cases) {
+        answers.set(`GET ${targetPath}`, answer);
+        const result = await run(note());
+        expect(result.code, text).toBe(1);
+        expect(result.stderr).toContain(text);
+        noPost();
+        expect(leaked(result)).toEqual([]);
+        calls = [];
+      }
+    });
+
+    it("a closed issue still gets the comment (a retest on a stale report that closed); a locked one fails with GitHub's status, nothing else is written", async () => {
+      answers.set(`GET ${targetPath}`, [200, { number: NOTE_ISSUE, user: { login: "xtimor" }, state: "closed", locked: false }]);
+      expect((await run(note())).code).toBe(0);
+      expect(writes()).toHaveLength(1);
+      calls = [];
+      answers.set(`POST ${postPath}`, [403, { message: "Unable to create comment because issue is locked." }]);
+      const locked = await run(note());
+      expect(locked.code).toBe(1);
+      expect(locked.stderr).toContain("GitHub answered 403");
+      expect(writes()).toHaveLength(1);
+    });
+
+    it("a user read that fails, or a login that is no login, refuses before the target is read", async () => {
+      answers.set("GET /user", [401, { message: `Bad credentials ${TOKEN}` }]);
+      const down = await run(note());
+      expect(down.code).toBe(1);
+      expect(down.stderr).toContain("GitHub answered 401");
+      expect(leaked(down)).toEqual([]);
+      answers.set("GET /user", [200, { login: "../etc" }]);
+      expect((await run(note())).code).toBe(1);
+      expect(seen().some((line) => line.includes(targetPath))).toBe(false);
+      noPost();
+    });
+  });
+
+  describe("idempotent: a comment by the token's user with the same Filed for line is returned, not repeated", () => {
+    const existingUrl = `https://github.com/${TARGET}/issues/${NOTE_ISSUE}#issuecomment-4242`;
+
+    it("the repeat returns the existing comment (any body, CRLF, any case of the login), posts nothing, and reads no cap", async () => {
+      answers.set(`GET ${postPath}`, [200, [entry(1, 30, "mallory", MARKER), entry(2, 30, "xtimor", `other\nFiled for ${OURS}#46`), entry(4242, 30, "XTimor", `Different words\r\n${MARKER}\r\nmore`)]]);
+      const result = await run(note());
+      expect(result.code, result.stderr).toBe(0);
+      noPost();
+      expect(result.stdout).toContain(`upstream-issue: existing ${existingUrl}`);
+      expect(result.output).toBe(`result=upstream-issue: existing ${existingUrl}\n`);
+      expect(seen().some((line) => line.includes(`/repos/${TARGET}/issues?`))).toBe(false);
+      expect(leaked(result)).toEqual([]);
+    });
+
+    it("a comment of someone else, or with another marker, or a marker only inside a line, does not count: the comment is posted", async () => {
+      answers.set(`GET ${postPath}`, [200, [entry(1, 30, "mallory", MARKER), entry(2, 30, "xtimor", `other\nFiled for ${OURS}#46`), entry(3, 30, "xtimor", `see ${MARKER} here`), entry(5, 30, "xtimor", "Filed for openclaw/openclaw#45")]]);
+      const result = await run(note());
+      expect(result.stdout).toContain("commented");
+      expect(writes()).toHaveLength(1);
+    });
+
+    it("pages through the comments: a match on page 2 is found; a full tenth page refuses instead of guessing", async () => {
+      const filler = Array.from({ length: 100 }, (_, i) => entry(100 + i, 30, "someone"));
+      answers.set(`GET ${postPath}?page=1`, [200, filler]);
+      answers.set(`GET ${postPath}?page=2`, [200, [entry(4242, 30, "xtimor", MARKER)]]);
+      const found = await run(note());
+      expect(found.stdout).toContain(`existing ${existingUrl}`);
+      noPost();
+      calls = [];
+      answers = new Map();
+      for (let page = 1; page <= 10; page++) answers.set(`GET ${postPath}?page=${page}`, [200, filler]);
+      const many = await run(note());
+      expect(many.code).toBe(1);
+      expect(many.stderr).toContain("cannot rule out a duplicate");
+      noPost();
+    });
+
+    it("an existing comment is returned even when the cap is reached (a retry must still work)", async () => {
+      answers.set(`GET ${postPath}`, [200, [entry(4242, 1, "xtimor", MARKER)]]);
+      listIssues([NOTE_ISSUE, 5]);
+      const result = await run(note());
+      expect(result.code, result.stderr).toBe(0);
+      expect(result.stdout).toContain("existing");
+    });
+
+    it("an unreadable comment list refuses; nothing is posted", async () => {
+      answers.set(`GET ${postPath}`, [200, { not: "a list" }]);
+      expect((await run(note())).code).toBe(1);
+      answers.set(`GET ${postPath}`, [500, { message: "boom" }]);
+      expect((await run(note())).code).toBe(1);
+      noPost();
+    });
+  });
+
+  describe("cap: 5 comments in 24 hours by the token's user across the target", () => {
+    it("five recent comments on the token user's issues refuse a sixth, nothing posted; four pass", async () => {
+      listIssues([200, 3], [201, 2]);
+      answers.set(`GET /repos/${TARGET}/issues/200/comments`, [200, [entry(1, 1), entry(2, 5), entry(3, 23)]]);
+      answers.set(`GET /repos/${TARGET}/issues/201/comments`, [200, [entry(4, 2), entry(5, 3)]]);
+      const refused = await run(note());
+      expect(refused.code).toBe(1);
+      expect(refused.stderr).toContain("Refused, nothing posted");
+      expect(refused.stderr).toContain("5 comments");
+      expect(calls.filter((call) => call.path === `/repos/${TARGET}/issues/200/comments`).every((call) => /since=\d{4}-\d\d-\d\dT/.test(call.search))).toBe(true);
+      noPost();
+      calls = [];
+      answers.set(`GET /repos/${TARGET}/issues/201/comments`, [200, [entry(4, 2)]]);
+      const ok = await run(note());
+      expect(ok.code, ok.stderr).toBe(0);
+      expect(writes()).toHaveLength(1);
+    });
+
+    it("older comments, comments of others, an unreadable date, and pull requests do not count; issues without comments are not read", async () => {
+      answers.set(`GET /repos/${TARGET}/issues`, [200, [{ number: 200, comments: 9 }, { number: 201, comments: 4, pull_request: { url: "x" } }, { number: 202, comments: 0 }, { number: 203, comments: 1 }]]);
+      answers.set(`GET /repos/${TARGET}/issues/200/comments`, [200, [entry(1, 25), entry(2, 30), entry(3, 1, "mallory"), { ...entry(4, 1), created_at: "garbage" }, entry(5, 2), entry(6, 3)]]);
+      answers.set(`GET /repos/${TARGET}/issues/203/comments`, [200, [entry(7, 4)]]);
+      const result = await run(note());
+      expect(result.code, result.stderr).toBe(0);
+      expect(seen().some((line) => line.endsWith("/issues/201/comments") || line.endsWith("/issues/202/comments"))).toBe(false);
+    });
+
+    it("the count spans pages of comments and of issues, and stops reading at the cap", async () => {
+      const page = (count: number, hours: number) => Array.from({ length: count }, (_, i) => entry(1000 + i, hours));
+      listIssues([200, 150]);
+      answers.set(`GET /repos/${TARGET}/issues/200/comments?page=1`, [200, [...page(100, 30).slice(0, 98), entry(1, 1), entry(2, 2)]]);
+      answers.set(`GET /repos/${TARGET}/issues/200/comments?page=2`, [200, [entry(3, 3), entry(4, 4), entry(5, 5)]]);
+      const refused = await run(note());
+      expect(refused.code).toBe(1);
+      expect(seen().filter((line) => line.endsWith("/issues/200/comments"))).toHaveLength(2);
+      noPost();
+      calls = [];
+      // At the cap on the first issue, the second one is never read.
+      listIssues([200, 5], [201, 5]);
+      answers = new Map([...answers, [`GET /repos/${TARGET}/issues/200/comments`, [200, [entry(1, 1), entry(2, 1), entry(3, 1), entry(4, 1), entry(5, 1)]]]]);
+      expect((await run(note())).code).toBe(1);
+      expect(seen().some((line) => line.endsWith("/issues/201/comments"))).toBe(false);
+    });
+
+    it("fails closed: an unreadable list, more requests than the budget, or too many pages refuses and posts nothing", async () => {
+      answers.set(`GET /repos/${TARGET}/issues`, [200, { not: "a list" }]);
+      expect((await run(note())).code).toBe(1);
+      answers.set(`GET /repos/${TARGET}/issues`, [500, { message: "boom" }]);
+      expect((await run(note())).code).toBe(1);
+      listIssues([200, 1]);
+      answers.set(`GET /repos/${TARGET}/issues/200/comments`, [200, "text"]);
+      expect((await run(note())).code).toBe(1);
+      // 70 recently updated issues with one comment each by someone else: more than 60 requests would be needed.
+      answers = new Map();
+      listIssues(...Array.from({ length: 70 }, (_, i): [number, number] => [300 + i, 1]));
+      for (let i = 0; i < 70; i++) answers.set(`GET /repos/${TARGET}/issues/${300 + i}/comments`, [200, [entry(i, 1, "someone")]]);
+      calls = [];
+      const budget = await run(note());
+      expect(budget.code).toBe(1);
+      expect(budget.stderr).toContain("cannot count");
+      noPost();
+      // A tenth full page of issues cannot be counted either.
+      answers = new Map();
+      for (let page = 1; page <= 10; page++) answers.set(`GET /repos/${TARGET}/issues?page=${page}`, [200, Array.from({ length: 100 }, (_, i) => ({ number: page * 1000 + i, comments: 0 }))]);
+      const many = await run(note());
+      expect(many.code).toBe(1);
+      expect(many.stderr).toContain("cannot count");
+      noPost();
+    });
+  });
+
+  it("API_FAILS: a failed POST says to read the issue before dispatching again and never prints the token; a missing id fails", async () => {
+    answers.set(`POST ${postPath}`, [403, { message: `forbidden ${TOKEN}` }]);
+    const failed = await run(note());
+    expect(failed.code).toBe(1);
+    expect(failed.stderr).toContain("read the issue before dispatching again");
+    expect(failed.stderr).toContain("GitHub answered 403");
+    expect(failed.output).toContain("upstream-issue: Failed while commenting");
+    expect(leaked(failed)).toEqual([]);
+    answers.set(`POST ${postPath}`, [201, { number: 5 }]);
+    expect((await run(note())).code).toBe(1);
+    answers.set(`POST ${postPath}`, [201, { id: -3 }]);
+    expect((await run(note())).code).toBe(1);
+  });
+
+  it("LOG_LINES: API text with newlines or a workflow command cannot fake a line", async () => {
+    answers.set(`GET ${targetPath}`, [500, { message: "line one\n::set-output name=x::y\r\n::error::fake" }]);
+    const result = await run(note());
+    expect(result.code).toBe(1);
+    for (const line of `${result.stdout}${result.stderr}`.split("\n").filter(Boolean)) expect(line.startsWith("upstream-issue: ")).toBe(true);
+    expect(result.output.trimEnd().split("\n")).toHaveLength(1);
   });
 });
 

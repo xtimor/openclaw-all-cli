@@ -1,13 +1,15 @@
 name: Upstream issue
 
-# Files one issue in an allow-listed upstream repository (only openclaw/openclaw) with the owner's personal token. A cloud session's
+# Files one issue in an allow-listed upstream repository (only openclaw/openclaw), or comments once on the owner's own issue there (ticket
+# 3.24; never an edit, close, or label), with the owner's personal token. A cloud session's
 # proxy swaps the owner's session credentials, which are scoped to this repository, into every api.github.com request, so a session
 # cannot write there. It dispatches this workflow instead (scripts/upstream-issue.sh); scripts/upstream-issue.mjs (tested) checks the
 # input and creates the issue, idempotently. Design and the agents' side: docs/agents/identity.md ("Upstream issues").
 # Setup: the secret GH_PUBLIC_TOKEN in the GitHub Environment `agent` (deployment branches: only `main`), the same environment as the
 # agent relay. The environment is what keeps the token from a copy of this file on another branch.
 # Only for an approved issue of ours: the script reads the issue named by the body's `Filed for` line and its events with the job's own
-# GITHUB_TOKEN (`issues: read`) and refuses unless an owner labeled it `status:approved`; it also refuses a third new issue in 24 hours.
+# GITHUB_TOKEN (`issues: read`) and refuses unless an owner labeled it `status:approved`; it also refuses a third new issue in 24 hours
+# and a sixth comment in 24 hours. A comment goes only on an issue the token's user opened, never on a pull request.
 # The tokens and the input reach the script only through env, never into the script text. The owner's token lives in the one step that
 # runs the script; no other step sees it, and nothing is written to the job environment file. The job never checks out pull request code.
 # Runs only on main: a dispatch on another ref does nothing. One run at a time (a second dispatch waits; a third replaces the pending
@@ -17,7 +19,7 @@ on:
   workflow_dispatch:
     inputs:
       issue:
-        description: 'One JSON object: title, body (with the line "Filed for xtimor/openclaw-all-cli#<n>"), labels?; see scripts/upstream-issue.mjs'
+        description: 'One JSON object: {title, body, labels?} to create, or {op: "comment", issue, body} to comment; the body holds the line "Filed for xtimor/openclaw-all-cli#<n>"; see scripts/upstream-issue.mjs'
         required: true
         type: string
 

@@ -1,15 +1,17 @@
 #!/usr/bin/env bash
-# The one entry point for filing an upstream issue (docs/agents/identity.md, "Upstream issues"): dispatches the `Upstream issue`
-# workflow on main with an issue file, waits for the run, checks that it succeeded, and prints the issue's URL. Agent-neutral.
+# The one entry point for filing an upstream issue or commenting on the owner's own one (docs/agents/identity.md, "Upstream issues"):
+# dispatches the `Upstream issue` workflow on main with a JSON file, waits for the run, checks that it succeeded, and prints the
+# issue's URL (a comment's URL ends in `#issuecomment-<id>`). Agent-neutral.
 #
 #   scripts/upstream-issue.sh /tmp/upstream-issue-1.json      # prints https://github.com/openclaw/openclaw/issues/<n> on stdout
 #
 # The file is one JSON object: {"title": "...", "body": "...\nFiled for xtimor/openclaw-all-cli#<n>", "labels": ["..."]} (labels
-# optional; see scripts/upstream-issue.mjs for every rule). It only runs `gh workflow run upstream-issue.yml --ref main`,
+# optional) to create an issue, or {"op": "comment", "issue": <number in openclaw/openclaw>, "body": "...\nFiled for ..."} to comment
+# on the owner's own issue there; see scripts/upstream-issue.mjs for every rule. It only runs `gh workflow run upstream-issue.yml --ref main`,
 # `gh run watch` (both with `--repo`, the same repository the reads use, never the current directory's), and `gh api` reads of the run, its jobs, and the job's annotations (`gh run view --log` as a fallback). It never
 # touches the proxy variables and holds no secret: the token stays in GitHub. After `gh run watch` (which can return early) it polls
 # the run's status until `completed`. The result is the run's `notice` annotation, written by the workflow.
-# Exit 0: the run concluded success and the issue's URL is on stdout (stderr says `created` or `existing`). Exit 1: the dispatch, run
+# Exit 0: the run concluded success and the issue's URL is on stdout (stderr says `created`, `commented`, or `existing`). Exit 1: the dispatch, run
 # id, or run conclusion failed, the run is still going after the wait, or the result could not be read (one-line reason on stderr;
 # dispatching the same file again is safe, the script returns the issue it already filed instead of a second one). Exit 2: bad
 # usage, or the file is missing, over 40000 bytes, or not a JSON object (nothing dispatched).
@@ -22,7 +24,7 @@ REPO="${UPSTREAM_ISSUE_REPO:-xtimor/openclaw-all-cli}"
 POLL_SECONDS="${UPSTREAM_ISSUE_POLL_SECONDS:-10}"
 MAX_POLLS="${UPSTREAM_ISSUE_MAX_POLLS:-120}"
 MAX_BYTES=40000
-RESULT_RE='^upstream-issue: (created|existing) (https://github\.com/openclaw/openclaw/issues/[0-9]+)$'
+RESULT_RE='^upstream-issue: (created|commented|existing) (https://github\.com/openclaw/openclaw/issues/[0-9]+(#issuecomment-[0-9]+)?)$'
 
 fail() { printf 'upstream-issue: %s\n' "$1" >&2; exit "${2:-1}"; }
 

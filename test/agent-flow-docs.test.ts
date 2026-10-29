@@ -234,4 +234,22 @@ describe("upstream issues (ticket 3.23)", () => {
     expect(triage).toMatch(/\*\*Upstream issues\.\*\* Triage files none/);
     expect(issues).toContain("agents/identity.md#upstream-issues");
   });
+
+  it("comments (ticket 3.24): identity.md gives the exact file shape and every guard, implement.md ends a follow-up issue with one comment and no closing keyword", () => {
+    const part = section(identity, "## Upstream issues");
+    expect(part).toContain('{"op": "comment", "issue": <number in openclaw/openclaw>, "body": "...\\nFiled for xtimor/openclaw-all-cli#<n>"}');
+    expect(part).toMatch(/#issuecomment-<id>/);
+    expect(part).toMatch(/was opened by the token's user/);
+    expect(part).toMatch(/is not a pull request/);
+    expect(part).toMatch(/already carries the same `Filed for` line is returned, not repeated/);
+    expect(part).toMatch(/sixth comment in 24 hours/);
+    expect(part).toMatch(/never edits, closes, reopens, or labels/);
+    expect(part).not.toMatch(/no comment, edit, or close upstream/);
+    const bullet = implement.split("\n").find((line) => line.startsWith("- **Upstream follow-up.**")) ?? "";
+    expect(bullet).toContain('{"op": "comment", ...}');
+    expect(bullet).toMatch(/none of `Fixes`, `Closes`, `Resolves`, or `Refs`/);
+    expect(bullet).toMatch(/`status:blocked`/);
+    expect(bullet).toMatch(/You never close it; the owner does/);
+    expect(issues).toMatch(/comment once on an issue you opened there/);
+  });
 });
