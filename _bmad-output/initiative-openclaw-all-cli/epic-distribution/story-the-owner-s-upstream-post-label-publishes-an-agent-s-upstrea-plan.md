@@ -3,19 +3,26 @@ title: 'The owner''s `upstream:post` label publishes an agent''s upstream draft 
 type: 'feature'
 ticket: 25
 created: '2026-10-29'
-status: 'ready-for-dev'
+status: 'built'
 baseline_revision: 'eb7072f1836e3cadefda465928c08ff5d350d188'
 route: 'full'
 route_source: 'auto'
 risk: 'high'
-review: ''
-review_source: ''
-lenses_ran: []
+review: 'thorough'
+review_source: 'pinned'
+lenses_ran: ['blind-hunter', 'edge-case-hunter', 'verification-gap', 'intent-alignment']
 review_loop_iteration: 0
-followup_review_recommended: false
+followup_review_recommended: true
 context: ['{project-root}/AGENTS.md', '{project-root}/MEMORY.md', '{project-root}/docs/agents/identity.md']
 warnings: ['oversized']
-deferred: []
+deferred:
+  - summary: >-
+      An agent that disobeys its rules can add the owner's label upstream:post through the owner's GitHub connector, because the relay refuses it but the connector acts as the owner.
+    evidence: |-
+      Found by the in-session review of ticket 3.25. It is the same trust limit as status:approved, which the state automation can revert only because it sees a non-owner actor; for upstream:post the actor would be the owner. Bounded: the draft must be written by the agent app (a connector-written draft is refused), the issue must be owner-approved and name the target, the comment must name it visibly, the draft may hold no hidden content, and the caps apply (3 new issues, 5 comments per 24 hours). The docs (identity.md, implement.md, triage.md) forbid it for agents. What would settle it: a way to tell the owner's click from an agent using the owner's connector, which GitHub does not give.
+    location: >-
+      .github/workflows/upstream-post.yml
+    severity: medium
 ---
 
 <intent-contract>
@@ -73,33 +80,86 @@ deferred: []
 
 ## Implementation Notes
 
-No subagent tool was available to this worker: the build and the review lenses run in-session.
+No subagent tool was available to this worker: the build and the four review lenses ran in-session (full route by size, no implementing subagent), as for tickets 3.23 and 3.24. Decisions:
+
+- **Shared path, not a fork.** `scripts/upstream-post.mjs` builds the input of `scripts/upstream-issue.mjs` and calls its `run()` unchanged, so every 3.23/3.24 guard runs there. It defines none (a test pins that) and imports one check, `checkNamesTarget`, for the visible-target rule.
+- **Draft format.** `<!-- upstream-draft target=<repo>#<n> op=comment -->` (a comment needs the number) or `target=<repo> op=create` (no number: a create has none; the ticket's text showed `#<n>` once for both) with a first line `Title: `, closed by `<!-- /upstream-draft -->`; tags alone on their lines; any other line that mentions `upstream-draft`, a second block, an unknown or repeated attribute, or another op is refused. The workflow appends the `Filed for xtimor/openclaw-all-cli#<n>` line.
+- **Replay and withdrawal change nothing.** Attempt over 1, a triggering actor outside the owners, or the label no longer on the issue: exit 1 with no write. Removing the label is how the owner cancels. From the labeler check on, every outcome posts one `<!-- upstream-post -->` comment on our issue and removes the label (the ticket: removed in both cases).
+- **The owner approves what they read.** The draft must not have changed after the label (`updated_at` of the comment against `issue.updated_at` of the labeled event; equal passes). The tags are HTML comments, so the draft text may hold no `<!--` and no invisible or direction-changing character, and a comment draft must name its target in the visible text of the same comment (the tag itself is invisible). The last two came out of the review (below).
+- **Who is the agent.** The login in `.github/agent-identity.json` plus REST type `Bot`; no login (relay off) means nothing is trusted, so a connector-written draft is refused by design.
+- **Concurrency.** The job shares the group `upstream-issue` with the dispatch workflow: one run at a time across both, so the idempotency check cannot race into a duplicate. A third pending run is dropped by GitHub (label stays, no result comment): the docs tell the owner to label again.
+- **Labels.** `upstream:post` is in `.github/labels.yml` (17 labels). The relay's `LABEL_RE` families already refuse it; the test pins add and remove in six spellings. `test/sync-labels.test.ts` names the 16 labels of the design plus this one.
+- **Docs.** `identity.md` (both workflows, draft form, rules, what the workflow does, owner steps), `implement.md` (two bullets), `triage.md`, `issues.md`, `MEMORY.md`; `agent-flow-docs.test.ts` parses the docs' own fenced draft blocks with the real parser. `scripts/upstream-issue.sh` and its workflow stay for the owner's interactive sessions (header notes added). `.claude/settings.json` untouched.
+
+Mutation checks (each failed at least one test): labeler owner, bot, and actor checks; comment author filter; `Bot` type; latest-not-first; edited-after; attempt; triggering actor; label presence; label removal; result comment; implementation marker; one block; malformed tag; identity file; HTML comment; invisible characters; visible target; workflow label filter, environment, permissions, concurrency group, token mask (24 in all).
 
 ## Plan Change Log
 
 ## Review Triage Log
 
+### 2026-10-29 — Review pass
+- verdicts: 18 findings — high 0, medium 3, low 12, false 2, maybe-false 1
+- findings: (the four lenses — blind-hunter, edge-case-hunter, verification-gap, intent-alignment — ran in the build's own session, no subagent tool: none was context-free)
+  - `[medium]` `[patch]` The owner approves the rendered draft, but HTML comments and invisible or direction-changing characters travel with it and would be published under the owner's name — `parseDraft` refuses `<!--` and the invisible set in the draft text; tests `HIDDEN` (two comment forms, 11 code points, title and body, plus visible non-ASCII passing); mutation checks fail.
+  - `[medium]` `[patch]` A comment draft's target lives only in the invisible tag, so the owner cannot see which upstream issue the comment lands on (the approved issue may name several) — the visible text of the comment must name the target (`checkNamesTarget`, reused, number matched exactly); test `VISIBLE_TARGET` (five refusals, URL form, mention inside the draft, create needs none); mutation check fails; docs and pins say so.
+  - `[low]` `[patch]` The default identity path (`new URL("../.github/agent-identity.json", import.meta.url)`) was never run by a test — test `DEFAULT_IDENTITY` runs without the hook with the repository file's login and with another app.
+  - `[medium]` `[defer]` An agent that disobeys its rules can add `upstream:post` as the owner through the owner's GitHub connector (relay refused it, connector is not) — the same trust limit as `status:approved`, which the state automation can revert only because it sees a non-owner actor; here the actor is the owner. Bounded: the draft must still come from the app, an approved issue, names the target, caps. Recorded in `deferred`; the docs forbid it for agents.
+  - `[low]` `[reject]` A published result becomes exit 1 when the result comment or label removal fails — intended (the run is red, the log and annotation still carry the URL); tested.
+  - `[low]` `[reject]` `Ignored` exits 0 for any other label — the job `if` already filters; the script check is the second guard; tested.
+  - `[low]` `[reject]` Our issue is read twice (the label check, then `checkApproved` inside the shared `run()`) — one cheap request; the shared path stays untouched by requirement.
+  - `[false]` `[reject]` `oneLine` truncates a URL to 500 characters in the result comment — a URL goes through `RESULT_URL` as itself; only reasons use `oneLine`.
+  - `[low]` `[reject]` More than 2000 comments on our issue refuses — fail closed, same limit style as 3.24.
+  - `[low]` `[reject]` A tag nested in a list or indented is refused as malformed — the message names the rule; the docs say tags stand alone on their lines.
+  - `[maybe-false]` `[reject]` `issue.updated_at` of a `labeled` payload might be earlier than the label time, which would refuse a draft edited in the seconds before the label — if true the owner labels again (safe failure, low); what would settle it: one live labeled event compared with its `labeled` timeline entry. Recorded as not verified.
+  - `[low]` `[reject]` One pending run per concurrency group: a third labeled event is dropped, the label stays without a result comment — GitHub behavior; workflow header and docs tell the owner to label again.
+  - `[false]` `[reject]` The label removal `DELETE .../labels/upstream%3Apost` may 404 because of the encoded colon and hide it (404 passes) — `sync-labels.mjs` PATCHes `status:*` labels with the same `encodeURIComponent` live; the stub decodes it the same way.
+  - `[low]` `[reject]` "Approved at some point" (3.23) lets a later removal of `status:approved` not stop a publish — not this change: and the owner's fresh `upstream:post` on this issue is itself an approval.
+  - `[low]` `[reject]` The workflow tests are text pins, not a YAML parse — the repository's other workflow tests do the same.
+  - `[low]` `[reject]` Real-runner behavior is not verified (payload fields, `issues: write` token in the `agent` environment, label sync before first use) — listed under Not run.
+  - `[low]` `[reject]` The ticket's text shows `#<n>` in the target of both ops; a create here takes none — a create has no issue number; a number gets a one-line refusal naming the rule. Recorded as a Decision above.
+  - `[low]` `[reject]` The result comment mentions the owner by `@login` (a notification) — only for a verified owner login; a stranger or bot is never mentioned (tested).
+
 ## Design Notes
 
-Draft block (agents write exactly this inside their `<!-- issue-impl -->` comment; the text between the tags is the public text, without the `Filed for` line, which the workflow appends):
+Why the label, not a dispatch: the routine's auto-mode permission check refuses a public write made by the agent itself, but it cannot refuse a GitHub workflow that acts on the owner's own click. The label is the approval, as `Batch merge` merges on the owner's "ready".
+
+Draft block (the agent writes exactly one inside its latest `<!-- issue-impl -->` comment; the text between the tags is the public text, without the `Filed for` line):
 
 ```
 <!-- upstream-draft target=openclaw/openclaw#172969 op=comment -->
-<body>
+<the comment>
 <!-- /upstream-draft -->
 
 <!-- upstream-draft target=openclaw/openclaw op=create -->
 Title: <one line>
 
-<body>
+<the issue body>
 <!-- /upstream-draft -->
 ```
 
 ## Verification
 
 **Commands:**
-- `npx vitest run test/upstream-post.test.ts test/upstream-issue.test.ts test/agent-flow-docs.test.ts test/sync-labels.test.ts test/agent-write.test.ts` -- expected: pass
+- `npx vitest run test/upstream-post.test.ts test/upstream-issue.test.ts test/upstream-issue-sh.test.ts test/agent-flow-docs.test.ts test/sync-labels.test.ts test/agent-write.test.ts` -- expected: pass
 - `npm run ci` -- expected: pass
 
 **Manual checks (if no CLI):**
 - Live (not run here): the owner labels #54 (or the next follow-up) and the draft appears upstream.
+
+## Auto Run Result
+
+Status: built. Blocking condition: none.
+
+**Summary:** The owner's label `upstream:post` on one of our issues now publishes an agent's upstream draft through GitHub. The agent writes one `<!-- upstream-draft ... -->` block in its latest `<!-- issue-impl -->` comment (`op=comment` with `target=openclaw/openclaw#<n>`, or `op=create` with a `Title:` line) and sets `status:blocked` awaiting the owner. The `Upstream post` workflow (`issues` `labeled`, environment `agent`) checks the labeler, reads the app's draft, hands it to `run()` of `scripts/upstream-issue.mjs` (every 3.23/3.24 guard unchanged), comments the URL or the refusal reason on our issue, and removes the label. Agents never add the label (the relay refuses it) and no longer call `scripts/upstream-issue.sh`.
+
+**Files changed:** `.github/labels.yml`, `.github/workflows/upstream-post.yml` (new), `.github/workflows/upstream-issue.yml` (header), `scripts/upstream-post.mjs` (new), `scripts/upstream-issue.sh` (header), `test/upstream-post.test.ts` (new), `test/agent-write.test.ts`, `test/sync-labels.test.ts`, `test/agent-flow-docs.test.ts`, `docs/agents/{identity,implement,triage}.md`, `docs/issues.md`, `MEMORY.md`, this plan.
+
+**Review:** 18 findings from four lenses run in-session (no subagents available): 3 patched (2 medium, 1 low), 1 deferred (medium), 14 rejected or false with reasons in the triage log.
+
+**Follow-up review recommended: true.** Patched: high 0, medium 2, low 1. The unverified risk: the two medium patches (hidden draft content, the visible target) were found and written by the same session that built the flow, with no context-free reviewer, so a fresh independent security review of `scripts/upstream-post.mjs` and `upstream-post.yml` is worth one pass before the first live use.
+
+**Verification:** `npm run ci` passed (see the commit); `test/upstream-post.test.ts` (45), the doc pins, and the 3.23/3.24 suites pass; 24 mutation checks each fail a test.
+
+**Not run:** the live run (the owner labels #54 or the next draft); on a real runner: the `issues`/`labeled` payload fields (`sender`, `issue.updated_at`), `secrets.GITHUB_TOKEN` with `issues: write` in the `agent` environment, the shared concurrency group dropping a third pending run, and `Labels` having synced `upstream:post` before the first use.
+
+**Residual risks:** the deferred finding (a rule-breaking agent can use the owner's connector to add the label); an owner who labels without reading approves whatever the app wrote; one draft and one target per label; `issue.updated_at` of the labeled event could refuse a draft edited in the seconds before the label (the owner labels again).
