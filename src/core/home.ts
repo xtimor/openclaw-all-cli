@@ -1,12 +1,14 @@
 import { join } from "node:path";
 import { reapOnce } from "./pid-locks.ts";
-import { CliError, type CliAdapter, type HomeEnv } from "./ports.ts";
+import { CliError, type CliAdapter, type CliToolProfile, type HomeEnv } from "./ports.ts";
 
 /** A prepared per-agent CLI home (AD-6). */
 export type AgentHome = {
   dir: string;
   /** Env additions that point the CLI at `dir`. */
   env: HomeEnv;
+  /** The profile the home was prepared for. It is part of the process reuse key (AD-13). */
+  profile?: CliToolProfile;
 };
 
 /** `<agentDir>/openclaw-all-cli/<backendId>/`: the one path rule for every adapter. */
@@ -25,6 +27,7 @@ export async function prepareAgentHome(
   backendId: string,
   agentDir: string | undefined,
   warn: (message: string) => void = () => {},
+  profile?: CliToolProfile,
 ): Promise<AgentHome> {
   if (!agentDir?.trim()) {
     throw new CliError({
@@ -35,7 +38,7 @@ export async function prepareAgentHome(
   const dir = homeDirFor(agentDir, backendId);
   await reapOnce(dir, warn);
   try {
-    return { dir, env: await adapter.prepareHome(dir) };
+    return { dir, env: await adapter.prepareHome(dir, profile), ...(profile ? { profile } : {}) };
   } catch (error) {
     if (error instanceof CliError) throw error;
     throw new CliError(

@@ -87,7 +87,9 @@ export type ExecuteOptions = {
 
 /** AD-13: model, mode, working directory, home, auth profile, and thinking level. The native session ID is checked on the session. */
 function reuseKey(ctx: ExecuteContext, home: AgentHome, authProfileId: string | undefined, hostShell: boolean, thinkingLevel: string | undefined): string {
-  return JSON.stringify([ctx.modelId, modeOf(ctx), hostShell, ctx.cwd, home.dir, authProfileId ?? null, thinkingLevel ?? null]);
+  // The permission profile is part of the key: a profile's permissions live in the CLI's config
+  // file and are read once per process, so a warm process of one profile must not serve another.
+  return JSON.stringify([ctx.modelId, modeOf(ctx), hostShell, ctx.cwd, home.dir, authProfileId ?? null, thinkingLevel ?? null, home.profile?.id ?? null]);
 }
 
 /** The error's core code, for the timing line. */

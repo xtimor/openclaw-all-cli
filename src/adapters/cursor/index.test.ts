@@ -1,5 +1,15 @@
 import { inspectProcess } from "../../core/pid-locks.ts";
-import { mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import {
+  lstatSync,
+  mkdirSync,
+  mkdtempSync,
+  readdirSync,
+  readFileSync,
+  readlinkSync,
+  rmSync,
+  statSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
@@ -524,6 +534,47 @@ describe("cursor adapter", () => {
         allow: ["Read(**)", "Mcp(openclaw:*)"],
         deny: ["Shell(*)", "Write(**)", "WebFetch(*)"],
       });
+    });
+
+    it("runs the restricted profile in its own config directory with the native file tools closed", async () => {
+      const home = join(root, "a");
+      await cursorAdapter.prepareHome(home, { id: "restricted", nativeTools: [] });
+      const configDir = join(home, "variants", "restricted");
+      await expect(cursorAdapter.prepareHome(home, { id: "restricted", nativeTools: [] })).resolves.toEqual({
+        CURSOR_CONFIG_DIR: configDir,
+        CURSOR_DATA_DIR: join(home, "data"),
+      });
+      const permissions = (JSON.parse(readFileSync(join(configDir, "cli-config.json"), "utf8")) as { permissions: unknown })
+        .permissions;
+      expect(permissions).toEqual({
+        allow: ["Mcp(openclaw:*)"],
+        deny: ["Shell(*)", "Write(*)", "Edit(*)", "WebFetch(*)", "Read(*)"],
+      });
+    });
+
+    it("keeps Cursor's keys when it rewrites the permissions of a profile", async () => {
+      const home = join(root, "a");
+      await cursorAdapter.prepareHome(home);
+      const configDir = join(home, "variants", "restricted");
+      mkdirSync(configDir, { recursive: true });
+      writeFileSync(join(configDir, "cli-config.json"), JSON.stringify({ version: 1, editor: { vimMode: true } }));
+      await cursorAdapter.prepareHome(home, { id: "restricted", nativeTools: [] });
+      const written = JSON.parse(readFileSync(join(configDir, "cli-config.json"), "utf8")) as Record<string, unknown>;
+      expect(written.version).toBe(1);
+      expect(written.editor).toEqual({ vimMode: true });
+      expect(written.permissions).toEqual({
+        allow: ["Mcp(openclaw:*)"],
+        deny: ["Shell(*)", "Write(*)", "Edit(*)", "WebFetch(*)", "Read(*)"],
+      });
+    });
+
+    it("points a profile at the chat store the default profile owns, so a chat crosses profiles", async () => {
+      const home = join(root, "a");
+      await cursorAdapter.prepareHome(home);
+      await cursorAdapter.prepareHome(home, { id: "restricted", nativeTools: [] });
+      const link = join(home, "variants", "restricted", "acp-sessions");
+      expect(lstatSync(link).isSymbolicLink()).toBe(true);
+      expect(readlinkSync(link)).toBe(join("..", "..", "acp-sessions"));
     });
 
     it("gives two agents separate homes with the same permissions", async () => {

@@ -188,7 +188,7 @@ describe("tool availability (AD-9)", () => {
     expect(prepared?.execute).toBeTypeOf("function");
   });
 
-  it("accepts a selection that keeps the native tools Cursor cannot switch off", async () => {
+  it("accepts a selection that keeps the native tools the default profile offers", async () => {
     const prepared = await prepare({ native: ["read", "grep", "glob"], openClaw: ["memory_search"] });
     expect(prepared?.execute).toBeTypeOf("function");
     const withMore = await prepare({ native: ["read", "grep", "glob", "exec"], openClaw: [] });
@@ -213,27 +213,35 @@ describe("tool availability (AD-9)", () => {
       expect(resolve({ hostOwnedTools: ["process"] })).toBe(base);
       expect(resolve({ hostOwnedTools: [] })).toBe(base);
       // An unenforceable selection still makes the host fail the run.
-      expect(resolve({ hostOwnedTools: ["exec"], toolAvailability: { native: [], openClaw: [] } })).toBeUndefined();
+      expect(resolve({ hostOwnedTools: ["exec"], toolAvailability: { native: ["read"], openClaw: [] } })).toBeUndefined();
     });
 
-    it("returns them for a selection that keeps the native tools Cursor cannot switch off", () => {
+    it("returns them for a selection that keeps the native tools the default profile offers", () => {
       expect(resolve({ toolAvailability: { native: ["read", "grep", "glob"], openClaw: ["memory_search"] } })).toBe(base);
       expect(resolve({ toolAvailability: { native: ["read", "grep", "glob", "exec"], openClaw: [] } })).toBe(base);
     });
 
-    it.each([[[]], [["read"]], [["grep", "glob", "exec"]]])("returns nothing for a selection of native tools %j, so the host fails the run", (native) => {
+    it("returns them for a selection of no native tools, which the restricted profile serves", () => {
+      expect(resolve({ toolAvailability: { native: [], openClaw: [] } })).toBe(base);
+    });
+
+    it.each([[["read"]], [["grep", "glob", "exec"]]])("returns nothing for a selection of native tools %j, so the host fails the run", (native) => {
       expect(resolve({ toolAvailability: { native, openClaw: [] } })).toBeUndefined();
     });
   });
 
   it.each([
-    [[], "read, grep, glob"],
     [["read"], "grep, glob"],
     [["grep", "glob", "exec"], "read"],
   ])("refuses a selection of native tools %j, which Cursor cannot honor", async (native, blocked) => {
     await expect(prepare({ native, openClaw: ["memory_search"] })).rejects.toThrow(
       new RegExp(`keeps native ${blocked.replaceAll(", ", ", ")} on in every turn.*did not start the run`),
     );
+  });
+
+  it("accepts a selection of no native tools, which the restricted profile serves", async () => {
+    const prepared = await prepare({ native: [], openClaw: ["memory_search"] });
+    expect(prepared?.execute).toBeTypeOf("function");
   });
 
   it("stays on always-on tools when the manifest leaves P10 undecided", () => {
@@ -1343,8 +1351,8 @@ describe("session resume and side questions (P4, P5, P18)", () => {
       backend.prepareExecution!({
         agentDir: join(scratch, "refuse-agent"),
         executionMode: "side-question",
-        toolAvailability: { native: [], openClaw: [] },
+        toolAvailability: { native: ["read"], openClaw: [] },
       } as never),
-    ).rejects.toThrow(/keeps native read, grep, glob on/);
+    ).rejects.toThrow(/keeps native grep, glob on/);
   });
 });

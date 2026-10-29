@@ -1,5 +1,5 @@
 import { isDeepStrictEqual } from "node:util";
-import type { PermissionDecision, PermissionRequest } from "./ports.ts";
+import type { CliToolProfile, PermissionDecision, PermissionRequest } from "./ports.ts";
 import type { ExecuteContext } from "./sdk-types.ts";
 
 /**
@@ -106,4 +106,47 @@ export function unenforceableNativeTools(
   alwaysOn: readonly string[],
 ): string[] {
   return alwaysOn.filter((name) => !availability.native.includes(name));
+}
+
+/**
+ * The profile an adapter runs a turn under (AD-9). A profile serves the host's native tool
+ * selection when it offers no native tool the host left out and withholds none the host selected,
+ * so the CLI's native tools are exactly the host's. The most capable such profile wins.
+ *
+ * A selection that no profile serves cannot be enforced, and the run is refused: a selection that
+ * takes only part of a group the CLI switches off together is one no profile can match.
+ *
+ * An adapter without profiles keeps `alwaysOnNativeTools` in every turn.
+ */
+export function selectToolProfile(
+  profiles: readonly CliToolProfile[],
+  selection: readonly string[] | undefined,
+): CliToolProfile | undefined {
+  // What the adapter could deliver natively at all: the union over its profiles.
+  const offered = new Set(profiles.flatMap((profile) => profile.nativeTools));
+  // What the host selected that the adapter could deliver. A tool it cannot deliver is
+  // over-restrictive, which the plugin accepts elsewhere (a selection naming `exec` that the CLI
+  // can never run is accepted rather than refused).
+  const wanted = selection ? selection.filter((tool) => offered.has(tool)) : [];
+  const serves = (profile: CliToolProfile): boolean =>
+    (!selection || profile.nativeTools.every((tool) => selection.includes(tool))) &&
+    wanted.every((tool) => profile.nativeTools.includes(tool));
+  const serving = profiles.filter(serves);
+  if (serving.length === 0) return undefined;
+  return serving.reduce((best, profile) => (profile.nativeTools.length > best.nativeTools.length ? profile : best));
+}
+
+/**
+ * The native tools a refusal leaves on: what the most capable profile keeps available that the
+ * host's selection left out. They are what the run cannot honor, and why.
+ */
+export function nativeToolsLeftOn(
+  profiles: readonly CliToolProfile[],
+  selection: readonly string[] | undefined,
+): string[] {
+  if (!selection) return [];
+  const mostCapable = profiles.reduce((best, profile) =>
+    profile.nativeTools.length > best.nativeTools.length ? profile : best,
+  );
+  return mostCapable.nativeTools.filter((tool) => !selection.includes(tool));
 }

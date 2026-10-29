@@ -9,7 +9,13 @@ import type { AcpPermissionRequest } from "../../transports/acp/session.ts";
  * call ID. A request the mapping cannot name returns `undefined`; the caller rejects it.
  */
 
-/** Native tools Cursor keeps open in every turn: the per-agent permissions allow `Read(**)`, and grep and glob are not blocked by it. */
+/**
+ * The native tools the `default` permission profile keeps open: its permissions allow `Read(**)`,
+ * and grep and glob are not blocked by it.
+ *
+ * The `restricted` profile closes all three (live-checked against cursor-agent 2026.10.22: a
+ * `Read(*)` deny takes native read, grep and glob down together, and Cursor's MCP path stays open).
+ */
 export const CURSOR_ALWAYS_ON_NATIVE_TOOLS = ["read", "grep", "glob"] as const;
 
 /** Cursor's question prompts reuse the permission request; their "allow" options are answers. */

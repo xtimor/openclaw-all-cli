@@ -33,7 +33,15 @@ describe("prepareAgentHome", () => {
       dir: "/state/agents/main/agent/openclaw-all-cli/acme-cli",
       env: { ACME_HOME: "/state/agents/main/agent/openclaw-all-cli/acme-cli" },
     });
-    expect(prepareHome).toHaveBeenCalledWith(homeDirFor("/state/agents/main/agent", "acme-cli"));
+    expect(prepareHome).toHaveBeenCalledWith(homeDirFor("/state/agents/main/agent", "acme-cli"), undefined);
+  });
+
+  it("hands the profile to the adapter and keeps it on the home", async () => {
+    const prepareHome = vi.fn(async (home: string) => ({ ACME_HOME: home }));
+    const profile = { id: "restricted", nativeTools: [] };
+    const home = await prepareAgentHome(adapterWith(prepareHome), "acme-cli", "/state/agents/main/agent", () => {}, profile);
+    expect(home.profile).toEqual(profile);
+    expect(prepareHome).toHaveBeenCalledWith(homeDirFor("/state/agents/main/agent", "acme-cli"), profile);
   });
 
   it("gives two agents two homes", async () => {

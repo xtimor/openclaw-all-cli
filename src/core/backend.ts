@@ -3,7 +3,7 @@ import { parseJsonlEvent } from "./events.ts";
 import { HOST_SHELL_ARG, createExecute, errorRecord, type ExecuteOptions } from "./execute.ts";
 import { prepareAgentHome } from "./home.ts";
 import { deriveFlags } from "./manifest.ts";
-import { unenforceableNativeTools } from "./permissions.ts";
+import { nativeToolsLeftOn, selectToolProfile, unenforceableNativeTools } from "./permissions.ts";
 import type { CliAdapter } from "./ports.ts";
 import { ProcessPool } from "./pool.ts";
 import { SYSTEM_PROMPT_TRANSPORT_MARKER } from "./system-prompt.ts";
@@ -124,13 +124,29 @@ export function buildCliBackend(adapter: CliAdapter, options: BuildBackendOption
  */
 function resolveExecutionArgsFor(adapter: CliAdapter): NonNullable<CliBackendPlugin["resolveExecutionArgs"]> {
   const enforceableSelection = (availability: PrepareExecutionContext["toolAvailability"]): boolean =>
-    !availability || unenforceableNativeTools(availability, adapter.alwaysOnNativeTools).length === 0;
+    enforceableUnder(adapter, availability);
   return (ctx) =>
     !enforceableSelection(ctx.toolAvailability)
       ? undefined
       : ctx.hostOwnedTools?.includes("exec")
         ? [...ctx.baseArgs, HOST_SHELL_ARG]
         : ctx.baseArgs;
+}
+
+/**
+ * Whether the adapter can enforce the run's native tool selection (AD-9). An adapter with
+ * permission profiles serves the selection under the profile that fits it; one without profiles
+ * keeps the same native tools in every turn, so the selection must include all of them.
+ */
+function enforceableUnder(
+  adapter: CliAdapter,
+  availability: PrepareExecutionContext["toolAvailability"],
+): boolean {
+  if (!availability) return true;
+  if (adapter.toolProfiles && adapter.toolProfiles.length > 0) {
+    return selectToolProfile(adapter.toolProfiles, availability.native) !== undefined;
+  }
+  return unenforceableNativeTools(availability, adapter.alwaysOnNativeTools).length === 0;
 }
 
 /**
@@ -146,7 +162,17 @@ function prepareExecutionFor(
   return async (ctx) => {
     // The run's native selection must be one the adapter enforces: it cannot switch off the
     // tools its permission file keeps open. Refuse before any process starts (AD-9).
-    const blocked = ctx.toolAvailability
+    const profiles = adapter.toolProfiles;
+    const profile = profiles && profiles.length > 0 ? selectToolProfile(profiles, ctx.toolAvailability?.native) : undefined;
+    if (profiles && profiles.length > 0 && ctx.toolAvailability && !profile) {
+      const leftOn = nativeToolsLeftOn(profiles, ctx.toolAvailability.native);
+      throw new Error(
+        `${backendIdFor(adapter)} keeps native ${leftOn.join(", ")} on in every turn and cannot switch ${leftOn.length > 1 ? "them" : "it"} off for this run, ` +
+          "and no other permission profile serves the rest of the selection. " +
+          "Select those native tools or run this turn on another model. OpenClaw did not start the run.",
+      );
+    }
+    const blocked = ctx.toolAvailability && !profiles?.length
       ? unenforceableNativeTools(ctx.toolAvailability, adapter.alwaysOnNativeTools)
       : [];
     if (blocked.length > 0) {
@@ -156,7 +182,7 @@ function prepareExecutionFor(
       );
     }
     try {
-      const home = await prepareAgentHome(adapter, backendIdFor(adapter), ctx.agentDir, options.warn);
+      const home = await prepareAgentHome(adapter, backendIdFor(adapter), ctx.agentDir, options.warn, profile);
       return {
         execute: createExecute(adapter, {
           ...options.execute,

@@ -1,5 +1,5 @@
 import { isDeepStrictEqual } from "node:util";
-import { rm } from "node:fs/promises";
+import { mkdir, rm, symlink } from "node:fs/promises";
 import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 import { AcpSession } from "../../transports/acp/session.ts";
@@ -13,6 +13,7 @@ import {
   type CliAdapter,
   type CliModel,
   type CliSession,
+  type CliToolProfile,
   type ExecutionMode,
   type HomeEnv,
   type ListModelsParams,
@@ -161,15 +162,70 @@ export const CURSOR_PERMISSIONS = {
   deny: ["Shell(*)", "Write(**)", "WebFetch(*)"],
 } as const;
 
+/**
+ * AD-9: the permission profiles a turn can run under, and the native tools each one offers.
+ *
+ * `default` is the profile every agent used before: Cursor's native read, grep and glob stay open,
+ * so the model can read any file the CLI can reach. That is what a run without a native tool
+ * selection gets.
+ *
+ * `restricted` closes them: `Read(*)` is denied, and Cursor's own permission matcher takes native
+ * read, grep and glob down with it (one rule governs the three, live-checked against
+ * cursor-agent 2026.10.22). The model then reaches files through the MCP proxy, where OpenClaw's
+ * own file tools apply the workspace boundary the run asked for. Cursor's MCP path stays open under
+ * this deny (live-checked), so the turn keeps its tools.
+ *
+ * The profile is part of the process identity (the permission file is read once per process), so a
+ * warm process of one profile never serves a turn of another.
+ */
+export const CURSOR_PROFILES = {
+  default: {
+    id: "default",
+    nativeTools: ["read", "grep", "glob"],
+    permissions: CURSOR_PERMISSIONS,
+  },
+  restricted: {
+    id: "restricted",
+    nativeTools: [],
+    permissions: {
+      allow: ["Mcp(openclaw:*)"],
+      deny: ["Shell(*)", "Write(*)", "Edit(*)", "WebFetch(*)", "Read(*)"],
+    },
+  },
+} as const satisfies Record<string, { id: string; nativeTools: readonly string[]; permissions: { allow: readonly string[]; deny: readonly string[] } }>;
+
 const CONFIG_FILE = "cli-config.json";
 
+/** The config directory each profile runs in, under the per-agent home (AD-6). */
+const PROFILE_DIRS: Record<string, string> = { default: "", restricted: join("variants", "restricted") };
+
+/** The profile a turn runs under, the default one when the run named none. */
+type CursorProfile = (typeof CURSOR_PROFILES)[keyof typeof CURSOR_PROFILES];
+
+function cursorProfileFor(profile?: CliToolProfile): CursorProfile {
+  if (profile && profile.id in CURSOR_PROFILES) {
+    return CURSOR_PROFILES[profile.id as keyof typeof CURSOR_PROFILES];
+  }
+  return CURSOR_PROFILES.default;
+}
+
 /**
- * Points Cursor's config and chat store at the per-agent home (AD-6) and writes the static
- * permissions there. Keys Cursor wrote stay; the file is rewritten only when its permissions
+ * Points Cursor's config and chat store at the per-agent home (AD-6) and writes the profile's
+ * static permissions there. Keys Cursor wrote stay; the file is rewritten only when its permissions
  * differ, and always by atomic rename so parallel turns never leave a partial file.
+ *
+ * A profile that runs in its own config directory keeps Cursor's chat store: the store is a
+ * directory Cursor owns, so the profile's directory points at the default profile's one. A chat
+ * created under one profile is then resumable under the other (live-checked).
  */
-async function prepareHome(home: string): Promise<HomeEnv> {
-  const file = join(home, CONFIG_FILE);
+async function prepareHome(home: string, profile?: CliToolProfile): Promise<HomeEnv> {
+  const chosen = cursorProfileFor(profile);
+  const variant = PROFILE_DIRS[chosen.id] ?? "";
+  const configDir = variant ? join(home, variant) : home;
+  const file = join(configDir, CONFIG_FILE);
+  // 0700 like the atomic writer creates a home with: the profile's directory holds the
+  // permissions that decide what the CLI may read.
+  await mkdir(configDir, { recursive: true, mode: 0o700 });
   // Only a missing or invalid file starts fresh; an unreadable one must not drop Cursor's keys.
   const existing =
     (await readJsonObject(file).catch((error: unknown) => {
@@ -181,10 +237,27 @@ async function prepareHome(home: string): Promise<HomeEnv> {
         { cause: error },
       );
     })) ?? {};
-  if (!isDeepStrictEqual(existing.permissions, CURSOR_PERMISSIONS)) {
-    await writeJsonAtomic(file, { ...existing, permissions: CURSOR_PERMISSIONS });
+  if (!isDeepStrictEqual(existing.permissions, chosen.permissions)) {
+    await writeJsonAtomic(file, { ...existing, permissions: chosen.permissions });
   }
-  return { CURSOR_CONFIG_DIR: home, CURSOR_DATA_DIR: join(home, "data") };
+  if (configDir !== home) {
+    await shareSessionStore(home, configDir);
+  }
+  return { CURSOR_CONFIG_DIR: configDir, CURSOR_DATA_DIR: join(home, "data") };
+}
+
+/**
+ * Points a profile's config directory at the chat store the default profile owns, so a chat
+ * created under either profile is resumable under the other. Cursor reads the store when it starts,
+ * so the target has to exist: the plugin creates it, and Cursor writes into it afterwards.
+ */
+async function shareSessionStore(home: string, configDir: string): Promise<void> {
+  const store = join(home, "acp-sessions");
+  const link = join(configDir, "acp-sessions");
+  await mkdir(store, { recursive: true, mode: 0o700 });
+  await symlink(join("..", "..", "acp-sessions"), link, "dir").catch(() => {
+    // A profile without the shared store still runs; its chats simply do not cross profiles.
+  });
 }
 
 /** The ACP `McpServer` shape for an HTTP server: headers are a name/value list. */
@@ -337,6 +410,10 @@ export const cursorAdapter: CliAdapter = {
   modelAliases: { "default[]": "auto", default: "auto" },
   manifest: cursorManifest,
   alwaysOnNativeTools: CURSOR_ALWAYS_ON_NATIVE_TOOLS,
+  toolProfiles: Object.values(CURSOR_PROFILES).map((profile) => ({
+    id: profile.id,
+    nativeTools: profile.nativeTools,
+  })),
   // Cursor's MCP client gives up on a tool call after 60 s and never hangs up (live probe).
   mcpCallTimeoutMs: 60_000,
   clearEnv: CURSOR_CLEAR_ENV,

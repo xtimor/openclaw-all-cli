@@ -328,6 +328,21 @@ export interface CliSession {
 /** Environment variables an adapter adds so its CLI keeps its state in the per-agent home. */
 export type HomeEnv = Readonly<Record<string, string>>;
 
+/**
+ * One permission profile of an adapter: the native tools the CLI offers under it, and the id that
+ * names the home variant it runs in.
+ */
+export type CliToolProfile = {
+  /** Stable id. It is part of the process reuse key: a warm process never serves another profile's turn. */
+  readonly id: string;
+  /**
+   * The native tools (canonical names, see `PermissionRequest.toolName`) the CLI offers in every
+   * turn under this profile. A profile that switches a native tool off offers it under no profile
+   * that keeps it on.
+   */
+  readonly nativeTools: readonly string[];
+};
+
 export type AuthStatus = "available" | "missing" | "unreadable";
 
 export type AuthProbeParams = {
@@ -408,6 +423,13 @@ export interface CliAdapter {
    */
   readonly alwaysOnNativeTools: readonly string[];
   /**
+   * The permission profiles this adapter can run a turn under. The core picks the profile whose
+   * native tools match the host's selection exactly: the CLI may not offer a native tool the host
+   * left out, and it may not withhold one the host selected. An adapter without profiles keeps
+   * `alwaysOnNativeTools` in every turn.
+   */
+  readonly toolProfiles?: readonly CliToolProfile[];
+  /**
    * How long the CLI's MCP client waits for one tool call before it gives up without hanging up, in
    * ms. When set, the core's proxy stops a call 5 s before that (see `StartMcpProxyOptions`).
    */
@@ -438,7 +460,7 @@ export interface CliAdapter {
    * names and file format are the adapter's. Writes only static permissions (AD-9), safe to call
    * for the same home from parallel turns. Returns the env additions that point the CLI at it.
    */
-  prepareHome(home: string): Promise<HomeEnv>;
+  prepareHome(home: string, profile?: CliToolProfile): Promise<HomeEnv>;
   /** Starts the process and the native session. Throws `CliError` only. */
   open(params: OpenParams): Promise<CliSession>;
   /**
