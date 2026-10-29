@@ -42,7 +42,7 @@ import { appendFileSync, readFileSync, realpathSync } from "node:fs";
 import { pathToFileURL } from "node:url";
 import { cell, lower, makeClient, WriteError, writeSummary } from "./agent-write.mjs";
 import { parseOwners } from "./issue-flow/transitions.mjs";
-import { run as runUpstream } from "./upstream-issue.mjs";
+import { checkNamesTarget, run as runUpstream } from "./upstream-issue.mjs";
 
 export const LABEL = "upstream:post";
 export const RESULT_MARKER = "<!-- upstream-post -->";
@@ -54,6 +54,9 @@ const CLOSE_TAG = /^<!--[ \t]+\/upstream-draft[ \t]+-->[ \t]*$/;
 const ANY_TAG = /<!--[ \t]*\/?[ \t]*upstream-draft/i;
 const ATTRIBUTE = /^(target|op)=([A-Za-z0-9_.#/-]+)$/;
 const REPO_PART = "[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+";
+// What the owner cannot see when they read the draft as rendered text: HTML comments, and characters that are invisible or change the
+// reading direction (soft hyphen, zero-width and direction marks, embeddings and isolates, word joiners, BOM, the Unicode tag block).
+const INVISIBLE = /[\u00AD\u200B-\u200F\u202A-\u202E\u2060-\u2064\u2066-\u2069\uFEFF\u{E0000}-\u{E007F}]/u;
 const LOGIN = /^[A-Za-z0-9][\w.-]*(?:\[bot\])?$/;
 const RESULT_URL = /^https:\/\/github\.com\/[\w.-]+\/[\w.-]+\/issues\/\d+(?:#issuecomment-\d+)?$/;
 
@@ -62,9 +65,9 @@ const isObject = (value) => value !== null && typeof value === "object" && !Arra
 const trimBlank = (text) => text.replace(/^(?:[ \t]*\n)+/, "").replace(/\s+$/, "");
 
 /**
- * Parses the one draft block of a comment body: `{op, repo, issue?, title?, body}`. Throws a refusal for no block, a second block,
- * a malformed or half-open tag, an unknown attribute or op, a target that does not fit the op, an empty body, or (create) a missing
- * `Title:` line. Text outside the block is ignored. Nothing here checks that the repository is allowed: upstream-issue.mjs does.
+ * Parses the one draft block of a comment body: `{op, repo, issue?, title?, body}`. Returns `visible` too: the comment's text except the two tag lines, which is what the owner sees when it is rendered. Throws a refusal for no block, a second block,
+ * a malformed or half-open tag, an unknown attribute or op, a target that does not fit the op, text with an HTML comment or an invisible
+ * character in it, an empty body, or (create) a missing `Title:` line. Text outside the block is ignored. Nothing here checks that the repository is allowed: upstream-issue.mjs does.
  */
 export function parseDraft(text) {
   const lines = String(text ?? "").replace(/\r\n?/g, "\n").split("\n");
@@ -89,11 +92,16 @@ export function parseDraft(text) {
   const op = attributes.get("op");
   const target = attributes.get("target");
   const inner = trimBlank(lines.slice(opens[0] + 1, closes[0]).join("\n"));
+  // Everything but the two tag lines is what the owner sees when the comment is rendered (the tags are HTML comments).
+  const visible = lines.filter((_, index) => index !== opens[0] && index !== closes[0]).join("\n");
+  // The owner approves what they read: nothing hidden may travel with the text (the comment is read rendered, not as source).
+  if (inner.includes("<!--")) throw refuse("the draft text holds an HTML comment (<!--), which the owner cannot see when reading it");
+  if (INVISIBLE.test(inner)) throw refuse("the draft text holds invisible or direction-changing characters, which the owner cannot see when reading it");
   if (op === "comment") {
     const match = new RegExp(`^(${REPO_PART})#([1-9]\\d{0,8})$`).exec(target);
     if (!match) throw refuse("op=comment needs target=<repo>#<issue number>");
     if (inner === "") throw refuse("the draft is empty");
-    return { op, repo: match[1], issue: Number(match[2]), body: inner };
+    return { op, repo: match[1], issue: Number(match[2]), body: inner, visible };
   }
   if (op === "create") {
     if (!new RegExp(`^${REPO_PART}$`).test(target)) throw refuse("op=create needs target=<repo> with no issue number");
@@ -102,7 +110,7 @@ export function parseDraft(text) {
     if (title === undefined) throw refuse("op=create needs a first line `Title: <one line>`");
     const body = trimBlank(rest.join("\n"));
     if (body === "") throw refuse("the draft has a title but no body");
-    return { op, repo: target, title, body };
+    return { op, repo: target, title, body, visible };
   }
   throw refuse('op must be "comment" or "create"');
 }
@@ -257,6 +265,14 @@ export async function run(env, log = () => {}, now = Date.now) {
     if (!Number.isFinite(labeledAtMs)) throw refuse("the time the label was added could not be read");
     const login = readAgentLogin(config.identityFile);
     const draft = findDraft(await readComments(ours, config), { login, labeledAtMs });
+    // The tag is invisible when the comment is rendered, so a comment draft must also name its target in the text the owner reads.
+    if (draft.op === "comment") {
+      try {
+        checkNamesTarget({ title: "", body: draft.visible }, { repo: config.repo }, { repo: draft.repo, issue: draft.issue, marker: { number: config.issue } });
+      } catch {
+        throw refuse(`the visible text of the draft comment must name ${draft.repo}#${draft.issue} (as ${draft.repo}#${draft.issue} or its issue URL), so the owner sees where the draft goes`);
+      }
+    }
     input = buildInput(draft, config.repo, config.issue);
   } catch (error) {
     return stop(error, "Failed while reading the draft");
