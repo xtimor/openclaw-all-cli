@@ -286,17 +286,17 @@ Provider card state (read from the OpenClaw 2026.10.3 Control UI and Gateway; a 
 
 Allow-list: an explicit `agents.defaults.modelPolicy.allow` must name `cursor-cli/*`, or direct selection is refused (see [Setup](../setup.md#3-configure)).
 
-Icon: the package ships its own neutral icon (a terminal prompt and a block cursor, not Cursor's brand mark) as `assets/icon.png`, a 256x256 PNG. OpenClaw 2026.10.3 reads a plugin icon only from that fixed path (there is no manifest key), so the Gateway's `plugins.list` reports `hasIcon: true` for the plugin (`openclaw gateway call plugins.list`; `openclaw plugins inspect` prints no icon field in that version). It is one icon for the plugin, not one per CLI.
+Icon: the package ships its own neutral icon (a terminal prompt and a block cursor, not Cursor's brand mark) as `assets/icon.png`, a 256x256 PNG. OpenClaw 2026.10.3 reads the plugin icon from that fixed path, so the Gateway's `plugins.list` reports `hasIcon: true` for the plugin (`openclaw gateway call plugins.list`; `openclaw plugins inspect` prints no icon field in that version). The manifest also gives each `providerAuthChoices` entry an `icon`, the raw GitHub URL of the same file, for the setup page. It is one icon for the plugin, not one per CLI.
 
 Where the Control UI shows it, and where it never does (read from the OpenClaw 2026.10.3 Control UI bundle; a live look in a headless browser was not run):
 
 | Place | Plugin icon? | What decides it in OpenClaw |
 | --- | --- | --- |
 | Plugins page (cards and detail), command palette plugin entries, channel setup, the chat install card | Yes | These load `/__openclaw__/plugin-icon/<plugin id>` for every plugin whose `plugins.list` row has `hasIcon` (`plugin-icon-http-*.mjs`, `resolvePluginIconSource` in `management-service-*.mjs`; `plugins-page-*.js`, `command-palette-*.js`, `channels-page-*.js`, `control-ui-boot-chat-*.js`). |
-| Model picker and provider cards | No: a letter avatar | The icon comes from a fixed set of brand SVGs bundled with the Control UI (`provider-icons/ProviderIcon-<provider id>.svg`), looked up by provider ID through an allow-list and alias map (`Lp`, `Gp`, `Kp` in `control-ui-boot-shared-*.js`). `cursor-cli` is not in it (`cursor` is), and no plugin file is read. |
-| "Connect provider" list | No: a letter avatar | `model-setup-page-*.js` uses the same bundled set by provider ID, else the choice's `icon`. That is an HTTPS URL honored only when ClawHub catalog metadata registered it (`catalog-icon-registry-*.mjs`); OpenClaw's manifest docs call provider-auth artwork server-owned catalog metadata. A plugin installed from npm cannot set it. |
+| Model setup page | Yes | The setup catalog allow-lists the `icon` of every non-workspace plugin's `providerAuthChoices` (`resolveManagedSetupCatalogIconUrl`), so the manifest `icon` URL is shown. The icon is fetched from GitHub, so it needs network access to `raw.githubusercontent.com`. |
+| Chat model picker, provider cards, "Connect provider" dialog | No: a letter avatar | These use a fixed set of brand SVGs bundled with the Control UI (`provider-icons/ProviderIcon-<provider id>.svg`), looked up by provider ID through an allow-list and alias map (`Lp`, `Gp`, `Kp` in `control-ui-boot-shared-*.js`; `model-setup-page-*.js` for the dialog). `cursor-cli` is not in it (`cursor` is), and no plugin file is read. Upstream: [openclaw/openclaw#186945](https://github.com/openclaw/openclaw/issues/186945). |
 
-So the letter avatar in the model picker, on the provider card, and in the Connect provider list is OpenClaw's behavior for a provider ID it has no brand artwork for, not a missing file in the package.
+So the letter avatar in the chat picker, on the provider card, and in the Connect provider dialog is OpenClaw's behavior for a provider ID it has no brand artwork for, not a missing file in the package.
 
 ## Models
 

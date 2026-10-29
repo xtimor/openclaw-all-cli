@@ -248,6 +248,15 @@ describe("manifest providerAuthChoices", () => {
     }
   });
 
+  it("sets the setup page icon: an HTTPS URL that ends in the path of the packaged assets/icon.png", () => {
+    expect(readFileSync(new URL("../assets/icon.png", import.meta.url)).length).toBeGreaterThan(0);
+    for (const choice of choices) {
+      const icon = new URL(String(choice.icon), "https://invalid.example");
+      expect(icon.protocol, String(choice.choiceId)).toBe("https:");
+      expect(icon.pathname.endsWith("/assets/icon.png"), String(choice.choiceId)).toBe(true);
+    }
+  });
+
   it("shows the provider as OAC / Cursor-CLI in the group label and the settings hint, with the provider ID unchanged", () => {
     const label = createAuthProvider(cursorAdapter, PLUGIN_ID).label;
     expect(label).toBe("OAC / Cursor-CLI");
