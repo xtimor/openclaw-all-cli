@@ -3,7 +3,7 @@ title: 'The upstream workflow can also comment on the owner''s own OpenClaw issu
 type: 'feature'
 ticket: 24
 created: '2026-10-29'
-status: built
+status: done
 baseline_revision: '6d6dc33afaa757f38304a9f6e1c32d1869e90acf'
 route: 'full'
 route_source: 'auto'
