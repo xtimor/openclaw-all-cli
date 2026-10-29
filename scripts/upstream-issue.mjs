@@ -14,7 +14,7 @@
 // (only an ALLOWED_REPOS entry, default the first). Comment (ticket 3.24): {"op":"comment","issue":<number in the target>,"body":...}
 // with the same body rules and repo?. Nothing else. Everything is validated before the first request; a refusal sends nothing.
 // Approved issues only (ticket 3.23, security review): the marker's issue of ours must exist, be an issue, and have had `status:approved`
-// labeled by an owner (ISSUE_FLOW_OWNERS; read with GITHUB_TOKEN, `issues: read`, from the repository's own events). "The owner asks"
+// labeled by an owner's own click (ISSUE_FLOW_OWNERS, a person, not made through a GitHub App; read with GITHUB_TOKEN, `issues: read`, from the repository's own events). "The owner asks"
 // means the owner approves that issue first. A cap refuses a third new issue in 24 hours by the token's user in the target.
 // Idempotent: before creating, it lists the issues the token's owner created in the target (`GET /user`, then `GET /issues?creator=`,
 // which is consistent at once, unlike search) and returns the one with the same marker line or the same title instead of creating.
@@ -145,8 +145,24 @@ export function validate(text, ourRepo) {
 const issueUrl = (repo, number) => `https://github.com/${repo}/issues/${number}`;
 
 /**
+ * A `labeled` event for `label` that is the owner's own click: the actor is an owner and a person (never a bot), and the event was not
+ * made through a GitHub App. A Claude session writes with the owner's credentials, so its events show the owner's login but carry
+ * `performed_via_github_app` (ticket 3.25, security review): they do not count as the owner's approval.
+ */
+export function isOwnersOwnClick(event, owners, label) {
+  return (
+    isObject(event) &&
+    event.event === "labeled" &&
+    event.label?.name === label &&
+    owners.includes(lower(event.actor?.login)) &&
+    (event.actor?.type ?? "User") === "User" &&
+    event.performed_via_github_app == null
+  );
+}
+
+/**
  * Reads the issue of ours that the marker names and refuses unless it exists, is an issue (never a pull request), and an owner
- * labeled it `status:approved` at some point (its events, oldest first). `ours` is the client for this repository (GITHUB_TOKEN,
+ * labeled it `status:approved` at some point, as the owner's own click (its events, oldest first; see isOwnersOwnClick). `ours` is the client for this repository (GITHUB_TOKEN,
  * read only). An unreadable answer refuses too. Sends no write. Returns the issue as fetched (title, body).
  */
 export async function checkApproved(ours, config, number) {
@@ -158,11 +174,11 @@ export async function checkApproved(ours, config, number) {
     const events = (await ours.rest("GET", `${path}/events?per_page=100&page=${page}`)).data;
     if (!Array.isArray(events)) throw new WriteError(`GET /issues/${number}/events: the events could not be read`);
     for (const event of events) {
-      if (event?.event === "labeled" && event.label?.name === APPROVED && config.owners.includes(lower(event.actor?.login))) return answer.data;
+      if (isOwnersOwnClick(event, config.owners, APPROVED)) return answer.data;
     }
     if (events.length < 100) break;
   }
-  throw refuse(`${config.repo}#${number} has no ${APPROVED} label set by an owner (ISSUE_FLOW_OWNERS); the owner approves the issue first`);
+  throw refuse(`${config.repo}#${number} has no ${APPROVED} label set by an owner (ISSUE_FLOW_OWNERS) with their own click, not through an app or an agent session; the owner approves the issue first`);
 }
 
 /** The login of the token's user (`GET /user`); an unreadable or odd answer fails closed. */

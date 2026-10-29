@@ -439,6 +439,27 @@ describe("decide: issue_comment", () => {
     expect(approved).toEqual([remove("status:approved"), revert(2)]);
   });
 
+  it("APPROVAL_VIA_APP: an owner's approval made through a GitHub App (a Claude session writes as the owner) is reverted; the owner's own click stays (ticket 3.25)", () => {
+    const viaApp = (label: string, actor: string, minutes: number, id: number) => ({ ...labeledAt(label, actor, minutes, id), performed_via_github_app: { slug: "claude", id: 1 } });
+    const event = { name: "issues", action: "labeled", actor: "xtimor", label: "status:approved" };
+    const labels = ["status:triaged", "status:approved"];
+    expect(t.decide(event, issue(labels), { owners: OWNERS, timeline: [labeledAt("status:triaged", "bob", 0, 1), viaApp("status:approved", "xtimor", 3, 2)] })).toEqual([remove("status:approved"), revert(2)]);
+    // Found from any event this run handles, and after an unrelated later label.
+    for (const other of [{ name: "issues", action: "labeled", actor: "bob", label: "type:bug" }, { name: "issues", action: "unlabeled", actor: "bob", label: "priority:p1" }]) {
+      expect(t.decide(other, issue([...labels, "type:bug"]), { owners: OWNERS, timeline: [labeledAt("status:triaged", "bob", 0, 1), viaApp("status:approved", "xtimor", 3, 2), labeledAt("type:bug", "bob", 4, 3)] })).toEqual([remove("status:approved"), revert(2)]);
+    }
+    // performed_via_github_app: null (the field GitHub sends for a person's click) and false are not an app.
+    for (const field of [null, undefined, false]) {
+      const own = { ...labeledAt("status:approved", "xtimor", 3, 2), performed_via_github_app: field };
+      expect(t.decide(event, issue(labels), { owners: OWNERS, timeline: [labeledAt("status:triaged", "bob", 0, 1), own] })).toEqual([remove("status:triaged")]);
+    }
+    // The owner's own click after the app's approval stands (the latest labeled event decides).
+    expect(t.decide(event, issue(labels), { owners: OWNERS, timeline: [viaApp("status:approved", "xtimor", 1, 1), labeledAt("status:approved", "xtimor", 5, 2)] })).toEqual([remove("status:triaged")]);
+    // An app event after the owner's click reverts again.
+    expect(t.decide(event, issue(labels), { owners: OWNERS, timeline: [labeledAt("status:approved", "xtimor", 1, 1), viaApp("status:approved", "xtimor", 5, 2)] })).toEqual([remove("status:approved"), revert(2)]);
+    expect(t.NON_OWNER_APPROVAL_COMMENT).toContain("with their own click (not through an app or an agent session)");
+  });
+
   it("AUTHOR_REPLY: a comment by someone else does nothing", () => {
     expect(t.decide(comment("bob"), issue(["status:needs-info"]))).toEqual([]);
     expect(t.decide(comment("xtimor"), issue(["status:needs-info"]), { owners: OWNERS })).toEqual([]);
@@ -885,6 +906,21 @@ describe("runEvent", () => {
     await apply.runEvent({ github: fake.github, context: ctx("issues", payload), core: fakeCore(), env });
     expect(fake.labelsOf(12)).toEqual(["status:triaged"]);
     expect(fake.calls).toEqual(["get 12", "events 12", "remove 12 status:approved", "comments 12", "comment 12 Only the owner appro"]);
+  });
+
+  it("APPROVAL_VIA_APP: runEvent reads performed_via_github_app from the issue's events and reverts an owner's approval made through an app", async () => {
+    const make = (field: unknown) =>
+      fakeGithub([{ number: 12, state: "open", labels: ["status:triaged", "status:approved"], user: { login: "alice" } }], {
+        events: { 12: [labeledAt("status:triaged", "bob", 0, 1), { ...labeledAt("status:approved", "xtimor", 3, 2), performed_via_github_app: field }] },
+      });
+    const payload = { action: "labeled", label: { name: "status:approved" }, sender: { login: "xtimor" }, issue: { number: 12 } };
+    const viaClaude = make({ slug: "claude" });
+    await apply.runEvent({ github: viaClaude.github, context: ctx("issues", payload), core: fakeCore(), env });
+    expect(viaClaude.labelsOf(12)).toEqual(["status:triaged"]);
+    expect(viaClaude.calls).toContain("remove 12 status:approved");
+    const click = make(null);
+    await apply.runEvent({ github: click.github, context: ctx("issues", payload), core: fakeCore(), env });
+    expect(click.labelsOf(12)).toEqual(["status:approved"]);
   });
 
   it("OWNER_APPROVED: the owner list comes from ISSUE_FLOW_OWNERS", async () => {
