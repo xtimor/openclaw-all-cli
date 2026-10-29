@@ -1,0 +1,83 @@
+name: Upstream post
+
+# Publishes an agent's upstream draft when the owner labels our issue `upstream:post` (ticket 3.25). The routine's permission check refuses an
+# agent's own call of scripts/upstream-issue.sh (a public write in openclaw/openclaw under the owner's name), so the agent writes the draft
+# (one block in its `<!-- issue-impl -->` comment), the owner's label is the approval, and GitHub publishes, the way `Batch merge` merges on
+# the owner's "ready". scripts/upstream-post.mjs checks the labeler, reads the draft, and hands it to run() of scripts/upstream-issue.mjs:
+# the same tested code path as the `Upstream issue` workflow, so every guard of tickets 3.23 and 3.24 applies (owner actors, attempt 1, an
+# owner-approved issue of ours that names the target, own issue for a comment, caps, idempotency, size limits). It then comments the result
+# (or the refusal reason) on our issue and removes the label. Design and the agents' side: docs/agents/identity.md ("Upstream issues").
+# Setup: the same secret GH_PUBLIC_TOKEN in the GitHub Environment `agent` (deployment branches: only `main`) as `Upstream issue`.
+# A workflow of an `issues` event runs from the default branch, so a pull request cannot change what runs; the job never checks out or runs
+# pull request code. The label is filtered in the job `if` and again in the script. The owner's token lives in the one step that runs the
+# script. Everything the event carries reaches the script only through env, never into the script text. The job token writes only to this
+# repository (the result comment, the label removal); the owner's token is sent only upstream, by run() of upstream-issue.mjs.
+# One run at a time, shared with `Upstream issue`: the same group serialises both, so a duplicate cannot be created in a race between them.
+# A third labeled event replaces a pending one: the label stays and no result comment comes, so add the label again.
+on:
+  issues:
+    types: [labeled]
+
+permissions: {}
+
+env:
+  # Same default as ci.yml and agent-write.yml.
+  NODE_VERSION: 24.22.0
+  # Logins (comma separated) allowed to publish. Keep in sync with ISSUE_FLOW_OWNERS in issue-flow.yml.
+  ISSUE_FLOW_OWNERS: xtimor
+
+jobs:
+  post:
+    if: github.ref == 'refs/heads/main' && github.event.label.name == 'upstream:post'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    environment: agent
+    concurrency:
+      group: upstream-issue
+      cancel-in-progress: false
+    permissions:
+      contents: read
+      issues: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: refs/heads/main
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+      - name: Publish the draft with the owner's token
+        id: post
+        env:
+          GH_PUBLIC_TOKEN: ${{ secrets.GH_PUBLIC_TOKEN }}
+          # This repository's token: reads the issue and its comments, writes the result comment and the label removal; never sent upstream.
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # Who started this run (differs from the actor on a re-run); the script requires an owner and attempt 1.
+          GITHUB_TRIGGERING_ACTOR: ${{ github.triggering_actor }}
+          GITHUB_RUN_ATTEMPT: ${{ github.run_attempt }}
+          ISSUE_NUMBER: ${{ github.event.issue.number }}
+          LABEL_NAME: ${{ github.event.label.name }}
+          LABELER: ${{ github.event.sender.login }}
+          LABELER_TYPE: ${{ github.event.sender.type }}
+          # The issue's update time in the labeled event: the draft comment must not have been edited after it.
+          LABELED_AT: ${{ github.event.issue.updated_at }}
+        run: |
+          set -euo pipefail
+          if [ -n "$GH_PUBLIC_TOKEN" ]; then
+            echo "::add-mask::$GH_PUBLIC_TOKEN"
+          fi
+          node scripts/upstream-post.mjs
+      # The outcome is one line the script built (a URL or a refusal reason); it reaches this step only through env.
+      - name: Report the result
+        if: always()
+        env:
+          RESULT: ${{ steps.post.outputs.result }}
+          OUTCOME: ${{ steps.post.outcome }}
+        run: |
+          # A workflow command unescapes %0A, %0D and %25 in its message: escape % first, so no text can inject a line break or a command.
+          RESULT="${RESULT//%/%25}"
+          if [ -n "$RESULT" ]; then
+            if [ "$OUTCOME" = success ]; then echo "::notice title=Upstream post::$RESULT"; else echo "::error title=Upstream post::$RESULT"; fi
+          else
+            echo "::error title=Upstream post::upstream-post: no result (the step did not run to the end)"
+          fi
