@@ -40,7 +40,7 @@ const DAY_MS = 24 * 60 * 60 * 1000;
 // Marks the automation's own comments; fixed text, no issue data inside.
 const MARKER = "<!-- issue-flow -->";
 
-export const NON_OWNER_APPROVAL_COMMENT = `${MARKER}\nOnly the owner approves an issue for development. The \`${APPROVED}\` label was removed and the previous status restored.`;
+export const NON_OWNER_APPROVAL_COMMENT = `${MARKER}\nOnly the owner approves an issue for development, with their own click (not through an app or an agent session). The \`${APPROVED}\` label was removed and the previous status restored.`;
 
 /** The comment for a reverted approval. `once` is a hidden key the apply layer looks for, so one label event gets one comment. */
 export function approvalComment(eventId) {
@@ -149,6 +149,8 @@ export function normalizeTimeline(raw) {
       kind,
       label,
       actor: (typeof item.actor === "string" ? item.actor : item.actor?.login) ?? null,
+      // Set when the event was made through a GitHub App (a Claude session writes with the owner's login and shows `performed_via_github_app`).
+      viaApp: item.viaApp === true || (item.performed_via_github_app != null && item.performed_via_github_app !== false),
       createdAt: item.createdAt ?? item.created_at ?? null,
       time: Number.isFinite(time) ? time : Number.NEGATIVE_INFINITY,
       index: entries.length,
@@ -178,7 +180,7 @@ function latestLabeled(timeline, event) {
   const latest = new Map();
   const entries = normalizeTimeline(timeline);
   entries.forEach((entry, rank) => {
-    if (entry.kind === "labeled" && isStatus(entry.label)) latest.set(entry.label, { rank, actor: entry.actor, id: entry.id, time: entry.time });
+    if (entry.kind === "labeled" && isStatus(entry.label)) latest.set(entry.label, { rank, actor: entry.actor, id: entry.id, time: entry.time, viaApp: entry.viaApp });
   });
   // The event being handled counts as the newest one when the timeline does not show it (not read, or lagging).
   if (event?.action === "labeled" && isStatus(event.label) && !latest.has(event.label)) {
@@ -199,7 +201,7 @@ function replacedBefore(entries, rank) {
 /**
  * The status an issue should have, from its current labels and its label timeline. Order-independent and idempotent,
  * so parallel runs for one issue converge: a closed issue has no status; every `status:approved` whose latest
- * `labeled` event is by a non-owner is dropped (one comment per event); of the status labels left, the most recently
+ * `labeled` event is by a non-owner, or by an owner through a GitHub App (`performed_via_github_app`), is dropped (one comment per event); of the status labels left, the most recently
  * labeled one stays (labels with no event rank below those with one, then by lifecycle order); none left means the
  * status the foreign approval replaced (the last one unlabeled before it), else `new`.
  */
@@ -211,7 +213,8 @@ function reconcile(issue, { timeline, owners, event }) {
   let reverted = null;
   if (statuses.includes(APPROVED)) {
     const approval = latest.get(APPROVED);
-    if (approval && !isOwner(approval.actor, owners)) {
+    // The owner's own click only: an owner login on an event made through an app (an agent session) is reverted too.
+    if (approval && (!isOwner(approval.actor, owners) || approval.viaApp === true)) {
       reverted = approval;
       kept = statuses.filter((label) => label !== APPROVED);
     }

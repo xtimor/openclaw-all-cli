@@ -285,3 +285,15 @@ after = [23]
 hitl = false
 risk = "high"
 references = ["epic-distribution.md", "issue-flow.md"]
+
+[[entry]]
+id = 25
+type = "story"
+title = "The owner's `upstream:post` label publishes an agent's upstream draft through GitHub"
+description = "Live 2026-10-29: the routine's auto-mode permission check refused `scripts/upstream-issue.sh` (a public write in openclaw/openclaw under the owner's name) although the command is in the allow list; the agent rightly left drafts in #51, #54, #55 and the owner's session posted them. Owner decision (2026-10-29): agents write the draft; the owner's label `upstream:post` on our issue is the approval; GitHub publishes it, like Batch merge. Build: (1) label `upstream:post` in `.github/labels.yml` (the relay's label allow-list must not accept it: agents can never add it). (2) A fixed draft format agents write in their `<!-- issue-impl -->` comment: a block opened by `<!-- upstream-draft target=openclaw/openclaw#<n> op=comment -->` (or `op=create` with a `Title:` line) and closed by `<!-- /upstream-draft -->`; exactly one block per issue comment. (3) Workflow `.github/workflows/upstream-post.yml` on `issues` `labeled` (only when the label is `upstream:post`), environment `agent`, `permissions: {}` with the job's minimum (`issues: write` on this repo for the result comment and label removal): checks the labeler (`github.event.sender`) is an owner (`ISSUE_FLOW_OWNERS`) and not a bot; reads the latest bot `<!-- issue-impl -->` comment of that issue (author must be the agent app, `.github/agent-identity.json`) and its one draft block; builds the `scripts/upstream-issue.mjs` input (body plus the `Filed for xtimor/openclaw-all-cli#<n>` line) and runs the same tested code path with `GH_PUBLIC_TOKEN` (all 3.23/3.24 guards apply: approved issue, the issue names the target, own issue for comments, caps, idempotent); then comments the result URL (or the refusal reason) on our issue and removes the label. Input reaches scripts only through env or the API, never `run:` text; tokens never printed. (4) Docs: implement.md (upstream follow-up ends with the draft block, `status:blocked`, `Waiting for: @owner: review the draft and add upstream:post`), triage.md (same if triage drafts upstream), identity.md, issues.md, MEMORY; agents stop calling `scripts/upstream-issue.sh` themselves (it stays for the owner's interactive sessions)."
+verify = "Tests: draft-block parser (one block, target and op, missing or two blocks refused, a block by a non-bot author ignored), the workflow script against API stubs (owner labeler posts and comments back, non-owner or bot labeler refused, label removed in both cases, guards of 3.23/3.24 still apply, token never printed), relay refuses `upstream:post`, workflow file pins (trigger, label filter, environment, permissions, env-only inputs); `npm run ci` passes; live: the owner labels #54 (or the next follow-up) and the draft appears upstream."
+covers = []
+after = [24]
+hitl = false
+risk = "high"
+references = ["epic-distribution.md", "issue-flow.md"]

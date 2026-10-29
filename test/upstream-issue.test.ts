@@ -376,6 +376,25 @@ describe("upstream-issue", () => {
       expect(upstream()).toEqual([]);
     });
 
+    it("an owner's login on an event made through a GitHub App (a Claude session writes as the owner) is not an approval; the owner's own click is (ticket 3.25)", async () => {
+      const viaApp = { ...approval(), performed_via_github_app: { slug: "claude", id: 1 } };
+      for (const events of [[viaApp], [{ ...approval(), actor: { login: "xtimor", type: "Bot" } }], [{ ...approval(), performed_via_github_app: { id: 7 } }]]) {
+        answers.set(eventsPath, [200, events]);
+        const result = await run(issue());
+        expect(result.code, JSON.stringify(events)).toBe(1);
+        expect(result.stderr).toContain("with their own click, not through an app or an agent session");
+        expect(upstream()).toEqual([]);
+        calls = [];
+      }
+      // An app event beside the owner's own click does not hide it, whichever comes first.
+      for (const events of [[viaApp, { ...approval(), performed_via_github_app: null }], [{ ...approval(), performed_via_github_app: null }, viaApp], [{ ...approval(), actor: { login: "xtimor", type: "User" }, performed_via_github_app: null }]]) {
+        answers.set(eventsPath, [200, events]);
+        const result = await run(issue());
+        expect(result.code, result.stderr).toBe(0);
+        calls = [];
+      }
+    });
+
     it("an owner's approval counts at any position, in any case of the login, and on a later page of the events", async () => {
       const filler = Array.from({ length: 100 }, () => ({ event: "commented", actor: { login: "someone" } }));
       answers.set(`${eventsPath}?page=1`, [200, filler]);

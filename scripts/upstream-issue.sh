@@ -2,6 +2,7 @@
 # The one entry point for filing an upstream issue or commenting on the owner's own one (docs/agents/identity.md, "Upstream issues"):
 # dispatches the `Upstream issue` workflow on main with a JSON file, waits for the run, checks that it succeeded, and prints the
 # issue's URL (a comment's URL ends in `#issuecomment-<id>`). Agent-neutral.
+# For the owner's interactive sessions: agents do not call it (ticket 3.25; they write a draft and the owner's `upstream:post` label publishes it).
 #
 #   scripts/upstream-issue.sh /tmp/upstream-issue-1.json      # prints https://github.com/openclaw/openclaw/issues/<n> on stdout
 #

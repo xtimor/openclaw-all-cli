@@ -230,8 +230,10 @@ describe("upstream issues (ticket 3.23)", () => {
     expect(part).toMatch(/Check it only with a real case/);
     expect(part).not.toMatch(/"title": "test"|#1"/);
     expect(implement).toMatch(/\*\*Upstream issues\.\*\*[^\n]*approved/);
-    expect(implement).toContain("scripts/upstream-issue.sh /tmp/upstream-issue-<n>.json");
-    expect(triage).toMatch(/\*\*Upstream issues\.\*\* Triage files none/);
+    // Ticket 3.25: agents write a draft and never call the helper (the routine's permission check refuses it).
+    expect(implement).not.toContain("scripts/upstream-issue.sh /tmp/upstream-issue-<n>.json");
+    expect(implement).toMatch(/never call `scripts\/upstream-issue\.sh`/);
+    expect(triage).toMatch(/\*\*Upstream issues\.\*\* Triage writes no upstream draft and publishes nothing/);
     expect(issues).toContain("agents/identity.md#upstream-issues");
   });
 
@@ -249,10 +251,84 @@ describe("upstream issues (ticket 3.23)", () => {
     expect(part).toMatch(/never edits, closes, reopens, or labels/);
     expect(part).not.toMatch(/no comment, edit, or close upstream/);
     const bullet = implement.split("\n").find((line) => line.startsWith("- **Upstream follow-up.**")) ?? "";
-    expect(bullet).toContain('{"op": "comment", ...}');
+    expect(bullet).toContain("`op=comment`");
+    expect(bullet).toContain("`target=openclaw/openclaw#<n>`");
     expect(bullet).toMatch(/none of `Fixes`, `Closes`, `Resolves`, or `Refs`/);
     expect(bullet).toMatch(/`status:blocked`/);
     expect(bullet).toMatch(/You never close it; the owner does/);
-    expect(issues).toMatch(/comment once on an issue you opened there/);
+    expect(issues).toMatch(/a comment on your own issue \(`op=comment`\)/);
+  });
+});
+
+describe("upstream drafts and the upstream:post label (ticket 3.25)", () => {
+  const identity = read("docs", "agents", "identity.md");
+  const part = section(identity, "## Upstream issues");
+  const labels = read(".github", "labels.yml");
+
+  it("identity.md prints the two draft forms, and the parser accepts exactly what the docs print", async () => {
+    const parser = (await import(pathToFileURL(join(ROOT, "scripts", "upstream-post.mjs")).href)) as { parseDraft: (text: string) => Record<string, unknown> };
+    const fences = [...part.matchAll(/```\n(<!-- upstream-draft[\s\S]*?)```/g)].map((match) => (match[1] ?? "").replaceAll("<n>", "172969"));
+    expect(fences).toHaveLength(2);
+    expect(parser.parseDraft(fences[0] as string)).toMatchObject({ op: "comment", repo: "openclaw/openclaw", issue: 172969 });
+    expect(parser.parseDraft(fences[1] as string)).toMatchObject({ op: "create", repo: "openclaw/openclaw", title: "one line, at most 256 characters" });
+    expect(part).toContain("<!-- upstream-draft target=openclaw/openclaw#<n> op=comment -->");
+    expect(part).toContain("<!-- upstream-draft target=openclaw/openclaw op=create -->");
+    expect(part).toContain("<!-- /upstream-draft -->");
+  });
+
+  it("identity.md says who labels, what the workflow checks, and the rules an agent must write for", () => {
+    expect(part).toMatch(/the owner's label `upstream:post` on our issue is the approval/);
+    expect(part).toMatch(/you never publish it and never add the label/);
+    expect(part).toMatch(/\*\*latest\*\* `<!-- issue-impl -->` comment by the app/);
+    expect(part).toMatch(/\*\*nothing the owner cannot see\*\*: no HTML comment/);
+    expect(part).toMatch(/\*\*names its target in the visible text\*\* of the same comment/);
+    expect(implement).toContain("`**Draft for:** openclaw/openclaw#<n>`");
+    expect(part).toMatch(/an owner \(`ISSUE_FLOW_OWNERS`\), is a person and not a bot, and is the run's actor/);
+    expect(part).toMatch(/runs that script's own `run\(\)` with `GH_PUBLIC_TOKEN`, so every guard below applies unchanged/);
+    expect(part).toMatch(/`<!-- upstream-post -->`/);
+    expect(part).toMatch(/Agents never add this label \(the relay refuses it/);
+    expect(part).toContain("Waiting for: @<owner-login>: review the draft and add upstream:post");
+  });
+
+  it("implement.md and triage.md forbid the agents to add the label and to call the helper; issues.md tells the owner what to do", () => {
+    expect(implement).toMatch(/Never add `upstream:post` yourself/);
+    expect(implement).toContain("`status:blocked`");
+    expect(implement).toContain("Waiting for: @<owner-login>: review the draft and add upstream:post");
+    expect(triage).toMatch(/Never add the label `upstream:post`/);
+    expect(issues).toMatch(/add the label `upstream:post` to our issue/);
+    expect(issues).toMatch(/agents and the relay never add it/);
+  });
+
+  it("approvals and the upstream:post label must be the owner's own click, not made through an app (security review of ticket 3.25, finding 1)", () => {
+    expect(part).toMatch(/\*\*the owner's own click\*\*/);
+    expect(part).toMatch(/no `performed_via_github_app`/);
+    expect(part).toMatch(/an injected session cannot publish by adding the label/);
+    expect(part).toMatch(/as the owner's own click \(`actor\.type` `User`, no `performed_via_github_app`/);
+    expect(implement).toMatch(/be the owner's own click, not made through an app\*\*: `actor\.type` is `User` and `performed_via_github_app` is `null`/);
+    expect(implement).toContain("an approval made through an app: skip and name it in the report");
+    expect(implement).toContain("performed_via_github_app.slug");
+    expect(triage).toMatch(/`performed_via_github_app` is `null`, so an event made through an app such as a Claude session does not count/);
+    expect(issues).toMatch(/or when you set it through an app/);
+    expect(issues).toMatch(/by an owner through a GitHub App \(the event's `performed_via_github_app` is set/);
+    expect(issues).toMatch(/with your own click in GitHub \(not through an app or an agent session/);
+  });
+
+  it("the draft rules: 60 seconds after the last edit, one comment per target per issue of ours, no hidden Markdown (review findings 3, 4, 6)", () => {
+    expect(part).toMatch(/not edited within 60 seconds before the owner adds the label, or after it/);
+    expect(part).toMatch(/\*\*One comment \(or issue\) per target per issue of ours\.\*\*/);
+    expect(part).toMatch(/A second note on the same target needs a new, owner-approved issue of ours/);
+    expect(part).toContain("**Existing:**");
+    expect(part).toMatch(/no link reference definition line/);
+    expect(part).toMatch(/no raw HTML/);
+    expect(part).toMatch(/outside any HTML comment/);
+    expect(implement).toMatch(/One comment or issue per target per issue of ours: a second draft for the same target posts nothing new/);
+    expect(issues).toMatch(/One comment per target per issue of ours/);
+    expect(issues).toMatch(/Wait a minute after the agent's last edit of the draft before you label/);
+  });
+
+  it("labels.yml defines upstream:post and the relay's label rule cannot name it", () => {
+    expect(labels).toContain('- name: "upstream:post"');
+    const writer = read("scripts", "agent-write.mjs");
+    expect(writer).toContain("const LABEL_RE = /^(status|type|priority|source):[a-z0-9-]{1,40}$/;");
   });
 });
