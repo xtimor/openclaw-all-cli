@@ -101,6 +101,13 @@ Mutation checks (each fails at least one test): author check removed, pull-reque
   - `[low]` `[reject]` Real-runner behavior of the `since` filters and of an unreadable annotation is not verified here -- documented REST behavior; failure mode is exit 1 with an idempotent retry.
   - `[low]` `[reject]` The live run is not done -- the ticket's verify says the first follow-up issue posts through it; recorded as not run.
 
+### 2026-10-29 -- Independent security review (after the build)
+- verdicts: 3 findings -- high 0, medium 1, low 2, false 0, maybe-false 0
+- findings: (from an independent reviewer of `6d6dc33..HEAD`; fixed on the same branch by the build worker, in-session; the review found nothing blocking)
+  - `[medium]` `[patch]` One approved issue of ours allowed a comment on every one of the owner's upstream issues, up to the cap -- `checkApproved` now returns the issue it fetched, and `checkNamesTarget` refuses, before anything upstream (an existing comment included), unless its title or body names the target as `openclaw/openclaw#<n>` or `https://github.com/openclaw/openclaw/issues/<n>`: case-insensitive, number matched exactly (`#1729` and `#1729690` do not match `#172969`), not preceded by a word, `.`, `/`, or `-` character. Tests: the "must name the target" block; mutation checks (check removed, number boundary removed, prefix guard removed, URL form removed) each fail a test. The stub's default issue 45 now names `#172969` and `#173057`. Docs: `identity.md`, `implement.md`, `MEMORY.md`.
+  - `[low]` `[patch]` A comment refused for its actors, attempt, or shape said "nothing created" -- `asksForComment` peeks at `op` before any check, so every refusal of a comment input says "nothing posted"; a create (and an unparsable input or another op) still says "nothing created". Test `WORDING`; the mutation (always "created") fails 6 tests.
+  - `[low]` `[patch]` The second half of the cap test ("the count spans pages ... stops reading at the cap") reused answers of the first half -- it now starts from a fresh `answers` map.
+
 ## Design Notes
 
 Why count on the user's own issues: GitHub has no per-user comment filter, search lags minutes, and the repository-wide comment list of a busy repository is too large; the set of issues this operation can touch is exactly the user's own, so counting there is complete for the cap's purpose. Why `existing` wins over the cap: a retry after a lost answer must return the posted comment, not fail.
@@ -122,11 +129,11 @@ Status: built. Blocking condition: none.
 
 **Files changed:** `scripts/upstream-issue.mjs`, `scripts/upstream-issue.sh`, `.github/workflows/upstream-issue.yml` (comments and input description), `test/upstream-issue.test.ts`, `test/upstream-issue-sh.test.ts`, `test/agent-flow-docs.test.ts`, `docs/agents/identity.md`, `docs/agents/implement.md`, `docs/issues.md`, `MEMORY.md`, this plan.
 
-**Review:** 13 findings from four lenses run in-session (no subagents available): 2 patched (low), 0 deferred, 11 rejected or false with reasons in the triage log.
+**Review:** 13 findings from four lenses run in-session (no subagents available): 2 patched (low), 0 deferred, 11 rejected or false with reasons in the triage log. The independent security review added 3 findings (1 medium, 2 low), all patched: the approved issue must name the target, comment refusals say "nothing posted", the cap test starts from fresh answers.
 
 **Follow-up review recommended: false.** Patched: high 0, medium 0, low 2.
 
-**Verification:** `npm run ci` passed (plan gate, typecheck, unit tests, build, package checks, install smoke); `test/upstream-issue.test.ts` (48), `test/upstream-issue-sh.test.ts` (11), and the doc pins pass; nine mutation checks fail the intended tests.
+**Verification:** `npm run ci` passed (plan gate, typecheck, unit tests, build, package checks, install smoke); `test/upstream-issue.test.ts` (52), `test/upstream-issue-sh.test.ts` (11), and the doc pins pass; nine mutation checks fail the intended tests.
 
 **Not run:** the live comment on a real upstream issue (needs the secret and an approved issue of ours); the real-runner behavior of the `since` filters of the issue and comment lists (REST documentation only).
 
