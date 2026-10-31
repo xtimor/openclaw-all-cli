@@ -735,6 +735,21 @@ describe("agent-write", () => {
     expect(approved.stderr).toContain("status:approved is the owner's to set");
   });
 
+  it("STATUS_NAMES: adding a status: name that is not a status of the label file (a typo, the retired status:new) is refused; removing one is fine (ticket 3.27)", async () => {
+    for (const name of ["status:new", "status:made-up", "status:todos", "status:in-progres"]) {
+      calls = [];
+      const result = await run([{ op: "comment", issue: 12, body: "hi" }, { op: "labels", issue: 12, add: ["status:triaged", name] }]);
+      expect(result.code, name).toBe(1);
+      expect(result.stderr).toContain(`${name} is not a status of .github/labels.yml`);
+      expect(calls).toEqual([]);
+    }
+    // Every real status except the owner's and the workflow's is accepted, and the old name may still be removed from an issue.
+    for (const name of ["status:todo", "status:needs-info", "status:triaged", "status:planned", "status:in-progress", "status:in-review", "status:blocked", "status:declined", "status:awaiting-post"]) {
+      expect((await run([{ op: "labels", issue: 12, add: [name] }])).code, name).toBe(0);
+    }
+    expect((await run([{ op: "labels", issue: 12, add: ["status:todo"], remove: ["status:new"] }])).code).toBe(0);
+  });
+
   it("LABEL_NAMES: only status:, type:, priority:, and source: names; dot names, lookalikes, typos, and a name in both lists are refused", async () => {
     const bad = [".", "..", "", "bug", "status:", "status: triaged", "Status:triaged", "status:Triaged", "stat\u0435s:triaged", "status:a/b", "status:../x", "wontfix", "status:x\nstatus:y", "label:x", "status:" + "a".repeat(41)];
     for (const name of bad) {

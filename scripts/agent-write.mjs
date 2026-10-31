@@ -12,7 +12,7 @@
 //   {op:"edit_comment", comment_id, body}                  only a comment whose author is AGENT_LOGIN
 //   {op:"labels", issue, add?:[...], remove?:[...]}        names like status:x, type:x, priority:x, source:x only; add first, then remove
 //                                                          (a label that is not there is fine); never add `status:approved` or `status:rework` (the owner's, by their own click) or
-//                                                          `status:upstream` (the `Upstream post` workflow's); no name in both lists
+//                                                          `status:upstream` (the `Upstream post` workflow's); no `status:` name that is not in STATUS_LABELS (a typo, or a retired status name); no name in both lists
 //   {op:"close", issue, reason}                            only a security report: reason not_planned, and SECURITY_CLOSE_COMMENT is posted on that issue by
 //                                                          an earlier `comment` of the same list (agents never close an issue otherwise, see closeGuard); an issue, never a pull request
 //   {op:"reopen", issue}                                   an issue, never a pull request
@@ -38,7 +38,7 @@
 // refused or failed; 2 a variable is missing or malformed.
 import { appendFileSync, realpathSync } from "node:fs";
 import { pathToFileURL } from "node:url";
-import { parseOwners } from "./issue-flow/transitions.mjs";
+import { STATUS_LABELS, parseOwners } from "./issue-flow/transitions.mjs";
 import { planStatus } from "./plan-gate.mjs";
 
 const DEFAULT_API = "https://api.github.com";
@@ -184,6 +184,8 @@ export function validate(text) {
         const add = labelList(raw, "add", index);
         const remove = labelList(raw, "remove", index);
         if (add.length + remove.length === 0) throw refuse(`${where}: add or remove must name a label`);
+        // A `status:` name that is not a status of .github/labels.yml (a typo, or a retired one such as the old name of todo) would make GitHub create a stray label.
+        for (const name of add) if (name.startsWith("status:") && !STATUS_LABELS.includes(name)) throw refuse(`${where}: ${name} is not a status of .github/labels.yml`);
         for (const owned of OWNER_ONLY_LABELS) if (add.includes(owned)) throw refuse(`${where}: ${owned} is the owner's to set`);
         if (add.includes(WORKFLOW_ONLY_LABEL)) throw refuse(`${where}: ${WORKFLOW_ONLY_LABEL} is set by the Upstream post workflow after it publishes a draft; an agent sets status:awaiting-post for a ready draft`);
         if (add.some((name) => remove.includes(name))) throw refuse(`${where}: a label cannot be both added and removed`);

@@ -42,7 +42,7 @@ export const AWAITING_POST = "status:awaiting-post";
 /** The draft was published upstream and the maintainers act. Set only by the `Upstream post` workflow; never stale (the owner closes it). */
 export const UPSTREAM = "status:upstream";
 /**
- * The owner sent the result back with comments; the approval holds (ticket 3.28). Counts only as the owner's own click, exactly like
+ * The owner sent the result back with comments (ticket 3.28); their own click is the authorization, no triage and no earlier approval. Counts only as the owner's own click, exactly like
  * `status:approved`: the implementation agent builds on it, so anyone else's (or an app's) is reverted. Never stale; triage skips it.
  */
 export const REWORK = "status:rework";
@@ -65,9 +65,8 @@ const DAY_MS = 24 * 60 * 60 * 1000;
 // Marks the automation's own comments; fixed text, no issue data inside.
 const MARKER = "<!-- issue-flow -->";
 
-export const NON_OWNER_APPROVAL_COMMENT = `${MARKER}\nOnly the owner approves an issue for development, with their own click (not through an app or an agent session). The \`${APPROVED}\` label was removed and the previous status restored.`;
-
-export const NON_OWNER_REWORK_COMMENT = `${MARKER}\nOnly the owner sends work back with \`${REWORK}\`, with their own click (not through an app or an agent session). The \`${REWORK}\` label was removed and the previous status restored.`;
+export const NON_OWNER_APPROVAL_COMMENT = `${MARKER}\nOnly the owner approves an issue for development, with their own click in GitHub (not through an app or an agent session). The \`${APPROVED}\` label was removed; the issue keeps the status it had, or \`${TODO}\` if it had none. If you are the owner, add the label again yourself.`;
+export const NON_OWNER_REWORK_COMMENT = `${MARKER}\nOnly the owner sends work back with \`${REWORK}\`, with their own click in GitHub (not through an app or an agent session). The \`${REWORK}\` label was removed; the issue keeps the status it had, or \`${TODO}\` if it had none. If you are the owner, add the label again yourself.`;
 
 /** The comment for a reverted approval. `once` is a hidden key the apply layer looks for, so one label event gets one comment. */
 export function approvalComment(eventId) {
@@ -130,17 +129,22 @@ function isOwner(login, owners) {
 
 /**
  * Accepts a REST issue (`labels` as objects or names, `user.login`, `updated_at`, `pull_request`) or an
- * already normalized one, and returns `{number, state, labels, author, updatedAt, isPullRequest}`.
+ * already normalized one, and returns `{number, state, labels, names, author, updatedAt, isPullRequest}`. `labels` reads a literal old
+ * status name (`status:new`, see LEGACY_STATUS) as its current name, once; `names` keeps the literal names, because that is what a
+ * label removal must send. Between a merge and the label sync the old label can still be on an issue, and it already counts as its status.
  */
 export function normalizeIssue(raw) {
   const issue = raw ?? {};
-  const labels = Array.isArray(issue.labels)
-    ? issue.labels.map((label) => (typeof label === "string" ? label : label?.name)).filter((name) => typeof name === "string")
-    : [];
+  const names = Array.isArray(issue.rawLabels)
+    ? issue.rawLabels.filter((name) => typeof name === "string")
+    : Array.isArray(issue.labels)
+      ? issue.labels.map((label) => (typeof label === "string" ? label : label?.name)).filter((name) => typeof name === "string")
+      : [];
   return {
     number: issue.number,
     state: issue.state === "closed" ? "closed" : "open",
-    labels,
+    labels: [...new Set(names.map(canonical))],
+    rawLabels: names,
     author: issue.user?.login ?? issue.author ?? null,
     updatedAt: issue.updated_at ?? issue.updatedAt ?? null,
     isPullRequest: Boolean(issue.pull_request ?? issue.isPullRequest),
@@ -151,16 +155,23 @@ const addLabel = (label) => ({ op: "addLabel", label });
 const removeLabel = (label) => ({ op: "removeLabel", label });
 const comment = (body) => ({ op: "comment", body });
 
-/** Exactly `target` among the status labels: add it if missing, then remove every other one. */
+/**
+ * Exactly `target` among the status labels: add it if missing, then remove every other one. A literal old name of `target`
+ * already counts as the label (never add its new name beside it); it goes only when the new name is on the issue too.
+ */
 function setStatus(issue, target) {
   const actions = issue.labels.includes(target) ? [] : [addLabel(target)];
-  for (const label of issue.labels) if (isStatus(label) && label !== target) actions.push(removeLabel(label));
+  for (const name of issue.rawLabels) {
+    const label = canonical(name);
+    if (!isStatus(label)) continue;
+    if (label !== target || (name !== label && issue.rawLabels.includes(label))) actions.push(removeLabel(name));
+  }
   return actions;
 }
 
-/** No status label at all. */
+/** No status label at all (a literal old name is removed under that name). */
 function clearStatus(issue) {
-  return issue.labels.filter(isStatus).map(removeLabel);
+  return issue.rawLabels.filter((name) => isStatus(canonical(name))).map(removeLabel);
 }
 
 /**
@@ -193,6 +204,15 @@ export function normalizeTimeline(raw) {
   // Stable: equal times keep the order GitHub returned them in.
   return entries.sort((a, b) => a.time - b.time || a.index - b.index);
 }
+
+/** Whether the timeline shows a `labeled` event for `label` (an old status name counts as its current one). */
+export function timelineHasLabeled(timeline, label) {
+  const wanted = canonical(label);
+  return normalizeTimeline(timeline).some((entry) => entry.kind === "labeled" && entry.label === wanted);
+}
+
+/** Whether `label` is one of the statuses (an old name counts). */
+export const isStatusName = (label) => isStatus(canonical(label));
 
 /**
  * True when the labels alone cannot settle the status: several status labels, an approval or a rework whose author matters, or an

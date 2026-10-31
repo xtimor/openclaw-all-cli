@@ -183,7 +183,7 @@ A fix (written when the pull request is ready; the issue is in `status:in-review
 <!-- issue-impl -->
 **Status:** `status:blocked`: a point needs your decision
 **Waiting for:** @<owner-login>: choose A (keep the old default) or B (change it and the docs); point 2 needs a protected file
-**Next:** answer here as a comment, then add `status:rework` again; the approval still holds
+**Next:** answer here as a comment, then add `status:rework` again
 **What happened:** 1. Point 1 is done in the plan. 2. Point 2 contradicts the approved scope.
 **Evidence:** your comment of 2026-10-31; `docs/issues.md`, section Labels.
 

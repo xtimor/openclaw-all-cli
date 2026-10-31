@@ -37,6 +37,16 @@ let labels: StubLabel[] = [];
 let calls: Call[] = [];
 /** Label names whose create/patch the stub refuses with 422. */
 let failNames = new Set<string>();
+/** The issues and pull requests the stub knows (open and closed), with the label names they carry. */
+interface StubIssue {
+  number: number;
+  state: "open" | "closed";
+  labels: string[];
+  pull_request?: object;
+}
+let issues: StubIssue[] = [];
+/** Issue numbers whose label add the stub refuses with 422. */
+let failIssues = new Set<number>();
 
 const stripVitest = () => Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.startsWith("VITEST") && !key.startsWith("GITHUB_")));
 
@@ -80,6 +90,30 @@ beforeAll(async () => {
       if (typeof body?.description === "string") label.description = body.description;
       return send(200, label);
     }
+    if (method === "GET" && url.pathname === `/repos/${REPO}/issues`) {
+      const wanted = (url.searchParams.get("labels") ?? "").toLowerCase();
+      const perPage = Number(url.searchParams.get("per_page") ?? "30");
+      const page = Number(url.searchParams.get("page") ?? "1");
+      const state = url.searchParams.get("state") ?? "open";
+      const rows = issues.filter((issue) => issue.labels.some((name) => name.toLowerCase() === wanted) && (state === "all" || state === issue.state));
+      return send(200, rows.slice((page - 1) * perPage, page * perPage).map((issue) => ({ number: issue.number, state: issue.state, pull_request: issue.pull_request })));
+    }
+    const onIssue = /^\/repos\/owner\/repo\/issues\/(\d+)\/labels(?:\/(.+))?$/.exec(url.pathname);
+    if (onIssue) {
+      const issue = issues.find((entry) => entry.number === Number(onIssue[1]));
+      if (!issue) return send(404, { message: "Not Found" });
+      if (method === "POST") {
+        if (failIssues.has(issue.number)) return send(422, { message: "Validation Failed" });
+        for (const name of (body?.labels as string[]) ?? []) if (!issue.labels.includes(name)) issue.labels.push(name);
+        return send(200, issue.labels.map((name) => ({ name })));
+      }
+      if (method === "DELETE") {
+        const name = decodeURIComponent(onIssue[2] ?? "");
+        if (!issue.labels.includes(name)) return send(404, { message: "Label does not exist" });
+        issue.labels = issue.labels.filter((entry) => entry !== name);
+        return send(200, issue.labels.map((entry) => ({ name: entry })));
+      }
+    }
     return send(405, { message: "stub: not supported" });
   });
   await new Promise<void>((done) => server.listen(0, "127.0.0.1", done));
@@ -94,6 +128,8 @@ beforeEach(() => {
   labels = [];
   calls = [];
   failNames = new Set();
+  issues = [];
+  failIssues = new Set();
 });
 
 const dirs: string[] = [];
@@ -174,7 +210,7 @@ describe("labels file", () => {
   });
 
   it("has status:rework with its description (ticket 3.28)", () => {
-    expect(fileLabels().find((entry) => entry.name === "status:rework")).toMatchObject({ description: "The owner sent it back with comments; approval holds" });
+    expect(fileLabels().find((entry) => entry.name === "status:rework")).toMatchObject({ description: "The owner sent it back with comments; no new triage or approval" });
   });
 
   it("passes the script's own validation (dry run)", async () => {
@@ -351,25 +387,76 @@ describe("sync-labels.mjs", () => {
       ]);
     });
 
-    it("both exist: nothing is written for them, the run fails naming both, the other labels still sync", async () => {
-      labels.push({ ...FORMER }, { name: TODO, color: "ededed", description: "Waiting for triage" });
+    const TODO_LABEL = { name: TODO, color: "ededed", description: "Waiting for triage" };
+
+    it("both exist: every issue and pull request with the old label (open and closed, all pages) gets the new one and loses the old; the old label stays, with a warning", async () => {
+      labels.push({ ...FORMER }, { name: TODO, color: "cccccc", description: "auto-created" });
+      issues = [
+        { number: 1, state: "open", labels: [OLD, "type:bug"] },
+        { number: 2, state: "closed", labels: [OLD] },
+        { number: 3, state: "open", labels: [OLD], pull_request: {} },
+        { number: 4, state: "open", labels: [TODO] },
+        { number: 5, state: "open", labels: [OLD, TODO] },
+      ];
+      for (let n = 10; n < 130; n += 1) issues.push({ number: n, state: n % 2 ? "open" : "closed", labels: [OLD] });
       const result = await run(["--file", tempLabelsFile(fileText)]);
-      expect(result.code).not.toBe(0);
-      expect(result.stderr).toContain(`FAILED   ${TODO}`);
-      expect(result.stderr).toContain(`"${OLD}"`);
-      expect(result.stderr).toContain(`"${TODO}"`);
-      expect(result.stderr).toMatch(/label\(s\) failed: status:todo/);
-      expect(writes().map((call) => [call.method, call.body?.name])).toEqual([["POST", "type:bug"]]);
-      expect(labels.filter((label) => label.name === OLD || label.name === TODO)).toHaveLength(2);
-      expect(calls.some((call) => call.method === "DELETE")).toBe(false);
+      expect(result.code, result.stderr).toBe(0);
+      for (const issue of issues) expect(issue.labels, `#${issue.number}`).not.toContain(OLD);
+      expect(issues.find((entry) => entry.number === 1)?.labels).toEqual(["type:bug", TODO]);
+      expect(issues.find((entry) => entry.number === 2)?.labels).toEqual([TODO]);
+      expect(issues.find((entry) => entry.number === 4)?.labels).toEqual([TODO]);
+      expect(issues.filter((entry) => entry.labels.includes(TODO))).toHaveLength(issues.length);
+      // The new label is brought up to the file, the old one is kept untouched.
+      expect(labels.find((label) => label.name === TODO)).toMatchObject({ color: "ededed", description: "Waiting for triage" });
+      expect(labels.find((label) => label.name === OLD)).toEqual(FORMER);
+      expect(calls.some((call) => call.method === "DELETE" && call.path.startsWith("/repos/owner/repo/labels/"))).toBe(false);
+      expect(result.stderr).toContain(`WARNING  "${OLD}" still exists next to "${TODO}"`);
+      expect(result.stderr).toContain("delete");
+      expect(result.stdout).toContain("1 to migrate");
+      expect(result.stdout).toContain(`migrated 124 of 124`);
+      // Every move adds the new label before it removes the old one.
+      const order = calls.filter((call) => /\/issues\/1\/labels/.test(call.path) && call.method !== "GET").map((call) => call.method);
+      expect(order).toEqual(["POST", "DELETE"]);
     });
 
-    it("both exist: a dry run fails too and writes nothing", async () => {
-      labels.push({ ...FORMER }, { name: TODO, color: "ededed", description: "Waiting for triage" });
-      const result = await run(["--dry-run", "--file", tempLabelsFile(fileText)]);
-      expect(result.code).not.toBe(0);
-      expect(result.stderr).toContain(`FAILED   ${TODO}`);
+    it("both exist: a second run moves nothing, warns again, and succeeds", async () => {
+      labels.push({ ...FORMER }, { ...TODO_LABEL });
+      issues = [{ number: 1, state: "open", labels: [OLD] }];
+      expect((await run(["--file", tempLabelsFile(fileText)])).code).toBe(0);
+      calls = [];
+      const again = await run(["--file", tempLabelsFile(fileText)]);
+      expect(again.code, again.stderr).toBe(0);
       expect(writes()).toEqual([]);
+      expect(again.stderr).toContain("WARNING");
+    });
+
+    it("both exist: an issue whose add fails keeps the old label, is named, and the others still move (non-zero exit)", async () => {
+      labels.push({ ...FORMER }, { ...TODO_LABEL });
+      issues = [
+        { number: 1, state: "open", labels: [OLD] },
+        { number: 2, state: "open", labels: [OLD] },
+      ];
+      failIssues.add(1);
+      const result = await run(["--file", tempLabelsFile(fileText)]);
+      expect(result.code).not.toBe(0);
+      expect(result.stderr).toContain("FAILED   #1");
+      expect(result.stderr).toMatch(/label\(s\) failed: status:todo \(#1\)/);
+      expect(issues.find((entry) => entry.number === 1)?.labels).toEqual([OLD]);
+      expect(issues.find((entry) => entry.number === 2)?.labels).toEqual([TODO]);
+    });
+
+    it("both exist: a dry run lists what it would move and writes nothing", async () => {
+      labels.push({ ...FORMER }, { name: TODO, color: "cccccc", description: "auto-created" });
+      issues = [
+        { number: 1, state: "open", labels: [OLD] },
+        { number: 2, state: "closed", labels: [OLD] },
+      ];
+      const result = await run(["--dry-run", "--file", tempLabelsFile(fileText)]);
+      expect(result.code, result.stderr).toBe(0);
+      expect(writes()).toEqual([]);
+      expect(result.stdout).toContain(`would migrate: 2 issue(s) and pull request(s) from ${OLD} to ${TODO} (#1, #2); would update (color, description): ${TODO}`);
+      expect(result.stderr).toContain("WARNING");
+      expect(issues.every((entry) => entry.labels.includes(OLD))).toBe(true);
     });
 
     it("a dry run says it would rename and writes nothing", async () => {
@@ -425,6 +512,11 @@ describe("sync-labels.mjs", () => {
         /type:bug.*renamed_from "type:idea" is also an entry/,
       ],
       ["a renamed_from that is not a string", '- name: "type:bug"\n  color: "d73a4a"\n  description: "d"\n  renamed_from: 3\n', /"renamed_from" must be a string/],
+      [
+        "a former name used by two entries (any case)",
+        '- name: "type:bug"\n  color: "d73a4a"\n  description: "d"\n  renamed_from: "old"\n- name: "type:idea"\n  color: "a2eeef"\n  description: "e"\n  renamed_from: "Old"\n',
+        /type:idea.*renamed_from "Old" is already the former name of another entry \(line 1\)/,
+      ],
       ["a duplicate renamed_from key", '- name: "type:bug"\n  color: "d73a4a"\n  description: "d"\n  renamed_from: "a"\n  renamed_from: "b"\n', /duplicate key "renamed_from"/],
     ];
     for (const [title, text, message] of cases) {

@@ -20,6 +20,9 @@
 // (default 60000) for CI to appear. A batch that changes a protected file is skipped before any waiting. When the time is spent the PR is
 // skipped with "not final after N s" and the next trigger retries.
 // A final state that is not clean or green (dirty, behind, a red check) is skipped at once.
+// A batch is also held while any issue it links (`Fixes`, `Closes`, `Resolves`, or `Refs #N` in its body) is in `status:rework` (ticket 3.28):
+// the owner sent that result back, and the label is how they stop the merge. It is skipped with "issue #N is in status:rework" and merges
+// on a later trigger once the label is replaced. An issue that cannot be read holds it too (fail closed).
 //
 // Environment: GH_TOKEN (the app's installation token), AGENT_LOGIN (`<app-slug>[bot]`), GITHUB_REPOSITORY, BATCH_PR (optional),
 // BATCH_MERGE_WAIT_MS / BATCH_MERGE_POLL_MS / BATCH_MERGE_NO_CHECKS_MS (the wait, the pause between re-reads, the wait for CI to appear; test knobs), GITHUB_API_URL (default https://api.github.com), GITHUB_GRAPHQL_URL (unused), GITHUB_STEP_SUMMARY (the Markdown summary).
@@ -30,6 +33,7 @@
 import { appendFileSync, realpathSync } from "node:fs";
 import { pathToFileURL } from "node:url";
 import { checkGreen, checkMergeable, makeClient, WriteError } from "./agent-write.mjs";
+import { REWORK, linkedIssues } from "./issue-flow/transitions.mjs";
 
 const DEFAULT_API = "https://api.github.com";
 const BATCH_TITLE = "Issue batch";
@@ -150,6 +154,19 @@ async function checkUnprotected(client, base, pr, number, sha) {
   if (changed.length > 0) throw new WriteError(`PR #${number}: touches protected files: package.json (${changed.join(", ")})`, { refused: true });
 }
 
+const MAX_LINKED = 50; // issues read per batch pull request
+
+/** Refuses a pull request that links an issue the owner sent back (`status:rework`); an unreadable issue is not skipped silently. */
+async function checkNotSentBack(client, base, pr, number, repo) {
+  const linked = linkedIssues(typeof pr.body === "string" ? pr.body : "", repo).slice(0, MAX_LINKED);
+  for (const { number: issue } of linked) {
+    const answer = await client.rest("GET", `${base}/issues/${issue}`, undefined, [404]);
+    if (answer.status === 404 || answer.data === null || typeof answer.data !== "object") continue; // not an issue of this repository
+    const labels = Array.isArray(answer.data.labels) ? answer.data.labels.map((entry) => (typeof entry === "string" ? entry : entry?.name)) : [];
+    if (labels.includes(REWORK)) throw new WriteError(`PR #${number}: issue #${issue} is in ${REWORK} (the owner sent it back); held until the label is replaced`, { refused: true });
+  }
+}
+
 /**
  * Runs the whole check. `log(line)` gets each result line as it happens. Returns `{code, rows, message}`; it writes nothing
  * itself. A missing or malformed variable throws a WriteError with code 2.
@@ -241,6 +258,7 @@ export async function run(env, log = () => {}) {
       }
       const sha = typeof pr.head?.sha === "string" ? pr.head.sha.toLowerCase() : "";
       if (!/^[0-9a-f]{40}$/.test(sha)) throw new WriteError(`PR #${number}: its head sha could not be read`, { refused: true });
+      await checkNotSentBack(client, base, pr, number, config.repo);
       const op = { pr: number, sha };
       try {
         checkMergeable(pr, op, config);

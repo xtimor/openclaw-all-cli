@@ -501,11 +501,53 @@ describe("status:rework: the owner sends approved work back (ticket 3.28)", () =
     expect(implement).toMatch(/A `status:rework` issue gets neither: it keeps its status and posts nothing until its answer/);
   });
 
-  it("the approval holds without a new one, and the label counts only as the owner's own click", () => {
-    expect(rework).toMatch(/no triage and no new approval/);
+  it("the owner's own click is the authorization (no earlier approval), and a click it cannot verify is asked for again, never skipped", () => {
+    expect(rework).toMatch(/itself the authorization, exactly like an own-click `status:approved`: there is no triage and no earlier approval is needed/);
     expect(rework).toMatch(/The label counts only as the owner's own click/);
-    expect(rework).toMatch(/is later than the issue's last `closed` and last `reopened` event/);
+    expect(rework).not.toMatch(/last `closed` and last `reopened` event/);
+    expect(rework).toMatch(/never skip the issue silently and never build on it: set `status:blocked`[^\n]*add status:rework again by your own click/);
+    expect(issues).toMatch(/Your own click is the authorization, so no earlier approval is needed/);
+    expect(flow).toMatch(/the owner's own click is the authorization/);
     expect(rework).toMatch(/No claim\./);
+  });
+
+  it("an owner comment edited by someone else is data: the last editor is read with GraphQL (editor), and an unreadable editor counts as data", () => {
+    expect(rework).toMatch(/\*\*An edited comment\*\* \(`updated_at` differs from `created_at`\) counts only if its last editor is an owner too/);
+    expect(rework).toContain("editor { login }");
+    expect(rework).toMatch(/whose editor you cannot read[^.]*is data/);
+    expect(issues).toMatch(/A comment you edited counts only if you were its last editor/);
+  });
+
+  it("the answer comment goes first, then the status; a half-done answer is finished by the next run, before the 'nothing to rework' rule", () => {
+    expect(rework).toMatch(/Put the `comment` operation \*\*first\*\* and the `labels` operation after it in one dispatch/);
+    expect(rework).toMatch(/the answer is posted and the issue is still `status:rework`/);
+    expect(rework).toMatch(/\*\*Finishing a half-done answer:\*\*[^\n]*only apply that status[^\n]*build nothing/);
+    expect(rework).toMatch(/Check this before the "nothing to rework" rule of item 2/);
+    expect(flow).toMatch(/The answer comment is posted before the status change; a half-done answer is finished by the next run/);
+  });
+
+  it("a resumed rework is found only by Issue: #N and Rework of <ref> on tickets the draft adds, and the fix's status goes out before the pull request is marked ready", () => {
+    expect(rework).toMatch(/`Issue: #N` \*\*and\*\* `Rework of <ref>`, on tickets the resumed draft adds/);
+    expect(rework).toMatch(/or one with only `Issue: #N`, is never a resumed rework build/);
+    expect(rework).toMatch(/notes `Issue: #N` and `Rework of <ref of the earlier ticket>`, both always/);
+    expect(rework).toMatch(/\*\*before\*\* `pr_edit` and `pr_ready`/);
+  });
+
+  it("Batch merge holds a batch pull request while an issue it links is in status:rework, and the docs tell the owner how to use it", () => {
+    expect(implement).toMatch(/It holds a batch pull request, merging nothing and logging `issue #N is in status:rework`, while any issue it links/);
+    expect(rework).toMatch(/Batch merge` then holds it|A ready batch pull request that is still open is \*\*held by `Batch merge`/);
+    expect(rework).toMatch(/Once the pull request has merged, the issue is closed: the owner reopens it \(it becomes `status:todo`\) and then adds `status:rework`/);
+    expect(issues).toMatch(/add `status:rework` before it merges; `Batch merge` holds a pull request while any issue it links is in that status/);
+    expect(issues).toMatch(/\*\*After the merge\*\* the issue is closed: reopen it \(it becomes `status:todo`\) and then add `status:rework`/);
+    expect(read("scripts", "batch-merge.mjs")).toContain("checkNotSentBack");
+  });
+
+  it("the batch-less exception covers only a run with no commit (checklist items 2 and 9, and the Rework section)", () => {
+    const checklist = section(implement, "## Run checklist");
+    expect(checklist).toMatch(/One exception to the whole list: a run whose only work is rework issues that end as a new draft or a question makes no commit and has no batch/);
+    expect(checklist).toMatch(/except a run that made no commit because every rework issue ended as a new draft or a question/);
+    expect(checklist).toMatch(/housekeeping commits still need the batch/);
+    expect(rework).toMatch(/This exception is only for a run that made no commit: housekeeping commits/);
   });
 
   it("agents never add status:rework: implement.md, triage.md, and identity.md say so", () => {
@@ -519,7 +561,7 @@ describe("status:rework: the owner sends approved work back (ticket 3.28)", () =
   it("triage skips status:rework", () => {
     expect(triage).toMatch(/\*\*Rework\.\*\* Triage skips an issue in `status:rework`/);
     expect(triage).toMatch(/Never an issue in any other status, `status:rework` included/);
-    expect(triage).toMatch(/issues in `status:rework` \(the owner sent a result back; the approval holds\)/);
+    expect(triage).toMatch(/issues in `status:rework` \(the owner sent a result back; their click is the authorization\)/);
   });
 
   it("issues.md documents Send it back for the owner: comment, then the label with their own click, and the three endings", () => {

@@ -148,6 +148,32 @@ describe("status:todo and the old name in label history (ticket 3.27)", () => {
     expect(t.decide(event, issue(["status:todo", "status:triaged"]), { owners: OWNERS })).toEqual([remove("status:triaged")]);
   });
 
+  it("a literal status:new on the issue is its todo status: never add status:todo beside it (the rollout window before the label sync)", () => {
+    const legacy = issue([OLD, "type:bug"]);
+    // opened and reopened: effectively there already, nothing to add or remove.
+    for (const action of ["opened", "reopened"]) expect(t.decide({ name: "issues", action, actor: "alice" }, legacy)).toEqual([]);
+    // another status is labeled: the literal old name is what gets removed, under that name.
+    const timeline = [labeledAt(OLD, "alice", 0, 1), labeledAt("status:triaged", "bob", 5, 2)];
+    expect(t.decide({ name: "issues", action: "labeled", actor: "bob", label: "status:triaged" }, issue([OLD, "status:triaged"]), { owners: OWNERS, timeline })).toEqual([remove(OLD)]);
+    // a stranger's approval is reverted onto it without adding status:todo.
+    const approval = [labeledAt(OLD, "alice", 0, 1), labeledAt("status:approved", "mallory", 5, 2)];
+    expect(t.decide({ name: "issues", action: "labeled", actor: "mallory", label: "status:approved" }, issue([OLD, "status:approved"]), { owners: OWNERS, timeline: approval })).toEqual([remove("status:approved"), revert(2)]);
+    // closing clears it under its literal name; the author's answer on needs-info replaces needs-info only.
+    expect(t.decide({ name: "issues", action: "closed", actor: "xtimor" }, issue([OLD], { state: "closed" }))).toEqual([remove(OLD)]);
+    expect(t.decide({ name: "issue_comment", action: "created", actor: "alice" }, issue(["status:needs-info", OLD]))).toEqual([remove("status:needs-info")]);
+    // both names on one issue (the new one was auto-created first): the old one goes, the new one stays.
+    expect(t.decide({ name: "issues", action: "reopened", actor: "alice" }, issue([OLD, "status:todo"]))).toEqual([remove(OLD)]);
+    expect(t.decide({ name: "issues", action: "closed", actor: "xtimor" }, issue([OLD, "status:todo"], { state: "closed" }))).toEqual([remove(OLD), remove("status:todo")]);
+  });
+
+  it("runEvent: a reopened issue that still carries the literal status:new gets no second label", async () => {
+    const fake = fakeGithub([{ number: 12, state: "open", labels: [OLD, "type:bug"], user: { login: "alice" } }]);
+    const payload = { action: "reopened", sender: { login: "alice" }, issue: { number: 12, updated_at: "2026-10-22T12:00:00Z" } };
+    await apply.runEvent({ github: fake.github, context: ctx("issues", payload), core: fakeCore(), env: { ISSUE_FLOW_OWNERS: "xtimor" } });
+    expect(fake.calls.filter((call) => /^(add|remove) /.test(call))).toEqual([]);
+    expect(fake.labelsOf(12)).toEqual([OLD, "type:bug"]);
+  });
+
   it("statusSince reads old-named events for status:todo", () => {
     const events = [labeledAt(OLD, "alice", 0, 1), labeledAt(OLD, "alice", 30, 2)];
     expect(t.statusSince(events, "status:todo")).toBe(Date.parse("2026-10-20T10:30:00Z"));
@@ -569,7 +595,7 @@ describe("decide: issue_comment", () => {
     expect(t.decide(event, issue(labels), { owners: OWNERS, timeline: [viaApp("status:approved", "xtimor", 1, 1), labeledAt("status:approved", "xtimor", 5, 2)] })).toEqual([remove("status:triaged")]);
     // An app event after the owner's click reverts again.
     expect(t.decide(event, issue(labels), { owners: OWNERS, timeline: [labeledAt("status:approved", "xtimor", 1, 1), viaApp("status:approved", "xtimor", 5, 2)] })).toEqual([remove("status:approved"), revert(2)]);
-    expect(t.NON_OWNER_APPROVAL_COMMENT).toContain("with their own click (not through an app or an agent session)");
+    expect(t.NON_OWNER_APPROVAL_COMMENT).toContain("with their own click in GitHub (not through an app or an agent session)");
   });
 
   it("AUTHOR_REPLY: a comment by someone else does nothing", () => {
@@ -813,8 +839,10 @@ describe("decide: status:rework (ticket 3.28)", () => {
     const comment = t.reworkComment(7) as { body: string; once: string };
     expect(comment.once).toBe("<!-- issue-flow:rework:7 -->");
     expect(comment.body).toContain(t.NON_OWNER_REWORK_COMMENT);
-    expect(comment.body).toContain("Only the owner sends work back with `status:rework`, with their own click");
-    expect(comment.body).toContain("previous status restored");
+    expect(comment.body).toContain("Only the owner sends work back with `status:rework`, with their own click in GitHub");
+    expect(comment.body).toContain("keeps the status it had, or `status:todo` if it had none");
+    expect(comment.body).toContain("If you are the owner, add the label again yourself.");
+    expect(comment.body).not.toContain("restored");
     expect((t.approvalComment(7) as { once: string }).once).not.toBe(comment.once);
   });
 
@@ -1125,7 +1153,7 @@ describe("applyActions", () => {
 });
 
 describe("runEvent", () => {
-  const env = { ISSUE_FLOW_OWNERS: "xtimor" };
+  const env = { ISSUE_FLOW_OWNERS: "xtimor", ISSUE_FLOW_EVENT_DELAY_MS: "0" };
   const HEAD = { head: { repo: { full_name: REPO } }, user: { login: "carol" } };
 
   it("OPENED: sets status:todo on the issue as it is now", async () => {
@@ -1142,7 +1170,35 @@ describe("runEvent", () => {
     const payload = { action: "labeled", label: { name: "status:approved" }, sender: { login: "mallory" }, issue: { number: 12 } };
     await apply.runEvent({ github: fake.github, context: ctx("issues", payload), core: fakeCore(), env });
     expect(fake.labelsOf(12)).toEqual(["status:triaged"]);
-    expect(fake.calls).toEqual(["get 12", "events 12", "remove 12 status:approved", "comments 12", "comment 12 Only the owner appro"]);
+    // The event of the label is not in the list at all: the list is read again (4 reads in all) before the label is judged.
+    expect(fake.calls).toEqual(["get 12", "events 12", "events 12", "events 12", "events 12", "remove 12 status:approved", "comments 12", "comment 12 Only the owner appro"]);
+  });
+
+  it("EVENT_LAG: the events list is read again until the handled label's event shows, so an owner login on an app-made click is not taken for the owner's own", async () => {
+    const events: Record<number, unknown[]> = { 12: [labeledAt("status:triaged", "bob", 0, 1)] };
+    let reads = 0;
+    const fake = fakeGithub([{ number: 12, state: "open", labels: ["status:triaged", "status:rework"], user: { login: "alice" } }], {
+      events,
+      failOn: (call) => {
+        if (call === "events 12" && (reads += 1) === 3) events[12]?.push({ ...labeledAt("status:rework", "xtimor", 3, 2), performed_via_github_app: { slug: "claude" } });
+        return undefined;
+      },
+    });
+    const payload = { action: "labeled", label: { name: "status:rework" }, sender: { login: "xtimor" }, issue: { number: 12 } };
+    await apply.runEvent({ github: fake.github, context: ctx("issues", payload), core: fakeCore(), env });
+    expect(reads).toBe(3); // stops as soon as the event shows
+    expect(fake.labelsOf(12)).toEqual(["status:triaged"]);
+    expect(fake.calls).toContain("remove 12 status:rework");
+  });
+
+  it("EVENT_LAG: an event that shows at once is read once; a non-status label or an unlabeled event is never waited for", async () => {
+    const once = fakeGithub([{ number: 12, state: "open", labels: ["status:triaged", "status:rework"], user: { login: "alice" } }], { events: { 12: [labeledAt("status:triaged", "bob", 0, 1), labeledAt("status:rework", "xtimor", 3, 2)] } });
+    await apply.runEvent({ github: once.github, context: ctx("issues", { action: "labeled", label: { name: "status:rework" }, sender: { login: "xtimor" }, issue: { number: 12 } }), core: fakeCore(), env });
+    expect(once.calls.filter((call) => call === "events 12")).toHaveLength(1);
+    const other = fakeGithub([{ number: 12, state: "open", labels: ["status:triaged", "status:approved"], user: { login: "alice" } }], { events: { 12: [labeledAt("status:triaged", "bob", 0, 1), labeledAt("status:approved", "xtimor", 3, 2)] } });
+    await apply.runEvent({ github: other.github, context: ctx("issues", { action: "labeled", label: { name: "type:bug" }, sender: { login: "alice" }, issue: { number: 12 } }), core: fakeCore(), env });
+    await apply.runEvent({ github: other.github, context: ctx("issues", { action: "unlabeled", label: { name: "priority:p1" }, sender: { login: "alice" }, issue: { number: 12 } }), core: fakeCore(), env });
+    expect(other.calls.filter((call) => call === "events 12")).toHaveLength(2);
   });
 
   it("APPROVAL_VIA_APP: runEvent reads performed_via_github_app from the issue's events and reverts an owner's approval made through an app", async () => {

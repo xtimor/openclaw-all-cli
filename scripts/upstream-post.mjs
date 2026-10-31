@@ -385,7 +385,7 @@ export async function run(env, log = () => {}, now = Date.now) {
     if (movesStatus(result)) {
       try {
         plan = await planMove(ours, config);
-        statusLine = plan.move ? `**Status:** \`${UPSTREAM_STATUS}\`: waiting for the upstream maintainers. Close this issue when upstream settles, or approve it again for a follow-up.` : "**Status:** unchanged (this issue is closed).";
+        statusLine = plan.move ? `**Status:** \`${UPSTREAM_STATUS}\`: waiting for the upstream maintainers. Close this issue when upstream settles, or send it back with \`status:rework\` (after a comment) for a follow-up.` : "**Status:** unchanged (this issue is closed).";
       } catch (error) {
         statusLine = "**Status:** unchanged (the issue's labels could not be read).";
         failure = `the status could not be moved to ${UPSTREAM_STATUS} (${error instanceof WriteError ? clean(error.message) : "unexpected error"})`;

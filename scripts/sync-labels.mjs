@@ -1,7 +1,9 @@
 #!/usr/bin/env node
 // Syncs the repository's GitHub labels with .github/labels.yml: creates missing labels and
 // updates color/description of existing ones. An entry with `renamed_from` renames the old label in place when only the old one
-// exists (issues keep it). Never deletes; a label that is not in the file is left alone.
+// exists (issues keep it). If both exist (the new one was created first, for example by an issue-flow run in the minutes before the sync),
+// every issue and pull request that carries the old label (open and closed) gets the new one and loses the old one, and the old label
+// stays: it warns, and the owner deletes it by hand. Never deletes; a label that is not in the file is left alone.
 // Agent-neutral and dependency-free (Node 24 `fetch`). Used by .github/workflows/labels.yml, runnable by hand.
 //
 //   GITHUB_TOKEN=... GITHUB_REPOSITORY=owner/repo node scripts/sync-labels.mjs [--dry-run] [--file <path>]
@@ -64,6 +66,7 @@ function validateLabels(entries) {
   const seen = new Map();
   const labels = [];
   const renames = [];
+  const formers = new Map();
   for (const entry of entries) {
     for (const key of KEYS) {
       if (typeof entry[key] !== "string") throw new SyncError(`${describe(entry)} (line ${entry.line}): missing "${key}"`);
@@ -85,6 +88,8 @@ function validateLabels(entries) {
       const from = entry.renamed_from.trim();
       if (from === "") throw new SyncError(`label "${name}" (line ${entry.line}): empty renamed_from`);
       if (from.toLowerCase() === key) throw new SyncError(`label "${name}" (line ${entry.line}): renamed_from is the label's own name`);
+      if (formers.has(from.toLowerCase())) throw new SyncError(`label "${name}" (line ${entry.line}): renamed_from "${from}" is already the former name of another entry (line ${formers.get(from.toLowerCase())})`);
+      formers.set(from.toLowerCase(), entry.line);
       label.renamedFrom = from;
       renames.push({ name, from, line: entry.line });
     }
@@ -100,7 +105,7 @@ function validateLabels(entries) {
 /**
  * What to do for each wanted label, given the labels the repository has. A label with a former name (`renamedFrom`) that the
  * repository still has under the old name only is renamed in place (`rename`: issues keep it); when the repository has both
- * names nothing is written for it and the result is a `conflict` (the run fails; someone merges the two by hand). Nothing is deleted.
+ * names the result is a `migrate`: the new label is updated and gets the old label's issues. Nothing is deleted.
  */
 export function planSync(wanted, existing) {
   const byName = new Map(existing.map((label) => [label.name.toLowerCase(), label]));
@@ -109,7 +114,12 @@ export function planSync(wanted, existing) {
     const have = byName.get(label.name.toLowerCase());
     const former = label.renamedFrom ? byName.get(label.renamedFrom.toLowerCase()) : undefined;
     if (former && have) {
-      actions.push({ op: "conflict", label, current: former.name, message: `both "${former.name}" and "${have.name}" exist; the file renames the first to the second. Move the issues to "${have.name}" and delete "${former.name}" by hand, then run the sync again` });
+      // Both exist: the new label gets the old one's issues (the old one is never deleted here).
+      const changes = [];
+      if (have.name !== label.name) changes.push("name");
+      if (String(have.color ?? "").toLowerCase() !== label.color) changes.push("color");
+      if ((have.description ?? "") !== label.description) changes.push("description");
+      actions.push({ op: "migrate", label, current: former.name, target: have.name, changes });
       continue;
     }
     if (former) {
@@ -180,6 +190,54 @@ async function listLabels(base, token, repo) {
   }
 }
 
+const MAX_ISSUE_PAGES = 100; // 10 000 issues and pull requests carrying one label
+
+/** The numbers of every issue and pull request (open and closed) that carries `label`. Collected first, so moving them cannot shift the pages. */
+async function listNumbersWithLabel(base, token, repo, label) {
+  const numbers = [];
+  for (let page = 1; page <= MAX_ISSUE_PAGES; page += 1) {
+    const rows = await api(base, token, "GET", `/repos/${repo}/issues?labels=${encodeURIComponent(label)}&state=all&per_page=${PAGE_SIZE}&page=${page}`);
+    if (!Array.isArray(rows)) throw new Error(`GET issues with "${label}" page ${page}: the answer is not a list`);
+    for (const row of rows) if (Number.isSafeInteger(row?.number)) numbers.push(row.number);
+    if (rows.length < PAGE_SIZE) return numbers;
+  }
+  throw new Error(`more than ${MAX_ISSUE_PAGES * PAGE_SIZE} issues carry "${label}"`);
+}
+
+/** Both labels exist: bring the new one up to the file, move the old one's issues to it (add the new label, then remove the old), keep the old label. */
+async function migrate(action, { base, token, repo, dryRun }, out) {
+  const { label, current, target } = action;
+  const numbers = await listNumbersWithLabel(base, token, repo, current);
+  out.warn?.(`WARNING  "${current}" still exists next to "${target}" (the file renames the first to the second). The sync never deletes a label: delete "${current}" by hand once the issues are moved.`);
+  if (dryRun) {
+    out.log(`would migrate: ${numbers.length} issue(s) and pull request(s) from ${current} to ${label.name}${numbers.length > 0 ? ` (#${numbers.join(", #")})` : ""}${action.changes.length > 0 ? `; would update (${action.changes.join(", ")}): ${label.name}` : ""}`);
+    return [];
+  }
+  const failures = [];
+  if (action.changes.length > 0) {
+    const patch = { color: label.color, description: label.description };
+    if (action.changes.includes("name")) patch.new_name = label.name;
+    await api(base, token, "PATCH", `/repos/${repo}/labels/${encodeURIComponent(target)}`, patch);
+    out.log(`updated  ${label.name}`);
+  }
+  for (const number of numbers) {
+    try {
+      await api(base, token, "POST", `/repos/${repo}/issues/${number}/labels`, { labels: [label.name] });
+      try {
+        await api(base, token, "DELETE", `/repos/${repo}/issues/${number}/labels/${encodeURIComponent(current)}`);
+      } catch (error) {
+        if (!/HTTP 404/.test(error.message)) throw error; // already gone: the goal is met
+      }
+      out.log(`moved    #${number}: ${current} -> ${label.name}`);
+    } catch (error) {
+      failures.push(`#${number}`);
+      out.error(`FAILED   #${number}: ${error.message}`);
+    }
+  }
+  out.log(`migrated ${numbers.length - failures.length} of ${numbers.length} issue(s) and pull request(s) from ${current} to ${label.name}; "${current}" is kept`);
+  return failures;
+}
+
 export async function main(argv, env, out = console) {
   const options = parseArgs(argv);
   let text;
@@ -206,10 +264,14 @@ export async function main(argv, env, out = console) {
       out.log(`ok       ${label.name}`);
       continue;
     }
-    if (action.op === "conflict") {
-      // A setup problem, not an API error: reported in a dry run too, nothing is written for this label.
-      failures.push(label.name);
-      out.error(`FAILED   ${label.name}: ${action.message}`);
+    if (action.op === "migrate") {
+      try {
+        const moved = await migrate(action, { base, token, repo, dryRun: options.dryRun }, out);
+        if (moved.length > 0) failures.push(`${label.name} (${moved.join(", ")})`);
+      } catch (error) {
+        failures.push(label.name);
+        out.error(`FAILED   ${label.name}: ${error.message}`);
+      }
       continue;
     }
     const verb = action.op === "create" ? "create" : action.op === "rename" ? `rename from ${action.current}` : `update (${action.changes.join(", ")})`;
@@ -233,7 +295,7 @@ export async function main(argv, env, out = console) {
   }
 
   const count = (op) => actions.filter((action) => action.op === op).length;
-  const renames = count("rename") > 0 ? `${count("rename")} to rename, ` : "";
+  const renames = (count("rename") > 0 ? `${count("rename")} to rename, ` : "") + (count("migrate") > 0 ? `${count("migrate")} to migrate, ` : "");
   out.log(`${options.dryRun ? "dry run: " : ""}${count("create")} to create, ${renames}${count("update")} to update, ${count("unchanged")} unchanged (${wanted.length} in the file)`);
   if (failures.length > 0) throw new SyncError(`${failures.length} label(s) failed: ${failures.join(", ")}`);
 }

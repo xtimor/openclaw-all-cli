@@ -9,7 +9,9 @@
 #     description: "..."   (at most 100 characters, a GitHub limit)
 #     renamed_from: "..."  (optional) the label's former name: while the repository still has that label and not the new
 #                          name, the sync renames it in place (issues keep it). Keep the line after the rename: it
-#                          changes nothing once the old label is gone. If both exist the sync fails; it never deletes.
+#                          changes nothing once the old label is gone. If both exist (the new one was created first, for example by an
+#                          issue-flow run before the sync), the sync moves every issue from the old label to the new one and
+#                          warns; it never deletes the old label, delete it by hand.
 
 # One status label per open issue.
 - name: "status:todo"
@@ -48,7 +50,7 @@
   description: "The draft was published upstream; waiting for the maintainers"
 - name: "status:rework"
   color: "e99695"
-  description: "The owner sent it back with comments; approval holds"
+  description: "The owner sent it back with comments; no new triage or approval"
 
 # Type.
 - name: "type:bug"

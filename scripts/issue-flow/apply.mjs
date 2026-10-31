@@ -1,7 +1,10 @@
 // Applies the decisions of transitions.mjs to GitHub. Entry points for .github/workflows/issue-flow.yml, which
 // calls them from actions/github-script (`github` is its octokit, `context` the event, `core` the logger).
 // No model, no text from an issue is evaluated; the owner list comes from the workflow's ISSUE_FLOW_OWNERS, the agent logins from ISSUE_FLOW_AGENTS.
-import { STALE_DAYS, STALE_STATUSES, decide, isBot, linkedIssues, needsTimeline, parseOwners, staleIssues, staleStatus, statusSince, AGENT_MARKER_RE } from "./transitions.mjs";
+import { STALE_DAYS, STALE_STATUSES, decide, isBot, isStatusName, linkedIssues, needsTimeline, parseOwners, staleIssues, staleStatus, statusSince, timelineHasLabeled, AGENT_MARKER_RE } from "./transitions.mjs";
+
+const EVENT_ATTEMPTS = 4; // the events list can lag a moment behind the event that started the run (as in scripts/upstream-post.mjs)
+const EVENT_DELAY_MS = 2000;
 
 /** Sending the label requests one by one keeps their order: the new status first, then the old ones go. */
 export async function applyActions(github, context, issueNumber, actions) {
@@ -92,7 +95,17 @@ export async function runEvent({ github, context, core, env = process.env }) {
       core.info(`issue-flow: #${number} not found, skipped`);
       return;
     }
-    const timeline = event.name === "issues" && needsTimeline(issue, event) ? await readTimeline(github, context, number) : [];
+    let timeline = [];
+    if (event.name === "issues" && needsTimeline(issue, event)) {
+      timeline = await readTimeline(github, context, number);
+      // The handled status label is not in the events yet: read again a few times before judging whose click it was. Without its
+      // event the author and the app flag are unknown, and an owner-only status (approved, rework) would be taken as the owner's own.
+      const delay = Number.isFinite(Number(env.ISSUE_FLOW_EVENT_DELAY_MS)) && String(env.ISSUE_FLOW_EVENT_DELAY_MS ?? "").trim() !== "" ? Number(env.ISSUE_FLOW_EVENT_DELAY_MS) : EVENT_DELAY_MS;
+      for (let attempt = 1; attempt < EVENT_ATTEMPTS && event.action === "labeled" && isStatusName(event.label) && !timelineHasLabeled(timeline, event.label); attempt += 1) {
+        await new Promise((done) => setTimeout(done, delay));
+        timeline = await readTimeline(github, context, number);
+      }
+    }
     const actions = decide(event, issue, { owners, agents, timeline });
     if (actions.length === 0) {
       core.info(`issue-flow: #${number} nothing to do (${event.name} ${event.action})`);

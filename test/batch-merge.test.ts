@@ -183,6 +183,59 @@ describe("batch-merge", () => {
     expect(leaked(result)).toEqual([]);
   });
 
+  describe("REWORK (ticket 3.28): a batch is held while an issue it links is in status:rework", () => {
+    const issuePath = (n: number) => `GET /repos/${REPO}/issues/${n}`;
+    const issue = (n: number, ...labels: string[]): [string, Answer] => [issuePath(n), [200, { number: n, state: "open", labels: labels.map((name) => ({ name })) }]];
+
+    it("HELD: Fixes, Closes, Resolves, and Refs links are all read, and a linked issue in status:rework stops the merge with the reason", async () => {
+      for (const keyword of ["Fixes", "Closes", "Resolves", "Refs"]) {
+        calls = [];
+        pulls = [pull(20, { body: `Issue batch\n${keyword} #7\n` })];
+        answers = new Map([issue(7, "status:rework", "type:bug")]);
+        const held = await run();
+        expect(held, keyword).toMatchObject({ code: 0, stderr: "" });
+        expect(held.stdout, keyword).toContain("batch-merge: #20 skipped:");
+        expect(held.stdout, keyword).toContain("issue #7 is in status:rework (the owner sent it back); held until the label is replaced");
+        expect(merges(), keyword).toEqual([]);
+      }
+    });
+
+    it("HELD: the rework label is found among several issues, and the batch is never merged, checked, or written to", async () => {
+      pulls = [pull(20, { body: "Fixes #5\nFixes #6\nRefs #7\n" })];
+      answers = new Map([issue(5, "status:in-review"), issue(6, "status:in-review"), issue(7, "status:rework")]);
+      const result = await run();
+      expect(result.stdout).toContain("batch-merge: #20 skipped:");
+      expect(result.stdout).toContain("issue #7 is in status:rework");
+      expect(merges()).toEqual([]);
+      expect(writes()).toEqual([]);
+      expect(leaked(result)).toEqual([]);
+    });
+
+    it("RELEASED: once the label is replaced the same batch merges; other statuses and unlinked rework issues do not hold it", async () => {
+      pulls = [pull(20, { body: "Fixes #7\nFixes #8\n" })];
+      answers = new Map([issue(7, "status:in-review"), issue(8, "status:in-review")]);
+      const merged = await run();
+      expect(merged.stdout).toBe("batch-merge: #20 merged: at fedcba9\n");
+      expect(merges()).toHaveLength(1);
+      // A rework issue the body does not link, or links as another repository's, does not matter.
+      calls = [];
+      pulls = [pull(20, { body: "Fixes #7\nFixes other/repo#9\n" })];
+      answers = new Map([issue(7, "status:in-review"), issue(9, "status:rework")]);
+      expect((await run()).stdout).toBe("batch-merge: #20 merged: at fedcba9\n");
+    });
+
+    it("FAIL_CLOSED: a linked issue that cannot be read holds the batch; a missing one (404) does not", async () => {
+      pulls = [pull(20, { body: "Fixes #7\n" })];
+      answers = new Map([[issuePath(7), [500, { message: "boom" }]]]);
+      const unreadable = await run();
+      expect(unreadable.stdout).toContain("batch-merge: #20 skipped:");
+      expect(merges()).toEqual([]);
+      calls = [];
+      answers = new Map([[issuePath(7), [404, { message: "Not Found" }]]]);
+      expect((await run()).stdout).toBe("batch-merge: #20 merged: at fedcba9\n");
+    });
+  });
+
   it("DRAFT: a draft is skipped and nothing is merged", async () => {
     pulls = [pull(20, { draft: true })];
     const result = await run();
