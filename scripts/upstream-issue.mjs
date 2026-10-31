@@ -22,7 +22,9 @@
 // Comment guards (ticket 3.24), on top of the above (same approval check of the marker's issue, same actors, attempt, and limits): the
 // target issue must exist, not be a pull request, and have been opened by the token's user (the owner commenting on their own report);
 // idempotent: a comment by the token's user on that issue that already carries the same `Filed for` line (same round: a later reply
-// carries `(reply N)`, ticket 3.26) is returned, not repeated
+// carries `(reply N)`, ticket 3.26) is returned, not repeated. The input never carries a round (validate refuses it); the Upstream
+// post workflow passes `replyBefore` to run(), and the round is then 1 plus the token user's comments on the target thread that name
+// the same issue of ours and were created before that time (countOwnReplies)
 // (listed before anything is written, fail closed past MAX_COMMENT_PAGES pages); a cap refuses a sixth comment in 24 hours by the
 // token's user across the target (counted on the token user's own issues there, the only ones this operation can reach). The one
 // write is `POST /issues/<n>/comments`: it never edits, closes, reopens, or labels anything.
@@ -132,6 +134,8 @@ export function validate(text, ourRepo) {
   const found = markers(raw.body);
   if (found.length !== 1) throw refuse(`the body must hold exactly one line "Filed for ${ourRepo}#<n>" (found ${found.length})`);
   if (lower(found[0].repo) !== lower(ourRepo)) throw refuse(`the marker line must name ${ourRepo}, the issue this serves`);
+  // A round is never chosen by the caller (input, env, or an agent's draft): the Upstream post workflow numbers a reply through the `replyBefore` option of run().
+  if (found[0].round !== 1) throw refuse("the marker line takes no (reply N); the Upstream post workflow numbers later replies itself");
   if (op === "comment") return { op, repo, issue: raw.issue, body: raw.body, marker: found[0] };
   let labels = [];
   if (raw.labels !== undefined) {
@@ -261,6 +265,37 @@ export async function findExistingComment(client, request, login) {
 }
 
 /**
+ * The number of comments by the token's user on the target issue whose marker line names the same issue of ours (any round) and that
+ * were created strictly before `beforeMs` (the creation time of the draft being posted). A reply is round 1 plus this count: it is read
+ * from the target thread itself, which only the owner's token writes to, so neither an agent nor the state of our own comments can change
+ * it. Fails closed on an unreadable answer or past MAX_COMMENT_PAGES pages.
+ */
+export async function countOwnReplies(client, request, login, beforeMs) {
+  let count = 0;
+  for (let page = 1; page <= MAX_COMMENT_PAGES; page++) {
+    const list = (await client.rest("GET", `/repos/${request.repo}/issues/${request.issue}/comments?per_page=100&page=${page}`)).data;
+    if (!Array.isArray(list)) throw new WriteError(`GET /issues/${request.issue}/comments: the comments could not be read`);
+    for (const item of list) {
+      if (!isObject(item) || !isObject(item.user) || lower(item.user.login) !== lower(login)) continue;
+      const created = typeof item.created_at === "string" ? Date.parse(item.created_at) : Number.NaN;
+      if (!Number.isFinite(created) || created >= beforeMs) continue;
+      if (markers(item.body).some((found) => lower(found.repo) === lower(request.marker.repo) && found.number === request.marker.number)) count += 1;
+    }
+    if (list.length < 100) return count;
+  }
+  throw refuse(`${request.repo}#${request.issue} has more than ${MAX_COMMENT_PAGES * 100} comments; cannot number the reply`);
+}
+
+const MAX_ROUND = 99;
+const FIRST_MARKER = /^Filed for [A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+#[1-9]\d{0,8}[ \t\r]*$/m;
+
+/** The request with `(reply N)` on its one marker line (round 2 or later); round 1 stays as it is. */
+function withRound(request, round) {
+  if (round === 1) return request;
+  return { ...request, body: request.body.replace(FIRST_MARKER, (line) => `${line.trimEnd()} (reply ${round})`), marker: { ...request.marker, round } };
+}
+
+/**
  * Counts the comments by the token's user in the target within the last 24 hours, across the user's own issues there (the only ones
  * this operation can comment on): the issues they opened and that were updated in that time, then each one's recent comments.
  * Stops as soon as COMMENT_CAP is reached. Fails closed: an unreadable answer, or more pages or requests than the limits, refuses.
@@ -317,13 +352,20 @@ async function postComment(client, request) {
 }
 
 /** The comment operation: approval of the marker's issue, then the target issue, an existing comment, the daily cap, the one POST. */
-async function runComment({ config, issue, client, ours, log, now, finish, fail, nothing }) {
+async function runComment({ config, issue: asked, client, ours, log, now, finish, fail, nothing, replyBefore }) {
   let login;
   let existing;
+  let issue = asked;
   try {
     checkNamesTarget(await checkApproved(ours, config, issue.marker.number), config, issue);
     login = await readUser(client);
     await checkTarget(client, issue, login);
+    // The workflow that numbers replies passes the creation time of its draft: the round is 1 plus the comments of ours already on the thread.
+    if (replyBefore !== undefined) {
+      const round = (await countOwnReplies(client, issue, login, replyBefore)) + 1;
+      if (round > MAX_ROUND) throw refuse(`this thread already holds ${round - 1} replies for ${config.repo}#${issue.marker.number}; the limit is ${MAX_ROUND - 1}`);
+      issue = withRound(issue, round);
+    }
     existing = await findExistingComment(client, issue, login);
     if (existing === null) {
       const recent = await countRecentComments(client, issue, login, now);
@@ -361,7 +403,9 @@ const asksForComment = (text) => {
  * Runs the whole input. `log(line)` is called with each progress line. Returns `{code, outcome, message, url, number, repo, ...}`;
  * it writes nothing itself. A missing or malformed variable throws a WriteError with code 2.
  */
-export async function run(env, log = () => {}, now = Date.now) {
+export async function run(env, log = () => {}, now = Date.now, options = {}) {
+  // Only the Upstream post workflow passes `replyBefore` (ms): the creation time of its draft. It is an option of this call, never read from env or input.
+  const replyBefore = Number.isFinite(options?.replyBefore) ? options.replyBefore : undefined;
   const config = readConfig(env);
   const base = { repo: config.repo, actor: config.actor, target: "", url: "", number: 0 };
   const finish = (code, outcome, message = "", extra = {}) => ({ code, outcome, message, ...base, ...extra });
@@ -389,7 +433,7 @@ export async function run(env, log = () => {}, now = Date.now) {
     const safe = error instanceof WriteError;
     return finish(1, safe && error.refused ? nothing : stage, safe ? clean(error.message) : "unexpected error", { target: issue.repo });
   };
-  if (comment) return runComment({ config, issue, client, ours, log, now, finish, fail, nothing });
+  if (comment) return runComment({ config, issue, client, ours, log, now, finish, fail, nothing, replyBefore });
   let found;
   try {
     await checkApproved(ours, config, issue.marker.number);
