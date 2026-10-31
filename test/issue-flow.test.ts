@@ -1166,12 +1166,65 @@ describe("runEvent", () => {
   });
 
   it("NON_OWNER_APPROVED: reverts through the API", async () => {
-    const fake = fakeGithub([{ number: 12, state: "open", labels: ["status:triaged", "status:approved"], user: { login: "alice" } }]);
+    const fake = fakeGithub([{ number: 12, state: "open", labels: ["status:triaged", "status:approved"], user: { login: "alice" } }], { events: { 12: [labeledAt("status:triaged", "bob", 0, 1), labeledAt("status:approved", "mallory", 3, 2)] } });
     const payload = { action: "labeled", label: { name: "status:approved" }, sender: { login: "mallory" }, issue: { number: 12 } };
     await apply.runEvent({ github: fake.github, context: ctx("issues", payload), core: fakeCore(), env });
     expect(fake.labelsOf(12)).toEqual(["status:triaged"]);
-    // The event of the label is not in the list at all: the list is read again (4 reads in all) before the label is judged.
-    expect(fake.calls).toEqual(["get 12", "events 12", "events 12", "events 12", "events 12", "remove 12 status:approved", "comments 12", "comment 12 Only the owner appro"]);
+    expect(fake.calls).toEqual(["get 12", "events 12", "remove 12 status:approved", "comments 12", "comment 12 Only the owner appro"]);
+  });
+
+  it("OWNER_ONLY_NO_EVENT: an approval or rework whose labeled event never shows in the events (after 4 reads) is not judged: nothing is applied", async () => {
+    for (const label of ["status:approved", "status:rework"]) {
+      const fake = fakeGithub([{ number: 12, state: "open", labels: ["status:triaged", label], user: { login: "alice" } }], { events: { 12: [labeledAt("status:triaged", "bob", 0, 1)] } });
+      const payload = { action: "labeled", label: { name: label }, sender: { login: "xtimor" }, issue: { number: 12 } };
+      const warnings: string[] = [];
+      const core = { ...fakeCore(), warning: (message: string) => warnings.push(message) };
+      expect(await apply.runEvent({ github: fake.github, context: ctx("issues", payload), core, env })).toEqual([]);
+      expect(fake.calls, label).toEqual(["get 12", "events 12", "events 12", "events 12", "events 12"]);
+      expect(fake.labelsOf(12), label).toEqual(["status:triaged", label]);
+      expect(warnings.join(" "), label).toContain("nothing applied");
+    }
+  });
+
+  it("NO_EVENT_OTHER_STATUS: a status that is not owner-only and whose event never shows is still applied after the reads (the handled event counts as the newest)", async () => {
+    const fake = fakeGithub([{ number: 12, state: "open", labels: ["status:todo", "status:triaged"], user: { login: "alice" } }], { events: { 12: [labeledAt("status:todo", "alice", 0, 1)] } });
+    const payload = { action: "labeled", label: { name: "status:triaged" }, sender: { login: "bob" }, issue: { number: 12 } };
+    await apply.runEvent({ github: fake.github, context: ctx("issues", payload), core: fakeCore(), env });
+    expect(fake.calls.filter((call) => call === "events 12")).toHaveLength(4);
+    expect(fake.labelsOf(12)).toEqual(["status:triaged"]);
+  });
+
+  it("EVENT_LAG: the owner's re-add after the agent removed the label is not in the list yet; the older labeled event is not taken for it (a stranger's re-add is reverted once it shows)", async () => {
+    // 10:00 the owner's rework, 11:00 the agent's blocked, the agent unlabels rework; the re-add being handled is not listed yet.
+    const history = () => [
+      labeledAt("status:rework", "xtimor", 0, 1),
+      labeledAt("status:blocked", "agent[bot]", 60, 2),
+      { ...labeledAt("status:rework", "agent[bot]", 61, 3), event: "unlabeled" },
+    ];
+    const run = async (readsUntilShown: number, actor: string) => {
+      const events: Record<number, unknown[]> = { 12: history() };
+      let reads = 0;
+      const fake = fakeGithub([{ number: 12, state: "open", labels: ["status:blocked", "status:rework"], user: { login: "alice" } }], {
+        events,
+        failOn: (call) => {
+          if (call === "events 12" && (reads += 1) === readsUntilShown) events[12]?.push(labeledAt("status:rework", actor, 120, 4));
+          return undefined;
+        },
+      });
+      const payload = { action: "labeled", label: { name: "status:rework" }, sender: { login: actor }, issue: { number: 12 } };
+      await apply.runEvent({ github: fake.github, context: ctx("issues", payload), core: fakeCore(), env });
+      return { fake, reads };
+    };
+    const stranger = await run(3, "mallory");
+    expect(stranger.reads).toBe(3);
+    expect(stranger.fake.labelsOf(12)).toEqual(["status:blocked"]); // reverted: the old owner click was not taken for this one
+    const owner = await run(2, "xtimor");
+    expect(owner.reads).toBe(2);
+    expect(owner.fake.labelsOf(12)).toEqual(["status:rework"]); // the owner's click stands, blocked goes
+    // Never shown: the old labeled event stands for nothing, nothing is applied.
+    const never = await run(99, "mallory");
+    expect(never.reads).toBe(4);
+    expect(never.fake.labelsOf(12)).toEqual(["status:blocked", "status:rework"]);
   });
 
   it("EVENT_LAG: the events list is read again until the handled label's event shows, so an owner login on an app-made click is not taken for the owner's own", async () => {
@@ -1239,13 +1292,13 @@ describe("runEvent", () => {
   });
 
   it("OWNER_APPROVED: the owner list comes from ISSUE_FLOW_OWNERS", async () => {
-    const make = () => fakeGithub([{ number: 12, state: "open", labels: ["status:triaged", "status:approved"], user: { login: "alice" } }]);
+    const make = () => fakeGithub([{ number: 12, state: "open", labels: ["status:triaged", "status:approved"], user: { login: "alice" } }], { events: { 12: [labeledAt("status:triaged", "bob", 0, 1), labeledAt("status:approved", "xtimor", 3, 2)] } });
     const payload = { action: "labeled", label: { name: "status:approved" }, sender: { login: "xtimor" }, issue: { number: 12 } };
     const owner = make();
     await apply.runEvent({ github: owner.github, context: ctx("issues", payload), core: fakeCore(), env });
     expect(owner.labelsOf(12)).toEqual(["status:approved"]);
     const nobody = make();
-    await apply.runEvent({ github: nobody.github, context: ctx("issues", payload), core: fakeCore(), env: {} });
+    await apply.runEvent({ github: nobody.github, context: ctx("issues", payload), core: fakeCore(), env: { ISSUE_FLOW_EVENT_DELAY_MS: "0" } });
     expect(nobody.labelsOf(12)).toEqual(["status:triaged"]);
   });
 
@@ -1295,9 +1348,9 @@ describe("runEvent", () => {
     expect(await send(undefined, "<!-- issue-impl -->\nx")).toEqual(["status:todo"]);
     expect(await send("", "<!-- issue-impl -->\nx")).toEqual(["status:todo"]);
 
-    const fake = fakeGithub([{ number: 12, state: "open", labels: ["status:triaged", "status:approved"], user: { login: "alice" } }]);
+    const fake = fakeGithub([{ number: 12, state: "open", labels: ["status:triaged", "status:approved"], user: { login: "alice" } }], { events: { 12: [labeledAt("status:triaged", "bob", 0, 1), labeledAt("status:approved", APP, 3, 2)] } });
     const approval = { action: "labeled", label: { name: "status:approved" }, sender: { login: APP }, issue: { number: 12 } };
-    await apply.runEvent({ github: fake.github, context: ctx("issues", approval), core: fakeCore(), env: { ISSUE_FLOW_OWNERS: "xtimor", ISSUE_FLOW_AGENTS: APP } });
+    await apply.runEvent({ github: fake.github, context: ctx("issues", approval), core: fakeCore(), env: { ISSUE_FLOW_OWNERS: "xtimor", ISSUE_FLOW_AGENTS: APP, ISSUE_FLOW_EVENT_DELAY_MS: "0" } });
     expect(fake.labelsOf(12)).toEqual(["status:triaged"]);
   });
 

@@ -558,6 +558,134 @@ describe("agent-write", () => {
     });
   });
 
+  describe("PR_CLOSE of a ready batch that Batch merge holds for rework (ticket 3.28, held ready batch)", () => {
+    const OLD_SHA = "1".repeat(40);
+    const NEW_SHA = "2".repeat(40);
+    const ready = (overrides: Record<string, unknown> = {}) => pull({ number: 21, draft: false, title: "Issue batch: #7, #8", body: "Fixes #7\nFixes #8\n", head: { ref: "claude/old", sha: OLD_SHA, repo: { full_name: REPO } }, ...overrides });
+    const issueOf = (n: number, ...labels: string[]) => answers.set(`GET /repos/${REPO}/issues/${n}`, [200, { number: n, state: "open", labels: labels.map((name) => ({ name })) }]);
+    const carrier = () => pull({ number: 31, draft: true, title: "Issue batch (in progress)", head: { ref: "claude/new", sha: NEW_SHA, repo: { full_name: REPO } } });
+    const held = (overrides: Record<string, unknown> = {}) => {
+      answers.set(`GET /repos/${REPO}/pulls/21`, [200, ready(overrides)]);
+      answers.set(`GET /repos/${REPO}/pulls/21/files`, [200, []]);
+      issueOf(7, "status:rework");
+      issueOf(8, "status:in-review");
+      answers.set(`GET /repos/${REPO}/pulls`, [200, [ready(), carrier()]]);
+      answers.set(`GET /repos/${REPO}/compare/${OLD_SHA}...${NEW_SHA}`, [200, { status: "ahead" }]);
+    };
+
+    it("a ready batch with a linked issue in status:rework is closed when another open batch PR of the app contains its head", async () => {
+      held();
+      const result = await run([{ op: "pr_close", pr: 21 }]);
+      expect(result, result.stderr).toMatchObject({ code: 0 });
+      expect(calls.filter((call) => call.method === "PATCH").map((call) => [call.path, call.body])).toEqual([[`/repos/${REPO}/pulls/21`, { state: "closed" }]]);
+      expect(seen()).toContain(`GET /compare/${OLD_SHA}...${NEW_SHA}`);
+    });
+
+    it("the whole retire dispatch works for a held ready batch: pr_create, comment, pr_edit, pr_close", async () => {
+      held();
+      answers.set(`GET /repos/${REPO}/pulls/21@created`, [200, ready()]);
+      const result = await run([
+        { op: "pr_create", head: "claude/new", title: "Issue batch (in progress)", draft: true },
+        { op: "comment", issue: 21, body: "continued" },
+        { op: "pr_edit", pr: 21, body: "Resumed on branch claude/new; this pull request is closed." },
+        { op: "pr_close", pr: 21 },
+      ]);
+      expect(result, result.stderr).toMatchObject({ code: 0 });
+      expect(calls.filter((call) => call.method === "PATCH").map((call) => call.body)).toEqual([{ body: "Resumed on branch claude/new; this pull request is closed." }, { state: "closed" }]);
+    });
+
+    it("a ready batch that no linked issue holds is never closed: it merges on its own", async () => {
+      held();
+      issueOf(7, "status:in-review");
+      const result = await run([{ op: "pr_close", pr: 21 }]);
+      expect(result.code).toBe(1);
+      expect(result.summary).toContain("no issue it links is in status:rework");
+      expect(calls.filter((call) => call.method === "PATCH")).toEqual([]);
+    });
+
+    it("without a carrier (no other open batch PR contains its head) the close is refused, even with no built plan", async () => {
+      held();
+      for (const compare of [{ status: "diverged" }, { status: "behind" }]) {
+        calls = [];
+        answers.set(`GET /repos/${REPO}/compare/${OLD_SHA}...${NEW_SHA}`, [200, compare]);
+        const result = await run([{ op: "pr_close", pr: 21 }]);
+        expect(result.code, compare.status).toBe(1);
+        expect(result.summary).toContain("no other open batch PR contains it");
+        expect(calls.filter((call) => call.method === "PATCH")).toEqual([]);
+      }
+      calls = [];
+      answers.set(`GET /repos/${REPO}/pulls`, [200, [ready()]]);
+      expect((await run([{ op: "pr_close", pr: 21 }])).code).toBe(1);
+    });
+
+    it("another author, a non-claude branch, a fork, another title, or a closed PR is refused", async () => {
+      for (const override of [
+        { user: { login: "xtimor" } },
+        { head: { ref: "feature/x", sha: OLD_SHA, repo: { full_name: REPO } } },
+        { head: { ref: "claude/old", sha: OLD_SHA, repo: { full_name: "evil/openclaw-all-cli" } } },
+        { title: "Fix a thing" },
+        { state: "closed" },
+      ]) {
+        calls = [];
+        held(override);
+        const result = await run([{ op: "pr_close", pr: 21 }]);
+        expect(result.code, JSON.stringify(override)).toBe(1);
+        expect(calls.filter((call) => call.method === "PATCH")).toEqual([]);
+      }
+    });
+
+    it("an unreadable linked issue fails closed; a label removed after the check (the owner took it off) refuses at apply time", async () => {
+      held();
+      answers.set(`GET /repos/${REPO}/issues/7`, [500, { message: "boom" }]);
+      expect((await run([{ op: "pr_close", pr: 21 }])).code).toBe(1);
+      expect(calls.filter((call) => call.method === "PATCH")).toEqual([]);
+      calls = [];
+      held();
+      answers.set(`GET /repos/${REPO}/pulls/21@created`, [200, ready()]);
+      answers.set(`GET /repos/${REPO}/issues/7@created`, [200, { number: 7, state: "open", labels: [{ name: "status:in-review" }] }]);
+      const result = await run([{ op: "pr_create", head: "claude/new", title: "Issue batch (in progress)", draft: true }, { op: "pr_close", pr: 21 }]);
+      expect(result.code).toBe(1);
+      expect(result.summary).toContain("merges on its own");
+      expect(calls.filter((call) => call.method === "PATCH")).toEqual([]);
+    });
+
+    it("an idle draft keeps its old rules (a ready flip between the check and the close is refused)", async () => {
+      held();
+      answers.set(`GET /repos/${REPO}/pulls/21`, [200, pull({ number: 21, draft: true, title: "Issue batch (in progress)", updated_at: hoursAgo(5), head: { ref: "claude/old", sha: OLD_SHA, repo: { full_name: REPO } } })]);
+      answers.set(`GET /repos/${REPO}/pulls/21@created`, [200, ready()]);
+      const result = await run([{ op: "pr_create", head: "claude/new", title: "Issue batch (in progress)", draft: true }, { op: "pr_close", pr: 21 }]);
+      expect(result.code).toBe(1);
+      expect(result.summary).toContain("it changed since it was checked");
+      expect(calls.filter((call) => call.method === "PATCH")).toEqual([]);
+    });
+  });
+
+  describe("MERGE honours the owner's send-back (ticket 3.28)", () => {
+    const issueOf = (n: number, ...labels: string[]) => answers.set(`GET /repos/${REPO}/issues/${n}`, [200, { number: n, state: "open", labels: labels.map((name) => ({ name })) }]);
+
+    it("the relay's merge is refused while a linked issue is in status:rework, and merges once it is not", async () => {
+      answers.set(`GET /repos/${REPO}/pulls/20`, [200, pull({ body: "Fixes #7\nRefs #8\n" })]);
+      issueOf(7, "status:in-review");
+      issueOf(8, "status:rework");
+      const held = await run([{ op: "merge", pr: 20, sha: SHA }]);
+      expect(held.code).toBe(1);
+      expect(held.summary).toContain("issue #8 is in status:rework");
+      expect(calls.filter((call) => call.method === "PUT")).toEqual([]);
+      calls = [];
+      issueOf(8, "status:in-review");
+      const ok = await run([{ op: "merge", pr: 20, sha: SHA }]);
+      expect(ok.code, ok.stderr).toBe(0);
+      expect(calls.filter((call) => call.method === "PUT")).toHaveLength(1);
+    });
+
+    it("an unreadable linked issue stops the merge (fail closed)", async () => {
+      answers.set(`GET /repos/${REPO}/pulls/20`, [200, pull({ body: "Fixes #7\n" })]);
+      answers.set(`GET /repos/${REPO}/issues/7`, [500, { message: "boom" }]);
+      expect((await run([{ op: "merge", pr: 20, sha: SHA }])).code).toBe(1);
+      expect(calls.filter((call) => call.method === "PUT")).toEqual([]);
+    });
+  });
+
   it("MERGE: merges the agent's own ready batch PR with method merge and the sha", async () => {
     const result = await run([{ op: "merge", pr: 20, sha: SHA.toUpperCase() }]);
     expect(result.code).toBe(0);

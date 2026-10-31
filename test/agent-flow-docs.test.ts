@@ -520,7 +520,9 @@ describe("status:rework: the owner sends approved work back (ticket 3.28)", () =
   });
 
   it("an owner comment edited by someone else is data: the last editor is read with GraphQL (editor), and an unreadable editor counts as data", () => {
-    expect(rework).toMatch(/\*\*An edited comment\*\* \(`updated_at` differs from `created_at`\) counts only if its last editor is an owner too/);
+    expect(rework).toMatch(/\*\*An edited comment\*\* \(`updated_at` differs from `created_at`\) counts only if it was last edited \*\*before\*\* the `created_at` of the latest own-click `labeled status:rework` event/);
+    expect(rework).toMatch(/an edit after the click is data, whoever the editor is/);
+    expect(rework).toMatch(/\*\*and\*\* its last editor is an owner too/);
     expect(rework).toContain("editor { login }");
     expect(rework).toMatch(/whose editor you cannot read[^.]*is data/);
     expect(issues).toMatch(/A comment you edited counts only if you were its last editor/);
@@ -548,6 +550,36 @@ describe("status:rework: the owner sends approved work back (ticket 3.28)", () =
     expect(issues).toMatch(/add `status:rework` before it merges; `Batch merge` holds a pull request while any issue it links is in that status/);
     expect(issues).toMatch(/\*\*After the merge\*\* the issue is closed: reopen it \(it becomes `status:todo`\) and then add `status:rework`/);
     expect(read("scripts", "batch-merge.mjs")).toContain("checkNotSentBack");
+  });
+
+  it("a held ready batch is resumed like an idle draft, not waited for, and the relay closes it only in that state", () => {
+    expect(implement).toMatch(/- \*\*Held \(rework\):\*\* open, ready, and an issue it links/);
+    expect(implement).toMatch(/waiting for it would stall every later run/);
+    expect(implement).toMatch(/- \*\*Green:\*\* open, ready, no linked issue in `status:rework`/);
+    expect(implement).toMatch(/Ready and \*\*held \(rework\)\*\*[^\n]*resume it exactly like an idle draft, never wait for it and never report it as green/);
+    expect(implement).toMatch(/\*\*step 8 opens your draft and retires the old pull request in the same dispatch\*\*/);
+    expect(implement).toMatch(/The relay closes a ready batch only when `Batch merge` holds it because a linked issue is in `status:rework` and another open batch pull request of yours already contains its head/);
+    expect(implement).toMatch(/Held \(rework\): an issue it links went to `status:rework` while you waited/);
+    expect(rework).toMatch(/A ready one is \*\*held by `Batch merge` while any issue it links is in `status:rework`\*\*/);
+    expect(rework).not.toMatch(/waited for as always, and the issue is taken after it merged\. A ready batch pull request that is still open/);
+    expect(identity).toMatch(/A ready batch \(title starting `Issue batch`[^|]*is closed only when `Batch merge` holds it because an issue it links is in `status:rework`/);
+    expect(identity).toMatch(/none of the issues the pull request links[^|]*is in `status:rework` \(the same hold as `Batch merge`/);
+    expect(issues).toMatch(/The next run does not wait for a held batch: it resumes it on its own branch/);
+    const writer = read("scripts", "agent-write.mjs");
+    expect(writer).toContain("checkClosableHeld");
+    expect(writer).toContain("await checkNotSentBack(client, base, pr, op.pr, config.repo)");
+  });
+
+  it("the half-done rule needs the own-click label to be older than the answer; a newer click asks for a comment; an answered fix gets no second comment", () => {
+    expect(rework).toMatch(/\*\*and the latest own-click `labeled status:rework` event \(item 1\) is older than that comment\*\*/);
+    expect(rework).toMatch(/If the click is newer than the answer, the owner sent it back again and has not commented yet: that is "nothing to rework" \(item 2\), so ask for a comment, never apply the old status/);
+    expect(rework).toMatch(/is already answered: apply the status and post \*\*no second comment\*\*/);
+  });
+
+  it("removing status:rework by hand sends the issue to status:todo; to cancel, set the wanted status", () => {
+    expect(rework).toMatch(/\*\*Removing the label\.\*\* Taking `status:rework` off by hand leaves the issue with no status, so the state automation sets `status:todo`/);
+    expect(rework).toMatch(/set the status you want instead/);
+    expect(issues).toMatch(/taking `status:rework` off by hand leaves the issue with no status, so it becomes `status:todo` and goes back to triage; to cancel a send-back, set the status you want instead/);
   });
 
   it("the batch-less exception covers only a run with no commit (checklist items 2 and 9, and the Rework section)", () => {

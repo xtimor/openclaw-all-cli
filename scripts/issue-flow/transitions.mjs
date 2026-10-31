@@ -205,11 +205,22 @@ export function normalizeTimeline(raw) {
   return entries.sort((a, b) => a.time - b.time || a.index - b.index);
 }
 
-/** Whether the timeline shows a `labeled` event for `label` (an old status name counts as its current one). */
-export function timelineHasLabeled(timeline, label) {
+/**
+ * Whether the latest label event of `label` in the timeline (oldest first; an old status name counts as its current one) is a `labeled`
+ * one. False when the latest is an `unlabeled` (a removal not followed by the re-add being handled) or there is none: the handled
+ * event is not in the list yet.
+ */
+export function latestEventIsLabeled(timeline, label) {
   const wanted = canonical(label);
-  return normalizeTimeline(timeline).some((entry) => entry.kind === "labeled" && entry.label === wanted);
+  const entries = normalizeTimeline(timeline).filter((entry) => entry.label === wanted);
+  return entries.length > 0 && entries[entries.length - 1].kind === "labeled";
 }
+
+/** Whether the issue currently carries `label` (an old status name counts as its current one). */
+export const issueHasLabel = (rawIssue, label) => normalizeIssue(rawIssue).labels.includes(canonical(label));
+
+/** The current name of a status label (an old name maps to its new one). */
+export const canonicalStatus = canonical;
 
 /** Whether `label` is one of the statuses (an old name counts). */
 export const isStatusName = (label) => isStatus(canonical(label));

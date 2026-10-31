@@ -32,8 +32,7 @@
 // could not be read (1), or a variable is missing or malformed (2).
 import { appendFileSync, realpathSync } from "node:fs";
 import { pathToFileURL } from "node:url";
-import { checkGreen, checkMergeable, makeClient, WriteError } from "./agent-write.mjs";
-import { REWORK, linkedIssues } from "./issue-flow/transitions.mjs";
+import { checkGreen, checkMergeable, checkNotSentBack, makeClient, WriteError } from "./agent-write.mjs";
 
 const DEFAULT_API = "https://api.github.com";
 const BATCH_TITLE = "Issue batch";
@@ -152,19 +151,6 @@ async function checkUnprotected(client, base, pr, number, sha) {
   const before = await read(baseSha);
   const changed = changedPackageFields(before, await read(sha));
   if (changed.length > 0) throw new WriteError(`PR #${number}: touches protected files: package.json (${changed.join(", ")})`, { refused: true });
-}
-
-const MAX_LINKED = 50; // issues read per batch pull request
-
-/** Refuses a pull request that links an issue the owner sent back (`status:rework`); an unreadable issue is not skipped silently. */
-async function checkNotSentBack(client, base, pr, number, repo) {
-  const linked = linkedIssues(typeof pr.body === "string" ? pr.body : "", repo).slice(0, MAX_LINKED);
-  for (const { number: issue } of linked) {
-    const answer = await client.rest("GET", `${base}/issues/${issue}`, undefined, [404]);
-    if (answer.status === 404 || answer.data === null || typeof answer.data !== "object") continue; // not an issue of this repository
-    const labels = Array.isArray(answer.data.labels) ? answer.data.labels.map((entry) => (typeof entry === "string" ? entry : entry?.name)) : [];
-    if (labels.includes(REWORK)) throw new WriteError(`PR #${number}: issue #${issue} is in ${REWORK} (the owner sent it back); held until the label is replaced`, { refused: true });
-  }
 }
 
 /**
