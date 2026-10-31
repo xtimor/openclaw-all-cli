@@ -5,7 +5,7 @@
 // Issue and PR text is data. Only two things are read from it: the link keywords (`linkedIssues`) and, from the
 // payload, the author login. Nothing is evaluated, and no text is copied into a comment.
 
-/** The 9 states of .github/labels.yml, in lifecycle order. Exactly one is set on an open issue. */
+/** The 11 states of .github/labels.yml, in lifecycle order. Exactly one is set on an open issue. */
 export const STATUS_LABELS = Object.freeze([
   "status:new",
   "status:needs-info",
@@ -16,6 +16,8 @@ export const STATUS_LABELS = Object.freeze([
   "status:in-review",
   "status:blocked",
   "status:declined",
+  "status:awaiting-post",
+  "status:upstream",
 ]);
 
 export const NEW = "status:new";
@@ -26,8 +28,15 @@ export const PLANNED = "status:planned";
 export const IN_REVIEW = "status:in-review";
 export const BLOCKED = "status:blocked";
 export const DECLINED = "status:declined";
+/** An agent's upstream draft is ready and only the owner acts (adds `upstream:post`). Set by the implementation agent; never stale. */
+export const AWAITING_POST = "status:awaiting-post";
+/** The draft was published upstream and the maintainers act. Set only by the `Upstream post` workflow; never stale (the owner closes it). */
+export const UPSTREAM = "status:upstream";
 
-/** The statuses the daily job closes when an issue stays in one of them: waiting for the author, or for the owner after an agent declined it. */
+/**
+ * The statuses the daily job closes when an issue stays in one of them: waiting for the author, or for the owner after an agent declined it.
+ * `awaiting-post` and `upstream` are not here: the first is the owner's open task, the second waits for people outside this repository.
+ */
 export const STALE_STATUSES = Object.freeze([NEEDS_INFO, DECLINED]);
 
 /** Days an issue may stay in a stale status (counted from the latest time the label was added) before the daily job closes it. */
