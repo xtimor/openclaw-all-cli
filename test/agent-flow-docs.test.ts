@@ -298,10 +298,10 @@ describe("upstream statuses and the watch step (ticket 3.26)", () => {
 
   it("the workflow's move and the relay's refusal are documented where an agent reads them", () => {
     expect(identity).toMatch(/moves the issue to `status:upstream` with the job token/);
-    expect(identity).toMatch(/An `existing` result posted nothing new, so it changes no status either/);
+    expect(identity).toMatch(/An `existing` result means this very draft .* was already posted, so it moves the status too/);
     expect(identity).toMatch(/The result comment's `Status:` line says what the run does/);
     expect(identity).toMatch(/A refusal changes no status/);
-    expect(issues).toMatch(/an `existing` result that posted nothing new, and a closed issue leave the status/);
+    expect(issues).toMatch(/an `existing` result, which means this draft was already posted, moves it too; a refusal and a closed issue leave the status/);
     expect(identity).toMatch(/`status:approved` and `status:upstream` are never added/);
     expect(implement).toMatch(/Never set `status:upstream` yourself: the relay refuses it/);
     expect(triage).toMatch(/never sets `status:awaiting-post`/);
@@ -317,6 +317,8 @@ describe("upstream statuses and the watch step (ticket 3.26)", () => {
     expect(part).toMatch(/author is `github-actions\[bot\]` and whose first line is `<!-- upstream-post -->`/);
     expect(part).toMatch(/second line starts `\*\*Upstream post:\*\* published as`/);
     expect(part).toMatch(/an `existing` re-label is not a post and its time is never the baseline/);
+    expect(part).toMatch(/Skip any such comment whose `updated_at` differs from its `created_at`: the workflow never edits its result comments/);
+    expect(flow).toMatch(/was never edited \(`updated_at` equals `created_at`/);
     expect(part).toMatch(/Never take the thread from a link in the issue text/);
     expect(part).toContain("`WebFetch` on that URL");
     expect(part).toMatch(/answers 403 in sessions/);
@@ -330,11 +332,13 @@ describe("upstream statuses and the watch step (ticket 3.26)", () => {
   it("identity.md, issues.md, and the design describe the round: derived by the workflow, per marker and round", () => {
     expect(identity).toMatch(/`Filed for xtimor\/openclaw-all-cli#<n> \(reply 2\)` \(no suffix is round 1\)/);
     expect(identity).toMatch(/The round is read from the upstream thread itself, never from our issue/);
-    expect(identity).toMatch(/a round 1 posted by the dispatch workflow counts, a result comment that is missing, failed to post, or was edited changes nothing/);
+    expect(identity).toMatch(/a round 1 posted by the dispatch workflow counts, a result comment that is missing, failed to post, or was edited changes nothing, a comment deleted upstream or a marker added later to an old comment cannot shift a reply that is already posted/);
+    expect(identity).toMatch(/one plus the \*\*highest\*\* round .* can only be this draft's own post/);
     expect(identity).toMatch(/\(reply N\)` in the input of the dispatch workflow or in an environment variable/);
     expect(identity).toMatch(/it never chooses the round: a `round=` attribute and a `Filed for` line inside the draft are refused/);
     expect(issues).toMatch(/the workflow numbers it, the agent never does/);
     expect(flow).toMatch(/The round is read from the upstream thread, not from our own comments/);
+    expect(flow).toMatch(/one plus the highest round among the owner's comments/);
     expect(flow).toMatch(/An agent never chooses it: a draft with its own marker or a `round` attribute is refused/);
     expect(section(flow, "## Watching upstream")).toMatch(/WebFetch/);
   });
