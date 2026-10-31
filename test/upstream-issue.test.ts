@@ -253,6 +253,13 @@ describe("upstream-issue", () => {
       `see ${MARKER} for details`,
       `${MARKER} extra words`,
       `Filed for ${OURS}#0`,
+      `${MARKER} (reply 1)`,
+      `${MARKER} (reply 0)`,
+      `${MARKER} (reply 100)`,
+      `${MARKER} (reply 02)`,
+      `${MARKER}  (reply 2)`,
+      `${MARKER} (reply 2) now`,
+      `${MARKER} (Reply 2)`,
     ];
     for (const body of bodies) {
       const result = await run(issue({ body }));
@@ -775,6 +782,40 @@ describe("upstream-issue: comment on the owner's own issue (ticket 3.24)", () =>
       expect(result.output).toBe(`result=upstream-issue: existing ${existingUrl}\n`);
       expect(seen().some((line) => line.includes(`/repos/${TARGET}/issues?`))).toBe(false);
       expect(leaked(result)).toEqual([]);
+    });
+
+    it("ROUNDS (ticket 3.26): a reply marker `(reply N)` is a different comment from round 1 and from another round; the same round is returned", async () => {
+      const round2 = `Filed for ${OURS}#45 (reply 2)`;
+      const body = (marker: string) => `### Retest\n\n${BODY_MARK}\n\n${marker}\n`;
+      // Round 2 after round 1: posted.
+      answers.set(`GET ${postPath}`, [200, [entry(4242, 30, "xtimor", MARKER)]]);
+      const second = await run(note({ body: body(round2) }));
+      expect(second.stdout, second.stderr).toContain("commented");
+      expect(writes()).toHaveLength(1);
+      // Round 2 again: the round 2 comment is returned, nothing is posted.
+      calls = [];
+      answers = new Map();
+      answers.set(`GET ${postPath}`, [200, [entry(4242, 30, "xtimor", MARKER), entry(4243, 30, "xtimor", round2)]]);
+      const again = await run(note({ body: body(round2) }));
+      expect(again.stdout).toContain(`existing https://github.com/${TARGET}/issues/${NOTE_ISSUE}#issuecomment-4243`);
+      noPost();
+      // Round 1 again with only a round 2 comment present: round 1 is not that comment, so it is posted.
+      calls = [];
+      answers = new Map();
+      answers.set(`GET ${postPath}`, [200, [entry(4243, 30, "xtimor", round2)]]);
+      const first = await run(note());
+      expect(first.stdout).toContain("commented");
+      // Round 3 is not round 2.
+      calls = [];
+      answers = new Map();
+      answers.set(`GET ${postPath}`, [200, [entry(4243, 30, "xtimor", round2)]]);
+      expect((await run(note({ body: body(`Filed for ${OURS}#45 (reply 3)`) }))).stdout).toContain("commented");
+    });
+
+    it("ROUNDS: a create ignores the round of a marker: the same marker line of any round returns the existing issue", async () => {
+      answers.set(`GET /repos/${TARGET}/issues`, [200, [{ number: 12, title: "Another title", body: `text\n${MARKER}\n` }]]);
+      const result = await run(issue({ body: `### Summary\n\n${BODY_MARK}\n\n${MARKER} (reply 3)\n` }));
+      expect(result.stdout, result.stderr).toContain(`existing https://github.com/${TARGET}/issues/12`);
     });
 
     it("a comment of someone else, or with another marker, or a marker only inside a line, does not count: the comment is posted", async () => {

@@ -21,7 +21,8 @@
 // Labels: GitHub drops, without an error, labels that a user without triage rights sets; the log says which were applied.
 // Comment guards (ticket 3.24), on top of the above (same approval check of the marker's issue, same actors, attempt, and limits): the
 // target issue must exist, not be a pull request, and have been opened by the token's user (the owner commenting on their own report);
-// idempotent: a comment by the token's user on that issue that already carries the same `Filed for` line is returned, not repeated
+// idempotent: a comment by the token's user on that issue that already carries the same `Filed for` line (same round: a later reply
+// carries `(reply N)`, ticket 3.26) is returned, not repeated
 // (listed before anything is written, fail closed past MAX_COMMENT_PAGES pages); a cap refuses a sixth comment in 24 hours by the
 // token's user across the target (counted on the token user's own issues there, the only ones this operation can reach). The one
 // write is `POST /issues/<n>/comments`: it never edits, closes, reopens, or labels anything.
@@ -59,7 +60,8 @@ const DAY_MS = 24 * 60 * 60 * 1000;
 const APPROVED = "status:approved";
 const CONTROL = /[\u0000-\u001f\u007f-\u009f\u2028\u2029]/; // a title or a label
 const BODY_CONTROL = /[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/; // a body may hold newlines and tabs
-const MARKER_LINE = /^Filed for ([A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+)#([1-9]\d{0,8})[ \t\r]*$/gm;
+// An optional round for a later reply on the same target (ticket 3.26): `Filed for <repo>#<n> (reply 2)`. No suffix is round 1.
+const MARKER_LINE = /^Filed for ([A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+)#([1-9]\d{0,8})(?: \(reply ([2-9]|[1-9]\d)\))?[ \t\r]*$/gm;
 
 const refuse = (message) => new WriteError(message, { refused: true });
 const isObject = (value) => value !== null && typeof value === "object" && !Array.isArray(value);
@@ -88,9 +90,9 @@ function readConfig(env) {
   };
 }
 
-/** The `Filed for <repo>#<n>` lines of a body: `[{repo, number}]`. */
+/** The `Filed for <repo>#<n>` lines of a body: `[{repo, number, round}]` (`round` is 1 without a `(reply N)` suffix). */
 export function markers(body) {
-  return [...String(body ?? "").matchAll(MARKER_LINE)].map((match) => ({ repo: match[1], number: Number(match[2]) }));
+  return [...String(body ?? "").matchAll(MARKER_LINE)].map((match) => ({ repo: match[1], number: Number(match[2]), round: match[3] === undefined ? 1 : Number(match[3]) }));
 }
 
 const KEYS = { create: ["repo", "title", "body", "labels"], comment: ["repo", "issue", "body"] };
@@ -223,7 +225,8 @@ async function create(client, issue) {
   return { number: data.number, applied };
 }
 
-const sameMarker = (body, wanted) => markers(body).some((found) => lower(found.repo) === lower(wanted.repo) && found.number === wanted.number);
+// A comment is the same one when marker and round agree: a later reply (round 2, 3, ...) on the same target is a new comment.
+const sameMarker = (body, wanted) => markers(body).some((found) => lower(found.repo) === lower(wanted.repo) && found.number === wanted.number && found.round === wanted.round);
 const commentUrl = (repo, issue, id) => `${issueUrl(repo, issue)}#issuecomment-${id}`;
 
 /**
