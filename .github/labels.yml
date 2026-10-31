@@ -2,16 +2,22 @@
 # Synced to GitHub by scripts/sync-labels.mjs (.github/workflows/labels.yml): creates missing labels,
 # updates color and description, never deletes.
 #
-# Format: a flat list of entries with exactly three keys, each value a double-quoted string
+# Format: a flat list of entries with the keys below, each value a double-quoted string
 # (JSON string syntax), so the script needs no YAML library:
 #   - name: "..."
 #     color: "rrggbb"
 #     description: "..."   (at most 100 characters, a GitHub limit)
+#     renamed_from: "..."  (optional) the label's former name: while the repository still has that label and not the new
+#                          name, the sync renames it in place (issues keep it). Keep the line after the rename: it
+#                          changes nothing once the old label is gone. If both exist (the new one was created first, for example by an
+#                          issue-flow run before the sync), the sync moves every issue from the old label to the new one and
+#                          warns; it never deletes the old label, delete it by hand.
 
 # One status label per open issue.
-- name: "status:new"
+- name: "status:todo"
   color: "ededed"
-  description: "Filed or reopened, not triaged yet"
+  description: "Filed, reopened, or answered by the author; waiting for triage"
+  renamed_from: "status:new"
 - name: "status:needs-info"
   color: "fbca04"
   description: "Waiting for details from the author"
@@ -42,6 +48,9 @@
 - name: "status:upstream"
   color: "0075ca"
   description: "The draft was published upstream; waiting for the maintainers"
+- name: "status:rework"
+  color: "e99695"
+  description: "The owner sent it back with comments; no new triage or approval"
 
 # Type.
 - name: "type:bug"

@@ -1,6 +1,9 @@
 #!/usr/bin/env node
 // Syncs the repository's GitHub labels with .github/labels.yml: creates missing labels and
-// updates color/description of existing ones. Never deletes; a label that is not in the file is left alone.
+// updates color/description of existing ones. An entry with `renamed_from` renames the old label in place when only the old one
+// exists (issues keep it). If both exist (the new one was created first, for example by an issue-flow run in the minutes before the sync),
+// every issue and pull request that carries the old label (open and closed) gets the new one and loses the old one, and the old label
+// stays: it warns, and the owner deletes it by hand. Never deletes; a label that is not in the file is left alone.
 // Agent-neutral and dependency-free (Node 24 `fetch`). Used by .github/workflows/labels.yml, runnable by hand.
 //
 //   GITHUB_TOKEN=... GITHUB_REPOSITORY=owner/repo node scripts/sync-labels.mjs [--dry-run] [--file <path>]
@@ -12,6 +15,7 @@ import { fileURLToPath } from "node:url";
 
 const DEFAULT_FILE = resolve(dirname(fileURLToPath(import.meta.url)), "..", ".github", "labels.yml");
 const KEYS = ["name", "color", "description"];
+const OPTIONAL_KEYS = ["renamed_from"];
 const MAX_DESCRIPTION = 100; // GitHub's limit
 const PAGE_SIZE = 100;
 const REQUEST_TIMEOUT_MS = 30_000;
@@ -21,7 +25,7 @@ class SyncError extends Error {}
 
 /**
  * Parses the restricted format of .github/labels.yml: a flat list of `- name:` entries with
- * `color:` and `description:` lines, values as double-quoted JSON strings. Comments and blank lines are ignored.
+ * `color:` and `description:` lines (and an optional `renamed_from:`), values as double-quoted JSON strings. Comments and blank lines are ignored.
  */
 export function parseLabels(text) {
   const entries = [];
@@ -30,7 +34,7 @@ export function parseLabels(text) {
   for (let i = 0; i < lines.length; i += 1) {
     const raw = lines[i];
     if (raw.trim() === "" || raw.trimStart().startsWith("#")) continue;
-    const match = /^(- |  )([a-z]+):[ \t]*(.*?)[ \t]*$/.exec(raw);
+    const match = /^(- |  )([a-z_]+):[ \t]*(.*?)[ \t]*$/.exec(raw);
     if (!match) throw new SyncError(`labels file line ${i + 1}: cannot parse ${JSON.stringify(raw)}`);
     const [, lead, key, rawValue] = match;
     if (lead === "- ") {
@@ -39,7 +43,7 @@ export function parseLabels(text) {
     } else if (!current) {
       throw new SyncError(`labels file line ${i + 1}: a key outside an entry`);
     }
-    if (!KEYS.includes(key)) throw new SyncError(`labels file line ${i + 1}: unknown key "${key}"`);
+    if (!KEYS.includes(key) && !OPTIONAL_KEYS.includes(key)) throw new SyncError(`labels file line ${i + 1}: unknown key "${key}"`);
     if (Object.hasOwn(current, key)) throw new SyncError(`labels file line ${i + 1}: duplicate key "${key}" in ${describe(current)}`);
     let value;
     try {
@@ -61,6 +65,8 @@ function validateLabels(entries) {
   if (entries.length === 0) throw new SyncError("labels file has no entries");
   const seen = new Map();
   const labels = [];
+  const renames = [];
+  const formers = new Map();
   for (const entry of entries) {
     for (const key of KEYS) {
       if (typeof entry[key] !== "string") throw new SyncError(`${describe(entry)} (line ${entry.line}): missing "${key}"`);
@@ -77,17 +83,49 @@ function validateLabels(entries) {
     const key = name.toLowerCase(); // GitHub compares label names case-insensitively
     if (seen.has(key)) throw new SyncError(`duplicate label "${name}" (lines ${seen.get(key)} and ${entry.line})`);
     seen.set(key, entry.line);
-    labels.push({ name, color: entry.color.toLowerCase(), description: entry.description });
+    const label = { name, color: entry.color.toLowerCase(), description: entry.description };
+    if (Object.hasOwn(entry, "renamed_from")) {
+      const from = entry.renamed_from.trim();
+      if (from === "") throw new SyncError(`label "${name}" (line ${entry.line}): empty renamed_from`);
+      if (from.toLowerCase() === key) throw new SyncError(`label "${name}" (line ${entry.line}): renamed_from is the label's own name`);
+      if (formers.has(from.toLowerCase())) throw new SyncError(`label "${name}" (line ${entry.line}): renamed_from "${from}" is already the former name of another entry (line ${formers.get(from.toLowerCase())})`);
+      formers.set(from.toLowerCase(), entry.line);
+      label.renamedFrom = from;
+      renames.push({ name, from, line: entry.line });
+    }
+    labels.push(label);
+  }
+  // A former name that is another entry's current name would rename a label the file still wants.
+  for (const { name, from, line } of renames) {
+    if (seen.has(from.toLowerCase())) throw new SyncError(`label "${name}" (line ${line}): renamed_from "${from}" is also an entry of the file (line ${seen.get(from.toLowerCase())})`);
   }
   return labels;
 }
 
-/** What to do for each wanted label, given the labels the repository has. */
+/**
+ * What to do for each wanted label, given the labels the repository has. A label with a former name (`renamedFrom`) that the
+ * repository still has under the old name only is renamed in place (`rename`: issues keep it); when the repository has both
+ * names the result is a `migrate`: the new label is updated and gets the old label's issues. Nothing is deleted.
+ */
 export function planSync(wanted, existing) {
   const byName = new Map(existing.map((label) => [label.name.toLowerCase(), label]));
   const actions = [];
   for (const label of wanted) {
     const have = byName.get(label.name.toLowerCase());
+    const former = label.renamedFrom ? byName.get(label.renamedFrom.toLowerCase()) : undefined;
+    if (former && have) {
+      // Both exist: the new label gets the old one's issues (the old one is never deleted here).
+      const changes = [];
+      if (have.name !== label.name) changes.push("name");
+      if (String(have.color ?? "").toLowerCase() !== label.color) changes.push("color");
+      if ((have.description ?? "") !== label.description) changes.push("description");
+      actions.push({ op: "migrate", label, current: former.name, target: have.name, changes });
+      continue;
+    }
+    if (former) {
+      actions.push({ op: "rename", label, current: former.name, changes: ["name"] });
+      continue;
+    }
     if (!have) {
       actions.push({ op: "create", label });
       continue;
@@ -152,6 +190,54 @@ async function listLabels(base, token, repo) {
   }
 }
 
+const MAX_ISSUE_PAGES = 100; // 10 000 issues and pull requests carrying one label
+
+/** The numbers of every issue and pull request (open and closed) that carries `label`. Collected first, so moving them cannot shift the pages. */
+async function listNumbersWithLabel(base, token, repo, label) {
+  const numbers = [];
+  for (let page = 1; page <= MAX_ISSUE_PAGES; page += 1) {
+    const rows = await api(base, token, "GET", `/repos/${repo}/issues?labels=${encodeURIComponent(label)}&state=all&per_page=${PAGE_SIZE}&page=${page}`);
+    if (!Array.isArray(rows)) throw new Error(`GET issues with "${label}" page ${page}: the answer is not a list`);
+    for (const row of rows) if (Number.isSafeInteger(row?.number)) numbers.push(row.number);
+    if (rows.length < PAGE_SIZE) return numbers;
+  }
+  throw new Error(`more than ${MAX_ISSUE_PAGES * PAGE_SIZE} issues carry "${label}"`);
+}
+
+/** Both labels exist: bring the new one up to the file, move the old one's issues to it (add the new label, then remove the old), keep the old label. */
+async function migrate(action, { base, token, repo, dryRun }, out) {
+  const { label, current, target } = action;
+  const numbers = await listNumbersWithLabel(base, token, repo, current);
+  out.warn?.(`WARNING  "${current}" still exists next to "${target}" (the file renames the first to the second). The sync never deletes a label: delete "${current}" by hand once the issues are moved.`);
+  if (dryRun) {
+    out.log(`would migrate: ${numbers.length} issue(s) and pull request(s) from ${current} to ${label.name}${numbers.length > 0 ? ` (#${numbers.join(", #")})` : ""}${action.changes.length > 0 ? `; would update (${action.changes.join(", ")}): ${label.name}` : ""}`);
+    return [];
+  }
+  const failures = [];
+  if (action.changes.length > 0) {
+    const patch = { color: label.color, description: label.description };
+    if (action.changes.includes("name")) patch.new_name = label.name;
+    await api(base, token, "PATCH", `/repos/${repo}/labels/${encodeURIComponent(target)}`, patch);
+    out.log(`updated  ${label.name}`);
+  }
+  for (const number of numbers) {
+    try {
+      await api(base, token, "POST", `/repos/${repo}/issues/${number}/labels`, { labels: [label.name] });
+      try {
+        await api(base, token, "DELETE", `/repos/${repo}/issues/${number}/labels/${encodeURIComponent(current)}`);
+      } catch (error) {
+        if (!/HTTP 404/.test(error.message)) throw error; // already gone: the goal is met
+      }
+      out.log(`moved    #${number}: ${current} -> ${label.name}`);
+    } catch (error) {
+      failures.push(`#${number}`);
+      out.error(`FAILED   #${number}: ${error.message}`);
+    }
+  }
+  out.log(`migrated ${numbers.length - failures.length} of ${numbers.length} issue(s) and pull request(s) from ${current} to ${label.name}; "${current}" is kept`);
+  return failures;
+}
+
 export async function main(argv, env, out = console) {
   const options = parseArgs(argv);
   let text;
@@ -178,20 +264,30 @@ export async function main(argv, env, out = console) {
       out.log(`ok       ${label.name}`);
       continue;
     }
-    const verb = action.op === "create" ? "create" : `update (${action.changes.join(", ")})`;
+    if (action.op === "migrate") {
+      try {
+        const moved = await migrate(action, { base, token, repo, dryRun: options.dryRun }, out);
+        if (moved.length > 0) failures.push(`${label.name} (${moved.join(", ")})`);
+      } catch (error) {
+        failures.push(label.name);
+        out.error(`FAILED   ${label.name}: ${error.message}`);
+      }
+      continue;
+    }
+    const verb = action.op === "create" ? "create" : action.op === "rename" ? `rename from ${action.current}` : `update (${action.changes.join(", ")})`;
     if (options.dryRun) {
       out.log(`would ${verb}: ${label.name}`);
       continue;
     }
     try {
       if (action.op === "create") {
-        await api(base, token, "POST", `/repos/${repo}/labels`, label);
+        await api(base, token, "POST", `/repos/${repo}/labels`, { name: label.name, color: label.color, description: label.description });
       } else {
         const patch = { color: label.color, description: label.description };
-        if (action.changes.includes("name")) patch.new_name = label.name;
+        if (action.changes.includes("name")) patch.new_name = label.name; // a rename always carries it
         await api(base, token, "PATCH", `/repos/${repo}/labels/${encodeURIComponent(action.current)}`, patch);
       }
-      out.log(`${action.op === "create" ? "created " : "updated "} ${label.name}`);
+      out.log(`${action.op === "create" ? "created " : action.op === "rename" ? "renamed " : "updated "} ${label.name}${action.op === "rename" ? ` (was ${action.current})` : ""}`);
     } catch (error) {
       failures.push(label.name);
       out.error(`FAILED   ${label.name}: ${error.message}`);
@@ -199,7 +295,8 @@ export async function main(argv, env, out = console) {
   }
 
   const count = (op) => actions.filter((action) => action.op === op).length;
-  out.log(`${options.dryRun ? "dry run: " : ""}${count("create")} to create, ${count("update")} to update, ${count("unchanged")} unchanged (${wanted.length} in the file)`);
+  const renames = (count("rename") > 0 ? `${count("rename")} to rename, ` : "") + (count("migrate") > 0 ? `${count("migrate")} to migrate, ` : "");
+  out.log(`${options.dryRun ? "dry run: " : ""}${count("create")} to create, ${renames}${count("update")} to update, ${count("unchanged")} unchanged (${wanted.length} in the file)`);
   if (failures.length > 0) throw new SyncError(`${failures.length} label(s) failed: ${failures.join(", ")}`);
 }
 

@@ -11,19 +11,21 @@
 //   {op:"comment", issue, body}                            new comment on an issue or pull request
 //   {op:"edit_comment", comment_id, body}                  only a comment whose author is AGENT_LOGIN
 //   {op:"labels", issue, add?:[...], remove?:[...]}        names like status:x, type:x, priority:x, source:x only; add first, then remove
-//                                                          (a label that is not there is fine); never add `status:approved` (the owner's) or `status:upstream` (the `Upstream post`
-//                                                          workflow's); no name in both lists
+//                                                          (a label that is not there is fine); never add `status:approved` or `status:rework` (the owner's, by their own click) or
+//                                                          `status:upstream` (the `Upstream post` workflow's); no `status:` name that is not in STATUS_LABELS (a typo, or a retired status name); no name in both lists
 //   {op:"close", issue, reason}                            only a security report: reason not_planned, and SECURITY_CLOSE_COMMENT is posted on that issue by
 //                                                          an earlier `comment` of the same list (agents never close an issue otherwise, see closeGuard); an issue, never a pull request
 //   {op:"reopen", issue}                                   an issue, never a pull request
 //   {op:"pr_create", head, title, body?, draft?}           head must be a `claude/` branch of this repository; base is main
 //   {op:"pr_ready", pr}                                    only a pull request by AGENT_LOGIN
 //   {op:"pr_edit", pr, title?, body?}                      only a pull request by AGENT_LOGIN
-//   {op:"merge", pr, sha}                                  method merge; see checkMergeable and checkGreen
+//   {op:"merge", pr, sha}                                  method merge; see checkMergeable and checkGreen; refused while a linked issue is in `status:rework` (checkNotSentBack)
 //   {op:"pr_close", pr}                                    closes only an open draft titled `Issue batch (in progress)` by AGENT_LOGIN from a `claude/` branch of this repository,
 //                                                          not updated for 2 hours (runs refresh their draft at least every 30 minutes), and only when its
 //                                                          branch holds no built ticket (a plan at `done`/`built`) or another open batch PR of the app
 //                                                          already contains its head (the work is resumed there, never lost: see builtPlans and requireCarried).
+//                                                          A READY batch (title starts with `Issue batch`) is closed only when `Batch merge` holds it because a linked issue is in `status:rework`
+//                                                          (checkClosableHeld) and another open batch PR of the app contains its head (always required); the run resumes it on its own branch.
 //                                                          Every pr_close target is read and checked (idle, author, title, built work) before ANY operation of the list is applied: the
 //                                                          comment and pr_edit that precede it in the same list refresh `updated_at`, which would otherwise make the idle check fail.
 // Everything is validated first; nothing is applied when anything is refused. Applying stops at the first failure.
@@ -38,7 +40,7 @@
 // refused or failed; 2 a variable is missing or malformed.
 import { appendFileSync, realpathSync } from "node:fs";
 import { pathToFileURL } from "node:url";
-import { parseOwners } from "./issue-flow/transitions.mjs";
+import { REWORK, STATUS_LABELS, linkedIssues, parseOwners } from "./issue-flow/transitions.mjs";
 import { planStatus } from "./plan-gate.mjs";
 
 const DEFAULT_API = "https://api.github.com";
@@ -73,7 +75,8 @@ export const SECURITY_CLOSE_COMMENT = [
   "",
   "— triage agent",
 ].join("\n");
-const FORBIDDEN_LABEL = "status:approved";
+// The owner's own click starts agent work: approving an issue, or sending its result back with comments (ticket 3.28). Removing them is fine.
+const OWNER_ONLY_LABELS = ["status:approved", "status:rework"];
 // Set only by the `Upstream post` workflow, after it published a draft (ticket 3.26): an agent cannot know that it happened. Removing it is fine.
 const WORKFLOW_ONLY_LABEL = "status:upstream";
 // Only the project's own label families: a typo or a lookalike never creates a label, and "." or ".." never reaches a URL.
@@ -183,7 +186,9 @@ export function validate(text) {
         const add = labelList(raw, "add", index);
         const remove = labelList(raw, "remove", index);
         if (add.length + remove.length === 0) throw refuse(`${where}: add or remove must name a label`);
-        if (add.includes(FORBIDDEN_LABEL)) throw refuse(`${where}: ${FORBIDDEN_LABEL} is the owner's to set`);
+        // A `status:` name that is not a status of .github/labels.yml (a typo, or a retired one such as the old name of todo) would make GitHub create a stray label.
+        for (const name of add) if (name.startsWith("status:") && !STATUS_LABELS.includes(name)) throw refuse(`${where}: ${name} is not a status of .github/labels.yml`);
+        for (const owned of OWNER_ONLY_LABELS) if (add.includes(owned)) throw refuse(`${where}: ${owned} is the owner's to set`);
         if (add.includes(WORKFLOW_ONLY_LABEL)) throw refuse(`${where}: ${WORKFLOW_ONLY_LABEL} is set by the Upstream post workflow after it publishes a draft; an agent sets status:awaiting-post for a ready draft`);
         if (add.some((name) => remove.includes(name))) throw refuse(`${where}: a label cannot be both added and removed`);
         return { op: "labels", issue: raw.issue, add, remove };
@@ -240,6 +245,54 @@ export function checkMergeable(pr, op, { repo, login }) {
   if (pr.mergeable_state !== "clean") throw refuse(`PR #${op.pr}: mergeable state is ${JSON.stringify(String(pr.mergeable_state ?? "unknown"))}, not "clean"`);
 }
 
+const MAX_LINKED = 50; // issues read per batch pull request
+
+/**
+ * The issues a batch pull request links (`Fixes`, `Closes`, `Resolves`, or `Refs #N` in its body) that are in `status:rework`: the owner
+ * sent that result back (ticket 3.28). An unreadable issue throws (fail closed); a missing one (404) is not an issue of this repository.
+ */
+export async function linkedReworkIssues(client, base, pr, repo) {
+  return reworkAmong(client, base, linkedIssueNumbers(pr, repo));
+}
+
+/** The numbers of the issues a pull request body links (`Fixes`, `Closes`, `Resolves`, or `Refs #N`), at most MAX_LINKED. */
+export function linkedIssueNumbers(pr, repo) {
+  return linkedIssues(typeof pr?.body === "string" ? pr.body : "", repo).slice(0, MAX_LINKED).map((entry) => entry.number);
+}
+
+/** Of these issue numbers, the ones now in `status:rework` (read by REST; an unreadable one throws, a missing one is skipped). */
+export async function reworkAmong(client, base, numbers) {
+  const found = [];
+  for (const number of numbers) {
+    const answer = await client.rest("GET", `${base}/issues/${number}`, undefined, [404]);
+    if (answer.status === 404 || !isObject(answer.data)) continue;
+    const labels = Array.isArray(answer.data.labels) ? answer.data.labels.map((entry) => (typeof entry === "string" ? entry : entry?.name)) : [];
+    if (labels.includes(REWORK)) found.push(number);
+  }
+  return found;
+}
+
+/** Refuses a batch pull request that links an issue the owner sent back with `status:rework`; shared by Batch merge and the relay's `merge`. */
+export async function checkNotSentBack(client, base, pr, number, repo) {
+  const [first] = await linkedReworkIssues(client, base, pr, repo);
+  if (first !== undefined) throw refuse(`PR #${number}: issue #${first} is in ${REWORK} (the owner sent it back); held until the label is replaced`);
+}
+
+/**
+ * The close guards for a READY batch pull request (ticket 3.28, a held batch): open, the app's, a `claude/` branch of this repository, a title
+ * that starts with `Issue batch`, and held by `Batch merge` because a linked issue is in `status:rework`. It is read before the list is applied;
+ * `requireCarried` then demands that another open batch PR of the app already contains its head, so the work lives on in the resumed batch.
+ */
+export async function checkClosableHeld(client, base, pr, op, { repo, login }) {
+  if (pr.state !== "open") throw refuse(`PR #${op.pr} is not open`);
+  if (lower(pr.user?.login) !== lower(login)) throw refuse(`PR #${op.pr} was not opened by ${login}`);
+  const ref = pr.head?.ref;
+  if (typeof ref !== "string" || !ref.startsWith(HEAD_PREFIX)) throw refuse(`PR #${op.pr}: head branch is not a ${HEAD_PREFIX} branch`);
+  if (lower(pr.head?.repo?.full_name) !== lower(repo)) throw refuse(`PR #${op.pr}: head branch is not in ${repo}`);
+  if (typeof pr.title !== "string" || !pr.title.startsWith(BATCH_TITLE)) throw refuse(`PR #${op.pr}: title does not start with "${BATCH_TITLE}"`);
+  if ((await linkedReworkIssues(client, base, pr, repo)).length === 0) throw refuse(`PR #${op.pr}: it is ready for review and no issue it links is in ${REWORK}; only a batch held for rework is closed (it merges on its own otherwise)`);
+}
+
 /**
  * The close guards, on a freshly read pull request: an open draft batch PR of the app from a `claude/` branch of this
  * repository, not updated for 2 hours (`now()` is the run's clock in ms; a missing or unreadable `updated_at` is refused).
@@ -293,7 +346,7 @@ export async function requireCarried(client, sha, built, op, { repo, login }) {
   const base = `/repos/${repo}`;
   const listed = (await client.rest("GET", `${base}/pulls?state=open&per_page=100`)).data;
   const carriers = (Array.isArray(listed) ? listed : [])
-    .filter((other) => other?.number !== op.pr && lower(other?.user?.login) === lower(login) && typeof other?.head?.ref === "string" && other.head.ref.startsWith(HEAD_PREFIX) && lower(other.head.repo?.full_name) === lower(repo) && /^[0-9a-f]{40}$/i.test(String(other.head.sha)))
+    .filter((other) => other?.number !== op.pr && lower(other?.user?.login) === lower(login) && typeof other?.title === "string" && other.title.startsWith(BATCH_TITLE) && typeof other?.head?.ref === "string" && other.head.ref.startsWith(HEAD_PREFIX) && lower(other.head.repo?.full_name) === lower(repo) && /^[0-9a-f]{40}$/i.test(String(other.head.sha)))
     .slice(0, MAX_CARRIERS);
   for (const other of carriers) {
     const { data } = await client.rest("GET", `${base}/compare/${sha}...${String(other.head.sha).toLowerCase()}`);
@@ -412,8 +465,13 @@ function handlers(config, client) {
       for (const op of ops) {
         if (op.op !== "pr_close" || closing.has(op.pr)) continue;
         const pr = await readPull(op.pr);
-        checkClosable(pr, op, config);
-        closing.set(op.pr, { sha: lower(pr.head?.sha), built: await builtPlans(client, pr, op, config) });
+        const held = pr.draft !== true;
+        if (held) await checkClosableHeld(client, base, pr, op, config);
+        else checkClosable(pr, op, config);
+        const built = await builtPlans(client, pr, op, config);
+        // A held ready batch always holds work that must live on: a carrier is demanded even when no plan is at done or built.
+        // The linked issues are recorded now: the same list may rewrite this pull request's body (`pr_edit` strips `Fixes`/`Refs`) before the close.
+        closing.set(op.pr, { sha: lower(pr.head?.sha), draft: !held, linked: held ? linkedIssueNumbers(pr, config.repo) : [], built: held && built.length === 0 ? ["(a ready batch)"] : built });
       }
     },
     async comment(op) {
@@ -485,13 +543,16 @@ function handlers(config, client) {
       const checked = closing.get(op.pr);
       if (checked === undefined) throw new WriteError(`PR #${op.pr}: it was not checked before the list was applied`);
       const pr = await readPull(op.pr);
-      if (pr.state !== "open" || pr.draft !== true || lower(pr.head?.sha) !== checked.sha) throw refuse(`PR #${op.pr}: it changed since it was checked (closed, ready, or a new push)`);
+      if (pr.state !== "open" || (pr.draft === true) !== checked.draft || lower(pr.head?.sha) !== checked.sha) throw refuse(`PR #${op.pr}: it changed since it was checked (closed, ready, or a new push)`);
+      if (!checked.draft && (await reworkAmong(client, base, checked.linked)).length === 0) throw refuse(`PR #${op.pr}: no issue it links is in ${REWORK} any more; it merges on its own`);
       if (checked.built.length > 0) await requireCarried(client, checked.sha, checked.built, op, config);
       await client.rest("PATCH", `${base}/pulls/${op.pr}`, { state: "closed" });
       return { target: `PR #${op.pr}`, result: "closed" };
     },
     async merge(op) {
-      checkMergeable(await readPull(op.pr), op, config);
+      const pr = await readPull(op.pr);
+      checkMergeable(pr, op, config);
+      await checkNotSentBack(client, base, pr, op.pr, config.repo); // the owner's send-back stops this merge as it stops Batch merge
       checkGreen((await client.rest("GET", `${base}/commits/${op.sha}/check-runs?per_page=100`)).data, (await client.rest("GET", `${base}/commits/${op.sha}/status`)).data, op);
       const { data } = await client.rest("PUT", `${base}/pulls/${op.pr}/merge`, { merge_method: "merge", sha: op.sha });
       if (data?.merged !== true) throw new WriteError(`PUT /pulls/${op.pr}/merge: GitHub did not merge it`);

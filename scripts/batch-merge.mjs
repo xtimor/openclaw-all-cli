@@ -20,6 +20,9 @@
 // (default 60000) for CI to appear. A batch that changes a protected file is skipped before any waiting. When the time is spent the PR is
 // skipped with "not final after N s" and the next trigger retries.
 // A final state that is not clean or green (dirty, behind, a red check) is skipped at once.
+// A batch is also held while any issue it links (`Fixes`, `Closes`, `Resolves`, or `Refs #N` in its body) is in `status:rework` (ticket 3.28):
+// the owner sent that result back, and the label is how they stop the merge. It is skipped with "issue #N is in status:rework" and merges
+// on a later trigger once the label is replaced. An issue that cannot be read holds it too (fail closed).
 //
 // Environment: GH_TOKEN (the app's installation token), AGENT_LOGIN (`<app-slug>[bot]`), GITHUB_REPOSITORY, BATCH_PR (optional),
 // BATCH_MERGE_WAIT_MS / BATCH_MERGE_POLL_MS / BATCH_MERGE_NO_CHECKS_MS (the wait, the pause between re-reads, the wait for CI to appear; test knobs), GITHUB_API_URL (default https://api.github.com), GITHUB_GRAPHQL_URL (unused), GITHUB_STEP_SUMMARY (the Markdown summary).
@@ -29,7 +32,7 @@
 // could not be read (1), or a variable is missing or malformed (2).
 import { appendFileSync, realpathSync } from "node:fs";
 import { pathToFileURL } from "node:url";
-import { checkGreen, checkMergeable, makeClient, WriteError } from "./agent-write.mjs";
+import { checkGreen, checkMergeable, checkNotSentBack, makeClient, WriteError } from "./agent-write.mjs";
 
 const DEFAULT_API = "https://api.github.com";
 const BATCH_TITLE = "Issue batch";
@@ -241,6 +244,7 @@ export async function run(env, log = () => {}) {
       }
       const sha = typeof pr.head?.sha === "string" ? pr.head.sha.toLowerCase() : "";
       if (!/^[0-9a-f]{40}$/.test(sha)) throw new WriteError(`PR #${number}: its head sha could not be read`, { refused: true });
+      await checkNotSentBack(client, base, pr, number, config.repo);
       const op = { pr: number, sha };
       try {
         checkMergeable(pr, op, config);

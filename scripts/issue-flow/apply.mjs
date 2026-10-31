@@ -1,7 +1,10 @@
 // Applies the decisions of transitions.mjs to GitHub. Entry points for .github/workflows/issue-flow.yml, which
 // calls them from actions/github-script (`github` is its octokit, `context` the event, `core` the logger).
 // No model, no text from an issue is evaluated; the owner list comes from the workflow's ISSUE_FLOW_OWNERS, the agent logins from ISSUE_FLOW_AGENTS.
-import { STALE_DAYS, STALE_STATUSES, decide, isBot, linkedIssues, needsTimeline, parseOwners, staleIssues, staleStatus, statusSince, AGENT_MARKER_RE } from "./transitions.mjs";
+import { STALE_DAYS, STALE_STATUSES, decide, isBot, isStatusName, linkedIssues, needsTimeline, parseOwners, staleIssues, staleStatus, statusSince, canonicalStatus, issueHasLabel, latestEventIsLabeled, OWNER_ONLY_STATUSES, AGENT_MARKER_RE } from "./transitions.mjs";
+
+const EVENT_ATTEMPTS = 4; // the events list can lag a moment behind the event that started the run (as in scripts/upstream-post.mjs)
+const EVENT_DELAY_MS = 2000;
 
 /** Sending the label requests one by one keeps their order: the new status first, then the old ones go. */
 export async function applyActions(github, context, issueNumber, actions) {
@@ -92,7 +95,24 @@ export async function runEvent({ github, context, core, env = process.env }) {
       core.info(`issue-flow: #${number} not found, skipped`);
       return;
     }
-    const timeline = event.name === "issues" && needsTimeline(issue, event) ? await readTimeline(github, context, number) : [];
+    let timeline = [];
+    if (event.name === "issues" && needsTimeline(issue, event)) {
+      timeline = await readTimeline(github, context, number);
+      // The handled status label's `labeled` event is not the latest event for it yet (not in the list, or only an older removal is): read
+      // again a few times, as scripts/upstream-post.mjs does. Without it the author and the app flag of this click are unknown.
+      const delay = String(env.ISSUE_FLOW_EVENT_DELAY_MS ?? "").trim() !== "" && Number.isFinite(Number(env.ISSUE_FLOW_EVENT_DELAY_MS)) ? Number(env.ISSUE_FLOW_EVENT_DELAY_MS) : EVENT_DELAY_MS;
+      const handled = event.action === "labeled" && isStatusName(event.label) && issueHasLabel(issue, event.label) ? event.label : null;
+      for (let attempt = 1; attempt < EVENT_ATTEMPTS && handled !== null && !latestEventIsLabeled(timeline, handled); attempt += 1) {
+        await new Promise((done) => setTimeout(done, delay));
+        timeline = await readTimeline(github, context, number);
+      }
+      // Still not there for an owner-only status (approved, rework): whose click it was cannot be told, and guessing "the owner's" would
+      // let a stranger's click stand. Apply nothing; the owner's next event, or the next run of this workflow, settles it.
+      if (handled !== null && !latestEventIsLabeled(timeline, handled) && OWNER_ONLY_STATUSES.includes(canonicalStatus(handled))) {
+        core.warning(`issue-flow: #${number} the ${handled} label event was not found in the issue's events; nothing applied`);
+        return;
+      }
+    }
     const actions = decide(event, issue, { owners, agents, timeline });
     if (actions.length === 0) {
       core.info(`issue-flow: #${number} nothing to do (${event.name} ${event.action})`);

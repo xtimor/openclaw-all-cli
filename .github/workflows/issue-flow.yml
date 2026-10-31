@@ -31,7 +31,7 @@ permissions:
   contents: read
 
 env:
-  # Logins (comma separated) allowed to set status:approved. Anyone else's approval is removed again. Keep in sync with
+  # Logins (comma separated) allowed to set status:approved or status:rework (the owner's own click). Anyone else's is removed again. Keep in sync with
   # ISSUE_FLOW_OWNERS in agent-write.yml (the logins allowed to dispatch the agents' write relay).
   ISSUE_FLOW_OWNERS: xtimor
   # Logins (comma separated) of the issue agents' GitHub App, as `<app-slug>[bot]` (docs/agents/identity.md). Only effect: an

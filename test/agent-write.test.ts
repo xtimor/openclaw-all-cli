@@ -47,6 +47,8 @@ let answers = new Map<string, Answer>();
 let created = false;
 /** Set by a write to pull request 21 or its comments: its `updated_at` then reads as now (GitHub refreshes it on any write). */
 let bumped = false;
+/** The body a `PATCH /pulls/21` set: later reads of pull request 21 show it, as GitHub does. */
+let editedBody: string | null = null;
 
 const pull = (overrides: Record<string, unknown> = {}) => ({
   number: 20,
@@ -105,6 +107,8 @@ beforeAll(async () => {
     calls.push({ method, path, search: url.search, body: await readBody(req), auth: req.headers.authorization });
     let [status, payload] = (created ? answers.get(`${method} ${path}@created`) : undefined) ?? answers.get(`${method} ${path}`) ?? defaults(method, path);
     if (method === "GET" && path === `/repos/${REPO}/pulls/21` && bumped && payload !== null && typeof payload === "object") payload = { ...(payload as object), updated_at: new Date().toISOString() };
+    if (method === "GET" && path === `/repos/${REPO}/pulls/21` && editedBody !== null && payload !== null && typeof payload === "object") payload = { ...(payload as object), body: editedBody };
+    if (method === "PATCH" && path === `/repos/${REPO}/pulls/21` && typeof calls[calls.length - 1]?.body?.body === "string") editedBody = calls[calls.length - 1]?.body?.body as string;
     if (method === "POST" && path === `/repos/${REPO}/pulls`) created = true;
     if ((method === "POST" && path === `/repos/${REPO}/issues/21/comments`) || (method === "PATCH" && path === `/repos/${REPO}/pulls/21`)) bumped = true;
     res.writeHead(status, { "content-type": "application/json" });
@@ -123,6 +127,7 @@ beforeEach(() => {
   answers = new Map();
   created = false;
   bumped = false;
+  editedBody = null;
 });
 
 const dirs: string[] = [];
@@ -140,6 +145,7 @@ interface Run {
 function run(ops: unknown, env: Record<string, string | undefined> = {}, raw?: string): Promise<Run> {
   created = false; // each run starts with the stub's world as the test set it
   bumped = false;
+  editedBody = null;
   const dir = mkdtempSync(join(tmpdir(), "agent-write-"));
   dirs.push(dir);
   const summaryFile = join(dir, "summary.md");
@@ -178,10 +184,10 @@ describe("agent-write", () => {
   it("COMMENT_THEN_LABEL: posts the comment, then the labels, then deletes the removed one, in that order, as the app", async () => {
     const result = await run([
       { op: "comment", issue: 12, body: `hello ${BODY_MARK}` },
-      { op: "labels", issue: 12, add: ["status:triaged", "priority:p2"], remove: ["status:new"] },
+      { op: "labels", issue: 12, add: ["status:triaged", "priority:p2"], remove: ["status:todo"] },
     ]);
     expect(result).toMatchObject({ code: 0, stderr: "" });
-    expect(seen()).toEqual(["POST /issues/12/comments", "POST /issues/12/labels", "DELETE /issues/12/labels/status:new"]);
+    expect(seen()).toEqual(["POST /issues/12/comments", "POST /issues/12/labels", "DELETE /issues/12/labels/status:todo"]);
     expect(calls[0]?.body).toEqual({ body: `hello ${BODY_MARK}` });
     expect(calls[1]?.body).toEqual({ labels: ["status:triaged", "priority:p2"] });
     expect(calls.every((call) => call.auth === `Bearer ${TOKEN}`)).toBe(true);
@@ -189,17 +195,17 @@ describe("agent-write", () => {
     expect(result.stdout).toContain(`agent-write: acting as ${BOT}\n`);
     expect(result.summary).toContain("Applied 2 operation(s)");
     expect(result.summary).toContain("comment 9001 created");
-    expect(result.summary).toContain("added status:triaged, priority:p2; removed status:new");
+    expect(result.summary).toContain("added status:triaged, priority:p2; removed status:todo");
     expect(leaked(result)).toEqual([]);
   });
 
   it("LABELS: removing a label the issue lacks is fine; any other 404 stops the run", async () => {
-    answers.set(`DELETE /repos/${REPO}/issues/12/labels/status:new`, [404, { message: "Label does not exist" }]);
-    const fine = await run([{ op: "labels", issue: 12, remove: ["status:new"] }]);
+    answers.set(`DELETE /repos/${REPO}/issues/12/labels/status:todo`, [404, { message: "Label does not exist" }]);
+    const fine = await run([{ op: "labels", issue: 12, remove: ["status:todo"] }]);
     expect(fine.code).toBe(0);
-    expect(fine.summary).toContain("status:new (was not set)");
-    answers.set(`DELETE /repos/${REPO}/issues/12/labels/status:new`, [404, { message: "Not Found" }]);
-    const bad = await run([{ op: "labels", issue: 12, remove: ["status:new"] }]);
+    expect(fine.summary).toContain("status:todo (was not set)");
+    answers.set(`DELETE /repos/${REPO}/issues/12/labels/status:todo`, [404, { message: "Not Found" }]);
+    const bad = await run([{ op: "labels", issue: 12, remove: ["status:todo"] }]);
     expect(bad).toMatchObject({ code: 1 });
     expect(bad.summary).toContain("failed");
   });
@@ -464,6 +470,7 @@ describe("agent-write", () => {
         ["behind", {}, "behind"],
         ["owner's PR", { user: { login: "xtimor" } }, "ahead"],
         ["non-claude branch", { head: { ref: "feature/x", sha: NEW_SHA, repo: { full_name: REPO } } }, "ahead"],
+        ["not an Issue batch title", { title: "Fix a thing" }, "ahead"],
         ["fork", { head: { ref: "claude/new", sha: NEW_SHA, repo: { full_name: "evil/openclaw-all-cli" } } }, "ahead"],
         ["no sha", { head: { ref: "claude/new", repo: { full_name: REPO } } }, "ahead"],
       ];
@@ -555,6 +562,151 @@ describe("agent-write", () => {
       answers.set(`GET /repos/${REPO}/compare/${OLD_SHA}...${NEW_SHA}`, [500, { message: "boom" }]);
       expect((await run([{ op: "pr_close", pr: 21 }])).code).toBe(1);
       expect(calls.filter((call) => call.method === "PATCH")).toEqual([]);
+    });
+  });
+
+  describe("PR_CLOSE of a ready batch that Batch merge holds for rework (ticket 3.28, held ready batch)", () => {
+    const OLD_SHA = "1".repeat(40);
+    const NEW_SHA = "2".repeat(40);
+    const ready = (overrides: Record<string, unknown> = {}) => pull({ number: 21, draft: false, title: "Issue batch: #7, #8", body: "Fixes #7\nFixes #8\n", head: { ref: "claude/old", sha: OLD_SHA, repo: { full_name: REPO } }, ...overrides });
+    const issueOf = (n: number, ...labels: string[]) => answers.set(`GET /repos/${REPO}/issues/${n}`, [200, { number: n, state: "open", labels: labels.map((name) => ({ name })) }]);
+    const carrier = () => pull({ number: 31, draft: true, title: "Issue batch (in progress)", head: { ref: "claude/new", sha: NEW_SHA, repo: { full_name: REPO } } });
+    const held = (overrides: Record<string, unknown> = {}) => {
+      answers.set(`GET /repos/${REPO}/pulls/21`, [200, ready(overrides)]);
+      answers.set(`GET /repos/${REPO}/pulls/21/files`, [200, []]);
+      issueOf(7, "status:rework");
+      issueOf(8, "status:in-review");
+      answers.set(`GET /repos/${REPO}/pulls`, [200, [ready(), carrier()]]);
+      answers.set(`GET /repos/${REPO}/compare/${OLD_SHA}...${NEW_SHA}`, [200, { status: "ahead" }]);
+    };
+
+    it("a ready batch with a linked issue in status:rework is closed when another open batch PR of the app contains its head", async () => {
+      held();
+      const result = await run([{ op: "pr_close", pr: 21 }]);
+      expect(result, result.stderr).toMatchObject({ code: 0 });
+      expect(calls.filter((call) => call.method === "PATCH").map((call) => [call.path, call.body])).toEqual([[`/repos/${REPO}/pulls/21`, { state: "closed" }]]);
+      expect(seen()).toContain(`GET /compare/${OLD_SHA}...${NEW_SHA}`);
+    });
+
+    it("the whole retire dispatch works for a held ready batch: pr_create, comment, pr_edit, pr_close", async () => {
+      held();
+      answers.set(`GET /repos/${REPO}/pulls/21@created`, [200, ready()]);
+      const result = await run([
+        { op: "pr_create", head: "claude/new", title: "Issue batch (in progress)", draft: true },
+        { op: "comment", issue: 21, body: "continued" },
+        { op: "pr_edit", pr: 21, body: "Resumed on branch claude/new; this pull request is closed." },
+        { op: "pr_close", pr: 21 },
+      ]);
+      expect(result, result.stderr).toMatchObject({ code: 0 });
+      expect(calls.filter((call) => call.method === "PATCH").map((call) => call.body)).toEqual([{ body: "Resumed on branch claude/new; this pull request is closed." }, { state: "closed" }]);
+      // The close was judged on the links read before the list (the re-read body no longer links anything), and the label was read again.
+      const issueReads = calls.filter((call) => call.method === "GET" && call.path === `/repos/${REPO}/issues/7`).length;
+      expect(issueReads).toBeGreaterThanOrEqual(2);
+    });
+
+    it("N1: the retire dispatch is refused when the rework label is gone at apply time, although the edit stripped the links from the body", async () => {
+      held();
+      answers.set(`GET /repos/${REPO}/pulls/21@created`, [200, ready()]);
+      answers.set(`GET /repos/${REPO}/issues/7@created`, [200, { number: 7, state: "open", labels: [{ name: "status:in-review" }] }]);
+      const result = await run([
+        { op: "pr_create", head: "claude/new", title: "Issue batch (in progress)", draft: true },
+        { op: "pr_edit", pr: 21, body: "Resumed on branch claude/new; this pull request is closed." },
+        { op: "pr_close", pr: 21 },
+      ]);
+      expect(result.code).toBe(1);
+      expect(result.summary).toContain("no issue it links is in status:rework any more");
+      expect(calls.filter((call) => call.method === "PATCH").map((call) => call.body)).toEqual([{ body: "Resumed on branch claude/new; this pull request is closed." }]);
+    });
+
+    it("a ready batch that no linked issue holds is never closed: it merges on its own", async () => {
+      held();
+      issueOf(7, "status:in-review");
+      const result = await run([{ op: "pr_close", pr: 21 }]);
+      expect(result.code).toBe(1);
+      expect(result.summary).toContain("no issue it links is in status:rework");
+      expect(calls.filter((call) => call.method === "PATCH")).toEqual([]);
+    });
+
+    it("without a carrier (no other open batch PR contains its head) the close is refused, even with no built plan", async () => {
+      held();
+      for (const compare of [{ status: "diverged" }, { status: "behind" }]) {
+        calls = [];
+        answers.set(`GET /repos/${REPO}/compare/${OLD_SHA}...${NEW_SHA}`, [200, compare]);
+        const result = await run([{ op: "pr_close", pr: 21 }]);
+        expect(result.code, compare.status).toBe(1);
+        expect(result.summary).toContain("no other open batch PR contains it");
+        expect(calls.filter((call) => call.method === "PATCH")).toEqual([]);
+      }
+      calls = [];
+      answers.set(`GET /repos/${REPO}/pulls`, [200, [ready()]]);
+      expect((await run([{ op: "pr_close", pr: 21 }])).code).toBe(1);
+    });
+
+    it("another author, a non-claude branch, a fork, another title, or a closed PR is refused", async () => {
+      for (const override of [
+        { user: { login: "xtimor" } },
+        { head: { ref: "feature/x", sha: OLD_SHA, repo: { full_name: REPO } } },
+        { head: { ref: "claude/old", sha: OLD_SHA, repo: { full_name: "evil/openclaw-all-cli" } } },
+        { title: "Fix a thing" },
+        { state: "closed" },
+      ]) {
+        calls = [];
+        held(override);
+        const result = await run([{ op: "pr_close", pr: 21 }]);
+        expect(result.code, JSON.stringify(override)).toBe(1);
+        expect(calls.filter((call) => call.method === "PATCH")).toEqual([]);
+      }
+    });
+
+    it("an unreadable linked issue fails closed; a label removed after the check (the owner took it off) refuses at apply time", async () => {
+      held();
+      answers.set(`GET /repos/${REPO}/issues/7`, [500, { message: "boom" }]);
+      expect((await run([{ op: "pr_close", pr: 21 }])).code).toBe(1);
+      expect(calls.filter((call) => call.method === "PATCH")).toEqual([]);
+      calls = [];
+      held();
+      answers.set(`GET /repos/${REPO}/pulls/21@created`, [200, ready()]);
+      answers.set(`GET /repos/${REPO}/issues/7@created`, [200, { number: 7, state: "open", labels: [{ name: "status:in-review" }] }]);
+      const result = await run([{ op: "pr_create", head: "claude/new", title: "Issue batch (in progress)", draft: true }, { op: "pr_close", pr: 21 }]);
+      expect(result.code).toBe(1);
+      expect(result.summary).toContain("merges on its own");
+      expect(calls.filter((call) => call.method === "PATCH")).toEqual([]);
+    });
+
+    it("an idle draft keeps its old rules (a ready flip between the check and the close is refused)", async () => {
+      held();
+      answers.set(`GET /repos/${REPO}/pulls/21`, [200, pull({ number: 21, draft: true, title: "Issue batch (in progress)", updated_at: hoursAgo(5), head: { ref: "claude/old", sha: OLD_SHA, repo: { full_name: REPO } } })]);
+      answers.set(`GET /repos/${REPO}/pulls/21@created`, [200, ready()]);
+      const result = await run([{ op: "pr_create", head: "claude/new", title: "Issue batch (in progress)", draft: true }, { op: "pr_close", pr: 21 }]);
+      expect(result.code).toBe(1);
+      expect(result.summary).toContain("it changed since it was checked");
+      expect(calls.filter((call) => call.method === "PATCH")).toEqual([]);
+    });
+  });
+
+  describe("MERGE honours the owner's send-back (ticket 3.28)", () => {
+    const issueOf = (n: number, ...labels: string[]) => answers.set(`GET /repos/${REPO}/issues/${n}`, [200, { number: n, state: "open", labels: labels.map((name) => ({ name })) }]);
+
+    it("the relay's merge is refused while a linked issue is in status:rework, and merges once it is not", async () => {
+      answers.set(`GET /repos/${REPO}/pulls/20`, [200, pull({ body: "Fixes #7\nRefs #8\n" })]);
+      issueOf(7, "status:in-review");
+      issueOf(8, "status:rework");
+      const held = await run([{ op: "merge", pr: 20, sha: SHA }]);
+      expect(held.code).toBe(1);
+      expect(held.summary).toContain("issue #8 is in status:rework");
+      expect(calls.filter((call) => call.method === "PUT")).toEqual([]);
+      calls = [];
+      issueOf(8, "status:in-review");
+      const ok = await run([{ op: "merge", pr: 20, sha: SHA }]);
+      expect(ok.code, ok.stderr).toBe(0);
+      expect(calls.filter((call) => call.method === "PUT")).toHaveLength(1);
+    });
+
+    it("an unreadable linked issue stops the merge (fail closed)", async () => {
+      answers.set(`GET /repos/${REPO}/pulls/20`, [200, pull({ body: "Fixes #7\n" })]);
+      answers.set(`GET /repos/${REPO}/issues/7`, [500, { message: "boom" }]);
+      expect((await run([{ op: "merge", pr: 20, sha: SHA }])).code).toBe(1);
+      expect(calls.filter((call) => call.method === "PUT")).toEqual([]);
     });
   });
 
@@ -711,6 +863,43 @@ describe("agent-write", () => {
     expect(calls).toEqual([]);
     // Removing it is not adding it.
     expect((await run([{ op: "labels", issue: 12, remove: ["status:approved"] }])).code).toBe(0);
+  });
+
+  it("REWORK: status:rework is the owner's own click: adding it is refused in any list and spelling, removing it is fine (ticket 3.28)", async () => {
+    for (const add of [["status:rework"], ["status:awaiting-post", "status:rework"], ["status:rework", "status:triaged"]]) {
+      calls = [];
+      const result = await run([{ op: "comment", issue: 12, body: "hi" }, { op: "labels", issue: 12, add }]);
+      expect(result.code).toBe(1);
+      expect(result.summary).toContain("Refused, nothing applied");
+      expect(result.stderr).toContain("status:rework is the owner's to set");
+      expect(calls).toEqual([]);
+    }
+    for (const name of ["Status:Rework", " status:rework ", "STATUS:REWORK", "status:rework\n"]) {
+      calls = [];
+      expect((await run([{ op: "labels", issue: 12, add: [name] }])).code, name).toBe(1);
+      expect(calls).toEqual([]);
+    }
+    // Removing it is not adding it, and the approval's own refusal is unchanged.
+    expect((await run([{ op: "labels", issue: 12, add: ["status:blocked"], remove: ["status:rework"] }])).code).toBe(0);
+    calls = [];
+    const approved = await run([{ op: "labels", issue: 12, add: ["status:approved"] }]);
+    expect(approved.code).toBe(1);
+    expect(approved.stderr).toContain("status:approved is the owner's to set");
+  });
+
+  it("STATUS_NAMES: adding a status: name that is not a status of the label file (a typo, the retired status:new) is refused; removing one is fine (ticket 3.27)", async () => {
+    for (const name of ["status:new", "status:made-up", "status:todos", "status:in-progres"]) {
+      calls = [];
+      const result = await run([{ op: "comment", issue: 12, body: "hi" }, { op: "labels", issue: 12, add: ["status:triaged", name] }]);
+      expect(result.code, name).toBe(1);
+      expect(result.stderr).toContain(`${name} is not a status of .github/labels.yml`);
+      expect(calls).toEqual([]);
+    }
+    // Every real status except the owner's and the workflow's is accepted, and the old name may still be removed from an issue.
+    for (const name of ["status:todo", "status:needs-info", "status:triaged", "status:planned", "status:in-progress", "status:in-review", "status:blocked", "status:declined", "status:awaiting-post"]) {
+      expect((await run([{ op: "labels", issue: 12, add: [name] }])).code, name).toBe(0);
+    }
+    expect((await run([{ op: "labels", issue: 12, add: ["status:todo"], remove: ["status:new"] }])).code).toBe(0);
   });
 
   it("LABEL_NAMES: only status:, type:, priority:, and source: names; dot names, lookalikes, typos, and a name in both lists are refused", async () => {

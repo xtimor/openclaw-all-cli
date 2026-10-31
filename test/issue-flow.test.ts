@@ -37,6 +37,12 @@ interface Event {
 }
 interface Transitions {
   STATUS_LABELS: string[];
+  TODO: string;
+  REWORK: string;
+  OWNER_ONLY_STATUSES: string[];
+  NON_OWNER_REWORK_COMMENT: string;
+  reworkComment(eventId: unknown): Action;
+  LEGACY_STATUS: Record<string, string>;
   AWAITING_POST: string;
   UPSTREAM: string;
   STALE_DAYS: number;
@@ -88,36 +94,114 @@ const labeledAt = (label: string, actor: string, minutes: number, id: number): R
 const revert = (id: unknown): Action => t.approvalComment(id);
 
 describe("STATUS_LABELS", () => {
-  it("are the 11 states of .github/labels.yml, in order", () => {
+  it("are the 12 states of .github/labels.yml, in order", () => {
     const text = readFileSync(join(ROOT, ".github", "labels.yml"), "utf8");
     const fromFile = [...text.matchAll(/^- name: "(status:[^"]+)"/gm)].map((match) => match[1]);
-    expect(fromFile).toHaveLength(11);
-    expect(fromFile.slice(-3)).toEqual(["status:declined", "status:awaiting-post", "status:upstream"]);
+    expect(fromFile).toHaveLength(12);
+    expect(fromFile.slice(-4)).toEqual(["status:declined", "status:awaiting-post", "status:upstream", "status:rework"]);
     expect(t.STATUS_LABELS).toEqual(fromFile);
   });
 });
 
+describe("status:todo and the old name in label history (ticket 3.27)", () => {
+  const OLD = "status:new";
+  /** A REST `unlabeled` event of the issue timeline. */
+  const unlabeledAt = (label: string, actor: string, minutes: number, id: number): Record<string, unknown> => ({ ...labeledAt(label, actor, minutes, id), event: "unlabeled" });
+
+  it("the waiting-for-triage status is status:todo; the old name is no status, only a history alias", () => {
+    expect(t.TODO).toBe("status:todo");
+    expect(t.STATUS_LABELS[0]).toBe("status:todo");
+    expect(t.STATUS_LABELS).not.toContain(OLD);
+    expect(t.LEGACY_STATUS).toEqual({ [OLD]: "status:todo" });
+  });
+
+  it("normalizeTimeline reads a historical status:new event, labeled or unlabeled, as status:todo and nothing else", () => {
+    const raw = [labeledAt(OLD, "alice", 0, 1), unlabeledAt(OLD, "bot", 1, 2), labeledAt("status:todo", "alice", 2, 3), labeledAt("status:newer", "alice", 3, 4), labeledAt("type:bug", "alice", 4, 5)];
+    expect(t.normalizeTimeline(raw).map((e) => [e.id, e.label])).toEqual([
+      [1, "status:todo"],
+      [2, "status:todo"],
+      [3, "status:todo"],
+      [4, "status:newer"],
+      [5, "type:bug"],
+    ]);
+    expect(t.normalizeTimeline([{ id: 1, kind: "labeled", label: OLD, createdAt: "2026-10-20T10:00:00Z" }]).map((e) => e.label)).toEqual(["status:todo"]);
+  });
+
+  it("latest wins across the rename: a status labeled after the old-named event wins, and the other way round", () => {
+    const labels = ["status:todo", "status:triaged", "type:bug"];
+    const after = [labeledAt(OLD, "alice", 0, 1), labeledAt("status:triaged", "bob", 5, 2)];
+    const before = [labeledAt("status:triaged", "bob", 0, 1), labeledAt(OLD, "alice", 5, 2)];
+    // The event being handled is a type label, so only the history tells the order.
+    const event = { name: "issues", action: "labeled", actor: "alice", label: "type:bug" };
+    expect(t.decide(event, issue(labels), { owners: OWNERS, timeline: after })).toEqual([remove("status:todo")]);
+    expect(t.decide(event, issue(labels), { owners: OWNERS, timeline: before })).toEqual([remove("status:triaged")]);
+  });
+
+  it("an approval reverted by a stranger restores the status the old-named history says was replaced last", () => {
+    const timeline = [unlabeledAt("status:triaged", "bot", 1, 10), unlabeledAt(OLD, "bot", 3, 11), labeledAt("status:approved", "mallory", 5, 12)];
+    const event = { name: "issues", action: "labeled", actor: "mallory", label: "status:approved" };
+    expect(t.decide(event, issue(["status:approved"]), { owners: OWNERS, timeline })).toEqual([add("status:todo"), remove("status:approved"), revert(12)]);
+  });
+
+  it("an event payload that still names status:new counts as the newest status:todo", () => {
+    const event = { name: "issues", action: "labeled", actor: "alice", label: OLD };
+    expect(t.decide(event, issue(["status:todo", "status:triaged"]), { owners: OWNERS })).toEqual([remove("status:triaged")]);
+  });
+
+  it("a literal status:new on the issue is its todo status: never add status:todo beside it (the rollout window before the label sync)", () => {
+    const legacy = issue([OLD, "type:bug"]);
+    // opened and reopened: effectively there already, nothing to add or remove.
+    for (const action of ["opened", "reopened"]) expect(t.decide({ name: "issues", action, actor: "alice" }, legacy)).toEqual([]);
+    // another status is labeled: the literal old name is what gets removed, under that name.
+    const timeline = [labeledAt(OLD, "alice", 0, 1), labeledAt("status:triaged", "bob", 5, 2)];
+    expect(t.decide({ name: "issues", action: "labeled", actor: "bob", label: "status:triaged" }, issue([OLD, "status:triaged"]), { owners: OWNERS, timeline })).toEqual([remove(OLD)]);
+    // a stranger's approval is reverted onto it without adding status:todo.
+    const approval = [labeledAt(OLD, "alice", 0, 1), labeledAt("status:approved", "mallory", 5, 2)];
+    expect(t.decide({ name: "issues", action: "labeled", actor: "mallory", label: "status:approved" }, issue([OLD, "status:approved"]), { owners: OWNERS, timeline: approval })).toEqual([remove("status:approved"), revert(2)]);
+    // closing clears it under its literal name; the author's answer on needs-info replaces needs-info only.
+    expect(t.decide({ name: "issues", action: "closed", actor: "xtimor" }, issue([OLD], { state: "closed" }))).toEqual([remove(OLD)]);
+    expect(t.decide({ name: "issue_comment", action: "created", actor: "alice" }, issue(["status:needs-info", OLD]))).toEqual([remove("status:needs-info")]);
+    // both names on one issue (the new one was auto-created first): the old one goes, the new one stays.
+    expect(t.decide({ name: "issues", action: "reopened", actor: "alice" }, issue([OLD, "status:todo"]))).toEqual([remove(OLD)]);
+    expect(t.decide({ name: "issues", action: "closed", actor: "xtimor" }, issue([OLD, "status:todo"], { state: "closed" }))).toEqual([remove(OLD), remove("status:todo")]);
+  });
+
+  it("runEvent: a reopened issue that still carries the literal status:new gets no second label", async () => {
+    const fake = fakeGithub([{ number: 12, state: "open", labels: [OLD, "type:bug"], user: { login: "alice" } }]);
+    const payload = { action: "reopened", sender: { login: "alice" }, issue: { number: 12, updated_at: "2026-10-22T12:00:00Z" } };
+    await apply.runEvent({ github: fake.github, context: ctx("issues", payload), core: fakeCore(), env: { ISSUE_FLOW_OWNERS: "xtimor" } });
+    expect(fake.calls.filter((call) => /^(add|remove) /.test(call))).toEqual([]);
+    expect(fake.labelsOf(12)).toEqual([OLD, "type:bug"]);
+  });
+
+  it("statusSince reads old-named events for status:todo", () => {
+    const events = [labeledAt(OLD, "alice", 0, 1), labeledAt(OLD, "alice", 30, 2)];
+    expect(t.statusSince(events, "status:todo")).toBe(Date.parse("2026-10-20T10:30:00Z"));
+    expect(t.statusSince(events, OLD)).toBeNull();
+  });
+});
+
 describe("decide: issues", () => {
-  it("OPENED: adds status:new and removes other status labels", () => {
-    expect(t.decide({ name: "issues", action: "opened", actor: "alice" }, issue(["type:bug"]))).toEqual([add("status:new")]);
+  it("OPENED: adds status:todo and removes other status labels", () => {
+    expect(t.decide({ name: "issues", action: "opened", actor: "alice" }, issue(["type:bug"]))).toEqual([add("status:todo")]);
     expect(t.decide({ name: "issues", action: "opened", actor: "alice" }, issue(["status:triaged", "type:bug", "status:blocked"]))).toEqual([
-      add("status:new"),
+      add("status:todo"),
       remove("status:triaged"),
       remove("status:blocked"),
     ]);
   });
 
-  it("OPENED: an issue that already has exactly status:new needs nothing", () => {
-    expect(t.decide({ name: "issues", action: "opened", actor: "alice" }, issue(["status:new", "type:idea"]))).toEqual([]);
+  it("OPENED: an issue that already has exactly status:todo needs nothing", () => {
+    expect(t.decide({ name: "issues", action: "opened", actor: "alice" }, issue(["status:todo", "type:idea"]))).toEqual([]);
   });
 
-  it("REOPENED: a reopened issue is status:new", () => {
-    expect(t.decide({ name: "issues", action: "reopened", actor: "alice" }, issue(["status:needs-info"]))).toEqual([add("status:new"), remove("status:needs-info")]);
-    expect(t.decide({ name: "issues", action: "reopened", actor: "alice" }, issue([]))).toEqual([add("status:new")]);
+  it("REOPENED: a reopened issue is status:todo", () => {
+    expect(t.decide({ name: "issues", action: "reopened", actor: "alice" }, issue(["status:needs-info"]))).toEqual([add("status:todo"), remove("status:needs-info")]);
+    expect(t.decide({ name: "issues", action: "reopened", actor: "alice" }, issue([]))).toEqual([add("status:todo")]);
   });
 
   it("a closed issue keeps no status:*", () => {
-    expect(t.decide({ name: "issues", action: "opened", actor: "alice" }, issue(["status:new", "type:bug"], { state: "closed" }))).toEqual([remove("status:new")]);
+    expect(t.decide({ name: "issues", action: "opened", actor: "alice" }, issue(["status:todo", "type:bug"], { state: "closed" }))).toEqual([remove("status:todo")]);
     expect(t.decide({ name: "issues", action: "labeled", actor: "xtimor", label: "status:triaged" }, issue(["status:triaged", "type:bug"], { state: "closed" }))).toEqual([
       remove("status:triaged"),
     ]);
@@ -130,12 +214,12 @@ describe("decide: issues", () => {
   });
 
   it("CLOSED: a close event that finds the issue open again (reopened meanwhile) leaves its status", () => {
-    expect(t.decide({ name: "issues", action: "closed", actor: "xtimor" }, issue(["status:new"]))).toEqual([]);
+    expect(t.decide({ name: "issues", action: "closed", actor: "xtimor" }, issue(["status:todo"]))).toEqual([]);
   });
 
-  it("UNLABELED: an open issue left with no status becomes new", () => {
+  it("UNLABELED: an open issue left with no status becomes todo", () => {
     const unlabeled = { name: "issues", action: "unlabeled", actor: "bob", label: "status:triaged" };
-    expect(t.decide(unlabeled, issue(["type:bug"]))).toEqual([add("status:new")]);
+    expect(t.decide(unlabeled, issue(["type:bug"]))).toEqual([add("status:todo")]);
     expect(t.decide(unlabeled, issue(["status:in-review"]))).toEqual([]);
     expect(t.decide(unlabeled, issue(["type:bug"], { state: "closed" }))).toEqual([]);
     expect(t.decide({ ...unlabeled, label: "type:bug" }, issue(["status:triaged"]))).toEqual([]);
@@ -143,7 +227,7 @@ describe("decide: issues", () => {
 
   it("TWO_STATUS: a newly added status label wins and the others go", () => {
     const labeled = (label: string) => ({ name: "issues", action: "labeled", actor: "xtimor", label });
-    expect(t.decide(labeled("status:triaged"), issue(["status:new", "status:triaged", "type:bug"]), { owners: OWNERS })).toEqual([remove("status:new")]);
+    expect(t.decide(labeled("status:triaged"), issue(["status:todo", "status:triaged", "type:bug"]), { owners: OWNERS })).toEqual([remove("status:todo")]);
     expect(t.decide(labeled("status:in-review"), issue(["status:triaged", "status:in-review", "status:blocked"]), { owners: OWNERS })).toEqual([
       remove("status:triaged"),
       remove("status:blocked"),
@@ -151,14 +235,14 @@ describe("decide: issues", () => {
   });
 
   it("TWO_STATUS: the most recently labeled status stays, from the timeline, whichever event is handled", () => {
-    const labels = ["status:new", "status:triaged", "type:bug"];
-    const timeline = [labeledAt("status:new", "alice", 0, 1), labeledAt("type:bug", "alice", 0, 2), labeledAt("status:triaged", "bob", 5, 3)];
-    for (const label of ["status:new", "status:triaged", "type:bug"]) {
-      expect(t.decide({ name: "issues", action: "labeled", actor: "x", label }, issue(labels), { owners: OWNERS, timeline })).toEqual([remove("status:new")]);
+    const labels = ["status:todo", "status:triaged", "type:bug"];
+    const timeline = [labeledAt("status:todo", "alice", 0, 1), labeledAt("type:bug", "alice", 0, 2), labeledAt("status:triaged", "bob", 5, 3)];
+    for (const label of ["status:todo", "status:triaged", "type:bug"]) {
+      expect(t.decide({ name: "issues", action: "labeled", actor: "x", label }, issue(labels), { owners: OWNERS, timeline })).toEqual([remove("status:todo")]);
     }
     // Same labels, timeline the other way round: the other label stays, with the same result for either event.
-    const flipped = [labeledAt("status:triaged", "bob", 0, 1), labeledAt("status:new", "alice", 5, 2)];
-    for (const label of ["status:new", "status:triaged"]) {
+    const flipped = [labeledAt("status:triaged", "bob", 0, 1), labeledAt("status:todo", "alice", 5, 2)];
+    for (const label of ["status:todo", "status:triaged"]) {
       expect(t.decide({ name: "issues", action: "labeled", actor: "x", label }, issue(labels), { owners: OWNERS, timeline: flipped })).toEqual([remove("status:triaged")]);
     }
   });
@@ -173,10 +257,10 @@ describe("decide: issues", () => {
   });
 
   it("a label that is not a status label changes nothing on a settled issue, and settles an unsettled one", () => {
-    expect(t.decide({ name: "issues", action: "labeled", actor: "alice", label: "type:bug" }, issue(["status:new", "type:bug"]))).toEqual([]);
-    expect(t.decide({ name: "issues", action: "labeled", actor: "alice", label: "status:triaged" }, issue(["status:new"]))).toEqual([]);
-    expect(t.decide({ name: "issues", action: "labeled", actor: "alice" }, issue(["status:new"]))).toEqual([]);
-    expect(t.decide({ name: "issues", action: "labeled", actor: "alice", label: "type:bug" }, issue(["type:bug"]))).toEqual([add("status:new")]);
+    expect(t.decide({ name: "issues", action: "labeled", actor: "alice", label: "type:bug" }, issue(["status:todo", "type:bug"]))).toEqual([]);
+    expect(t.decide({ name: "issues", action: "labeled", actor: "alice", label: "status:triaged" }, issue(["status:todo"]))).toEqual([]);
+    expect(t.decide({ name: "issues", action: "labeled", actor: "alice" }, issue(["status:todo"]))).toEqual([]);
+    expect(t.decide({ name: "issues", action: "labeled", actor: "alice", label: "type:bug" }, issue(["type:bug"]))).toEqual([add("status:todo")]);
   });
 
   it("NON_OWNER_APPROVED: removes approved, keeps the previous status, comments", () => {
@@ -184,9 +268,9 @@ describe("decide: issues", () => {
     expect(t.decide(event, issue(["status:triaged", "status:approved"]), { owners: OWNERS })).toEqual([remove("status:approved"), revert("event")]);
   });
 
-  it("NON_OWNER_APPROVED: no previous status gives status:new", () => {
+  it("NON_OWNER_APPROVED: no previous status gives status:todo", () => {
     const event = { name: "issues", action: "labeled", actor: "mallory", label: "status:approved" };
-    expect(t.decide(event, issue(["status:approved", "type:bug"]), { owners: OWNERS })).toEqual([add("status:new"), remove("status:approved"), revert("event")]);
+    expect(t.decide(event, issue(["status:approved", "type:bug"]), { owners: OWNERS })).toEqual([add("status:todo"), remove("status:approved"), revert("event")]);
   });
 
   it("NON_OWNER_APPROVED: of several previous statuses the most recently labeled stays", () => {
@@ -208,7 +292,7 @@ describe("decide: issues", () => {
 
   it("NON_OWNER_APPROVED: a missing actor is a non-owner", () => {
     const event = { name: "issues", action: "labeled", actor: null, label: "status:approved" };
-    expect(t.decide(event, issue(["status:approved"]), { owners: OWNERS })[0]).toEqual(add("status:new"));
+    expect(t.decide(event, issue(["status:approved"]), { owners: OWNERS })[0]).toEqual(add("status:todo"));
   });
 
   it("NON_OWNER_APPROVED: found from the timeline whichever event this run handles (a dropped or late run)", () => {
@@ -245,22 +329,22 @@ describe("decide: issues", () => {
     }
   });
 
-  it("OPENED / REOPENED: a status labeled after the event is kept; one labeled at or before it is reset to new", () => {
+  it("OPENED / REOPENED: a status labeled after the event is kept; one labeled at or before it is reset to todo", () => {
     const at = "2026-10-20T10:00:00Z";
     for (const action of ["opened", "reopened"]) {
       const event = { name: "issues", action, actor: "alice", at };
-      const later = [labeledAt("status:new", "alice", 0, 1), labeledAt("status:triaged", "bob", 5, 2)];
-      expect(t.decide(event, issue(["status:new", "status:triaged"]), { owners: OWNERS, timeline: later })).toEqual([remove("status:new")]);
+      const later = [labeledAt("status:todo", "alice", 0, 1), labeledAt("status:triaged", "bob", 5, 2)];
+      expect(t.decide(event, issue(["status:todo", "status:triaged"]), { owners: OWNERS, timeline: later })).toEqual([remove("status:todo")]);
       expect(t.decide(event, issue(["status:triaged"]), { owners: OWNERS, timeline: later })).toEqual([]);
       const before = [labeledAt("status:triaged", "bob", -5, 1)];
-      expect(t.decide(event, issue(["status:triaged"]), { owners: OWNERS, timeline: before })).toEqual([add("status:new"), remove("status:triaged")]);
+      expect(t.decide(event, issue(["status:triaged"]), { owners: OWNERS, timeline: before })).toEqual([add("status:todo"), remove("status:triaged")]);
       // Same second counts as not later; no time or no timeline keeps the old rule.
-      expect(t.decide(event, issue(["status:triaged"]), { owners: OWNERS, timeline: [labeledAt("status:triaged", "bob", 0, 1)] })).toEqual([add("status:new"), remove("status:triaged")]);
-      expect(t.decide({ ...event, at: undefined }, issue(["status:triaged"]), { timeline: later })).toEqual([add("status:new"), remove("status:triaged")]);
-      expect(t.decide(event, issue(["status:triaged"]))).toEqual([add("status:new"), remove("status:triaged")]);
+      expect(t.decide(event, issue(["status:triaged"]), { owners: OWNERS, timeline: [labeledAt("status:triaged", "bob", 0, 1)] })).toEqual([add("status:todo"), remove("status:triaged")]);
+      expect(t.decide({ ...event, at: undefined }, issue(["status:triaged"]), { timeline: later })).toEqual([add("status:todo"), remove("status:triaged")]);
+      expect(t.decide(event, issue(["status:triaged"]))).toEqual([add("status:todo"), remove("status:triaged")]);
       // A foreign approval labeled after the event is still reverted.
       const approved = [labeledAt("status:approved", "mallory", 5, 3)];
-      expect(t.decide(event, issue(["status:approved"]), { owners: OWNERS, timeline: approved })).toEqual([add("status:new"), remove("status:approved"), revert(3)]);
+      expect(t.decide(event, issue(["status:approved"]), { owners: OWNERS, timeline: approved })).toEqual([add("status:todo"), remove("status:approved"), revert(3)]);
     }
     expect(t.needsTimeline(issue(["status:triaged"]), { name: "issues", action: "opened" } as Event)).toBe(true);
     expect(t.needsTimeline(issue(["type:bug"]), { name: "issues", action: "opened" } as Event)).toBe(false);
@@ -282,13 +366,13 @@ describe("decide: issues", () => {
     // Only an unlabeled event before the approval counts, and never the approval itself.
     const after = [labeledAt("status:approved", "mallory", 5, 3), { ...labeledAt("status:triaged", "mallory", 6, 4), event: "unlabeled" }];
     expect(t.decide({ name: "issues", action: "unlabeled", actor: "mallory" }, issue(["status:approved"]), { owners: OWNERS, timeline: after })).toEqual([
-      add("status:new"),
+      add("status:todo"),
       remove("status:approved"),
       revert(3),
     ]);
     const self = [labeledAt("status:approved", "xtimor", 0, 1), { ...labeledAt("status:approved", "mallory", 1, 2), event: "unlabeled" }, labeledAt("status:approved", "mallory", 2, 3)];
     expect(t.decide({ name: "issues", action: "unlabeled", actor: "mallory" }, issue(["status:approved"]), { owners: OWNERS, timeline: self })).toEqual([
-      add("status:new"),
+      add("status:todo"),
       remove("status:approved"),
       revert(3),
     ]);
@@ -306,27 +390,27 @@ describe("decide: issues", () => {
   });
 
   it("needsTimeline: only an approval or several statuses need the label history", () => {
-    expect(t.needsTimeline(issue(["status:new", "type:bug"]))).toBe(false);
+    expect(t.needsTimeline(issue(["status:todo", "type:bug"]))).toBe(false);
     expect(t.needsTimeline(issue(["type:bug"]))).toBe(false);
     expect(t.needsTimeline(issue(["status:approved"]))).toBe(true);
-    expect(t.needsTimeline(issue(["status:new", "status:triaged"]))).toBe(true);
-    expect(t.needsTimeline(issue(["status:new", "status:triaged"], { state: "closed" }))).toBe(false);
+    expect(t.needsTimeline(issue(["status:todo", "status:triaged"]))).toBe(true);
+    expect(t.needsTimeline(issue(["status:todo", "status:triaged"], { state: "closed" }))).toBe(false);
   });
 
   it("normalizeTimeline keeps labeled and unlabeled events, oldest first, from REST or normalized entries", () => {
     const raw = [
-      { id: 9, event: "unlabeled", label: { name: "status:new" }, created_at: "2026-10-22T10:00:00Z" },
+      { id: 9, event: "unlabeled", label: { name: "status:todo" }, created_at: "2026-10-22T10:00:00Z" },
       { id: 8, event: "commented" },
       labeledAt("status:triaged", "bob", 5, 2),
-      labeledAt("status:new", "alice", 0, 1),
+      labeledAt("status:todo", "alice", 0, 1),
       { id: 3, label: "status:blocked", actor: "carol", createdAt: "2026-10-21T10:00:00Z" },
       null,
     ];
     expect(t.normalizeTimeline(raw).map((e) => [e.id, e.label, e.actor])).toEqual([
-      [1, "status:new", "alice"],
+      [1, "status:todo", "alice"],
       [2, "status:triaged", "bob"],
       [3, "status:blocked", "carol"],
-      [9, "status:new", null],
+      [9, "status:todo", null],
     ]);
     expect(t.normalizeTimeline(undefined)).toEqual([]);
   });
@@ -342,13 +426,13 @@ describe("decide: issues", () => {
   it("BOT_EVENT: a label change by github-actions[bot] does nothing", () => {
     const event = { name: "issues", action: "labeled", actor: "github-actions[bot]", label: "status:approved" };
     expect(t.decide(event, issue(["status:triaged", "status:approved"]), { owners: OWNERS })).toEqual([]);
-    expect(t.decide({ name: "issues", action: "labeled", actor: "GitHub-Actions[bot]", label: "status:triaged" }, issue(["status:new", "status:triaged"]))).toEqual([]);
+    expect(t.decide({ name: "issues", action: "labeled", actor: "GitHub-Actions[bot]", label: "status:triaged" }, issue(["status:todo", "status:triaged"]))).toEqual([]);
     expect(t.isBot("github-actions[bot]")).toBe(true);
     expect(t.isBot("dependabot[bot]")).toBe(false);
   });
 
   it("a pull request is never handled as an issue", () => {
-    const pr = issue(["status:new", "status:triaged"], { pull_request: {} });
+    const pr = issue(["status:todo", "status:triaged"], { pull_request: {} });
     expect(t.decide({ name: "issues", action: "labeled", actor: "xtimor", label: "status:triaged" }, pr, { owners: OWNERS })).toEqual([]);
     expect(t.decide({ name: "stale" }, { ...pr, labels: ["status:needs-info"] })).toEqual([]);
   });
@@ -369,10 +453,10 @@ describe("decide: status:declined", () => {
 
   it("DECLINED: is a status; the latest status wins over it in both directions", () => {
     expect(t.STATUS_LABELS).toContain("status:declined");
-    // An agent declines a new issue: the old status goes.
-    expect(t.decide(labeled("status:declined", "agent[bot]"), issue(["status:new", "status:declined"]), { owners: OWNERS, timeline: [labeledAt("status:new", "x", 0, 1), labeledAt("status:declined", "agent[bot]", 5, 2)] })).toEqual([remove("status:new")]);
-    // The owner moves it to new for a re-triage: declined goes.
-    expect(t.decide(labeled("status:new", "xtimor"), issue(["status:declined", "status:new"]), { owners: OWNERS, timeline: [labeledAt("status:declined", "agent[bot]", 0, 1), labeledAt("status:new", "xtimor", 5, 2)] })).toEqual([remove("status:declined")]);
+    // An agent declines a todo issue: the old status goes.
+    expect(t.decide(labeled("status:declined", "agent[bot]"), issue(["status:todo", "status:declined"]), { owners: OWNERS, timeline: [labeledAt("status:todo", "x", 0, 1), labeledAt("status:declined", "agent[bot]", 5, 2)] })).toEqual([remove("status:todo")]);
+    // The owner moves it to todo for a re-triage: declined goes.
+    expect(t.decide(labeled("status:todo", "xtimor"), issue(["status:declined", "status:todo"]), { owners: OWNERS, timeline: [labeledAt("status:declined", "agent[bot]", 0, 1), labeledAt("status:todo", "xtimor", 5, 2)] })).toEqual([remove("status:declined")]);
     // The owner approves a declined issue: the approval stands and declined goes.
     expect(t.decide(labeled("status:approved", "xtimor"), issue(["status:declined", "status:approved"]), { owners: OWNERS, timeline: [labeledAt("status:declined", "agent[bot]", 0, 1), labeledAt("status:approved", "xtimor", 5, 2)] })).toEqual([remove("status:declined")]);
   });
@@ -382,9 +466,9 @@ describe("decide: status:declined", () => {
     expect(t.decide(labeled("status:approved", "mallory"), issue(["status:approved"]), { owners: OWNERS, timeline })).toEqual([add("status:declined"), remove("status:approved"), revert(3)]);
   });
 
-  it("DECLINED: closing the issue clears it, and a reopen sets new", () => {
+  it("DECLINED: closing the issue clears it, and a reopen sets todo", () => {
     expect(t.decide({ name: "issues", action: "closed", actor: "xtimor" }, issue(["status:declined", "type:bug"], { state: "closed" }))).toEqual([remove("status:declined")]);
-    expect(t.decide({ name: "issues", action: "reopened", actor: "xtimor" }, issue(["status:declined"]))).toEqual([add("status:new"), remove("status:declined")]);
+    expect(t.decide({ name: "issues", action: "reopened", actor: "xtimor" }, issue(["status:declined"]))).toEqual([add("status:todo"), remove("status:declined")]);
   });
 
   it("DECLINED: the author's reply does not move it (only needs-info is moved by a reply); the owner decides", () => {
@@ -415,12 +499,12 @@ describe("decide: status:awaiting-post and status:upstream (ticket 3.26)", () =>
     expect(t.decide(labeled("status:awaiting-post", "agent[bot]"), issue(["status:upstream", "status:awaiting-post"]), { owners: OWNERS, timeline: [labeledAt("status:upstream", "github-actions[bot]", 0, 1), labeledAt("status:awaiting-post", "agent[bot]", 5, 2)] })).toEqual([remove("status:upstream")]);
   });
 
-  it("a stranger's approval on them is reverted and the status comes back; closing clears them; a reopen sets new", () => {
+  it("a stranger's approval on them is reverted and the status comes back; closing clears them; a reopen sets todo", () => {
     for (const status of ["status:awaiting-post", "status:upstream"]) {
       const timeline = [labeledAt(status, "agent[bot]", 0, 1), { ...labeledAt(status, "x", 3, 2), event: "unlabeled" }, labeledAt("status:approved", "mallory", 4, 3)];
       expect(t.decide(labeled("status:approved", "mallory"), issue(["status:approved"]), { owners: OWNERS, timeline })).toEqual([add(status), remove("status:approved"), revert(3)]);
       expect(t.decide({ name: "issues", action: "closed", actor: "xtimor" }, issue([status, "type:bug"], { state: "closed" }))).toEqual([remove(status)]);
-      expect(t.decide({ name: "issues", action: "reopened", actor: "xtimor" }, issue([status]))).toEqual([add("status:new"), remove(status)]);
+      expect(t.decide({ name: "issues", action: "reopened", actor: "xtimor" }, issue([status]))).toEqual([add("status:todo"), remove(status)]);
     }
   });
 
@@ -447,9 +531,9 @@ describe("decide: status:awaiting-post and status:upstream (ticket 3.26)", () =>
 describe("decide: issue_comment", () => {
   const comment = (actor: string | null) => ({ name: "issue_comment", action: "created", actor });
 
-  it("AUTHOR_REPLY: the author's comment on needs-info moves it to new", () => {
-    expect(t.decide(comment("alice"), issue(["status:needs-info", "type:bug"]))).toEqual([add("status:new"), remove("status:needs-info")]);
-    expect(t.decide(comment("ALICE"), issue(["status:needs-info"]))).toEqual([add("status:new"), remove("status:needs-info")]);
+  it("AUTHOR_REPLY: the author's comment on needs-info moves it to todo", () => {
+    expect(t.decide(comment("alice"), issue(["status:needs-info", "type:bug"]))).toEqual([add("status:todo"), remove("status:needs-info")]);
+    expect(t.decide(comment("ALICE"), issue(["status:needs-info"]))).toEqual([add("status:todo"), remove("status:needs-info")]);
   });
 
   it("AUTHOR_REPLY: an issue agent's comment (marker) is not a reply, even under the author's account", () => {
@@ -463,9 +547,9 @@ describe("decide: issue_comment", () => {
     expect(t.decide({ ...comment("alice"), agent: true }, issue(["status:needs-info"]), { owners: ["alice"] })).toEqual([]);
     expect(t.decide({ ...comment("xtimor"), agent: true }, issue(["status:needs-info"]), { owners: OWNERS })).toEqual([]);
     // A reporter who is not an owner and starts a reply with a marker still counts as replying.
-    expect(t.decide({ ...comment("alice"), agent: true }, issue(["status:needs-info"]), { owners: ["owner"] })).toEqual([add("status:new"), remove("status:needs-info")]);
+    expect(t.decide({ ...comment("alice"), agent: true }, issue(["status:needs-info"]), { owners: ["owner"] })).toEqual([add("status:todo"), remove("status:needs-info")]);
     // A plain author reply (no agent flag) counts as a reply, even for an author who is an owner.
-    expect(t.decide(comment("alice"), issue(["status:needs-info"]), { owners: ["alice"] })).toEqual([add("status:new"), remove("status:needs-info")]);
+    expect(t.decide(comment("alice"), issue(["status:needs-info"]), { owners: ["alice"] })).toEqual([add("status:todo"), remove("status:needs-info")]);
   });
 
   it("AGENT_MARKER: a marker comment by an agent login is not a reply; the same text by anyone else, or without the marker, is", () => {
@@ -476,11 +560,11 @@ describe("decide: issue_comment", () => {
     expect(reply("OAC-Issue-Agents[bot]", true)).toEqual([]);
     // Not the agent's login: still a reply when it is the author's.
     const other = issue(["status:needs-info"], { user: { login: "alice" } });
-    expect(t.decide({ ...comment("alice"), agent: true }, other, { owners: OWNERS, agents: [APP] })).toEqual([add("status:new"), remove("status:needs-info")]);
+    expect(t.decide({ ...comment("alice"), agent: true }, other, { owners: OWNERS, agents: [APP] })).toEqual([add("status:todo"), remove("status:needs-info")]);
     // No agent list (app not configured): the app login's marker comment counts like anyone's.
-    expect(t.decide({ ...comment(APP), agent: true }, open, { owners: OWNERS })).toEqual([add("status:new"), remove("status:needs-info")]);
+    expect(t.decide({ ...comment(APP), agent: true }, open, { owners: OWNERS })).toEqual([add("status:todo"), remove("status:needs-info")]);
     // The agent's comment without the marker is not an agent comment.
-    expect(reply(APP, false)).toEqual([add("status:new"), remove("status:needs-info")]);
+    expect(reply(APP, false)).toEqual([add("status:todo"), remove("status:needs-info")]);
   });
 
   it("APPROVAL_BY_AGENT: an approval by an agent login is reverted like anyone's (agents are not owners)", () => {
@@ -511,7 +595,7 @@ describe("decide: issue_comment", () => {
     expect(t.decide(event, issue(labels), { owners: OWNERS, timeline: [viaApp("status:approved", "xtimor", 1, 1), labeledAt("status:approved", "xtimor", 5, 2)] })).toEqual([remove("status:triaged")]);
     // An app event after the owner's click reverts again.
     expect(t.decide(event, issue(labels), { owners: OWNERS, timeline: [labeledAt("status:approved", "xtimor", 1, 1), viaApp("status:approved", "xtimor", 5, 2)] })).toEqual([remove("status:approved"), revert(2)]);
-    expect(t.NON_OWNER_APPROVAL_COMMENT).toContain("with their own click (not through an app or an agent session)");
+    expect(t.NON_OWNER_APPROVAL_COMMENT).toContain("with their own click in GitHub (not through an app or an agent session)");
   });
 
   it("AUTHOR_REPLY: a comment by someone else does nothing", () => {
@@ -611,7 +695,7 @@ describe("decide: pull_request", () => {
   });
 
   it("PR_OPENED: any other state is left alone (an outsider's PR moves nothing)", () => {
-    for (const status of ["new", "needs-info", "triaged", "approved", "planned", "blocked"]) {
+    for (const status of ["todo", "needs-info", "triaged", "approved", "planned", "blocked"]) {
       expect(t.decide(pr("opened", "fixes"), issue([`status:${status}`]))).toEqual([]);
     }
     expect(t.decide(pr("opened", "fixes"), issue(["type:bug"]))).toEqual([]);
@@ -638,7 +722,7 @@ describe("decide: pull_request", () => {
   it("PR_MERGED_REFS: a merged Refs moves an in-review issue to planned", () => {
     expect(t.decide(pr("closed", "refs", { merged: true }), issue(["status:in-review"]))).toEqual([add("status:planned"), remove("status:in-review")]);
     expect(t.decide(pr("closed", "refs", { merged: true }), issue(["status:in-review"], { state: "closed" }))).toEqual([]);
-    for (const status of ["new", "triaged", "approved", "in-progress", "blocked", "planned"]) {
+    for (const status of ["todo", "triaged", "approved", "in-progress", "blocked", "planned"]) {
       expect(t.decide(pr("closed", "refs", { merged: true }), issue([`status:${status}`]))).toEqual([]);
     }
   });
@@ -647,7 +731,7 @@ describe("decide: pull_request", () => {
     for (const link of ["fixes", "refs"]) {
       expect(t.decide(pr("closed", link, { merged: false }), issue(["status:in-review"]))).toEqual([add("status:blocked"), remove("status:in-review")]);
       expect(t.decide(pr("closed", link), issue(["status:in-review"]))).toEqual([add("status:blocked"), remove("status:in-review")]);
-      for (const status of ["new", "triaged", "approved", "in-progress", "planned"]) {
+      for (const status of ["todo", "triaged", "approved", "in-progress", "planned"]) {
         expect(t.decide(pr("closed", link, { merged: false }), issue([`status:${status}`]))).toEqual([]);
       }
     }
@@ -655,8 +739,135 @@ describe("decide: pull_request", () => {
   });
 
   it("an unknown link kind or action does nothing", () => {
-    expect(t.decide(pr("opened", "mentions"), issue(["status:new"]))).toEqual([]);
-    expect(t.decide(pr("synchronize", "fixes"), issue(["status:new"]))).toEqual([]);
+    expect(t.decide(pr("opened", "mentions"), issue(["status:todo"]))).toEqual([]);
+    expect(t.decide(pr("synchronize", "fixes"), issue(["status:todo"]))).toEqual([]);
+  });
+});
+
+describe("decide: status:rework (ticket 3.28)", () => {
+  const labeled = (label: string, actor: string) => ({ name: "issues", action: "labeled", actor, label });
+  const viaApp = (label: string, actor: string, minutes: number, id: number) => ({ ...labeledAt(label, actor, minutes, id), performed_via_github_app: { slug: "claude", id: 1 } });
+  const reworkRevert = (id: unknown): Action => t.reworkComment(id);
+
+  it("is a status, last in the lifecycle order, counted as owner-only like approved, and never stale", () => {
+    expect(t.REWORK).toBe("status:rework");
+    expect(t.STATUS_LABELS.at(-1)).toBe("status:rework");
+    expect(t.OWNER_ONLY_STATUSES).toEqual(["status:approved", "status:rework"]);
+    expect(t.STALE_STATUSES).not.toContain("status:rework");
+  });
+
+  it("OWNER_CLICK: an owner's own click stays and the status it replaces goes, whichever event this run handles (case-insensitive login)", () => {
+    for (const actor of ["xtimor", "XTimor"]) {
+      const timeline = [labeledAt("status:awaiting-post", "agent[bot]", 0, 1), labeledAt("status:rework", actor, 5, 2)];
+      for (const event of [labeled("status:rework", actor), labeled("status:awaiting-post", "agent[bot]"), { name: "issues", action: "unlabeled", actor: "x", label: "priority:p1" }]) {
+        expect(t.decide(event, issue(["status:awaiting-post", "status:rework"]), { owners: OWNERS, timeline })).toEqual([remove("status:awaiting-post")]);
+      }
+    }
+  });
+
+  it("OWNER_CLICK: a status labeled after the rework wins (the agent's outcome replaces it)", () => {
+    const timeline = [labeledAt("status:rework", "xtimor", 0, 1), labeledAt("status:awaiting-post", "agent[bot]", 5, 2)];
+    expect(t.decide(labeled("status:awaiting-post", "agent[bot]"), issue(["status:rework", "status:awaiting-post"]), { owners: OWNERS, timeline })).toEqual([remove("status:rework")]);
+  });
+
+  it("STRANGER: a non-owner's rework is removed with one comment and the status it was added to stays", () => {
+    const timeline = [labeledAt("status:awaiting-post", "agent[bot]", 0, 1), labeledAt("status:rework", "mallory", 5, 2)];
+    for (const event of [labeled("status:rework", "mallory"), labeled("status:awaiting-post", "agent[bot]"), { name: "issues", action: "labeled", actor: "alice", label: "type:bug" }]) {
+      expect(t.decide(event, issue(["status:awaiting-post", "status:rework"]), { owners: OWNERS, timeline })).toEqual([remove("status:rework"), reworkRevert(2)]);
+    }
+  });
+
+  it("STRANGER: with no status left the one it replaced comes back, else todo", () => {
+    const replaced = [labeledAt("status:in-review", "agent[bot]", 0, 1), { ...labeledAt("status:in-review", "x", 3, 2), event: "unlabeled" }, labeledAt("status:rework", "mallory", 4, 3)];
+    expect(t.decide(labeled("status:rework", "mallory"), issue(["status:rework"]), { owners: OWNERS, timeline: replaced })).toEqual([add("status:in-review"), remove("status:rework"), reworkRevert(3)]);
+    // A reverted approval or rework is never the status to restore.
+    const approvedBefore = [{ ...labeledAt("status:approved", "x", 1, 1), event: "unlabeled" }, labeledAt("status:rework", "mallory", 4, 2)];
+    expect(t.decide(labeled("status:rework", "mallory"), issue(["status:rework"]), { owners: OWNERS, timeline: approvedBefore })).toEqual([add("status:todo"), remove("status:rework"), reworkRevert(2)]);
+    const reworkBefore = [{ ...labeledAt("status:rework", "x", 1, 1), event: "unlabeled" }, labeledAt("status:rework", "mallory", 4, 2)];
+    expect(t.decide(labeled("status:rework", "mallory"), issue(["status:rework"]), { owners: OWNERS, timeline: reworkBefore })).toEqual([add("status:todo"), remove("status:rework"), reworkRevert(2)]);
+  });
+
+  it("STRANGER: an empty owner list or a missing actor makes everyone a non-owner", () => {
+    const event = labeled("status:rework", "xtimor");
+    for (const options of [undefined, { owners: [] }]) {
+      expect(t.decide(event, issue(["status:blocked", "status:rework"]), options)).toEqual([remove("status:rework"), reworkRevert("event")]);
+    }
+    expect(t.decide({ ...event, actor: null }, issue(["status:blocked", "status:rework"]), { owners: OWNERS })).toEqual([remove("status:rework"), reworkRevert("event")]);
+  });
+
+  it("VIA_APP: an owner's login on a label event made through a GitHub App (an agent session) is reverted too; null and false are a click", () => {
+    const labels = ["status:blocked", "status:rework"];
+    const through = [labeledAt("status:blocked", "agent[bot]", 0, 1), viaApp("status:rework", "xtimor", 3, 2)];
+    expect(t.decide(labeled("status:rework", "xtimor"), issue(labels), { owners: OWNERS, timeline: through })).toEqual([remove("status:rework"), reworkRevert(2)]);
+    for (const field of [null, false]) {
+      const own = [labeledAt("status:blocked", "agent[bot]", 0, 1), { ...labeledAt("status:rework", "xtimor", 3, 2), performed_via_github_app: field }];
+      expect(t.decide(labeled("status:rework", "xtimor"), issue(labels), { owners: OWNERS, timeline: own })).toEqual([remove("status:blocked")]);
+    }
+  });
+
+  it("the latest labeled event judges it: an owner's click after a stranger's stays, a stranger's after the owner's is reverted", () => {
+    const labels = ["status:blocked", "status:rework"];
+    const ownerLast = [labeledAt("status:blocked", "agent[bot]", 0, 1), labeledAt("status:rework", "mallory", 1, 2), labeledAt("status:rework", "xtimor", 9, 3)];
+    const strangerLast = [labeledAt("status:blocked", "agent[bot]", 0, 1), labeledAt("status:rework", "xtimor", 1, 2), labeledAt("status:rework", "mallory", 9, 3)];
+    expect(t.decide(labeled("status:rework", "x"), issue(labels), { owners: OWNERS, timeline: ownerLast })).toEqual([remove("status:blocked")]);
+    expect(t.decide(labeled("status:rework", "x"), issue(labels), { owners: OWNERS, timeline: strangerLast })).toEqual([remove("status:rework"), reworkRevert(3)]);
+  });
+
+  it("NO_EVENT: a rework whose author cannot be told (no timeline entry, not this event) stays, as approved does", () => {
+    expect(t.decide({ name: "issues", action: "unlabeled", actor: "bob" }, issue(["status:rework"]), { owners: OWNERS })).toEqual([]);
+  });
+
+  it("BOTH_OWNER_ONLY: a stranger's approved and rework are both removed, one comment each, and the earlier status comes back", () => {
+    const timeline = [labeledAt("status:triaged", "xtimor", 0, 1), labeledAt("status:approved", "mallory", 2, 2), labeledAt("status:rework", "mallory", 3, 3)];
+    expect(t.decide(labeled("status:rework", "mallory"), issue(["status:triaged", "status:approved", "status:rework"]), { owners: OWNERS, timeline })).toEqual([remove("status:approved"), remove("status:rework"), revert(2), reworkRevert(3)]);
+    // The owner's approval and a stranger's rework: only the rework goes.
+    const mixed = [labeledAt("status:triaged", "xtimor", 0, 1), labeledAt("status:approved", "xtimor", 2, 2), labeledAt("status:rework", "mallory", 3, 3)];
+    expect(t.decide(labeled("status:rework", "mallory"), issue(["status:approved", "status:rework"]), { owners: OWNERS, timeline: mixed })).toEqual([remove("status:rework"), reworkRevert(3)]);
+  });
+
+  it("BOTH_OWNER_ONLY: with nothing else left the status replaced before the earliest foreign label comes back", () => {
+    const timeline = [
+      { ...labeledAt("status:blocked", "x", 1, 1), event: "unlabeled" },
+      labeledAt("status:approved", "mallory", 2, 2),
+      { ...labeledAt("status:in-review", "x", 3, 3), event: "unlabeled" },
+      labeledAt("status:rework", "mallory", 4, 4),
+    ];
+    expect(t.decide(labeled("status:rework", "mallory"), issue(["status:approved", "status:rework"]), { owners: OWNERS, timeline })).toEqual([add("status:blocked"), remove("status:approved"), remove("status:rework"), revert(2), reworkRevert(4)]);
+  });
+
+  it("the revert comment says who may do it, carries its own once-key, and never repeats the approval's key", () => {
+    const comment = t.reworkComment(7) as { body: string; once: string };
+    expect(comment.once).toBe("<!-- issue-flow:rework:7 -->");
+    expect(comment.body).toContain(t.NON_OWNER_REWORK_COMMENT);
+    expect(comment.body).toContain("Only the owner sends work back with `status:rework`, with their own click in GitHub");
+    expect(comment.body).toContain("keeps the status it had, or `status:todo` if it had none");
+    expect(comment.body).toContain("If you are the owner, add the label again yourself.");
+    expect(comment.body).not.toContain("restored");
+    expect((t.approvalComment(7) as { once: string }).once).not.toBe(comment.once);
+  });
+
+  it("needsTimeline: a rework needs the label history, like an approval", () => {
+    expect(t.needsTimeline(issue(["status:rework"]))).toBe(true);
+    expect(t.needsTimeline(issue(["status:rework"], { state: "closed" }))).toBe(false);
+  });
+
+  it("closing clears it, a reopen sets todo, the author's reply and the workflow's own events change nothing", () => {
+    expect(t.decide({ name: "issues", action: "closed", actor: "xtimor" }, issue(["status:rework", "type:bug"], { state: "closed" }))).toEqual([remove("status:rework")]);
+    expect(t.decide({ name: "issues", action: "reopened", actor: "xtimor" }, issue(["status:rework"]))).toEqual([add("status:todo"), remove("status:rework")]);
+    expect(t.decide({ name: "issue_comment", action: "created", actor: "alice" }, issue(["status:rework"]))).toEqual([]);
+    expect(t.decide(labeled("status:rework", "github-actions[bot]"), issue(["status:rework"]))).toEqual([]);
+  });
+
+  it("an owner's pull request flow: an in-review issue is not moved by a rework, and a rework issue is not moved by a pull request (the agent sets in-review itself)", () => {
+    const opened = { name: "pull_request", action: "opened", actor: "xtimor", repo: REPO, headRepo: REPO, author: "xtimor", link: "fixes", prState: "open" };
+    expect(t.decide(opened, issue(["status:rework"]), { owners: OWNERS })).toEqual([]);
+  });
+
+  it("STALE: never listed or closed by the daily job, however old", () => {
+    const old = (number: number): IssueIn => ({ number, state: "open", labels: [{ name: "status:rework" }], updated_at: daysAgo(400), user: { login: "alice" } });
+    expect(t.staleIssues([old(1)], NOW, 30, new Map([[1, NOW - 400 * DAY]]))).toEqual([]);
+    expect(t.staleStatus(old(1))).toBeNull();
+    expect(t.decide({ name: "stale" }, old(1), { owners: OWNERS })).toEqual([]);
   });
 });
 
@@ -793,7 +1004,7 @@ describe("staleIssues and decide: stale", () => {
     ]);
     const body = t.declinedStaleComment("alice", ["xtimor"]);
     expect(body).toMatch(/^<!-- issue-flow -->\n@alice, @xtimor: this issue has been in `status:declined` for 30 days without a decision, so it is closed as not planned\./);
-    expect(body).toContain("Reopen it to continue; it returns to `status:new`.");
+    expect(body).toContain("Reopen it to continue; it returns to `status:todo`.");
   });
 
   it("DECLINED: logins are checked and listed once; a bot author, no owners, or odd logins give no bad mention", () => {
@@ -902,10 +1113,10 @@ function fakeCore() {
 describe("applyActions", () => {
   it("sends each action in order and returns them", async () => {
     const fake = fakeGithub([{ number: 12, state: "open", labels: ["status:triaged"] }]);
-    const actions: Action[] = [add("status:new"), remove("status:triaged"), { op: "comment", body: "x\ny" }, { op: "close", reason: "not_planned" }];
+    const actions: Action[] = [add("status:todo"), remove("status:triaged"), { op: "comment", body: "x\ny" }, { op: "close", reason: "not_planned" }];
     expect(await apply.applyActions(fake.github, ctx("issues", {}), 12, actions)).toEqual(actions);
-    expect(fake.calls).toEqual(["add 12 status:new", "remove 12 status:triaged", "comment 12 y", "update 12 closed not_planned"]);
-    expect(fake.labelsOf(12)).toEqual(["status:new"]);
+    expect(fake.calls).toEqual(["add 12 status:todo", "remove 12 status:triaged", "comment 12 y", "update 12 closed not_planned"]);
+    expect(fake.labelsOf(12)).toEqual(["status:todo"]);
   });
 
   it("a comment with a once key is skipped when that key is already in a comment", async () => {
@@ -923,16 +1134,16 @@ describe("applyActions", () => {
 
   it("ignores a 404 when removing a label that is not there", async () => {
     const fake = fakeGithub([{ number: 12, state: "open", labels: [] }]);
-    await expect(apply.applyActions(fake.github, ctx("issues", {}), 12, [remove("status:new"), add("status:triaged")])).resolves.toHaveLength(2);
-    expect(fake.calls).toEqual(["remove 12 status:new", "add 12 status:triaged"]);
+    await expect(apply.applyActions(fake.github, ctx("issues", {}), 12, [remove("status:todo"), add("status:triaged")])).resolves.toHaveLength(2);
+    expect(fake.calls).toEqual(["remove 12 status:todo", "add 12 status:triaged"]);
   });
 
   it("does not hide other errors, and stops at the first one", async () => {
-    const fake = fakeGithub([{ number: 12, state: "open", labels: ["status:new"] }], {
+    const fake = fakeGithub([{ number: 12, state: "open", labels: ["status:todo"] }], {
       failOn: (call) => (call.startsWith("remove") ? Object.assign(new Error("Forbidden"), { status: 403 }) : undefined),
     });
-    await expect(apply.applyActions(fake.github, ctx("issues", {}), 12, [remove("status:new"), add("status:triaged")])).rejects.toThrow("Forbidden");
-    expect(fake.calls).toEqual(["remove 12 status:new"]);
+    await expect(apply.applyActions(fake.github, ctx("issues", {}), 12, [remove("status:todo"), add("status:triaged")])).rejects.toThrow("Forbidden");
+    expect(fake.calls).toEqual(["remove 12 status:todo"]);
   });
 
   it("rejects an unknown action", async () => {
@@ -942,24 +1153,105 @@ describe("applyActions", () => {
 });
 
 describe("runEvent", () => {
-  const env = { ISSUE_FLOW_OWNERS: "xtimor" };
+  const env = { ISSUE_FLOW_OWNERS: "xtimor", ISSUE_FLOW_EVENT_DELAY_MS: "0" };
   const HEAD = { head: { repo: { full_name: REPO } }, user: { login: "carol" } };
 
-  it("OPENED: sets status:new on the issue as it is now", async () => {
+  it("OPENED: sets status:todo on the issue as it is now", async () => {
     const fake = fakeGithub([{ number: 12, state: "open", labels: ["status:triaged", "type:bug"], user: { login: "alice" } }]);
     const core = fakeCore();
     const payload = { action: "opened", sender: { login: "alice" }, issue: { number: 12, labels: [] } };
     const result = await apply.runEvent({ github: fake.github, context: ctx("issues", payload), core, env });
-    expect(fake.labelsOf(12).filter((l) => l.startsWith("status:"))).toEqual(["status:new"]);
-    expect(result).toEqual([{ issue: 12, actions: [add("status:new"), remove("status:triaged")] }]);
+    expect(fake.labelsOf(12).filter((l) => l.startsWith("status:"))).toEqual(["status:todo"]);
+    expect(result).toEqual([{ issue: 12, actions: [add("status:todo"), remove("status:triaged")] }]);
   });
 
   it("NON_OWNER_APPROVED: reverts through the API", async () => {
-    const fake = fakeGithub([{ number: 12, state: "open", labels: ["status:triaged", "status:approved"], user: { login: "alice" } }]);
+    const fake = fakeGithub([{ number: 12, state: "open", labels: ["status:triaged", "status:approved"], user: { login: "alice" } }], { events: { 12: [labeledAt("status:triaged", "bob", 0, 1), labeledAt("status:approved", "mallory", 3, 2)] } });
     const payload = { action: "labeled", label: { name: "status:approved" }, sender: { login: "mallory" }, issue: { number: 12 } };
     await apply.runEvent({ github: fake.github, context: ctx("issues", payload), core: fakeCore(), env });
     expect(fake.labelsOf(12)).toEqual(["status:triaged"]);
     expect(fake.calls).toEqual(["get 12", "events 12", "remove 12 status:approved", "comments 12", "comment 12 Only the owner appro"]);
+  });
+
+  it("OWNER_ONLY_NO_EVENT: an approval or rework whose labeled event never shows in the events (after 4 reads) is not judged: nothing is applied", async () => {
+    for (const label of ["status:approved", "status:rework"]) {
+      const fake = fakeGithub([{ number: 12, state: "open", labels: ["status:triaged", label], user: { login: "alice" } }], { events: { 12: [labeledAt("status:triaged", "bob", 0, 1)] } });
+      const payload = { action: "labeled", label: { name: label }, sender: { login: "xtimor" }, issue: { number: 12 } };
+      const warnings: string[] = [];
+      const core = { ...fakeCore(), warning: (message: string) => warnings.push(message) };
+      expect(await apply.runEvent({ github: fake.github, context: ctx("issues", payload), core, env })).toEqual([]);
+      expect(fake.calls, label).toEqual(["get 12", "events 12", "events 12", "events 12", "events 12"]);
+      expect(fake.labelsOf(12), label).toEqual(["status:triaged", label]);
+      expect(warnings.join(" "), label).toContain("nothing applied");
+    }
+  });
+
+  it("NO_EVENT_OTHER_STATUS: a status that is not owner-only and whose event never shows is still applied after the reads (the handled event counts as the newest)", async () => {
+    const fake = fakeGithub([{ number: 12, state: "open", labels: ["status:todo", "status:triaged"], user: { login: "alice" } }], { events: { 12: [labeledAt("status:todo", "alice", 0, 1)] } });
+    const payload = { action: "labeled", label: { name: "status:triaged" }, sender: { login: "bob" }, issue: { number: 12 } };
+    await apply.runEvent({ github: fake.github, context: ctx("issues", payload), core: fakeCore(), env });
+    expect(fake.calls.filter((call) => call === "events 12")).toHaveLength(4);
+    expect(fake.labelsOf(12)).toEqual(["status:triaged"]);
+  });
+
+  it("EVENT_LAG: the owner's re-add after the agent removed the label is not in the list yet; the older labeled event is not taken for it (a stranger's re-add is reverted once it shows)", async () => {
+    // 10:00 the owner's rework, 11:00 the agent's blocked, the agent unlabels rework; the re-add being handled is not listed yet.
+    const history = () => [
+      labeledAt("status:rework", "xtimor", 0, 1),
+      labeledAt("status:blocked", "agent[bot]", 60, 2),
+      { ...labeledAt("status:rework", "agent[bot]", 61, 3), event: "unlabeled" },
+    ];
+    const run = async (readsUntilShown: number, actor: string) => {
+      const events: Record<number, unknown[]> = { 12: history() };
+      let reads = 0;
+      const fake = fakeGithub([{ number: 12, state: "open", labels: ["status:blocked", "status:rework"], user: { login: "alice" } }], {
+        events,
+        failOn: (call) => {
+          if (call === "events 12" && (reads += 1) === readsUntilShown) events[12]?.push(labeledAt("status:rework", actor, 120, 4));
+          return undefined;
+        },
+      });
+      const payload = { action: "labeled", label: { name: "status:rework" }, sender: { login: actor }, issue: { number: 12 } };
+      await apply.runEvent({ github: fake.github, context: ctx("issues", payload), core: fakeCore(), env });
+      return { fake, reads };
+    };
+    const stranger = await run(3, "mallory");
+    expect(stranger.reads).toBe(3);
+    expect(stranger.fake.labelsOf(12)).toEqual(["status:blocked"]); // reverted: the old owner click was not taken for this one
+    const owner = await run(2, "xtimor");
+    expect(owner.reads).toBe(2);
+    expect(owner.fake.labelsOf(12)).toEqual(["status:rework"]); // the owner's click stands, blocked goes
+    // Never shown: the old labeled event stands for nothing, nothing is applied.
+    const never = await run(99, "mallory");
+    expect(never.reads).toBe(4);
+    expect(never.fake.labelsOf(12)).toEqual(["status:blocked", "status:rework"]);
+  });
+
+  it("EVENT_LAG: the events list is read again until the handled label's event shows, so an owner login on an app-made click is not taken for the owner's own", async () => {
+    const events: Record<number, unknown[]> = { 12: [labeledAt("status:triaged", "bob", 0, 1)] };
+    let reads = 0;
+    const fake = fakeGithub([{ number: 12, state: "open", labels: ["status:triaged", "status:rework"], user: { login: "alice" } }], {
+      events,
+      failOn: (call) => {
+        if (call === "events 12" && (reads += 1) === 3) events[12]?.push({ ...labeledAt("status:rework", "xtimor", 3, 2), performed_via_github_app: { slug: "claude" } });
+        return undefined;
+      },
+    });
+    const payload = { action: "labeled", label: { name: "status:rework" }, sender: { login: "xtimor" }, issue: { number: 12 } };
+    await apply.runEvent({ github: fake.github, context: ctx("issues", payload), core: fakeCore(), env });
+    expect(reads).toBe(3); // stops as soon as the event shows
+    expect(fake.labelsOf(12)).toEqual(["status:triaged"]);
+    expect(fake.calls).toContain("remove 12 status:rework");
+  });
+
+  it("EVENT_LAG: an event that shows at once is read once; a non-status label or an unlabeled event is never waited for", async () => {
+    const once = fakeGithub([{ number: 12, state: "open", labels: ["status:triaged", "status:rework"], user: { login: "alice" } }], { events: { 12: [labeledAt("status:triaged", "bob", 0, 1), labeledAt("status:rework", "xtimor", 3, 2)] } });
+    await apply.runEvent({ github: once.github, context: ctx("issues", { action: "labeled", label: { name: "status:rework" }, sender: { login: "xtimor" }, issue: { number: 12 } }), core: fakeCore(), env });
+    expect(once.calls.filter((call) => call === "events 12")).toHaveLength(1);
+    const other = fakeGithub([{ number: 12, state: "open", labels: ["status:triaged", "status:approved"], user: { login: "alice" } }], { events: { 12: [labeledAt("status:triaged", "bob", 0, 1), labeledAt("status:approved", "xtimor", 3, 2)] } });
+    await apply.runEvent({ github: other.github, context: ctx("issues", { action: "labeled", label: { name: "type:bug" }, sender: { login: "alice" }, issue: { number: 12 } }), core: fakeCore(), env });
+    await apply.runEvent({ github: other.github, context: ctx("issues", { action: "unlabeled", label: { name: "priority:p1" }, sender: { login: "alice" }, issue: { number: 12 } }), core: fakeCore(), env });
+    expect(other.calls.filter((call) => call === "events 12")).toHaveLength(2);
   });
 
   it("APPROVAL_VIA_APP: runEvent reads performed_via_github_app from the issue's events and reverts an owner's approval made through an app", async () => {
@@ -977,14 +1269,36 @@ describe("runEvent", () => {
     expect(click.labelsOf(12)).toEqual(["status:approved"]);
   });
 
+  it("REWORK_VIA_APP: runEvent reverts a rework made through an app or by a stranger with one comment, keeps an owner's click, and a second run adds no second comment", async () => {
+    const make = (field: unknown, actor: string) =>
+      fakeGithub([{ number: 12, state: "open", labels: ["status:awaiting-post", "status:rework"], user: { login: "alice" } }], {
+        events: { 12: [labeledAt("status:awaiting-post", "agent[bot]", 0, 1), { ...labeledAt("status:rework", actor, 3, 2), performed_via_github_app: field }] },
+      });
+    const payload = (sender: string) => ({ action: "labeled", label: { name: "status:rework" }, sender: { login: sender }, issue: { number: 12 } });
+    const viaClaude = make({ slug: "claude" }, "xtimor");
+    await apply.runEvent({ github: viaClaude.github, context: ctx("issues", payload("xtimor")), core: fakeCore(), env });
+    expect(viaClaude.labelsOf(12)).toEqual(["status:awaiting-post"]);
+    expect(viaClaude.comments(12)).toHaveLength(1);
+    expect(viaClaude.comments(12)[0]).toContain("Only the owner sends work back");
+    await apply.runEvent({ github: viaClaude.github, context: ctx("issues", payload("xtimor")), core: fakeCore(), env });
+    expect(viaClaude.comments(12)).toHaveLength(1);
+    const stranger = make(null, "mallory");
+    await apply.runEvent({ github: stranger.github, context: ctx("issues", payload("mallory")), core: fakeCore(), env });
+    expect(stranger.labelsOf(12)).toEqual(["status:awaiting-post"]);
+    const click = make(null, "xtimor");
+    await apply.runEvent({ github: click.github, context: ctx("issues", payload("xtimor")), core: fakeCore(), env });
+    expect(click.labelsOf(12)).toEqual(["status:rework"]);
+    expect(click.comments(12)).toEqual([]);
+  });
+
   it("OWNER_APPROVED: the owner list comes from ISSUE_FLOW_OWNERS", async () => {
-    const make = () => fakeGithub([{ number: 12, state: "open", labels: ["status:triaged", "status:approved"], user: { login: "alice" } }]);
+    const make = () => fakeGithub([{ number: 12, state: "open", labels: ["status:triaged", "status:approved"], user: { login: "alice" } }], { events: { 12: [labeledAt("status:triaged", "bob", 0, 1), labeledAt("status:approved", "xtimor", 3, 2)] } });
     const payload = { action: "labeled", label: { name: "status:approved" }, sender: { login: "xtimor" }, issue: { number: 12 } };
     const owner = make();
     await apply.runEvent({ github: owner.github, context: ctx("issues", payload), core: fakeCore(), env });
     expect(owner.labelsOf(12)).toEqual(["status:approved"]);
     const nobody = make();
-    await apply.runEvent({ github: nobody.github, context: ctx("issues", payload), core: fakeCore(), env: {} });
+    await apply.runEvent({ github: nobody.github, context: ctx("issues", payload), core: fakeCore(), env: { ISSUE_FLOW_EVENT_DELAY_MS: "0" } });
     expect(nobody.labelsOf(12)).toEqual(["status:triaged"]);
   });
 
@@ -1003,7 +1317,7 @@ describe("runEvent", () => {
     await apply.runEvent({ github: fake.github, context: ctx("issue_comment", comment("alice", { pull_request: {} })), core: fakeCore(), env });
     expect(fake.labelsOf(12)).toEqual(["status:needs-info"]);
     await apply.runEvent({ github: fake.github, context: ctx("issue_comment", comment("alice")), core: fakeCore(), env });
-    expect(fake.labelsOf(12)).toEqual(["status:new"]);
+    expect(fake.labelsOf(12)).toEqual(["status:todo"]);
   });
 
   it("AUTHOR_REPLY: runEvent reads the marker at the start of the body, for the owner only", async () => {
@@ -1015,9 +1329,9 @@ describe("runEvent", () => {
     };
     expect(await send("xtimor", "<!-- issue-impl -->\n**Status:** needs-info", "xtimor")).toEqual(["status:needs-info"]);
     expect(await send("xtimor", "<!-- issue-triage -->\nx", "xtimor")).toEqual(["status:needs-info"]);
-    expect(await send("xtimor", "I quote <!-- issue-impl --> here", "xtimor")).toEqual(["status:new"]);
-    expect(await send("alice", "<!-- issue-impl -->\nx", "xtimor")).toEqual(["status:new"]);
-    expect(await send("alice", "plain reply", "xtimor")).toEqual(["status:new"]);
+    expect(await send("xtimor", "I quote <!-- issue-impl --> here", "xtimor")).toEqual(["status:todo"]);
+    expect(await send("alice", "<!-- issue-impl -->\nx", "xtimor")).toEqual(["status:todo"]);
+    expect(await send("alice", "plain reply", "xtimor")).toEqual(["status:todo"]);
   });
 
   it("AGENT_MARKER: runEvent reads the agent logins from ISSUE_FLOW_AGENTS; an agent approval is reverted", async () => {
@@ -1030,13 +1344,13 @@ describe("runEvent", () => {
     };
     expect(await send("Oac-Issue-Agents[bot], other[bot]", "<!-- issue-impl -->\n**Status:** needs-info")).toEqual(["status:needs-info"]);
     expect(await send("Oac-Issue-Agents[bot]", "<!-- issue-triage -->\nx")).toEqual(["status:needs-info"]);
-    expect(await send("Oac-Issue-Agents[bot]", "plain text")).toEqual(["status:new"]);
-    expect(await send(undefined, "<!-- issue-impl -->\nx")).toEqual(["status:new"]);
-    expect(await send("", "<!-- issue-impl -->\nx")).toEqual(["status:new"]);
+    expect(await send("Oac-Issue-Agents[bot]", "plain text")).toEqual(["status:todo"]);
+    expect(await send(undefined, "<!-- issue-impl -->\nx")).toEqual(["status:todo"]);
+    expect(await send("", "<!-- issue-impl -->\nx")).toEqual(["status:todo"]);
 
-    const fake = fakeGithub([{ number: 12, state: "open", labels: ["status:triaged", "status:approved"], user: { login: "alice" } }]);
+    const fake = fakeGithub([{ number: 12, state: "open", labels: ["status:triaged", "status:approved"], user: { login: "alice" } }], { events: { 12: [labeledAt("status:triaged", "bob", 0, 1), labeledAt("status:approved", APP, 3, 2)] } });
     const approval = { action: "labeled", label: { name: "status:approved" }, sender: { login: APP }, issue: { number: 12 } };
-    await apply.runEvent({ github: fake.github, context: ctx("issues", approval), core: fakeCore(), env: { ISSUE_FLOW_OWNERS: "xtimor", ISSUE_FLOW_AGENTS: APP } });
+    await apply.runEvent({ github: fake.github, context: ctx("issues", approval), core: fakeCore(), env: { ISSUE_FLOW_OWNERS: "xtimor", ISSUE_FLOW_AGENTS: APP, ISSUE_FLOW_EVENT_DELAY_MS: "0" } });
     expect(fake.labelsOf(12)).toEqual(["status:triaged"]);
   });
 
@@ -1044,7 +1358,7 @@ describe("runEvent", () => {
     const fake = fakeGithub([
       { number: 12, state: "open", labels: ["status:in-progress"] },
       { number: 13, state: "open", labels: ["status:in-progress"] },
-      { number: 14, state: "open", labels: ["status:new"], pull_request: {} },
+      { number: 14, state: "open", labels: ["status:todo"], pull_request: {} },
       { number: 15, state: "closed", labels: [] },
       { number: 17, state: "open", labels: ["status:approved"] },
     ]);
@@ -1055,7 +1369,7 @@ describe("runEvent", () => {
     expect(result.map((r) => r.issue)).toEqual([12, 13]);
     expect(fake.labelsOf(12)).toEqual(["status:in-review"]);
     expect(fake.labelsOf(13)).toEqual(["status:in-review"]);
-    expect(fake.labelsOf(14)).toEqual(["status:new"]);
+    expect(fake.labelsOf(14)).toEqual(["status:todo"]);
     expect(fake.labelsOf(17)).toEqual(["status:approved"]);
     expect(fake.calls.filter((c) => c.startsWith("get"))).toEqual(["get 12", "get 13", "get 14", "get 15", "get 99", "get 17"]);
     expect(core.lines.join("\n")).toContain("#99 not found");
@@ -1098,11 +1412,11 @@ describe("runEvent", () => {
   });
 
   it("OPENED and a status labeled after it converge in either order (timeline read)", async () => {
-    const events = { 12: [labeledAt("status:new", "alice", 0, 1), labeledAt("status:triaged", "bob", 5, 2)] };
+    const events = { 12: [labeledAt("status:todo", "alice", 0, 1), labeledAt("status:triaged", "bob", 5, 2)] };
     const openedAt = new Date(Date.parse("2026-10-20T10:00:00Z")).toISOString();
     const opened = { action: "opened", sender: { login: "alice" }, issue: { number: 12, created_at: openedAt } };
     const labeled = { action: "labeled", label: { name: "status:triaged" }, sender: { login: "bob" }, issue: { number: 12 } };
-    const labels = ["status:new", "status:triaged"];
+    const labels = ["status:todo", "status:triaged"];
     for (const order of [[opened, labeled], [labeled, opened]]) {
       const fake = fakeGithub([{ number: 12, state: "open", labels }], { events });
       for (const payload of order) await apply.runEvent({ github: fake.github, context: ctx("issues", payload), core: fakeCore(), env });
@@ -1131,11 +1445,11 @@ describe("runEvent", () => {
     const bare = fakeGithub([{ number: 13, state: "open", labels: ["type:bug"] }]);
     const payload = { action: "unlabeled", label: { name: "status:triaged" }, sender: { login: "bob" }, issue: { number: 13 } };
     await apply.runEvent({ github: bare.github, context: ctx("issues", payload), core: fakeCore(), env });
-    expect(bare.labelsOf(13)).toEqual(["type:bug", "status:new"]);
+    expect(bare.labelsOf(13)).toEqual(["type:bug", "status:todo"]);
   });
 
   it("reads the label timeline only when the labels need it", async () => {
-    const settled = fakeGithub([{ number: 12, state: "open", labels: ["status:new", "type:bug"] }]);
+    const settled = fakeGithub([{ number: 12, state: "open", labels: ["status:todo", "type:bug"] }]);
     const payload = { action: "labeled", label: { name: "type:bug" }, sender: { login: "bob" }, issue: { number: 12 } };
     await apply.runEvent({ github: settled.github, context: ctx("issues", payload), core: fakeCore(), env });
     expect(settled.calls).toEqual(["get 12"]);
@@ -1210,6 +1524,14 @@ describe("runStale", () => {
     expect(fake.labelsOf(1)).toEqual([]);
     expect(fake.state(2)).toBe("open");
     expect(fake.labelsOf(2)).toEqual(["status:needs-info"]);
+  });
+
+  it("STALE: an old status:rework issue is not listed, read, or closed (ticket 3.28)", async () => {
+    const fake = fakeGithub([{ number: 5, state: "open", labels: ["status:rework"], updated_at: daysAgo(400) }], { events: { 5: [{ ...labeledAt("status:rework", "xtimor", 0, 1), created_at: daysAgo(400) }] } });
+    expect(await apply.runStale({ github: fake.github, context: ctx("schedule", {}), core: fakeCore(), dryRun: false, now: NOW })).toEqual([]);
+    expect(fake.state(5)).toBe("open");
+    expect(fake.labelsOf(5)).toEqual(["status:rework"]);
+    expect(fake.calls.filter((call) => /events 5|update 5|comment 5/.test(call))).toEqual([]);
   });
 
   it("STALE: relabeled issue (added 40 days ago, removed, added 5 days ago) stays open", async () => {
