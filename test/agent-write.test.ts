@@ -47,6 +47,8 @@ let answers = new Map<string, Answer>();
 let created = false;
 /** Set by a write to pull request 21 or its comments: its `updated_at` then reads as now (GitHub refreshes it on any write). */
 let bumped = false;
+/** The body a `PATCH /pulls/21` set: later reads of pull request 21 show it, as GitHub does. */
+let editedBody: string | null = null;
 
 const pull = (overrides: Record<string, unknown> = {}) => ({
   number: 20,
@@ -105,6 +107,8 @@ beforeAll(async () => {
     calls.push({ method, path, search: url.search, body: await readBody(req), auth: req.headers.authorization });
     let [status, payload] = (created ? answers.get(`${method} ${path}@created`) : undefined) ?? answers.get(`${method} ${path}`) ?? defaults(method, path);
     if (method === "GET" && path === `/repos/${REPO}/pulls/21` && bumped && payload !== null && typeof payload === "object") payload = { ...(payload as object), updated_at: new Date().toISOString() };
+    if (method === "GET" && path === `/repos/${REPO}/pulls/21` && editedBody !== null && payload !== null && typeof payload === "object") payload = { ...(payload as object), body: editedBody };
+    if (method === "PATCH" && path === `/repos/${REPO}/pulls/21` && typeof calls[calls.length - 1]?.body?.body === "string") editedBody = calls[calls.length - 1]?.body?.body as string;
     if (method === "POST" && path === `/repos/${REPO}/pulls`) created = true;
     if ((method === "POST" && path === `/repos/${REPO}/issues/21/comments`) || (method === "PATCH" && path === `/repos/${REPO}/pulls/21`)) bumped = true;
     res.writeHead(status, { "content-type": "application/json" });
@@ -123,6 +127,7 @@ beforeEach(() => {
   answers = new Map();
   created = false;
   bumped = false;
+  editedBody = null;
 });
 
 const dirs: string[] = [];
@@ -140,6 +145,7 @@ interface Run {
 function run(ops: unknown, env: Record<string, string | undefined> = {}, raw?: string): Promise<Run> {
   created = false; // each run starts with the stub's world as the test set it
   bumped = false;
+  editedBody = null;
   const dir = mkdtempSync(join(tmpdir(), "agent-write-"));
   dirs.push(dir);
   const summaryFile = join(dir, "summary.md");
@@ -464,6 +470,7 @@ describe("agent-write", () => {
         ["behind", {}, "behind"],
         ["owner's PR", { user: { login: "xtimor" } }, "ahead"],
         ["non-claude branch", { head: { ref: "feature/x", sha: NEW_SHA, repo: { full_name: REPO } } }, "ahead"],
+        ["not an Issue batch title", { title: "Fix a thing" }, "ahead"],
         ["fork", { head: { ref: "claude/new", sha: NEW_SHA, repo: { full_name: "evil/openclaw-all-cli" } } }, "ahead"],
         ["no sha", { head: { ref: "claude/new", repo: { full_name: REPO } } }, "ahead"],
       ];
@@ -592,6 +599,23 @@ describe("agent-write", () => {
       ]);
       expect(result, result.stderr).toMatchObject({ code: 0 });
       expect(calls.filter((call) => call.method === "PATCH").map((call) => call.body)).toEqual([{ body: "Resumed on branch claude/new; this pull request is closed." }, { state: "closed" }]);
+      // The close was judged on the links read before the list (the re-read body no longer links anything), and the label was read again.
+      const issueReads = calls.filter((call) => call.method === "GET" && call.path === `/repos/${REPO}/issues/7`).length;
+      expect(issueReads).toBeGreaterThanOrEqual(2);
+    });
+
+    it("N1: the retire dispatch is refused when the rework label is gone at apply time, although the edit stripped the links from the body", async () => {
+      held();
+      answers.set(`GET /repos/${REPO}/pulls/21@created`, [200, ready()]);
+      answers.set(`GET /repos/${REPO}/issues/7@created`, [200, { number: 7, state: "open", labels: [{ name: "status:in-review" }] }]);
+      const result = await run([
+        { op: "pr_create", head: "claude/new", title: "Issue batch (in progress)", draft: true },
+        { op: "pr_edit", pr: 21, body: "Resumed on branch claude/new; this pull request is closed." },
+        { op: "pr_close", pr: 21 },
+      ]);
+      expect(result.code).toBe(1);
+      expect(result.summary).toContain("no issue it links is in status:rework any more");
+      expect(calls.filter((call) => call.method === "PATCH").map((call) => call.body)).toEqual([{ body: "Resumed on branch claude/new; this pull request is closed." }]);
     });
 
     it("a ready batch that no linked issue holds is never closed: it merges on its own", async () => {

@@ -558,7 +558,7 @@ describe("status:rework: the owner sends approved work back (ticket 3.28)", () =
     expect(implement).toMatch(/- \*\*Green:\*\* open, ready, no linked issue in `status:rework`/);
     expect(implement).toMatch(/Ready and \*\*held \(rework\)\*\*[^\n]*resume it exactly like an idle draft, never wait for it and never report it as green/);
     expect(implement).toMatch(/\*\*step 8 opens your draft and retires the old pull request in the same dispatch\*\*/);
-    expect(implement).toMatch(/The relay closes a ready batch only when `Batch merge` holds it because a linked issue is in `status:rework` and another open batch pull request of yours already contains its head/);
+    expect(implement).toMatch(/The relay closes a ready batch only when `Batch merge` holds it because a linked issue is in `status:rework` and another open batch pull request of yours \(title starting `Issue batch`\) already contains its head; the links are read before the list, since your own `pr_edit` in the same dispatch strips them/);
     expect(implement).toMatch(/Held \(rework\): an issue it links went to `status:rework` while you waited/);
     expect(rework).toMatch(/A ready one is \*\*held by `Batch merge` while any issue it links is in `status:rework`\*\*/);
     expect(rework).not.toMatch(/waited for as always, and the issue is taken after it merged\. A ready batch pull request that is still open/);
@@ -567,6 +567,7 @@ describe("status:rework: the owner sends approved work back (ticket 3.28)", () =
     expect(issues).toMatch(/The next run does not wait for a held batch: it resumes it on its own branch/);
     const writer = read("scripts", "agent-write.mjs");
     expect(writer).toContain("checkClosableHeld");
+    expect(writer).toContain("reworkAmong(client, base, checked.linked)");
     expect(writer).toContain("await checkNotSentBack(client, base, pr, op.pr, config.repo)");
   });
 

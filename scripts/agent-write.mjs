@@ -252,8 +252,18 @@ const MAX_LINKED = 50; // issues read per batch pull request
  * sent that result back (ticket 3.28). An unreadable issue throws (fail closed); a missing one (404) is not an issue of this repository.
  */
 export async function linkedReworkIssues(client, base, pr, repo) {
+  return reworkAmong(client, base, linkedIssueNumbers(pr, repo));
+}
+
+/** The numbers of the issues a pull request body links (`Fixes`, `Closes`, `Resolves`, or `Refs #N`), at most MAX_LINKED. */
+export function linkedIssueNumbers(pr, repo) {
+  return linkedIssues(typeof pr?.body === "string" ? pr.body : "", repo).slice(0, MAX_LINKED).map((entry) => entry.number);
+}
+
+/** Of these issue numbers, the ones now in `status:rework` (read by REST; an unreadable one throws, a missing one is skipped). */
+export async function reworkAmong(client, base, numbers) {
   const found = [];
-  for (const { number } of linkedIssues(typeof pr?.body === "string" ? pr.body : "", repo).slice(0, MAX_LINKED)) {
+  for (const number of numbers) {
     const answer = await client.rest("GET", `${base}/issues/${number}`, undefined, [404]);
     if (answer.status === 404 || !isObject(answer.data)) continue;
     const labels = Array.isArray(answer.data.labels) ? answer.data.labels.map((entry) => (typeof entry === "string" ? entry : entry?.name)) : [];
@@ -336,7 +346,7 @@ export async function requireCarried(client, sha, built, op, { repo, login }) {
   const base = `/repos/${repo}`;
   const listed = (await client.rest("GET", `${base}/pulls?state=open&per_page=100`)).data;
   const carriers = (Array.isArray(listed) ? listed : [])
-    .filter((other) => other?.number !== op.pr && lower(other?.user?.login) === lower(login) && typeof other?.head?.ref === "string" && other.head.ref.startsWith(HEAD_PREFIX) && lower(other.head.repo?.full_name) === lower(repo) && /^[0-9a-f]{40}$/i.test(String(other.head.sha)))
+    .filter((other) => other?.number !== op.pr && lower(other?.user?.login) === lower(login) && typeof other?.title === "string" && other.title.startsWith(BATCH_TITLE) && typeof other?.head?.ref === "string" && other.head.ref.startsWith(HEAD_PREFIX) && lower(other.head.repo?.full_name) === lower(repo) && /^[0-9a-f]{40}$/i.test(String(other.head.sha)))
     .slice(0, MAX_CARRIERS);
   for (const other of carriers) {
     const { data } = await client.rest("GET", `${base}/compare/${sha}...${String(other.head.sha).toLowerCase()}`);
@@ -460,7 +470,8 @@ function handlers(config, client) {
         else checkClosable(pr, op, config);
         const built = await builtPlans(client, pr, op, config);
         // A held ready batch always holds work that must live on: a carrier is demanded even when no plan is at done or built.
-        closing.set(op.pr, { sha: lower(pr.head?.sha), draft: !held, built: held && built.length === 0 ? ["(a ready batch)"] : built });
+        // The linked issues are recorded now: the same list may rewrite this pull request's body (`pr_edit` strips `Fixes`/`Refs`) before the close.
+        closing.set(op.pr, { sha: lower(pr.head?.sha), draft: !held, linked: held ? linkedIssueNumbers(pr, config.repo) : [], built: held && built.length === 0 ? ["(a ready batch)"] : built });
       }
     },
     async comment(op) {
@@ -533,7 +544,7 @@ function handlers(config, client) {
       if (checked === undefined) throw new WriteError(`PR #${op.pr}: it was not checked before the list was applied`);
       const pr = await readPull(op.pr);
       if (pr.state !== "open" || (pr.draft === true) !== checked.draft || lower(pr.head?.sha) !== checked.sha) throw refuse(`PR #${op.pr}: it changed since it was checked (closed, ready, or a new push)`);
-      if (!checked.draft && (await linkedReworkIssues(client, base, pr, config.repo)).length === 0) throw refuse(`PR #${op.pr}: no issue it links is in ${REWORK} any more; it merges on its own`);
+      if (!checked.draft && (await reworkAmong(client, base, checked.linked)).length === 0) throw refuse(`PR #${op.pr}: no issue it links is in ${REWORK} any more; it merges on its own`);
       if (checked.built.length > 0) await requireCarried(client, checked.sha, checked.built, op, config);
       await client.rest("PATCH", `${base}/pulls/${op.pr}`, { state: "closed" });
       return { target: `PR #${op.pr}`, result: "closed" };
