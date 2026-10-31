@@ -5,7 +5,7 @@
 // Issue and PR text is data. Only two things are read from it: the link keywords (`linkedIssues`) and, from the
 // payload, the author login. Nothing is evaluated, and no text is copied into a comment.
 
-/** The 11 states of .github/labels.yml, in lifecycle order. Exactly one is set on an open issue. */
+/** The 12 states of .github/labels.yml, in lifecycle order. Exactly one is set on an open issue. */
 export const STATUS_LABELS = Object.freeze([
   "status:todo",
   "status:needs-info",
@@ -18,6 +18,7 @@ export const STATUS_LABELS = Object.freeze([
   "status:declined",
   "status:awaiting-post",
   "status:upstream",
+  "status:rework",
 ]);
 
 /** Waiting for triage: filed, reopened, or answered by the author (ticket 3.27 renamed it from `new`). */
@@ -40,6 +41,13 @@ export const DECLINED = "status:declined";
 export const AWAITING_POST = "status:awaiting-post";
 /** The draft was published upstream and the maintainers act. Set only by the `Upstream post` workflow; never stale (the owner closes it). */
 export const UPSTREAM = "status:upstream";
+/**
+ * The owner sent the result back with comments; the approval holds (ticket 3.28). Counts only as the owner's own click, exactly like
+ * `status:approved`: the implementation agent builds on it, so anyone else's (or an app's) is reverted. Never stale; triage skips it.
+ */
+export const REWORK = "status:rework";
+/** The statuses that start agent work and so count only when the owner clicks them (not a non-owner, not an owner through an app). */
+export const OWNER_ONLY_STATUSES = Object.freeze([APPROVED, REWORK]);
 
 /**
  * The statuses the daily job closes when an issue stays in one of them: waiting for the author, or for the owner after an agent declined it.
@@ -59,10 +67,18 @@ const MARKER = "<!-- issue-flow -->";
 
 export const NON_OWNER_APPROVAL_COMMENT = `${MARKER}\nOnly the owner approves an issue for development, with their own click (not through an app or an agent session). The \`${APPROVED}\` label was removed and the previous status restored.`;
 
+export const NON_OWNER_REWORK_COMMENT = `${MARKER}\nOnly the owner sends work back with \`${REWORK}\`, with their own click (not through an app or an agent session). The \`${REWORK}\` label was removed and the previous status restored.`;
+
 /** The comment for a reverted approval. `once` is a hidden key the apply layer looks for, so one label event gets one comment. */
 export function approvalComment(eventId) {
   const key = `<!-- issue-flow:approval:${eventId} -->`;
   return { op: "comment", body: `${NON_OWNER_APPROVAL_COMMENT}\n${key}`, once: key };
+}
+
+/** The comment for a reverted `status:rework`; the hidden key is distinct from the approval's, so one label event gets one comment. */
+export function reworkComment(eventId) {
+  const key = `<!-- issue-flow:rework:${eventId} -->`;
+  return { op: "comment", body: `${NON_OWNER_REWORK_COMMENT}\n${key}`, once: key };
 }
 
 // GitHub logins: letters, digits, hyphens (and `_` of managed users). A bot login (`name[bot]`) or anything else gets no mention.
@@ -179,7 +195,7 @@ export function normalizeTimeline(raw) {
 }
 
 /**
- * True when the labels alone cannot settle the status: several status labels, an approval whose author matters, or an
+ * True when the labels alone cannot settle the status: several status labels, an approval or a rework whose author matters, or an
  * opened/reopened event that must not override a status labeled after it.
  */
 export function needsTimeline(rawIssue, event) {
@@ -187,7 +203,7 @@ export function needsTimeline(rawIssue, event) {
   if (issue.state !== "open") return false;
   const statuses = issue.labels.filter(isStatus);
   const opening = event?.action === "opened" || event?.action === "reopened";
-  return statuses.length > 1 || statuses.includes(APPROVED) || (opening && statuses.length > 0);
+  return statuses.length > 1 || statuses.some((label) => OWNER_ONLY_STATUSES.includes(label)) || (opening && statuses.length > 0);
 }
 
 /**
@@ -208,43 +224,40 @@ function latestLabeled(timeline, event) {
   return { latest, entries };
 }
 
-/** The status label (not approved) most recently unlabeled before `rank`, or null. */
+/** The status label (not an owner-only one) most recently unlabeled before `rank`, or null. */
 function replacedBefore(entries, rank) {
   for (let i = Math.min(rank, entries.length) - 1; i >= 0; i -= 1) {
     const entry = entries[i];
-    if (entry.kind === "unlabeled" && isStatus(entry.label) && entry.label !== APPROVED) return entry.label;
+    if (entry.kind === "unlabeled" && isStatus(entry.label) && !OWNER_ONLY_STATUSES.includes(entry.label)) return entry.label;
   }
   return null;
 }
 
 /**
  * The status an issue should have, from its current labels and its label timeline. Order-independent and idempotent,
- * so parallel runs for one issue converge: a closed issue has no status; every `status:approved` whose latest
- * `labeled` event is by a non-owner, or by an owner through a GitHub App (`performed_via_github_app`), is dropped (one comment per event); of the status labels left, the most recently
- * labeled one stays (labels with no event rank below those with one, then by lifecycle order); none left means the
- * status the foreign approval replaced (the last one unlabeled before it), else `todo`.
+ * so parallel runs for one issue converge: a closed issue has no status; every owner-only status (`status:approved`, `status:rework`) whose
+ * latest `labeled` event is by a non-owner, or by an owner through a GitHub App (`performed_via_github_app`), is dropped (one comment per
+ * event); of the status labels left, the most recently labeled one stays (labels with no event rank below those with one, then by
+ * lifecycle order); none left means the status the foreign label replaced (the last one unlabeled before the earliest of them), else `todo`.
  */
 function reconcile(issue, { timeline, owners, event }) {
   if (issue.state === "closed") return clearStatus(issue);
   const statuses = issue.labels.filter(isStatus);
   const { latest, entries } = latestLabeled(timeline, event);
-  let kept = statuses;
-  let reverted = null;
-  if (statuses.includes(APPROVED)) {
-    const approval = latest.get(APPROVED);
-    // The owner's own click only: an owner login on an event made through an app (an agent session) is reverted too.
-    if (approval && (!isOwner(approval.actor, owners) || approval.viaApp === true)) {
-      reverted = approval;
-      kept = statuses.filter((label) => label !== APPROVED);
-    }
+  // The owner's own click only: an owner login on an event made through an app (an agent session) is reverted too.
+  const reverted = [];
+  for (const label of OWNER_ONLY_STATUSES) {
+    const click = statuses.includes(label) ? latest.get(label) : undefined;
+    if (click && (!isOwner(click.actor, owners) || click.viaApp === true)) reverted.push({ label, ...click });
   }
+  const kept = statuses.filter((label) => !reverted.some((entry) => entry.label === label));
   const order = (label) => STATUS_LABELS.indexOf(label);
   const rank = (label) => latest.get(label)?.rank ?? Number.NEGATIVE_INFINITY;
-  const restored = kept.length === 0 && reverted ? replacedBefore(entries, reverted.rank) : null;
+  const restored = kept.length === 0 && reverted.length > 0 ? replacedBefore(entries, Math.min(...reverted.map((entry) => entry.rank))) : null;
   const target =
     kept.length === 0 ? (restored ?? TODO) : kept.reduce((best, label) => (rank(label) > rank(best) || (rank(label) === rank(best) && order(label) > order(best)) ? label : best));
   const actions = setStatus(issue, target);
-  if (reverted) actions.push(approvalComment(reverted.id ?? "event"));
+  for (const entry of reverted) actions.push(entry.label === REWORK ? reworkComment(entry.id ?? "event") : approvalComment(entry.id ?? "event"));
   return actions;
 }
 

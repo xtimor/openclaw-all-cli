@@ -713,6 +713,28 @@ describe("agent-write", () => {
     expect((await run([{ op: "labels", issue: 12, remove: ["status:approved"] }])).code).toBe(0);
   });
 
+  it("REWORK: status:rework is the owner's own click: adding it is refused in any list and spelling, removing it is fine (ticket 3.28)", async () => {
+    for (const add of [["status:rework"], ["status:awaiting-post", "status:rework"], ["status:rework", "status:triaged"]]) {
+      calls = [];
+      const result = await run([{ op: "comment", issue: 12, body: "hi" }, { op: "labels", issue: 12, add }]);
+      expect(result.code).toBe(1);
+      expect(result.summary).toContain("Refused, nothing applied");
+      expect(result.stderr).toContain("status:rework is the owner's to set");
+      expect(calls).toEqual([]);
+    }
+    for (const name of ["Status:Rework", " status:rework ", "STATUS:REWORK", "status:rework\n"]) {
+      calls = [];
+      expect((await run([{ op: "labels", issue: 12, add: [name] }])).code, name).toBe(1);
+      expect(calls).toEqual([]);
+    }
+    // Removing it is not adding it, and the approval's own refusal is unchanged.
+    expect((await run([{ op: "labels", issue: 12, add: ["status:blocked"], remove: ["status:rework"] }])).code).toBe(0);
+    calls = [];
+    const approved = await run([{ op: "labels", issue: 12, add: ["status:approved"] }]);
+    expect(approved.code).toBe(1);
+    expect(approved.stderr).toContain("status:approved is the owner's to set");
+  });
+
   it("LABEL_NAMES: only status:, type:, priority:, and source: names; dot names, lookalikes, typos, and a name in both lists are refused", async () => {
     const bad = [".", "..", "", "bug", "status:", "status: triaged", "Status:triaged", "status:Triaged", "stat\u0435s:triaged", "status:a/b", "status:../x", "wontfix", "status:x\nstatus:y", "label:x", "status:" + "a".repeat(41)];
     for (const name of bad) {

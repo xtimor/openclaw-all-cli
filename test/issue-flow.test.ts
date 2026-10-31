@@ -38,6 +38,10 @@ interface Event {
 interface Transitions {
   STATUS_LABELS: string[];
   TODO: string;
+  REWORK: string;
+  OWNER_ONLY_STATUSES: string[];
+  NON_OWNER_REWORK_COMMENT: string;
+  reworkComment(eventId: unknown): Action;
   LEGACY_STATUS: Record<string, string>;
   AWAITING_POST: string;
   UPSTREAM: string;
@@ -90,11 +94,11 @@ const labeledAt = (label: string, actor: string, minutes: number, id: number): R
 const revert = (id: unknown): Action => t.approvalComment(id);
 
 describe("STATUS_LABELS", () => {
-  it("are the 11 states of .github/labels.yml, in order", () => {
+  it("are the 12 states of .github/labels.yml, in order", () => {
     const text = readFileSync(join(ROOT, ".github", "labels.yml"), "utf8");
     const fromFile = [...text.matchAll(/^- name: "(status:[^"]+)"/gm)].map((match) => match[1]);
-    expect(fromFile).toHaveLength(11);
-    expect(fromFile.slice(-3)).toEqual(["status:declined", "status:awaiting-post", "status:upstream"]);
+    expect(fromFile).toHaveLength(12);
+    expect(fromFile.slice(-4)).toEqual(["status:declined", "status:awaiting-post", "status:upstream", "status:rework"]);
     expect(t.STATUS_LABELS).toEqual(fromFile);
   });
 });
@@ -714,6 +718,131 @@ describe("decide: pull_request", () => {
   });
 });
 
+describe("decide: status:rework (ticket 3.28)", () => {
+  const labeled = (label: string, actor: string) => ({ name: "issues", action: "labeled", actor, label });
+  const viaApp = (label: string, actor: string, minutes: number, id: number) => ({ ...labeledAt(label, actor, minutes, id), performed_via_github_app: { slug: "claude", id: 1 } });
+  const reworkRevert = (id: unknown): Action => t.reworkComment(id);
+
+  it("is a status, last in the lifecycle order, counted as owner-only like approved, and never stale", () => {
+    expect(t.REWORK).toBe("status:rework");
+    expect(t.STATUS_LABELS.at(-1)).toBe("status:rework");
+    expect(t.OWNER_ONLY_STATUSES).toEqual(["status:approved", "status:rework"]);
+    expect(t.STALE_STATUSES).not.toContain("status:rework");
+  });
+
+  it("OWNER_CLICK: an owner's own click stays and the status it replaces goes, whichever event this run handles (case-insensitive login)", () => {
+    for (const actor of ["xtimor", "XTimor"]) {
+      const timeline = [labeledAt("status:awaiting-post", "agent[bot]", 0, 1), labeledAt("status:rework", actor, 5, 2)];
+      for (const event of [labeled("status:rework", actor), labeled("status:awaiting-post", "agent[bot]"), { name: "issues", action: "unlabeled", actor: "x", label: "priority:p1" }]) {
+        expect(t.decide(event, issue(["status:awaiting-post", "status:rework"]), { owners: OWNERS, timeline })).toEqual([remove("status:awaiting-post")]);
+      }
+    }
+  });
+
+  it("OWNER_CLICK: a status labeled after the rework wins (the agent's outcome replaces it)", () => {
+    const timeline = [labeledAt("status:rework", "xtimor", 0, 1), labeledAt("status:awaiting-post", "agent[bot]", 5, 2)];
+    expect(t.decide(labeled("status:awaiting-post", "agent[bot]"), issue(["status:rework", "status:awaiting-post"]), { owners: OWNERS, timeline })).toEqual([remove("status:rework")]);
+  });
+
+  it("STRANGER: a non-owner's rework is removed with one comment and the status it was added to stays", () => {
+    const timeline = [labeledAt("status:awaiting-post", "agent[bot]", 0, 1), labeledAt("status:rework", "mallory", 5, 2)];
+    for (const event of [labeled("status:rework", "mallory"), labeled("status:awaiting-post", "agent[bot]"), { name: "issues", action: "labeled", actor: "alice", label: "type:bug" }]) {
+      expect(t.decide(event, issue(["status:awaiting-post", "status:rework"]), { owners: OWNERS, timeline })).toEqual([remove("status:rework"), reworkRevert(2)]);
+    }
+  });
+
+  it("STRANGER: with no status left the one it replaced comes back, else todo", () => {
+    const replaced = [labeledAt("status:in-review", "agent[bot]", 0, 1), { ...labeledAt("status:in-review", "x", 3, 2), event: "unlabeled" }, labeledAt("status:rework", "mallory", 4, 3)];
+    expect(t.decide(labeled("status:rework", "mallory"), issue(["status:rework"]), { owners: OWNERS, timeline: replaced })).toEqual([add("status:in-review"), remove("status:rework"), reworkRevert(3)]);
+    // A reverted approval or rework is never the status to restore.
+    const approvedBefore = [{ ...labeledAt("status:approved", "x", 1, 1), event: "unlabeled" }, labeledAt("status:rework", "mallory", 4, 2)];
+    expect(t.decide(labeled("status:rework", "mallory"), issue(["status:rework"]), { owners: OWNERS, timeline: approvedBefore })).toEqual([add("status:todo"), remove("status:rework"), reworkRevert(2)]);
+    const reworkBefore = [{ ...labeledAt("status:rework", "x", 1, 1), event: "unlabeled" }, labeledAt("status:rework", "mallory", 4, 2)];
+    expect(t.decide(labeled("status:rework", "mallory"), issue(["status:rework"]), { owners: OWNERS, timeline: reworkBefore })).toEqual([add("status:todo"), remove("status:rework"), reworkRevert(2)]);
+  });
+
+  it("STRANGER: an empty owner list or a missing actor makes everyone a non-owner", () => {
+    const event = labeled("status:rework", "xtimor");
+    for (const options of [undefined, { owners: [] }]) {
+      expect(t.decide(event, issue(["status:blocked", "status:rework"]), options)).toEqual([remove("status:rework"), reworkRevert("event")]);
+    }
+    expect(t.decide({ ...event, actor: null }, issue(["status:blocked", "status:rework"]), { owners: OWNERS })).toEqual([remove("status:rework"), reworkRevert("event")]);
+  });
+
+  it("VIA_APP: an owner's login on a label event made through a GitHub App (an agent session) is reverted too; null and false are a click", () => {
+    const labels = ["status:blocked", "status:rework"];
+    const through = [labeledAt("status:blocked", "agent[bot]", 0, 1), viaApp("status:rework", "xtimor", 3, 2)];
+    expect(t.decide(labeled("status:rework", "xtimor"), issue(labels), { owners: OWNERS, timeline: through })).toEqual([remove("status:rework"), reworkRevert(2)]);
+    for (const field of [null, false]) {
+      const own = [labeledAt("status:blocked", "agent[bot]", 0, 1), { ...labeledAt("status:rework", "xtimor", 3, 2), performed_via_github_app: field }];
+      expect(t.decide(labeled("status:rework", "xtimor"), issue(labels), { owners: OWNERS, timeline: own })).toEqual([remove("status:blocked")]);
+    }
+  });
+
+  it("the latest labeled event judges it: an owner's click after a stranger's stays, a stranger's after the owner's is reverted", () => {
+    const labels = ["status:blocked", "status:rework"];
+    const ownerLast = [labeledAt("status:blocked", "agent[bot]", 0, 1), labeledAt("status:rework", "mallory", 1, 2), labeledAt("status:rework", "xtimor", 9, 3)];
+    const strangerLast = [labeledAt("status:blocked", "agent[bot]", 0, 1), labeledAt("status:rework", "xtimor", 1, 2), labeledAt("status:rework", "mallory", 9, 3)];
+    expect(t.decide(labeled("status:rework", "x"), issue(labels), { owners: OWNERS, timeline: ownerLast })).toEqual([remove("status:blocked")]);
+    expect(t.decide(labeled("status:rework", "x"), issue(labels), { owners: OWNERS, timeline: strangerLast })).toEqual([remove("status:rework"), reworkRevert(3)]);
+  });
+
+  it("NO_EVENT: a rework whose author cannot be told (no timeline entry, not this event) stays, as approved does", () => {
+    expect(t.decide({ name: "issues", action: "unlabeled", actor: "bob" }, issue(["status:rework"]), { owners: OWNERS })).toEqual([]);
+  });
+
+  it("BOTH_OWNER_ONLY: a stranger's approved and rework are both removed, one comment each, and the earlier status comes back", () => {
+    const timeline = [labeledAt("status:triaged", "xtimor", 0, 1), labeledAt("status:approved", "mallory", 2, 2), labeledAt("status:rework", "mallory", 3, 3)];
+    expect(t.decide(labeled("status:rework", "mallory"), issue(["status:triaged", "status:approved", "status:rework"]), { owners: OWNERS, timeline })).toEqual([remove("status:approved"), remove("status:rework"), revert(2), reworkRevert(3)]);
+    // The owner's approval and a stranger's rework: only the rework goes.
+    const mixed = [labeledAt("status:triaged", "xtimor", 0, 1), labeledAt("status:approved", "xtimor", 2, 2), labeledAt("status:rework", "mallory", 3, 3)];
+    expect(t.decide(labeled("status:rework", "mallory"), issue(["status:approved", "status:rework"]), { owners: OWNERS, timeline: mixed })).toEqual([remove("status:rework"), reworkRevert(3)]);
+  });
+
+  it("BOTH_OWNER_ONLY: with nothing else left the status replaced before the earliest foreign label comes back", () => {
+    const timeline = [
+      { ...labeledAt("status:blocked", "x", 1, 1), event: "unlabeled" },
+      labeledAt("status:approved", "mallory", 2, 2),
+      { ...labeledAt("status:in-review", "x", 3, 3), event: "unlabeled" },
+      labeledAt("status:rework", "mallory", 4, 4),
+    ];
+    expect(t.decide(labeled("status:rework", "mallory"), issue(["status:approved", "status:rework"]), { owners: OWNERS, timeline })).toEqual([add("status:blocked"), remove("status:approved"), remove("status:rework"), revert(2), reworkRevert(4)]);
+  });
+
+  it("the revert comment says who may do it, carries its own once-key, and never repeats the approval's key", () => {
+    const comment = t.reworkComment(7) as { body: string; once: string };
+    expect(comment.once).toBe("<!-- issue-flow:rework:7 -->");
+    expect(comment.body).toContain(t.NON_OWNER_REWORK_COMMENT);
+    expect(comment.body).toContain("Only the owner sends work back with `status:rework`, with their own click");
+    expect(comment.body).toContain("previous status restored");
+    expect((t.approvalComment(7) as { once: string }).once).not.toBe(comment.once);
+  });
+
+  it("needsTimeline: a rework needs the label history, like an approval", () => {
+    expect(t.needsTimeline(issue(["status:rework"]))).toBe(true);
+    expect(t.needsTimeline(issue(["status:rework"], { state: "closed" }))).toBe(false);
+  });
+
+  it("closing clears it, a reopen sets todo, the author's reply and the workflow's own events change nothing", () => {
+    expect(t.decide({ name: "issues", action: "closed", actor: "xtimor" }, issue(["status:rework", "type:bug"], { state: "closed" }))).toEqual([remove("status:rework")]);
+    expect(t.decide({ name: "issues", action: "reopened", actor: "xtimor" }, issue(["status:rework"]))).toEqual([add("status:todo"), remove("status:rework")]);
+    expect(t.decide({ name: "issue_comment", action: "created", actor: "alice" }, issue(["status:rework"]))).toEqual([]);
+    expect(t.decide(labeled("status:rework", "github-actions[bot]"), issue(["status:rework"]))).toEqual([]);
+  });
+
+  it("an owner's pull request flow: an in-review issue is not moved by a rework, and a rework issue is not moved by a pull request (the agent sets in-review itself)", () => {
+    const opened = { name: "pull_request", action: "opened", actor: "xtimor", repo: REPO, headRepo: REPO, author: "xtimor", link: "fixes", prState: "open" };
+    expect(t.decide(opened, issue(["status:rework"]), { owners: OWNERS })).toEqual([]);
+  });
+
+  it("STALE: never listed or closed by the daily job, however old", () => {
+    const old = (number: number): IssueIn => ({ number, state: "open", labels: [{ name: "status:rework" }], updated_at: daysAgo(400), user: { login: "alice" } });
+    expect(t.staleIssues([old(1)], NOW, 30, new Map([[1, NOW - 400 * DAY]]))).toEqual([]);
+    expect(t.staleStatus(old(1))).toBeNull();
+    expect(t.decide({ name: "stale" }, old(1), { owners: OWNERS })).toEqual([]);
+  });
+});
+
 describe("staleIssues and decide: stale", () => {
   const needsInfo = (number: number, days: number, extra: IssueIn = {}): IssueIn => ({
     number,
@@ -1031,6 +1160,28 @@ describe("runEvent", () => {
     expect(click.labelsOf(12)).toEqual(["status:approved"]);
   });
 
+  it("REWORK_VIA_APP: runEvent reverts a rework made through an app or by a stranger with one comment, keeps an owner's click, and a second run adds no second comment", async () => {
+    const make = (field: unknown, actor: string) =>
+      fakeGithub([{ number: 12, state: "open", labels: ["status:awaiting-post", "status:rework"], user: { login: "alice" } }], {
+        events: { 12: [labeledAt("status:awaiting-post", "agent[bot]", 0, 1), { ...labeledAt("status:rework", actor, 3, 2), performed_via_github_app: field }] },
+      });
+    const payload = (sender: string) => ({ action: "labeled", label: { name: "status:rework" }, sender: { login: sender }, issue: { number: 12 } });
+    const viaClaude = make({ slug: "claude" }, "xtimor");
+    await apply.runEvent({ github: viaClaude.github, context: ctx("issues", payload("xtimor")), core: fakeCore(), env });
+    expect(viaClaude.labelsOf(12)).toEqual(["status:awaiting-post"]);
+    expect(viaClaude.comments(12)).toHaveLength(1);
+    expect(viaClaude.comments(12)[0]).toContain("Only the owner sends work back");
+    await apply.runEvent({ github: viaClaude.github, context: ctx("issues", payload("xtimor")), core: fakeCore(), env });
+    expect(viaClaude.comments(12)).toHaveLength(1);
+    const stranger = make(null, "mallory");
+    await apply.runEvent({ github: stranger.github, context: ctx("issues", payload("mallory")), core: fakeCore(), env });
+    expect(stranger.labelsOf(12)).toEqual(["status:awaiting-post"]);
+    const click = make(null, "xtimor");
+    await apply.runEvent({ github: click.github, context: ctx("issues", payload("xtimor")), core: fakeCore(), env });
+    expect(click.labelsOf(12)).toEqual(["status:rework"]);
+    expect(click.comments(12)).toEqual([]);
+  });
+
   it("OWNER_APPROVED: the owner list comes from ISSUE_FLOW_OWNERS", async () => {
     const make = () => fakeGithub([{ number: 12, state: "open", labels: ["status:triaged", "status:approved"], user: { login: "alice" } }]);
     const payload = { action: "labeled", label: { name: "status:approved" }, sender: { login: "xtimor" }, issue: { number: 12 } };
@@ -1264,6 +1415,14 @@ describe("runStale", () => {
     expect(fake.labelsOf(1)).toEqual([]);
     expect(fake.state(2)).toBe("open");
     expect(fake.labelsOf(2)).toEqual(["status:needs-info"]);
+  });
+
+  it("STALE: an old status:rework issue is not listed, read, or closed (ticket 3.28)", async () => {
+    const fake = fakeGithub([{ number: 5, state: "open", labels: ["status:rework"], updated_at: daysAgo(400) }], { events: { 5: [{ ...labeledAt("status:rework", "xtimor", 0, 1), created_at: daysAgo(400) }] } });
+    expect(await apply.runStale({ github: fake.github, context: ctx("schedule", {}), core: fakeCore(), dryRun: false, now: NOW })).toEqual([]);
+    expect(fake.state(5)).toBe("open");
+    expect(fake.labelsOf(5)).toEqual(["status:rework"]);
+    expect(fake.calls.filter((call) => /events 5|update 5|comment 5/.test(call))).toEqual([]);
   });
 
   it("STALE: relabeled issue (added 40 days ago, removed, added 5 days ago) stays open", async () => {

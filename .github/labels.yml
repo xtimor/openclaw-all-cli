@@ -46,6 +46,9 @@
 - name: "status:upstream"
   color: "0075ca"
   description: "The draft was published upstream; waiting for the maintainers"
+- name: "status:rework"
+  color: "e99695"
+  description: "The owner sent it back with comments; approval holds"
 
 # Type.
 - name: "type:bug"

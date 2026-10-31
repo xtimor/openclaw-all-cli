@@ -157,8 +157,8 @@ describe("labels file", () => {
     const entries = fileLabels();
     // `upstream:post` (ticket 3.25) is the owner's approval to publish an agent's upstream draft; it is not part of the issue-flow design.
     expect(entries.map((entry) => entry.name).sort()).toEqual([...named, "upstream:post"].sort());
-    // The design lists 11 states, 2 types, 4 priorities, and the agent source.
-    expect(named).toHaveLength(18);
+    // The design lists 12 states, 2 types, 4 priorities, and the agent source.
+    expect(named).toHaveLength(19);
     for (const entry of entries) {
       expect(entry.color).toMatch(/^[0-9a-f]{6}$/);
       expect(entry.description.length).toBeGreaterThan(0);
@@ -173,10 +173,14 @@ describe("labels file", () => {
     expect(entries.filter((entry) => entry.renamedFrom !== undefined).map((entry) => entry.name)).toEqual([TODO]);
   });
 
+  it("has status:rework with its description (ticket 3.28)", () => {
+    expect(fileLabels().find((entry) => entry.name === "status:rework")).toMatchObject({ description: "The owner sent it back with comments; approval holds" });
+  });
+
   it("passes the script's own validation (dry run)", async () => {
     const result = await run(["--dry-run"]);
     expect(result.code).toBe(0);
-    expect(result.stdout).toContain("19 to create");
+    expect(result.stdout).toContain("20 to create");
   });
 });
 
@@ -230,7 +234,7 @@ describe("sync-labels.mjs", () => {
     const second = await run();
     expect(second.code, second.stderr).toBe(0);
     expect(writes()).toEqual([]);
-    expect(second.stdout).toContain("0 to create, 0 to update, 19 unchanged");
+    expect(second.stdout).toContain("0 to create, 0 to update, 20 unchanged");
   });
 
   it("SECOND_SYNC: a label GitHub reports with an upper-case color is still equal", async () => {
