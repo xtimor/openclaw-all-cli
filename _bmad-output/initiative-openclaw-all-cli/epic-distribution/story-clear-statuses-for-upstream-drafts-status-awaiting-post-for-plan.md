@@ -3,7 +3,7 @@ title: 'Clear statuses for upstream drafts: `status:awaiting-post` for the owner
 type: 'feature'
 ticket: 26
 created: '2026-10-31'
-status: built
+status: done
 baseline_revision: 'ba9a13db887921ad83982b7c7976574891def9eb'
 route: 'full'
 route_source: 'auto'
