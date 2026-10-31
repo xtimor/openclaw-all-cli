@@ -8,13 +8,16 @@
 // What it does, in order (every write is to THIS repository, with the job's GITHUB_TOKEN, except the one upstream call):
 //   1. Replay and withdrawal: attempt not 1, a triggering actor who is not an owner, or the label no longer on the issue: exit 1 and
 //      change nothing (a re-run is not a new signal from the owner, and removing the label cancels the request).
-//   2. From here every outcome ends the same way: one result comment on our issue and the label removed.
+//   2. From here every outcome ends the same way: one result comment on our issue and the label removed. A publish (created,
+//      commented, or existing) then moves our issue to `status:upstream` (ticket 3.26): it adds that label, then removes every other
+//      `status:*` label, with the job token and after the comment. A refusal leaves the statuses as they are (`status:awaiting-post`).
 //   3. The labeler (`github.event.sender`) must be the workflow's actor, an owner (ISSUE_FLOW_OWNERS), a User, not a bot.
 //   4. The draft: the LATEST comment of our issue whose first line is `<!-- issue-impl -->` and whose author is the agent app (the
 //      login in .github/agent-identity.json, type Bot). It must hold exactly one draft block and must not have been edited after the
 //      label was added (the owner approves the text they read). Comments of anyone else are ignored, a block in them included.
 //   5. The input of scripts/upstream-issue.mjs is built from the block plus the line `Filed for <this repository>#<n>` and handed to
-//      its `run()`: the same code path as the dispatch workflow. Every guard of tickets 3.23 and 3.24 applies there (owner actors,
+//      its `run()`: the same code path as the dispatch workflow. A reply after an earlier publish carries `(reply N)` on that line: the
+//      round is derived here from the result comments of earlier publishes (draftRound), never chosen by the agent (ticket 3.26). Every guard of tickets 3.23 and 3.24 applies there (owner actors,
 //      attempt 1, approved issue, the issue names the target, own issue for a comment, caps, idempotency, size limits, one marker).
 //
 // The draft block, written by the agent inside its `<!-- issue-impl -->` comment (the text between the tags is the public text,
@@ -45,6 +48,8 @@ import { parseOwners } from "./issue-flow/transitions.mjs";
 import { checkNamesTarget, isOwnersOwnClick, run as runUpstream } from "./upstream-issue.mjs";
 
 export const LABEL = "upstream:post";
+/** Set by this script alone, after a publish: the draft is upstream and the maintainers act (the relay refuses agents this label). */
+export const UPSTREAM_STATUS = "status:upstream";
 export const RESULT_MARKER = "<!-- upstream-post -->";
 const MAX_COMMENT_PAGES = 20; // 2000 comments on one issue of ours
 const MAX_EVENT_PAGES = 10; // 1000 events of one issue of ours
@@ -171,6 +176,39 @@ export function parseDraft(text) {
   throw refuse('op must be "comment" or "create"');
 }
 
+/** The latest `<!-- issue-impl -->` comment by the agent app, or undefined. */
+function latestImpl(comments, login) {
+  const mine = comments.filter((comment) => isObject(comment) && isObject(comment.user) && lower(comment.user.login) === lower(login) && comment.user.type === "Bot" && IMPL_MARKER.test(String(comment.body ?? "").replace(/^\uFEFF/, "")));
+  return mine[mine.length - 1];
+}
+
+/** The workflow's own result comment for a publish: the first line is the marker, the second says "published as ...". */
+const PUBLISHED_RESULT = /^<!-- upstream-post -->\n\*\*Upstream post:\*\* published as /;
+const WORKFLOW_LOGIN = "github-actions[bot]";
+const MAX_ROUND = 99;
+
+/**
+ * The round of this draft (ticket 3.26): 1 plus the number of earlier publishes recorded on our issue, that is the result comments
+ * of this workflow (author `github-actions[bot]`, type Bot, first line the marker, headline "published as") created BEFORE the draft
+ * comment was. The agent never chooses it; the same draft labeled again after it published has the same round, so the shared path
+ * returns the existing comment instead of posting twice, and a reply written in a new `<!-- issue-impl -->` comment after a publish
+ * is the next round. A result comment with an unreadable time is not counted (the safe side: the draft then matches an existing marker).
+ * Refuses when there is no draft comment, its creation time is unreadable, or the round would pass MAX_ROUND.
+ */
+export function draftRound(comments, { login }) {
+  const latest = latestImpl(comments, login);
+  const created = typeof latest?.created_at === "string" ? Date.parse(latest.created_at) : Number.NaN;
+  if (!Number.isFinite(created)) throw refuse("the draft comment has no readable creation time");
+  const earlier = comments.filter((comment) => {
+    if (!isObject(comment) || !isObject(comment.user) || lower(comment.user.login) !== WORKFLOW_LOGIN || comment.user.type !== "Bot") return false;
+    if (!PUBLISHED_RESULT.test(String(comment.body ?? "").replace(/\r\n?/g, "\n"))) return false;
+    const at = typeof comment.created_at === "string" ? Date.parse(comment.created_at) : Number.NaN;
+    return Number.isFinite(at) && at < created;
+  }).length;
+  if (earlier + 1 > MAX_ROUND) throw refuse(`this issue already has ${earlier} published replies; the limit is ${MAX_ROUND - 1}`);
+  return earlier + 1;
+}
+
 /**
  * The draft of our issue from its comments (oldest first): the latest comment whose first line is the implementation marker and whose
  * author is the agent app. A comment by anyone else, with or without a block, is ignored. Refuses when there is none, when it was
@@ -178,8 +216,7 @@ export function parseDraft(text) {
  * its block does not parse.
  */
 export function findDraft(comments, { login, labeledAtMs }) {
-  const mine = comments.filter((comment) => isObject(comment) && isObject(comment.user) && lower(comment.user.login) === lower(login) && comment.user.type === "Bot" && IMPL_MARKER.test(String(comment.body ?? "").replace(/^\uFEFF/, "")));
-  const latest = mine[mine.length - 1];
+  const latest = latestImpl(comments, login);
   if (latest === undefined) throw refuse(`no <!-- issue-impl --> comment by ${login} on this issue`);
   const edited = typeof latest.updated_at === "string" ? Date.parse(latest.updated_at) : Number.NaN;
   if (!Number.isFinite(edited)) throw refuse("the draft comment has no readable edit time");
@@ -187,9 +224,14 @@ export function findDraft(comments, { login, labeledAtMs }) {
   return parseDraft(latest.body);
 }
 
-/** The input of scripts/upstream-issue.mjs for a parsed draft: the draft's text plus the one `Filed for` line of this issue. */
-export function buildInput(draft, ourRepo, number) {
-  const body = `${draft.body}\n\nFiled for ${ourRepo}#${number}\n`;
+/**
+ * The input of scripts/upstream-issue.mjs for a parsed draft: the draft's text plus the one `Filed for` line of this issue. A comment
+ * of round 2 or later carries `(reply N)` on that line (a create never does: it stays one issue per marker). The round comes from
+ * `draftRound`; a marker line inside the draft is a second marker and is refused by the shared path.
+ */
+export function buildInput(draft, ourRepo, number, round = 1) {
+  const suffix = draft.op === "comment" && round > 1 ? ` (reply ${round})` : "";
+  const body = `${draft.body}\n\nFiled for ${ourRepo}#${number}${suffix}\n`;
   return draft.op === "comment" ? { op: "comment", repo: draft.repo, issue: draft.issue, body } : { op: "create", repo: draft.repo, title: draft.title, body };
 }
 
@@ -248,7 +290,8 @@ function resultComment(result, config) {
     RESULT_MARKER,
     `**Upstream post:** ${headline}.${requester}`,
     published ? `**${result.kind === "existing" ? "Existing" : "Result"}:** ${result.url}` : `**Reason:** \`${oneLine(result.message ? `${result.outcome}: ${result.message}` : result.outcome)}\``,
-    published ? `**Label:** \`${LABEL}\` removed.${result.kind === "existing" ? " One comment or issue per target per issue of ours: a new note on the same target needs a new issue of ours." : ""}` : `**Label:** \`${LABEL}\` removed. Fix the cause, then add it again.`,
+    published ? `**Label:** \`${LABEL}\` removed.${result.kind === "existing" ? " The same draft is posted once; a reply written in a new `<!-- issue-impl -->` comment after a publish is the next round." : ""}` : `**Label:** \`${LABEL}\` removed. Fix the cause, then add it again.`,
+    published ? `**Status:** \`${UPSTREAM_STATUS}\`: waiting for the upstream maintainers. Close this issue when upstream settles, or approve it again for a follow-up.` : "**Status:** unchanged.",
     "",
     "— `Upstream post` workflow (GitHub Actions, no agent)",
   ].join("\n");
@@ -284,6 +327,18 @@ async function checkLabelEvent(ours, config) {
     if (attempt < EVENT_ATTEMPTS) await new Promise((done) => setTimeout(done, config.eventDelayMs));
   }
   throw refuse(`the ${LABEL} label event was not found in the issue's events (they can lag); remove the label and add it again`);
+}
+
+/** `status:upstream` and no other status on our issue; a closed issue has none, so it is left alone. The labels are read again just before the write. */
+async function moveToUpstream(ours, config) {
+  const issue = (await ours.rest("GET", `/repos/${config.repo}/issues/${config.issue}`)).data;
+  if (!isObject(issue) || !Array.isArray(issue.labels)) throw new WriteError(`GET /issues/${config.issue}: the labels could not be read`);
+  if (issue.state === "closed") return;
+  const names = issue.labels.map((entry) => (typeof entry === "string" ? entry : entry?.name)).filter((name) => typeof name === "string");
+  if (!names.some((name) => lower(name) === UPSTREAM_STATUS)) await ours.rest("POST", `/repos/${config.repo}/issues/${config.issue}/labels`, { labels: [UPSTREAM_STATUS] });
+  for (const name of names) {
+    if (lower(name).startsWith("status:") && lower(name) !== UPSTREAM_STATUS) await ours.rest("DELETE", `/repos/${config.repo}/issues/${config.issue}/labels/${encodeURIComponent(name)}`, undefined, [404]);
+  }
 }
 
 async function readComments(ours, config) {
@@ -337,6 +392,13 @@ export async function run(env, log = () => {}, now = Date.now) {
     } catch (error) {
       failure += `${failure === "" ? "" : "; "}the label could not be removed (${error instanceof WriteError ? clean(error.message) : "unexpected error"})`;
     }
+    if (result.code === 0 && RESULT_URL.test(result.url) && ["created", "commented", "existing"].includes(result.kind)) {
+      try {
+        await moveToUpstream(ours, config);
+      } catch (error) {
+        failure += `${failure === "" ? "" : "; "}the status could not be moved to ${UPSTREAM_STATUS} (${error instanceof WriteError ? clean(error.message) : "unexpected error"})`;
+      }
+    }
     return failure === "" ? result : { ...result, code: result.code === 0 ? 1 : result.code, message: clean(`${result.message}${result.message === "" ? "" : "; "}${failure}`) };
   };
   const stop = (error, stage) => settle(finish(1, error instanceof WriteError && error.refused ? "Refused, nothing published" : stage, error instanceof WriteError ? error.message : "unexpected error"));
@@ -352,7 +414,9 @@ export async function run(env, log = () => {}, now = Date.now) {
   try {
     const labeledAtMs = await checkLabelEvent(ours, config);
     const login = readAgentLogin(config.identityFile);
-    const draft = findDraft(await readComments(ours, config), { login, labeledAtMs });
+    const comments = await readComments(ours, config);
+    const draft = findDraft(comments, { login, labeledAtMs });
+    const round = draftRound(comments, { login });
     // The tag is invisible when the comment is rendered, so a comment draft must also name its target in the text the owner reads.
     if (draft.op === "comment") {
       try {
@@ -361,7 +425,7 @@ export async function run(env, log = () => {}, now = Date.now) {
         throw refuse(`the visible text of the draft comment must name ${draft.repo}#${draft.issue} (as ${draft.repo}#${draft.issue} or its issue URL), so the owner sees where the draft goes`);
       }
     }
-    input = buildInput(draft, config.repo, config.issue);
+    input = buildInput(draft, config.repo, config.issue, round);
   } catch (error) {
     return stop(error, "Failed while reading the draft");
   }

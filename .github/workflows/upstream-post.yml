@@ -6,7 +6,8 @@ name: Upstream post
 # the owner's "ready". scripts/upstream-post.mjs checks the labeler, reads the draft, and hands it to run() of scripts/upstream-issue.mjs:
 # the same tested code path as the `Upstream issue` workflow, so every guard of tickets 3.23 and 3.24 applies (owner actors, attempt 1, an
 # owner-approved issue of ours that names the target, own issue for a comment, caps, idempotency, size limits). It then comments the result
-# (or the refusal reason) on our issue and removes the label. Design and the agents' side: docs/agents/identity.md ("Upstream issues").
+# (or the refusal reason) on our issue and removes the label; after a publish it also moves the issue from `status:awaiting-post` to `status:upstream`
+# (the job token, after the comment; a refusal leaves the status). Design and the agents' side: docs/agents/identity.md ("Upstream issues").
 # Setup: the same secret GH_PUBLIC_TOKEN in the GitHub Environment `agent` (deployment branches: only `main`) as `Upstream issue`.
 # A workflow of an `issues` event runs from the default branch, so a pull request cannot change what runs; the job never checks out or runs
 # pull request code. The label is filtered in the job `if` and again in the script. The script reads the label event itself from the issue's events
