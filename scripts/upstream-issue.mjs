@@ -61,6 +61,9 @@ const MAX_CAP_READS = 60; // requests the cap count may spend; more refuses (can
 const MAX_NUMBER = 999_999_999; // the marker's limit too
 const DAY_MS = 24 * 60 * 60 * 1000;
 const APPROVED = "status:approved";
+// The owner's own click on this status is the same proof (ticket 3.28): it sends an agent's result back and is itself the authorization.
+const REWORK = "status:rework";
+const OWNER_PROOF = [APPROVED, REWORK];
 const CONTROL = /[\u0000-\u001f\u007f-\u009f\u2028\u2029]/; // a title or a label
 const BODY_CONTROL = /[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/; // a body may hold newlines and tabs
 // An optional round for a later reply on the same target (ticket 3.26): `Filed for <repo>#<n> (reply 2)`. No suffix is round 1.
@@ -169,7 +172,7 @@ export function isOwnersOwnClick(event, owners, label) {
 
 /**
  * Reads the issue of ours that the marker names and refuses unless it exists, is an issue (never a pull request), and an owner
- * labeled it `status:approved` at some point, as the owner's own click (its events, oldest first; see isOwnersOwnClick). `ours` is the client for this repository (GITHUB_TOKEN,
+ * labeled it `status:approved` or `status:rework` at some point, as the owner's own click (its events, oldest first; see isOwnersOwnClick). `ours` is the client for this repository (GITHUB_TOKEN,
  * read only). An unreadable answer refuses too. Sends no write. Returns the issue as fetched (title, body).
  */
 export async function checkApproved(ours, config, number) {
@@ -181,11 +184,11 @@ export async function checkApproved(ours, config, number) {
     const events = (await ours.rest("GET", `${path}/events?per_page=100&page=${page}`)).data;
     if (!Array.isArray(events)) throw new WriteError(`GET /issues/${number}/events: the events could not be read`);
     for (const event of events) {
-      if (isOwnersOwnClick(event, config.owners, APPROVED)) return answer.data;
+      if (OWNER_PROOF.some((label) => isOwnersOwnClick(event, config.owners, label))) return answer.data;
     }
     if (events.length < 100) break;
   }
-  throw refuse(`${config.repo}#${number} has no ${APPROVED} label set by an owner (ISSUE_FLOW_OWNERS) with their own click, not through an app or an agent session; the owner approves the issue first`);
+  throw refuse(`${config.repo}#${number} has no ${APPROVED} label set by an owner (ISSUE_FLOW_OWNERS) with their own click, not through an app or an agent session, and no ${REWORK} label set that way either; the owner approves the issue first (or sends it back with ${REWORK})`);
 }
 
 /** The login of the token's user (`GET /user`); an unreadable or odd answer fails closed. */

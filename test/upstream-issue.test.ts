@@ -383,6 +383,29 @@ describe("upstream-issue", () => {
       expect(upstream()).toEqual([]);
     });
 
+    it("status:rework is the same proof (ticket 3.28): the owner's own click is accepted; through an app, by a non-owner, or by a bot it is refused", async () => {
+      const rework = (extra: Record<string, unknown> = {}) => ({ ...approval("xtimor", "status:rework"), ...extra });
+      answers.set(eventsPath, [200, [rework()]]);
+      const ok = await run(issue());
+      expect(ok.code, ok.stderr).toBe(0);
+      expect(upstream().length).toBeGreaterThan(0);
+      calls = [];
+      for (const events of [
+        [rework({ performed_via_github_app: { slug: "claude", id: 1 } })],
+        [rework({ actor: { login: "mallory" } })],
+        [rework({ actor: { login: "xtimor", type: "Bot" } })],
+        [{ event: "unlabeled", label: { name: "status:rework" }, actor: { login: "xtimor" } }],
+      ]) {
+        answers.set(eventsPath, [200, events]);
+        const result = await run(issue());
+        expect(result.code, JSON.stringify(events)).toBe(1);
+        expect(result.stderr).toContain("Refused, nothing created");
+        expect(result.stderr).toContain("status:rework");
+        expect(upstream()).toEqual([]);
+        calls = [];
+      }
+    });
+
     it("an owner's login on an event made through a GitHub App (a Claude session writes as the owner) is not an approval; the owner's own click is (ticket 3.25)", async () => {
       const viaApp = { ...approval(), performed_via_github_app: { slug: "claude", id: 1 } };
       for (const events of [[viaApp], [{ ...approval(), actor: { login: "xtimor", type: "Bot" } }], [{ ...approval(), performed_via_github_app: { id: 7 } }]]) {

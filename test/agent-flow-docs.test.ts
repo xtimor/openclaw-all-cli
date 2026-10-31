@@ -511,6 +511,14 @@ describe("status:rework: the owner sends approved work back (ticket 3.28)", () =
     expect(rework).toMatch(/No claim\./);
   });
 
+  it("the Upstream post workflow accepts the owner's own-click rework as the proof of approval, and the docs say so", () => {
+    expect(identity).toMatch(/without an owner's own-click `status:approved` or `status:rework` on that issue it publishes nothing/);
+    expect(identity).toMatch(/have had `status:approved` or `status:rework` labeled by an owner at some point, as the owner's own click/);
+    expect(issues).toMatch(/Your own click on `status:rework` is also the proof the `Upstream post` workflow needs/);
+    expect(implement).toMatch(/own-click `status:approved` or `status:rework`\)/);
+    expect(read("scripts", "upstream-issue.mjs")).toContain("const OWNER_PROOF = [APPROVED, REWORK];");
+  });
+
   it("an owner comment edited by someone else is data: the last editor is read with GraphQL (editor), and an unreadable editor counts as data", () => {
     expect(rework).toMatch(/\*\*An edited comment\*\* \(`updated_at` differs from `created_at`\) counts only if its last editor is an owner too/);
     expect(rework).toContain("editor { login }");
