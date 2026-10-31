@@ -12,7 +12,7 @@ review: 'quick'
 review_source: 'pinned'
 lenses_ran: ['quick']
 review_loop_iteration: 0
-followup_review_recommended: false
+followup_review_recommended: true
 context: ['{project-root}/AGENTS.md', '{project-root}/MEMORY.md', '{project-root}/docs/agents/identity.md']
 warnings: ['oversized']
 deferred:
@@ -59,8 +59,8 @@ deferred:
 - `scripts/upstream-post.mjs` -- `settle` (comment, label removal) gets a final `setUpstreamStatus`; `resultComment` names the status.
 - `scripts/agent-write.mjs` -- `FORBIDDEN_LABEL` guard: also refuse adding `status:upstream`.
 - `docs/agents/{implement,triage,comments,identity}.md`, `docs/issues.md`, `issue-flow.md`, `MEMORY.md` -- the new statuses.
-- `scripts/upstream-issue.mjs` -- `MARKER_LINE`, `markers()` (adds `round`), comment `sameMarker` (marker and round); `findExisting` for a create keeps ignoring the round.
-- `scripts/upstream-post.mjs` -- `draftRound`, `buildInput(draft, repo, n, round)`.
+- `scripts/upstream-issue.mjs` -- `MARKER_LINE`, `markers()` (adds `round`), comment `sameMarker` (marker and round), `validate` (refuses any `(reply N)` in the input), `countOwnReplies` and `withRound` (the round, from the upstream thread, only through the `replyBefore` option of `run()`); `findExisting` for a create keeps ignoring the round.
+- `scripts/upstream-post.mjs` -- `draftCreatedMs` (passed as `replyBefore`), `planMove`/`applyMove`/`movesStatus`, the Status line of the result comment.
 - `docs/agents/implement.md` -- new "Watch upstream" section and checklist item 1a.
 - Tests: `test/{issue-flow,upstream-post,upstream-issue,agent-write,agent-flow-docs,sync-labels}.test.ts`.
 
@@ -71,7 +71,7 @@ deferred:
 - [ ] `scripts/upstream-post.mjs`, `.github/workflows/upstream-post.yml` header -- status move after a published result
 - [ ] `scripts/agent-write.mjs` -- relay refuses adding `status:upstream`
 - [ ] docs, `issue-flow.md`, `MEMORY.md` -- a ready draft sets `status:awaiting-post`, not blocked
-- [ ] `scripts/upstream-issue.mjs`, `scripts/upstream-post.mjs` -- round in the marker line, derived by the workflow (Plan Change Log, 2026-10-31)
+- [ ] `scripts/upstream-issue.mjs`, `scripts/upstream-post.mjs` -- round in the marker line, read from the upstream thread (Plan Change Log, 2026-10-31 and the independent review)
 - [ ] `docs/agents/implement.md` and the other docs -- the watch-upstream step
 - [ ] tests -- matrix rows, doc pins, mutation checks
 
@@ -86,11 +86,11 @@ No subagent tool was available to this worker: the build and the review ran in-s
 
 - **Statuses.** `status:awaiting-post` (purple, like `upstream:post`) and `status:upstream` are appended to `labels.yml` and `STATUS_LABELS` (11), after `declined`; the state automation needed no other change (latest wins, closed clears, a foreign approval restores them) and ignores the workflow's own label events. Neither is in `STALE_STATUSES`: `awaiting-post` is the owner's open task, `upstream` waits for outsiders; the owner closes the issue.
 - **Who sets what.** The implementation agent sets `awaiting-post` instead of `blocked` when it leaves a draft (triage writes no draft and never sets either status). `status:upstream` only comes from the workflow: the relay refuses adding it (`WORKFLOW_ONLY_LABEL`, removal stays allowed so the agent can leave it when it answers upstream); `awaiting-post` passes the existing `LABEL_RE`. Documented in identity.md, implement.md, comments.md, issues.md, issue-flow.md.
-- **The move.** `settle` posts the result comment, removes `upstream:post`, then (only for created, commented, existing) `moveToUpstream`: GET the issue again, skip a closed one, add `status:upstream` unless present, remove every other `status:*` (404 passes). A failure exits 1 with the reason after comment and label are done. A refusal changes no status and the comment says so.
-- **Owner's added scope (see Plan Change Log).** The marker round and the round derivation are described there; `markers()` now returns `round`, only comment idempotency compares it, a create ignores it. The watch step is documentation (`implement.md` section "Watch upstream", checklist item 1a, before any early end of the run); no code reads the upstream thread.
+- **The move.** `settle` reads the issue (`planMove`), posts the result comment with a true Status line, removes `upstream:post`, then (only for created and commented results) `applyMove`: add `status:upstream` unless present, remove every other `status:*` (404 passes). A closed issue, an `existing` result, and a refusal change no status. A failure exits 1 with the reason after comment and label are done.
+- **Owner's added scope (see Plan Change Log).** The marker round and the round derivation are described there; `markers()` now returns `round`, only comment idempotency compares it, a create ignores it. After the independent review the round is read from the upstream thread (`countOwnReplies`), not from our result comments. The watch step is documentation (`implement.md` section "Watch upstream", checklist item 1a, before any early end of the run); no code reads the upstream thread.
 - **Not changed:** the 3.25 guards (owner's own click, replay, draft author and age, caps, own-issue, visible target, hidden text), `.claude/settings.json`, `AGENTS.md`, tickets, CHANGELOG.
 
-Mutation checks (each fails at least one test): the status move; the result-comment author filter; "created before the draft" in `draftRound`; the closed-issue skip; the round in `sameMarker`; the relay refusal; `UPSTREAM` in `STALE_STATUSES`.
+Mutation checks (each fails at least one test): the status move; the closed-issue skip; the round in `sameMarker`; the relay refusal; `UPSTREAM` in `STALE_STATUSES`; after the review: the strict `<` of the count, the count ignoring the issue number or the author, the refusal of `(reply N)` in the input, `existing` moving the status, `replyBefore` not passed or read from the environment, the 99-round limit.
 
 ## Plan Change Log
 
@@ -102,6 +102,12 @@ Mutation checks (each fails at least one test): the status move; the result-comm
 - **Known bad state avoided:** counting all result comments would make a re-label of round 2 post round 3; counting any author's would let the agent raise the round.
 - **KEEP:** the `status:upstream` move, the relay refusal, and the stale decision stay as first planned.
 
+### 2026-10-31 -- independent review of the first build: the round comes from the upstream thread
+- **Trigger:** findings 1 to 5 of the independent review of `ba9a13d..HEAD` (see the Review Triage Log). The first design derived the round from `github-actions[bot]` result comments on our issue. Known-bad states: a round 1 posted by the dispatch workflow (#51, #54, #55) or whose result comment failed to post leaves no "published as" comment, so every reply was round 1 and returned `existing` while the status still left `awaiting-post`; an edited older bot comment could inflate the count; the dispatch path accepted a caller-chosen `(reply N)`.
+- **Amended (outside the intent contract):** decisions (2), (3) and (5) of the entry above are superseded. The round is 1 plus the number of comments by the token's user on the target thread whose marker line names our issue (any round) and that were created strictly before the draft comment's `created_at`; `upstream-post` passes that time as the option `replyBefore` of `run()` and nothing on our side is counted. `validate()` refuses any `(reply N)` in the input, so only that call option can set a round. An `existing` result no longer moves the status. The result comment's `Status:` line is decided before the comment from a fresh read of the issue and says what the run does (moved, closed, unreadable, unchanged). The watch step takes the thread from the latest comment whose headline is `published as`, and the baseline time is that post's.
+- **Known bad state avoided:** counting anything on our issue (any author, edited or not) or the dispatch path's lack of a result comment; trusting the input for a round.
+- **KEEP:** the `status:upstream` move for created and commented, the relay refusal, the stale decision, round 1 without a suffix, the create ignoring the round, `existing` on a re-label of the same reply, the 99-round limit.
+
 ## Review Triage Log
 
 ### 2026-10-31 -- Review pass
@@ -109,11 +115,20 @@ Mutation checks (each fails at least one test): the status move; the result-comm
 - findings: (the Quick lens ran in the build's own session: no subagent tool was available, so it was not context-free)
   - `[low]` `[patch]` The watch step's "Last checked" edit could touch a comment that still holds a pending draft -- the doc now says the edit happens only in `status:upstream`, when the latest comment's draft is already published.
   - `[low]` `[defer]` A reply to an upstream issue the workflow created is refused unless our issue names that issue -- the 3.24 rule `checkNamesTarget`, unchanged; recorded in `deferred` and in `docs/issues.md`.
-  - `[low]` `[reject]` A result comment that failed to post is not counted, so the next reply maps to the same round and returns the existing comment -- fail-safe (no duplicate); the owner labels again after the comment shows; in MEMORY.
+  - `[low]` `[reject]` A result comment that failed to post is not counted, so the next reply maps to the same round and returns the existing comment -- (superseded by the independent review below: the round no longer depends on our result comments, so a failed result comment changes nothing).
   - `[low]` `[reject]` The move happens for an issue not in `awaiting-post` (e.g. the owner labels while it is `approved`) -- intended: the draft is published, the one status is `upstream`.
   - `[low]` `[reject]` The labels are read again before the move, a status the owner sets in those seconds is removed -- the window is a few requests; the owner's later click wins afterward (latest wins).
   - `[false]` `[reject]` Counting only "published as" results lets an `existing` re-label raise the round -- an `existing` headline is "nothing new was posted", not counted; test RELABEL_ROUND_2.
   - `[maybe-false]` `[reject]` `performed_via_github_app` of the workflow's own label events might make the state automation revert something -- it ignores `github-actions[bot]` events and `GITHUB_TOKEN` events start no run; would settle: the live #52/#53 move.
+
+### 2026-10-31 -- Independent review (after the build)
+- verdicts: 5 findings -- high 0, medium 2, low 3, false 0, maybe-false 0
+- findings: (from an independent reviewer of `ba9a13d..HEAD`; fixed on the same branch by the build worker, in-session, each with tests and mutation checks)
+  - `[medium]` `[patch]` Rounds loop when no "published as" result comment exists (round 1 by the dispatch workflow, or the result POST failed): every reply was round 1, returned `existing`, and the status still left `awaiting-post` -- the round is now read from the upstream thread (`countOwnReplies`, created strictly before the draft); an `existing` result leaves the status; tests ROUND_1_VIA_DISPATCH, RESULT_POST_FAILED, BOUNDARY (`<` vs `<=`, both layers), RELABEL_ROUND_2 (status unchanged), EXISTING; the claim "the owner labels again after the comment shows" is gone from MEMORY and the docs.
+  - `[medium]` `[patch]` An edited older bot comment could inflate the round -- no comment of ours is counted any more (finding 1); test OUR_COMMENTS_DO_NOT_COUNT (edited, forged, any author).
+  - `[low]` `[patch]` The dispatch path accepted a caller-chosen `(reply N)` -- `validate()` refuses it for every input; only the `replyBefore` option of `run()` (the workflow's own call) sets a round, never env or input; tests INPUT_ROUND (child process with env variables, in-process, a create), NO_OPTION, mutation checks (env-read variant, no refusal).
+  - `[low]` `[patch]` Watch-step docs took the URL from any result comment and the baseline from an `existing` re-label -- `implement.md`, `issue-flow.md`: the latest comment whose second line starts `**Upstream post:** published as`; an `existing` re-label is never the baseline; a post made by the dispatch workflow leaves the thread unknown (reported); doc pins.
+  - `[low]` `[patch]` The result comment's Status line promised the move for a closed issue -- it is decided from a fresh read of the issue before the comment: `status:upstream`, `unchanged (this issue is closed)`, `unchanged (the issue's labels could not be read)`, or `unchanged.`; tests CLOSED and EXISTING.
 
 ## Design Notes
 
@@ -134,16 +149,16 @@ Stale: no. `awaiting-post` is the owner's open task (a draft would be lost with 
 
 Status: built. Blocking condition: none.
 
-**Summary:** Two statuses. `status:awaiting-post`: an upstream draft is ready and only the owner acts (the implementation agent sets it instead of `blocked`). `status:upstream`: the draft was published (set only by the `Upstream post` workflow after the result comment and the label removal, for created, commented, and existing; a refusal leaves the status). Neither is closed by the stale job. The relay refuses adding `status:upstream`. Owner's added scope: every run watches the upstream thread of a `status:upstream` issue (docs step, thread from the workflow's result comment, `WebFetch`, upstream text untrusted), a request for us leads to a reply draft and `awaiting-post`, and a later reply carries `(reply N)` in its marker line, derived by the workflow from earlier publishes; idempotency holds per marker plus round.
+**Summary:** Two statuses. `status:awaiting-post`: an upstream draft is ready and only the owner acts (the implementation agent sets it instead of `blocked`). `status:upstream`: the draft was published (set only by the `Upstream post` workflow after the result comment and the label removal, for created, commented, and existing; a refusal leaves the status). Neither is closed by the stale job. The relay refuses adding `status:upstream`. Owner's added scope: every run watches the upstream thread of a `status:upstream` issue (docs step, thread from the workflow's result comment, `WebFetch`, upstream text untrusted), a request for us leads to a reply draft and `awaiting-post`, and a later reply carries `(reply N)` in its marker line, numbered from the upstream thread (the owner's earlier comments there that name this issue) by the shared path when `upstream-post` passes `replyBefore`; idempotency holds per marker plus round; an `existing` result leaves the status.
 
 **Files changed:** `.github/labels.yml`, `.github/workflows/upstream-post.yml` (header), `scripts/issue-flow/transitions.mjs`, `scripts/agent-write.mjs`, `scripts/upstream-issue.mjs`, `scripts/upstream-post.mjs`, `docs/agents/{implement,identity,comments,triage}.md`, `docs/issues.md`, `issue-flow.md`, `MEMORY.md`, tests `test/{issue-flow,upstream-post,upstream-issue,agent-write,agent-flow-docs,sync-labels}.test.ts`.
 
-**Review:** 7 findings from the Quick lens, run in-session (no subagents): 1 patched (low), 1 deferred (low), 5 rejected or false with reasons in the triage log.
+**Review:** 7 findings from the Quick lens, run in-session (no subagents): 1 patched (low), 1 deferred (low), 5 rejected or false with reasons in the triage log. Then an independent review: 5 findings (2 medium, 3 low), all patched with tests and mutation checks.
 
-**Follow-up review recommended: false.** Patched: high 0, medium 0, low 1. (By the rule; the round derivation touches a posting guard and was reviewed only in-session, so an independent pass is still reasonable.)
+**Follow-up review recommended: true.** Patched by the independent review: high 0, medium 2, low 3 (first pass: low 1). The unverified risk: the round derived from the upstream thread (`countOwnReplies`, the `replyBefore` option of `run()`) is new code on a posting guard, reviewed in-session after the independent pass and not yet by a second independent reader; the live check on #52/#53 has not run.
 
 **Verification:** `npm run ci` passed; seven mutation checks fail the intended tests.
 
 **Not run:** live checks: #52/#53 moving to `status:upstream` after the owner's label; the label sync creating both labels on `main`; `WebFetch` of a real upstream thread by a routine run.
 
-**Residual risks:** the round count trusts the `github-actions[bot]` result comments of this issue; a result comment that failed to post leaves the next reply at the same round (it returns the existing comment, nothing duplicates).
+**Residual risks:** the round count trusts the owner's comments on the upstream thread (only the owner's token writes there); a post made by the dispatch workflow leaves no result comment, so the watch step reports that thread as unknown until the owner adds the label or sets the status.
