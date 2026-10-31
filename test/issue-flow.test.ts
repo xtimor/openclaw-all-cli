@@ -37,6 +37,8 @@ interface Event {
 }
 interface Transitions {
   STATUS_LABELS: string[];
+  AWAITING_POST: string;
+  UPSTREAM: string;
   STALE_DAYS: number;
   STALE_STATUSES: string[];
   AGENT_MARKER_RE: RegExp;
@@ -86,11 +88,11 @@ const labeledAt = (label: string, actor: string, minutes: number, id: number): R
 const revert = (id: unknown): Action => t.approvalComment(id);
 
 describe("STATUS_LABELS", () => {
-  it("are the 9 states of .github/labels.yml, in order", () => {
+  it("are the 11 states of .github/labels.yml, in order", () => {
     const text = readFileSync(join(ROOT, ".github", "labels.yml"), "utf8");
     const fromFile = [...text.matchAll(/^- name: "(status:[^"]+)"/gm)].map((match) => match[1]);
-    expect(fromFile).toHaveLength(9);
-    expect(fromFile.at(-1)).toBe("status:declined");
+    expect(fromFile).toHaveLength(11);
+    expect(fromFile.slice(-3)).toEqual(["status:declined", "status:awaiting-post", "status:upstream"]);
     expect(t.STATUS_LABELS).toEqual(fromFile);
   });
 });
@@ -387,6 +389,58 @@ describe("decide: status:declined", () => {
 
   it("DECLINED: the author's reply does not move it (only needs-info is moved by a reply); the owner decides", () => {
     expect(t.decide({ name: "issue_comment", action: "created", actor: "alice" }, issue(["status:declined"]))).toEqual([]);
+  });
+});
+
+describe("decide: status:awaiting-post and status:upstream (ticket 3.26)", () => {
+  const labeled = (label: string, actor: string) => ({ name: "issues", action: "labeled", actor, label });
+
+  it("both are statuses, and neither is stale", () => {
+    expect(t.STATUS_LABELS).toContain("status:awaiting-post");
+    expect(t.STATUS_LABELS).toContain("status:upstream");
+    expect(t.AWAITING_POST).toBe("status:awaiting-post");
+    expect(t.UPSTREAM).toBe("status:upstream");
+    expect(t.STALE_STATUSES).not.toContain("status:awaiting-post");
+    expect(t.STALE_STATUSES).not.toContain("status:upstream");
+  });
+
+  it("the latest status wins over them in both directions (the agent drafts, the workflow publishes, the owner moves on)", () => {
+    // The agent sets awaiting-post on an in-progress issue: in-progress goes.
+    expect(t.decide(labeled("status:awaiting-post", "agent[bot]"), issue(["status:in-progress", "status:awaiting-post"]), { owners: OWNERS, timeline: [labeledAt("status:in-progress", "agent[bot]", 0, 1), labeledAt("status:awaiting-post", "agent[bot]", 5, 2)] })).toEqual([remove("status:in-progress")]);
+    // A late event with both labels (the workflow's move, then a stale run): the later one stays.
+    expect(t.decide(labeled("status:upstream", "x"), issue(["status:awaiting-post", "status:upstream"]), { owners: OWNERS, timeline: [labeledAt("status:awaiting-post", "agent[bot]", 0, 1), labeledAt("status:upstream", "github-actions[bot]", 5, 2)] })).toEqual([remove("status:awaiting-post")]);
+    // The owner approves a follow-up on an issue in upstream: the approval stands, upstream goes.
+    expect(t.decide(labeled("status:approved", "xtimor"), issue(["status:upstream", "status:approved"]), { owners: OWNERS, timeline: [labeledAt("status:upstream", "github-actions[bot]", 0, 1), labeledAt("status:approved", "xtimor", 5, 2)] })).toEqual([remove("status:upstream")]);
+    // The agent answers an upstream request: awaiting-post replaces upstream.
+    expect(t.decide(labeled("status:awaiting-post", "agent[bot]"), issue(["status:upstream", "status:awaiting-post"]), { owners: OWNERS, timeline: [labeledAt("status:upstream", "github-actions[bot]", 0, 1), labeledAt("status:awaiting-post", "agent[bot]", 5, 2)] })).toEqual([remove("status:upstream")]);
+  });
+
+  it("a stranger's approval on them is reverted and the status comes back; closing clears them; a reopen sets new", () => {
+    for (const status of ["status:awaiting-post", "status:upstream"]) {
+      const timeline = [labeledAt(status, "agent[bot]", 0, 1), { ...labeledAt(status, "x", 3, 2), event: "unlabeled" }, labeledAt("status:approved", "mallory", 4, 3)];
+      expect(t.decide(labeled("status:approved", "mallory"), issue(["status:approved"]), { owners: OWNERS, timeline })).toEqual([add(status), remove("status:approved"), revert(3)]);
+      expect(t.decide({ name: "issues", action: "closed", actor: "xtimor" }, issue([status, "type:bug"], { state: "closed" }))).toEqual([remove(status)]);
+      expect(t.decide({ name: "issues", action: "reopened", actor: "xtimor" }, issue([status]))).toEqual([add("status:new"), remove(status)]);
+    }
+  });
+
+  it("the author's reply and the workflow's own events change nothing", () => {
+    for (const status of ["status:awaiting-post", "status:upstream"]) {
+      expect(t.decide({ name: "issue_comment", action: "created", actor: "alice" }, issue([status]))).toEqual([]);
+      expect(t.decide(labeled(status, "github-actions[bot]"), issue([status]))).toEqual([]);
+    }
+  });
+
+  it("STALE: neither status is listed or closed by the daily job, however old", () => {
+    const old = (status: string, number: number): IssueIn => ({ number, state: "open", labels: [{ name: status }], updated_at: daysAgo(400), user: { login: "alice" } });
+    expect(t.staleIssues([old("status:awaiting-post", 1), old("status:upstream", 2)], NOW, 30, new Map([[1, NOW - 400 * DAY], [2, NOW - 400 * DAY]]))).toEqual([]);
+    expect(t.staleStatus(old("status:upstream", 2))).toBeNull();
+    expect(t.decide({ name: "stale" }, old("status:awaiting-post", 1), { owners: OWNERS })).toEqual([]);
+  });
+
+  it("a pull request that closes unmerged moves only an in-review issue (awaiting-post and upstream stay)", () => {
+    const closed = { name: "pull_request", action: "closed", actor: "xtimor", repo: REPO, headRepo: REPO, author: "xtimor", link: "refs", merged: false, prState: "closed" };
+    for (const status of ["status:awaiting-post", "status:upstream"]) expect(t.decide(closed, issue([status]), { owners: OWNERS })).toEqual([]);
   });
 });
 

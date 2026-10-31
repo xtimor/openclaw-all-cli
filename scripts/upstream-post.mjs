@@ -8,13 +8,18 @@
 // What it does, in order (every write is to THIS repository, with the job's GITHUB_TOKEN, except the one upstream call):
 //   1. Replay and withdrawal: attempt not 1, a triggering actor who is not an owner, or the label no longer on the issue: exit 1 and
 //      change nothing (a re-run is not a new signal from the owner, and removing the label cancels the request).
-//   2. From here every outcome ends the same way: one result comment on our issue and the label removed.
+//   2. From here every outcome ends the same way: one result comment on our issue and the label removed. A post (created,
+//      commented, or existing: this draft was posted before) then moves our issue to `status:upstream` (ticket 3.26): it adds that label, then removes every other `status:*`
+//      label, with the job token and after the comment. A refusal and a closed issue leave the statuses as they are, and the
+//      comment's Status line says which happened.
 //   3. The labeler (`github.event.sender`) must be the workflow's actor, an owner (ISSUE_FLOW_OWNERS), a User, not a bot.
 //   4. The draft: the LATEST comment of our issue whose first line is `<!-- issue-impl -->` and whose author is the agent app (the
 //      login in .github/agent-identity.json, type Bot). It must hold exactly one draft block and must not have been edited after the
 //      label was added (the owner approves the text they read). Comments of anyone else are ignored, a block in them included.
 //   5. The input of scripts/upstream-issue.mjs is built from the block plus the line `Filed for <this repository>#<n>` and handed to
-//      its `run()`: the same code path as the dispatch workflow. Every guard of tickets 3.23 and 3.24 applies there (owner actors,
+//      its `run()`: the same code path as the dispatch workflow. A reply after an earlier post carries `(reply N)` on that line: the
+//      shared path numbers it from the upstream thread (the owner's comments there that name this issue, created before the draft
+//      comment; `replyBefore` option of run()), never from our comments, the input, or the agent (ticket 3.26). Every guard of tickets 3.23 and 3.24 applies there (owner actors,
 //      attempt 1, approved issue, the issue names the target, own issue for a comment, caps, idempotency, size limits, one marker).
 //
 // The draft block, written by the agent inside its `<!-- issue-impl -->` comment (the text between the tags is the public text,
@@ -45,6 +50,8 @@ import { parseOwners } from "./issue-flow/transitions.mjs";
 import { checkNamesTarget, isOwnersOwnClick, run as runUpstream } from "./upstream-issue.mjs";
 
 export const LABEL = "upstream:post";
+/** Set by this script alone, after a publish: the draft is upstream and the maintainers act (the relay refuses agents this label). */
+export const UPSTREAM_STATUS = "status:upstream";
 export const RESULT_MARKER = "<!-- upstream-post -->";
 const MAX_COMMENT_PAGES = 20; // 2000 comments on one issue of ours
 const MAX_EVENT_PAGES = 10; // 1000 events of one issue of ours
@@ -171,6 +178,24 @@ export function parseDraft(text) {
   throw refuse('op must be "comment" or "create"');
 }
 
+/** The latest `<!-- issue-impl -->` comment by the agent app, or undefined. */
+function latestImpl(comments, login) {
+  const mine = comments.filter((comment) => isObject(comment) && isObject(comment.user) && lower(comment.user.login) === lower(login) && comment.user.type === "Bot" && IMPL_MARKER.test(String(comment.body ?? "").replace(/^\uFEFF/, "")));
+  return mine[mine.length - 1];
+}
+
+/**
+ * The creation time (ms) of the latest `<!-- issue-impl -->` comment by the agent app, which holds the draft. The shared path numbers a
+ * reply from the upstream thread: 1 plus the owner's comments there that name this issue of ours and were created before this time
+ * (ticket 3.26). Nothing on our issue is counted, so a result comment that is missing, failed to post, or was edited changes nothing,
+ * and a round 1 posted by the dispatch workflow counts. Refuses when the time is unreadable.
+ */
+export function draftCreatedMs(comments, { login }) {
+  const created = typeof latestImpl(comments, login)?.created_at === "string" ? Date.parse(latestImpl(comments, login).created_at) : Number.NaN;
+  if (!Number.isFinite(created)) throw refuse("the draft comment has no readable creation time");
+  return created;
+}
+
 /**
  * The draft of our issue from its comments (oldest first): the latest comment whose first line is the implementation marker and whose
  * author is the agent app. A comment by anyone else, with or without a block, is ignored. Refuses when there is none, when it was
@@ -178,8 +203,7 @@ export function parseDraft(text) {
  * its block does not parse.
  */
 export function findDraft(comments, { login, labeledAtMs }) {
-  const mine = comments.filter((comment) => isObject(comment) && isObject(comment.user) && lower(comment.user.login) === lower(login) && comment.user.type === "Bot" && IMPL_MARKER.test(String(comment.body ?? "").replace(/^\uFEFF/, "")));
-  const latest = mine[mine.length - 1];
+  const latest = latestImpl(comments, login);
   if (latest === undefined) throw refuse(`no <!-- issue-impl --> comment by ${login} on this issue`);
   const edited = typeof latest.updated_at === "string" ? Date.parse(latest.updated_at) : Number.NaN;
   if (!Number.isFinite(edited)) throw refuse("the draft comment has no readable edit time");
@@ -187,7 +211,10 @@ export function findDraft(comments, { login, labeledAtMs }) {
   return parseDraft(latest.body);
 }
 
-/** The input of scripts/upstream-issue.mjs for a parsed draft: the draft's text plus the one `Filed for` line of this issue. */
+/**
+ * The input of scripts/upstream-issue.mjs for a parsed draft: the draft's text plus the one `Filed for` line of this issue, with no
+ * round. A marker line inside the draft is a second marker and is refused by the shared path, which also refuses any `(reply N)`.
+ */
 export function buildInput(draft, ourRepo, number) {
   const body = `${draft.body}\n\nFiled for ${ourRepo}#${number}\n`;
   return draft.op === "comment" ? { op: "comment", repo: draft.repo, issue: draft.issue, body } : { op: "create", repo: draft.repo, title: draft.title, body };
@@ -240,7 +267,7 @@ function readAgentLogin(file) {
 /** One line safe inside a Markdown code span: no line break, no backtick, at most 500 characters. */
 const oneLine = (text) => String(text).replace(/[\u0000-\u001f\u007f-\u009f\u2028\u2029]+/g, " ").replaceAll("`", "'").replace(/\s+/g, " ").trim().slice(0, 500);
 
-function resultComment(result, config) {
+function resultComment(result, config, statusLine) {
   const requester = config.owners.includes(lower(config.labeler)) && config.labelerType === "User" && LOGIN.test(config.labeler) ? ` Requested by @${config.labeler}.` : "";
   const published = result.code === 0 && RESULT_URL.test(result.url);
   const headline = published ? { created: "published as a new issue", commented: "published as a comment", existing: "nothing new was posted: this issue of ours already published for this target" }[result.kind] ?? "published" : "not published";
@@ -248,7 +275,8 @@ function resultComment(result, config) {
     RESULT_MARKER,
     `**Upstream post:** ${headline}.${requester}`,
     published ? `**${result.kind === "existing" ? "Existing" : "Result"}:** ${result.url}` : `**Reason:** \`${oneLine(result.message ? `${result.outcome}: ${result.message}` : result.outcome)}\``,
-    published ? `**Label:** \`${LABEL}\` removed.${result.kind === "existing" ? " One comment or issue per target per issue of ours: a new note on the same target needs a new issue of ours." : ""}` : `**Label:** \`${LABEL}\` removed. Fix the cause, then add it again.`,
+    published ? `**Label:** \`${LABEL}\` removed.${result.kind === "existing" ? " The same draft is posted once; a reply written in a new `<!-- issue-impl -->` comment after this post is numbered from the upstream thread." : ""}` : `**Label:** \`${LABEL}\` removed. Fix the cause, then add it again.`,
+    statusLine,
     "",
     "— `Upstream post` workflow (GitHub Actions, no agent)",
   ].join("\n");
@@ -284,6 +312,30 @@ async function checkLabelEvent(ours, config) {
     if (attempt < EVENT_ATTEMPTS) await new Promise((done) => setTimeout(done, config.eventDelayMs));
   }
   throw refuse(`the ${LABEL} label event was not found in the issue's events (they can lag); remove the label and add it again`);
+}
+
+/**
+ * Whether a result moves our issue to `status:upstream` (ticket 3.26): a post that was just made (created or commented) and an
+ * `existing` one, never a refusal. An `existing` comment result means this very draft (the latest implementation comment) is already
+ * posted, so moving again recovers an earlier move that failed; a newer draft would be a later reply with its own round and its own post.
+ */
+const movesStatus = (result) => result.code === 0 && RESULT_URL.test(result.url) && ["created", "commented", "existing"].includes(result.kind);
+
+/** Reads our issue's labels and state just before the result comment: `{move, names}`; a closed issue has no status, so it is not moved. */
+async function planMove(ours, config) {
+  const issue = (await ours.rest("GET", `/repos/${config.repo}/issues/${config.issue}`)).data;
+  if (!isObject(issue) || !Array.isArray(issue.labels)) throw new WriteError(`GET /issues/${config.issue}: the labels could not be read`);
+  const names = issue.labels.map((entry) => (typeof entry === "string" ? entry : entry?.name)).filter((name) => typeof name === "string");
+  return { move: issue.state !== "closed", closed: issue.state === "closed", names };
+}
+
+/** `status:upstream` and no other status on our issue, from the labels read by planMove. */
+async function applyMove(ours, config, plan) {
+  const { names } = plan;
+  if (!names.some((name) => lower(name) === UPSTREAM_STATUS)) await ours.rest("POST", `/repos/${config.repo}/issues/${config.issue}/labels`, { labels: [UPSTREAM_STATUS] });
+  for (const name of names) {
+    if (lower(name).startsWith("status:") && lower(name) !== UPSTREAM_STATUS) await ours.rest("DELETE", `/repos/${config.repo}/issues/${config.issue}/labels/${encodeURIComponent(name)}`, undefined, [404]);
+  }
 }
 
 async function readComments(ours, config) {
@@ -327,15 +379,34 @@ export async function run(env, log = () => {}, now = Date.now) {
   // 2. From here on, every outcome gets one result comment and the label removed.
   const settle = async (result) => {
     let failure = "";
+    // The status line of the comment says what this run does, so it is decided before the comment: a closed issue or an unreadable one is not moved.
+    let plan = null;
+    let statusLine = "**Status:** unchanged.";
+    if (movesStatus(result)) {
+      try {
+        plan = await planMove(ours, config);
+        statusLine = plan.move ? `**Status:** \`${UPSTREAM_STATUS}\`: waiting for the upstream maintainers. Close this issue when upstream settles, or approve it again for a follow-up.` : "**Status:** unchanged (this issue is closed).";
+      } catch (error) {
+        statusLine = "**Status:** unchanged (the issue's labels could not be read).";
+        failure = `the status could not be moved to ${UPSTREAM_STATUS} (${error instanceof WriteError ? clean(error.message) : "unexpected error"})`;
+      }
+    }
     try {
-      await ours.rest("POST", `/repos/${config.repo}/issues/${config.issue}/comments`, { body: resultComment(result, config) });
+      await ours.rest("POST", `/repos/${config.repo}/issues/${config.issue}/comments`, { body: resultComment(result, config, statusLine) });
     } catch (error) {
-      failure = `the result comment could not be posted (${error instanceof WriteError ? clean(error.message) : "unexpected error"})`;
+      failure += `${failure === "" ? "" : "; "}the result comment could not be posted (${error instanceof WriteError ? clean(error.message) : "unexpected error"})`;
     }
     try {
       await ours.rest("DELETE", `/repos/${config.repo}/issues/${config.issue}/labels/${encodeURIComponent(LABEL)}`, undefined, [404]);
     } catch (error) {
       failure += `${failure === "" ? "" : "; "}the label could not be removed (${error instanceof WriteError ? clean(error.message) : "unexpected error"})`;
+    }
+    if (plan?.move) {
+      try {
+        await applyMove(ours, config, plan);
+      } catch (error) {
+        failure += `${failure === "" ? "" : "; "}the status could not be moved to ${UPSTREAM_STATUS} (${error instanceof WriteError ? clean(error.message) : "unexpected error"})`;
+      }
     }
     return failure === "" ? result : { ...result, code: result.code === 0 ? 1 : result.code, message: clean(`${result.message}${result.message === "" ? "" : "; "}${failure}`) };
   };
@@ -349,10 +420,13 @@ export async function run(env, log = () => {}, now = Date.now) {
 
   // 4. The draft.
   let input;
+  let replyBefore;
   try {
     const labeledAtMs = await checkLabelEvent(ours, config);
     const login = readAgentLogin(config.identityFile);
-    const draft = findDraft(await readComments(ours, config), { login, labeledAtMs });
+    const comments = await readComments(ours, config);
+    const draft = findDraft(comments, { login, labeledAtMs });
+    replyBefore = draftCreatedMs(comments, { login });
     // The tag is invisible when the comment is rendered, so a comment draft must also name its target in the text the owner reads.
     if (draft.op === "comment") {
       try {
@@ -369,7 +443,7 @@ export async function run(env, log = () => {}, now = Date.now) {
   // 5. The same code path as the dispatch workflow: every guard of tickets 3.23 and 3.24 runs there.
   let result;
   try {
-    result = await runUpstream({ ...env, UPSTREAM_ISSUE: JSON.stringify(input) }, log, now);
+    result = await runUpstream({ ...env, UPSTREAM_ISSUE: JSON.stringify(input) }, log, now, { replyBefore });
   } catch (error) {
     return stop(error, "Failed before publishing");
   }

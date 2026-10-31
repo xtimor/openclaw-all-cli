@@ -11,7 +11,8 @@
 //   {op:"comment", issue, body}                            new comment on an issue or pull request
 //   {op:"edit_comment", comment_id, body}                  only a comment whose author is AGENT_LOGIN
 //   {op:"labels", issue, add?:[...], remove?:[...]}        names like status:x, type:x, priority:x, source:x only; add first, then remove
-//                                                          (a label that is not there is fine); never add `status:approved`; no name in both lists
+//                                                          (a label that is not there is fine); never add `status:approved` (the owner's) or `status:upstream` (the `Upstream post`
+//                                                          workflow's); no name in both lists
 //   {op:"close", issue, reason}                            only a security report: reason not_planned, and SECURITY_CLOSE_COMMENT is posted on that issue by
 //                                                          an earlier `comment` of the same list (agents never close an issue otherwise, see closeGuard); an issue, never a pull request
 //   {op:"reopen", issue}                                   an issue, never a pull request
@@ -73,6 +74,8 @@ export const SECURITY_CLOSE_COMMENT = [
   "— triage agent",
 ].join("\n");
 const FORBIDDEN_LABEL = "status:approved";
+// Set only by the `Upstream post` workflow, after it published a draft (ticket 3.26): an agent cannot know that it happened. Removing it is fine.
+const WORKFLOW_ONLY_LABEL = "status:upstream";
 // Only the project's own label families: a typo or a lookalike never creates a label, and "." or ".." never reaches a URL.
 const LABEL_RE = /^(status|type|priority|source):[a-z0-9-]{1,40}$/;
 const OP_KEYS = {
@@ -181,6 +184,7 @@ export function validate(text) {
         const remove = labelList(raw, "remove", index);
         if (add.length + remove.length === 0) throw refuse(`${where}: add or remove must name a label`);
         if (add.includes(FORBIDDEN_LABEL)) throw refuse(`${where}: ${FORBIDDEN_LABEL} is the owner's to set`);
+        if (add.includes(WORKFLOW_ONLY_LABEL)) throw refuse(`${where}: ${WORKFLOW_ONLY_LABEL} is set by the Upstream post workflow after it publishes a draft; an agent sets status:awaiting-post for a ready draft`);
         if (add.some((name) => remove.includes(name))) throw refuse(`${where}: a label cannot be both added and removed`);
         return { op: "labels", issue: raw.issue, add, remove };
       }

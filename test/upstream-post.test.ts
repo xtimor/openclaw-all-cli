@@ -60,11 +60,11 @@ const approval = (login = "xtimor", label = "status:approved") => ({ event: "lab
 const labelEvent = (overrides: Record<string, unknown> = {}) => ({ event: "labeled", label: { name: "upstream:post" }, actor: { login: "xtimor", type: "User" }, created_at: LABELED_AT, performed_via_github_app: null, ...overrides });
 const APP = { id: 1, slug: "claude" };
 const block = (attributes: string, text: string) => `<!-- upstream-draft ${attributes} -->\n${text}\n<!-- /upstream-draft -->`;
-const impl = (draft: string, names = `${TARGET}#${NOTE_ISSUE}`) => `<!-- issue-impl -->\n**Status:** \`status:blocked\`: the draft waits for the owner\n**Waiting for:** @xtimor: review the draft and add upstream:post\n**Draft for:** ${names}\n\n${draft}\n\n— implementation agent`;
+const impl = (draft: string, names = `${TARGET}#${NOTE_ISSUE}`) => `<!-- issue-impl -->\n**Status:** \`status:awaiting-post\`: the draft waits for the owner\n**Waiting for:** @xtimor: review the draft and add upstream:post\n**Draft for:** ${names}\n\n${draft}\n\n— implementation agent`;
 const botComment = (body: string, overrides: Record<string, unknown> = {}) => ({ id: 3001, user: { login: BOT, type: "Bot" }, body, created_at: "2026-10-29T08:00:00Z", updated_at: EDITED_AT, ...overrides });
 const COMMENT_DRAFT = block(`target=${TARGET}#${NOTE_ISSUE} op=comment`, `### Retest\n\n${BODY_MARK}`);
 const CREATE_DRAFT = block(`target=${TARGET} op=create`, `Title: Plugin icon is not read ${TITLE_MARK}\n\n### Summary\n\n${BODY_MARK}`);
-const ourIssue = (overrides: Record<string, unknown> = {}) => ({ number: 45, title: "Retest the stale reports", body: `Comment on ${TARGET}#${NOTE_ISSUE}.`, labels: [{ name: "status:blocked" }, { name: "upstream:post" }], ...overrides });
+const ourIssue = (overrides: Record<string, unknown> = {}) => ({ number: 45, title: "Retest the stale reports", body: `Comment on ${TARGET}#${NOTE_ISSUE}.`, labels: [{ name: "status:awaiting-post" }, { name: "upstream:post" }], ...overrides });
 
 function defaults(method: string, path: string): Answer {
   // Our repository: issue 45 is an issue the owner approved, labeled upstream:post, with the agent's draft in its comments.
@@ -73,6 +73,9 @@ function defaults(method: string, path: string): Answer {
   if (method === "GET" && path === `${OURS_API}/issues/45/comments`) return [200, [botComment(impl(COMMENT_DRAFT))]];
   if (method === "POST" && path === `${OURS_API}/issues/45/comments`) return [201, { id: 5001 }];
   if (method === "DELETE" && path === `${OURS_API}/issues/45/labels/upstream:post`) return [200, []];
+  // The status move after a publish (ticket 3.26).
+  if (method === "POST" && path === `${OURS_API}/issues/45/labels`) return [200, []];
+  if (method === "DELETE" && path.startsWith(`${OURS_API}/issues/45/labels/status:`)) return [200, []];
   // The target: an issue the token's user opened, nothing recent by them.
   if (method === "GET" && path === "/user") return [200, { login: "xtimor" }];
   if (method === "GET" && path === `/repos/${TARGET}/issues/${NOTE_ISSUE}`) return [200, { number: NOTE_ISSUE, user: { login: "xtimor" }, comments: 0 }];
@@ -171,6 +174,7 @@ const writes = () => calls.filter((call) => call.method !== "GET");
 const upstream = () => calls.filter((call) => call.path.startsWith(`/repos/${TARGET}`) || call.path === "/user");
 const upstreamWrites = () => writes().filter((call) => call.path.startsWith(`/repos/${TARGET}`));
 const ourComments = () => writes().filter((call) => call.method === "POST" && call.path === `${OURS_API}/issues/45/comments`);
+const statusWrites = () => writes().filter((call) => call.path.startsWith(`${OURS_API}/issues/45/labels`) && !call.path.endsWith("/upstream:post"));
 const labelRemovals = () => writes().filter((call) => call.method === "DELETE" && call.path === `${OURS_API}/issues/45/labels/upstream:post`);
 const posted = () => ourComments().map((call) => String(call.body?.body ?? "")).join("\n---\n");
 const everything = (result: Run) => `${result.stdout}\n${result.stderr}\n${result.summary}\n${result.output}\n${posted()}`;
@@ -195,11 +199,14 @@ describe("upstream-post: the published path", () => {
       `GET ${OURS_API}/issues/45/events`,
       "GET /user",
       `GET /repos/${TARGET}/issues/${NOTE_ISSUE}`,
-      `GET /repos/${TARGET}/issues/${NOTE_ISSUE}/comments`,
+      `GET /repos/${TARGET}/issues/${NOTE_ISSUE}/comments`, // the thread: the highest round of ours before the draft, and this draft's own post
       `GET /repos/${TARGET}/issues`, // the cap
       `POST /repos/${TARGET}/issues/${NOTE_ISSUE}/comments`,
+      `GET ${OURS_API}/issues/45`, // the status line of the result comment: is the issue open
       `POST ${OURS_API}/issues/45/comments`,
       `DELETE ${OURS_API}/issues/45/labels/upstream:post`,
+      `POST ${OURS_API}/issues/45/labels`,
+      `DELETE ${OURS_API}/issues/45/labels/status:awaiting-post`,
     ]);
     // The upstream text is the draft's text plus the one marker line, nothing else.
     expect(upstreamWrites()).toHaveLength(1);
@@ -248,7 +255,7 @@ describe("upstream-post: the published path", () => {
   });
 
   it("EXISTING: a comment with the same marker line is returned, nothing is posted upstream, the label is still removed", async () => {
-    answers.set(`GET /repos/${TARGET}/issues/${NOTE_ISSUE}/comments`, [200, [{ id: 8123, user: { login: "xtimor" }, body: `earlier\n${MARKER}\n` }]]);
+    answers.set(`GET /repos/${TARGET}/issues/${NOTE_ISSUE}/comments`, [200, [{ id: 8123, user: { login: "xtimor" }, created_at: "2026-10-29T08:30:00Z", body: `earlier\n${MARKER}\n` }]]);
     const result = await run();
     expect(result.code, result.stderr).toBe(0);
     expect(upstreamWrites()).toEqual([]);
@@ -256,7 +263,7 @@ describe("upstream-post: the published path", () => {
     expect(posted()).toContain(`https://github.com/${TARGET}/issues/${NOTE_ISSUE}#issuecomment-8123`);
     expect(posted()).toContain("nothing new was posted");
     expect(posted()).toContain("**Existing:**");
-    expect(posted()).toContain("a new note on the same target needs a new issue of ours");
+    expect(posted()).toContain("The same draft is posted once; a reply written in a new");
     expect(result.output).toContain("upstream-post: existing ");
   });
 
@@ -720,14 +727,246 @@ describe("upstream-post: the guards of tickets 3.23 and 3.24 still apply (same c
 
   it("SHARED_PATH: the script reuses run() of upstream-issue.mjs and defines no guard of its own", () => {
     const text = readFileSync(SCRIPT, "utf8");
-    expect(text).toMatch(/await runUpstream\(\{ \.\.\.env, UPSTREAM_ISSUE: JSON\.stringify\(input\) \}, log, now\)/);
+    expect(text).toMatch(/await runUpstream\(\{ \.\.\.env, UPSTREAM_ISSUE: JSON\.stringify\(input\) \}, log, now, \{ replyBefore \}\)/);
     // It may import a check (the visible-target rule reuses checkNamesTarget); it defines none and sends nothing upstream itself.
     for (const name of ["checkApproved", "checkNamesTarget", "checkTarget", "findExisting", "findExistingComment", "countRecentComments", "DAILY_CAP", "COMMENT_CAP", "ALLOWED_REPOS"]) expect(text, name).not.toMatch(new RegExp(`(function|const|let|class)\\s+${name}\\b`));
     expect(text).toContain('import { checkNamesTarget, isOwnersOwnClick, run as runUpstream } from "./upstream-issue.mjs";');
     expect(text).not.toContain("POST /repos");
     // The only write upstream is the one inside runUpstream; this script writes to its own repository only.
-    expect([...text.matchAll(/ours\.rest\("(POST|DELETE)"/g)].map((match) => match[1])).toEqual(["POST", "DELETE"]);
+    expect([...text.matchAll(/ours\.rest\("(POST|DELETE)"/g)].map((match) => match[1])).toEqual(["POST", "DELETE", "POST", "DELETE"]); // the status move, then the comment and the label removal
     expect(text).not.toMatch(/theirs\.rest|client\.rest/);
+  });
+});
+
+describe("upstream-post: the status after the post (ticket 3.26)", () => {
+  const statusAdds = () => statusWrites().filter((call) => call.method === "POST").map((call) => call.body);
+  const statusRemovals = () => statusWrites().filter((call) => call.method === "DELETE").map((call) => call.path.replace(`${OURS_API}/issues/45/labels/`, ""));
+
+  it("PUBLISHED: after the result comment and the label removal, status:upstream is added and the other status labels go", async () => {
+    answers.set(`GET ${OURS_API}/issues/45`, [200, ourIssue({ labels: [{ name: "status:awaiting-post" }, { name: "status:blocked" }, { name: "type:bug" }, { name: "upstream:post" }] })]);
+    const result = await run();
+    expect(result.code, result.stderr).toBe(0);
+    expect(statusAdds()).toEqual([{ labels: ["status:upstream"] }]);
+    expect(statusRemovals()).toEqual(["status:awaiting-post", "status:blocked"]);
+    const order = seen().filter((entry) => entry.startsWith(`POST ${OURS_API}`) || entry.startsWith(`DELETE ${OURS_API}`));
+    expect(order).toEqual([`POST ${OURS_API}/issues/45/comments`, `DELETE ${OURS_API}/issues/45/labels/upstream:post`, `POST ${OURS_API}/issues/45/labels`, `DELETE ${OURS_API}/issues/45/labels/status:awaiting-post`, `DELETE ${OURS_API}/issues/45/labels/status:blocked`]);
+    for (const call of statusWrites()) expect(call.auth).toBe(`Bearer ${OUR_TOKEN}`);
+    expect(posted()).toContain("**Status:** `status:upstream`");
+    expect(leaked(result)).toEqual([]);
+  });
+
+  it("CREATED moves it too", async () => {
+    setComments(botComment(impl(CREATE_DRAFT)));
+    expect((await run()).code).toBe(0);
+    expect(statusAdds()).toEqual([{ labels: ["status:upstream"] }]);
+    expect(posted()).toContain("**Status:** `status:upstream`");
+  });
+
+  it("EXISTING: this draft is already posted, so the status moves to upstream again (it recovers a failed earlier move), and the comment says so", async () => {
+    answers.set(`GET /repos/${TARGET}/issues/${NOTE_ISSUE}/comments`, [200, [{ id: 8123, user: { login: "xtimor" }, created_at: "2026-10-29T08:30:00Z", body: `earlier\n${MARKER}\n` }]]);
+    const existing = await run();
+    expect(existing.code, existing.stderr).toBe(0);
+    expect(posted()).toContain("nothing new was posted");
+    expect(upstreamWrites()).toEqual([]);
+    expect(statusAdds()).toEqual([{ labels: ["status:upstream"] }]);
+    expect(statusRemovals()).toEqual(["status:awaiting-post"]);
+    expect(posted()).toContain("**Status:** `status:upstream`");
+    expect(labelRemovals()).toHaveLength(1);
+  });
+
+  it("ALREADY_UPSTREAM: an issue that already has status:upstream is not labeled again", async () => {
+    answers.set(`GET ${OURS_API}/issues/45`, [200, ourIssue({ labels: [{ name: "status:upstream" }, { name: "upstream:post" }] })]);
+    expect((await run()).code).toBe(0);
+    expect(statusWrites()).toEqual([]);
+  });
+
+  it("CLOSED: a closed issue is not moved and the comment's Status line says so; an unreadable issue says that and the run is red", async () => {
+    sequences.set(`GET ${OURS_API}/issues/45`, [[200, ourIssue()], [200, ourIssue()], [200, ourIssue({ state: "closed" })]]);
+    const closed = await run();
+    expect(closed.code, closed.stderr).toBe(0);
+    expect(statusWrites()).toEqual([]);
+    expect(posted()).toContain("**Status:** unchanged (this issue is closed).");
+    expect(posted()).not.toContain("waiting for the upstream maintainers");
+    calls = [];
+    sequences = new Map([[`GET ${OURS_API}/issues/45`, [[200, ourIssue()], [200, ourIssue()], [500, { message: "boom" }]]]]);
+    const unreadable = await run();
+    expect(unreadable.code).toBe(1);
+    expect(statusWrites()).toEqual([]);
+    expect(posted()).toContain("**Status:** unchanged (the issue's labels could not be read).");
+    expect(unreadable.stderr).toContain("the status could not be moved to status:upstream");
+    expect(ourComments()).toHaveLength(1);
+    expect(labelRemovals()).toHaveLength(1);
+  });
+
+  it("REFUSED: any refusal leaves the statuses alone, and says so", async () => {
+    setComments(botComment(impl("No draft here.")));
+    const result = await run();
+    expect(result.code).toBe(1);
+    settled();
+    expect(statusWrites()).toEqual([]);
+    expect(posted()).toContain("**Status:** unchanged.");
+    expect(posted()).not.toContain("status:upstream");
+  });
+
+  it("REPLAY and WITHDRAWN: no write at all, so no status either", async () => {
+    expect((await run({ GITHUB_RUN_ATTEMPT: "2" })).code).toBe(1);
+    answers.set(`GET ${OURS_API}/issues/45`, [200, ourIssue({ labels: [{ name: "status:awaiting-post" }] })]);
+    expect((await run()).code).toBe(1);
+    expect(writes()).toEqual([]);
+  });
+
+  it("STATUS_FAILS: a status write that fails is reported, the comment and the label removal already happened, the URL stays in the log", async () => {
+    answers.set(`POST ${OURS_API}/issues/45/labels`, [403, { message: `no ${OUR_TOKEN}` }]);
+    const result = await run();
+    expect(result.code).toBe(1);
+    settled();
+    expect(result.stderr).toContain("the status could not be moved to status:upstream");
+    expect(result.stdout + result.stderr).toContain(`https://github.com/${TARGET}/issues/${NOTE_ISSUE}`);
+    expect(leaked(result)).toEqual([]);
+    // A status label that is already gone (404) is fine.
+    calls = [];
+    answers = new Map([[`DELETE ${OURS_API}/issues/45/labels/status:awaiting-post`, [404, { message: "Label does not exist" }]]]);
+    expect((await run()).code).toBe(0);
+  });
+});
+
+describe("upstream-post: later replies on the same target, numbered from the upstream thread (round numbers)", () => {
+  const WORKFLOW = { login: "github-actions[bot]", type: "Bot" };
+  const T1 = "2026-10-29T08:30:00Z"; // round 1 on the upstream thread
+  const DRAFT2_AT = "2026-10-29T09:40:00Z"; // the reply draft comment on our issue
+  const threadComment = (id: number, created: string, text: string, login = "xtimor") => ({ id, user: { login }, created_at: created, body: text });
+  const thread = (...list: unknown[]) => answers.set(`GET /repos/${TARGET}/issues/${NOTE_ISSUE}/comments`, [200, list]);
+  const ourResult = (body: string, created: string, user: Record<string, unknown> = WORKFLOW, extra: Record<string, unknown> = {}) => ({ id: 4000, user, body, created_at: created, updated_at: created, ...extra });
+  const PUBLISHED = `<!-- upstream-post -->\n**Upstream post:** published as a comment. Requested by @xtimor.\n**Result:** ${COMMENT_URL}\n`;
+  const draft1 = botComment(impl(COMMENT_DRAFT), { id: 3001, created_at: "2026-10-29T08:00:00Z", updated_at: "2026-10-29T08:00:00Z" });
+  const reply = (text = `### Retest 2\n\n${BODY_MARK}`, created = DRAFT2_AT) => botComment(impl(block(`target=${TARGET}#${NOTE_ISSUE} op=comment`, text)), { id: 3002, created_at: created, updated_at: created });
+  const statusAdds = () => writes().filter((call) => call.method === "POST" && call.path === `${OURS_API}/issues/45/labels`).map((call) => call.body);
+  const round1 = threadComment(8123, T1, `first\n${MARKER}\n`);
+  const round2 = threadComment(8124, "2026-10-29T09:50:00Z", `second\n${MARKER} (reply 2)\n`);
+
+  it("ROUND_1_VIA_DISPATCH: round 1 was posted by hand, there is no result comment on our issue at all: the reply is still round 2 and is posted", async () => {
+    setComments(draft1, reply());
+    thread(round1);
+    const posted2 = await run();
+    expect(posted2.code, posted2.stderr).toBe(0);
+    expect(upstreamWrites()).toHaveLength(1);
+    expect(upstreamWrites()[0]?.body).toEqual({ body: `### Retest 2\n\n${BODY_MARK}\n\n${MARKER} (reply 2)\n` });
+    settled();
+    expect(posted2.stdout).toContain(`upstream-post: commented ${COMMENT_URL}`);
+    expect(statusAdds()).toEqual([{ labels: ["status:upstream"] }]);
+  });
+
+  it("RESULT_POST_FAILED: round 1 was posted but its result comment never was: the reply is still round 2", async () => {
+    setComments(draft1);
+    answers.set(`POST ${OURS_API}/issues/45/comments`, [403, { message: "no" }]);
+    const first = await run();
+    expect(first.code).toBe(1);
+    expect(first.stderr).toContain("the result comment could not be posted");
+    expect(upstreamWrites()[0]?.body).toEqual({ body: `### Retest\n\n${BODY_MARK}\n\n${MARKER}\n` }); // round 1: the thread held nothing of ours
+    calls = [];
+    answers = new Map();
+    setComments(draft1, reply());
+    thread(round1);
+    const second = await run();
+    expect(second.code, second.stderr).toBe(0);
+    expect(upstreamWrites()[0]?.body).toEqual({ body: `### Retest 2\n\n${BODY_MARK}\n\n${MARKER} (reply 2)\n` });
+  });
+
+  it("ROUND_3: two earlier comments of ours on the thread; comments of others, of another issue of ours, and with no marker are not counted", async () => {
+    setComments(draft1, reply());
+    thread(round1, { ...round2, created_at: "2026-10-29T08:50:00Z" }, threadComment(1, T1, MARKER, "mallory"), threadComment(2, T1, `Filed for ${OURS}#46`), threadComment(3, T1, "plain words"));
+    expect((await run()).code).toBe(0);
+    expect(upstreamWrites()[0]?.body).toEqual({ body: `### Retest 2\n\n${BODY_MARK}\n\n${MARKER} (reply 3)\n` });
+  });
+
+  it("RELABEL_ROUND_2: the same reply labeled again after it was posted keeps round 2, returns that comment, posts nothing, and moves the status again", async () => {
+    setComments(draft1, reply());
+    thread(round1, round2);
+    const again = await run();
+    expect(again.code, again.stderr).toBe(0);
+    expect(upstreamWrites()).toEqual([]);
+    expect(posted()).toContain("nothing new was posted");
+    expect(posted()).toContain("#issuecomment-8124");
+    expect(again.stdout).toContain("existing");
+    expect(statusAdds()).toEqual([{ labels: ["status:upstream"] }]);
+  });
+
+  it("RELABEL_ROUND_1: the first draft labeled again keeps round 1 and returns the first comment, not the reply", async () => {
+    setComments(draft1);
+    thread(round1);
+    expect((await run()).code).toBe(0);
+    expect(upstreamWrites()).toEqual([]);
+    expect(posted()).toContain("#issuecomment-8123");
+  });
+
+  it("BOUNDARY: a thread comment created in the very second the draft was is not before it (strict <); a second earlier is", async () => {
+    setComments(draft1, reply(undefined, DRAFT2_AT));
+    thread(threadComment(8123, DRAFT2_AT, `first\n${MARKER}\n`));
+    const same = await run();
+    expect(same.code, same.stderr).toBe(0);
+    expect(upstreamWrites()).toEqual([]); // not counted: round 1 matches that comment
+    calls = [];
+    thread(threadComment(8123, "2026-10-29T09:39:59Z", `first\n${MARKER}\n`));
+    expect((await run()).code).toBe(0);
+    expect(upstreamWrites()[0]?.body).toEqual({ body: `### Retest 2\n\n${BODY_MARK}\n\n${MARKER} (reply 2)\n` });
+  });
+
+  it("DELETED_ROUND_1: round 1 was deleted upstream: the re-label of the posted reply returns it and posts nothing; a new draft after it is (reply 3)", async () => {
+    setComments(draft1, reply());
+    thread(round2);
+    const again = await run();
+    expect(again.code, again.stderr).toBe(0);
+    expect(upstreamWrites()).toEqual([]);
+    expect(posted()).toContain("#issuecomment-8124");
+    calls = [];
+    setComments(draft1, reply(), reply(`### Retest 3\n\n${BODY_MARK}`, "2026-10-29T09:55:00Z"));
+    expect((await run()).code).toBe(0);
+    expect(upstreamWrites()[0]?.body).toEqual({ body: `### Retest 3\n\n${BODY_MARK}\n\n${MARKER} (reply 3)\n` });
+  });
+
+  it("EDITED_OLD_COMMENT: a marker added later to an older owner comment does not shift a re-label of the posted reply", async () => {
+    setComments(draft1, reply());
+    thread(round1, threadComment(5, "2026-10-29T08:00:00Z", `an old remark\n${MARKER}`), round2);
+    const again = await run();
+    expect(again.code, again.stderr).toBe(0);
+    expect(upstreamWrites()).toEqual([]);
+    expect(posted()).toContain("#issuecomment-8124");
+  });
+
+  it("OUR_COMMENTS_DO_NOT_COUNT: result comments on our issue (published, edited, forged, any author) never change the round", async () => {
+    const edited = ourResult(PUBLISHED, "2026-10-29T08:30:00Z", WORKFLOW, { updated_at: "2026-10-29T09:00:00Z" });
+    setComments(draft1, ourResult(PUBLISHED, "2026-10-29T08:30:00Z"), edited, ourResult(PUBLISHED, "2026-10-29T08:31:00Z", { login: BOT, type: "Bot" }), ourResult(PUBLISHED, "2026-10-29T08:32:00Z", { login: "xtimor", type: "User" }), reply());
+    thread();
+    expect((await run()).code).toBe(0);
+    expect(upstreamWrites()[0]?.body).toEqual({ body: `### Retest 2\n\n${BODY_MARK}\n\n${MARKER}\n` }); // the thread holds nothing of ours: round 1
+  });
+
+  it("AGENT_ROUND: an agent cannot choose the round; a round attribute and a marker line in the text are refused, nothing goes upstream", async () => {
+    setComments(draft1, botComment(impl(block(`target=${TARGET}#${NOTE_ISSUE} op=comment round=5`, `Text ${BODY_MARK}`)), { created_at: DRAFT2_AT, updated_at: DRAFT2_AT }));
+    const attribute = await run();
+    expect(attribute.code).toBe(1);
+    expect(posted()).toContain("takes exactly target=<repo or repo#n> and op=<comment|create>");
+    expect(upstream()).toEqual([]);
+    for (const line of [`${MARKER} (reply 7)`, MARKER, `${MARKER} (reply 2)`]) {
+      calls = [];
+      setComments(draft1, reply(`Text ${BODY_MARK}\n\n${line}`));
+      thread(round1);
+      const result = await run();
+      expect(result.code, line).toBe(1);
+      expect(upstreamWrites(), line).toEqual([]);
+      expect(posted(), line).toMatch(/exactly one line "Filed for|takes no \(reply N\)/);
+    }
+  });
+
+  it("UNIT: draftCreatedMs reads the latest draft comment's creation time and refuses when there is none or it is unreadable; buildInput never adds a round", async () => {
+    const mod = (await import(pathToFileURL(SCRIPT).href)) as { buildInput: (draft: Record<string, unknown>, repo: string, n: number) => { body: string }; draftCreatedMs: (comments: unknown[], options: { login: string }) => number; draftRound?: unknown };
+    const comment = { op: "comment", repo: TARGET, issue: 1, body: "x" };
+    expect(mod.buildInput(comment, OURS, 45).body).toBe(`x\n\n${MARKER}\n`);
+    expect(mod.buildInput({ op: "create", repo: TARGET, title: "t", body: "x" }, OURS, 45).body).toBe(`x\n\n${MARKER}\n`);
+    expect(mod.draftRound).toBeUndefined();
+    expect(mod.draftCreatedMs([draft1, reply()], { login: BOT })).toBe(Date.parse(DRAFT2_AT));
+    expect(() => mod.draftCreatedMs([], { login: BOT })).toThrow(/no readable creation time/);
+    expect(() => mod.draftCreatedMs([botComment(impl(COMMENT_DRAFT), { created_at: "soon" })], { login: BOT })).toThrow(/no readable creation time/);
   });
 });
 

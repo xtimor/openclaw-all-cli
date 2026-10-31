@@ -4,7 +4,7 @@ import { createServer, type IncomingMessage, type Server } from "node:http";
 import type { AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from "vitest";
 
 /**
@@ -253,6 +253,13 @@ describe("upstream-issue", () => {
       `see ${MARKER} for details`,
       `${MARKER} extra words`,
       `Filed for ${OURS}#0`,
+      `${MARKER} (reply 1)`,
+      `${MARKER} (reply 0)`,
+      `${MARKER} (reply 100)`,
+      `${MARKER} (reply 02)`,
+      `${MARKER}  (reply 2)`,
+      `${MARKER} (reply 2) now`,
+      `${MARKER} (Reply 2)`,
     ];
     for (const body of bodies) {
       const result = await run(issue({ body }));
@@ -775,6 +782,164 @@ describe("upstream-issue: comment on the owner's own issue (ticket 3.24)", () =>
       expect(result.output).toBe(`result=upstream-issue: existing ${existingUrl}\n`);
       expect(seen().some((line) => line.includes(`/repos/${TARGET}/issues?`))).toBe(false);
       expect(leaked(result)).toEqual([]);
+    });
+
+    describe("rounds (ticket 3.26): a later reply is numbered from the upstream thread, only through the replyBefore option of run()", () => {
+      const T1 = "2026-10-20T10:00:00Z"; // round 1 on the thread
+      const T2 = "2026-10-25T10:00:00Z"; // round 2 on the thread
+      const DRAFT2 = Date.parse("2026-10-24T10:00:00Z"); // the reply drafted after round 1, posted (or not yet) as round 2
+      const DRAFT3 = Date.parse("2026-10-28T10:00:00Z");
+      const at = (id: number, created: string, body: string, login = "xtimor") => ({ id, user: { login }, created_at: created, body });
+      const round2 = `Filed for ${OURS}#45 (reply 2)`;
+      const body = (marker: string) => `### Retest\n\n${BODY_MARK}\n\n${marker}\n`;
+      const thread = (...list: unknown[]) => answers.set(`GET ${postPath}`, [200, list]);
+      const post = () => calls.filter((call) => call.method === "POST");
+      /** run() in this process (the stub serves from here): the option is a parameter of the call, not of the environment. */
+      const runIn = async (input: unknown, replyBefore?: number) => {
+        const mod = (await import(pathToFileURL(SCRIPT).href)) as { run: (env: Record<string, string>, log: (line: string) => void, now: () => number, options?: { replyBefore?: number }) => Promise<{ code: number; outcome: string; message: string }> };
+        const env = { UPSTREAM_ISSUE: JSON.stringify(input), GH_PUBLIC_TOKEN: TOKEN, GITHUB_TOKEN: OUR_TOKEN, GITHUB_REPOSITORY: OURS, GITHUB_ACTOR: "xtimor", GITHUB_TRIGGERING_ACTOR: "xtimor", GITHUB_RUN_ATTEMPT: "1", ISSUE_FLOW_OWNERS: "xtimor", GITHUB_API_URL: base };
+        return mod.run(env, () => {}, Date.now, replyBefore === undefined ? undefined : { replyBefore });
+      };
+
+      it("ROUND_1_VIA_DISPATCH: a round 1 posted by hand (no result comment anywhere on our side) counts: the reply is round 2 and is posted", async () => {
+        thread(at(4242, T1, MARKER));
+        const result = await runIn(note({ body: body(MARKER) }), DRAFT2);
+        expect(result.outcome, result.message).toMatch(/^commented /);
+        expect(post()).toHaveLength(1);
+        expect(post()[0]?.body).toEqual({ body: body(round2) });
+      });
+
+      it("RELABEL: the same reply labeled again after it was posted keeps round 2 and returns that comment; round 1 is not posted twice either", async () => {
+        thread(at(4242, T1, MARKER), at(4243, T2, round2));
+        const again = await runIn(note({ body: body(MARKER) }), DRAFT2);
+        expect(again.outcome).toBe(`existing https://github.com/${TARGET}/issues/${NOTE_ISSUE}#issuecomment-4243`);
+        expect(post()).toEqual([]);
+        // The first draft labeled again: nothing of ours is older, so round 1, and the first comment is returned.
+        const first = await runIn(note({ body: body(MARKER) }), Date.parse("2026-10-19T10:00:00Z"));
+        expect(first.outcome).toContain("#issuecomment-4242");
+        expect(post()).toEqual([]);
+      });
+
+      it("ROUND_3: two earlier comments of ours on the thread give round 3; comments of others, of another issue of ours, and no marker are not counted", async () => {
+        thread(at(1, T1, MARKER), at(2, T2, round2), at(3, T1, MARKER, "mallory"), at(4, T1, `Filed for ${OURS}#46`), at(5, T1, "plain words"), at(6, T1, `see ${MARKER} here`));
+        const result = await runIn(note({ body: body(MARKER) }), DRAFT3);
+        expect(result.outcome, result.message).toMatch(/^commented /);
+        expect(post()[0]?.body).toEqual({ body: body(`Filed for ${OURS}#45 (reply 3)`) });
+      });
+
+      it("BOUNDARY: a comment created exactly when the draft was is not before it (the strict <); one millisecond earlier is", async () => {
+        thread(at(4242, T1, MARKER));
+        const same = await runIn(note({ body: body(MARKER) }), Date.parse(T1));
+        expect(same.outcome).toContain("existing"); // not counted: round 1 matches the comment
+        expect(post()).toEqual([]);
+        const later = await runIn(note({ body: body(MARKER) }), Date.parse(T1) + 1);
+        expect(later.outcome).toMatch(/^commented /);
+        expect(post()[0]?.body).toEqual({ body: body(round2) });
+      });
+
+      it("NO_OPTION: without replyBefore (the dispatch path) no round is derived: the reply returns round 1's comment, and no extra read is made", async () => {
+        thread(at(4242, T1, MARKER));
+        const result = await runIn(note({ body: body(MARKER) }));
+        expect(result.outcome).toContain("existing");
+        expect(calls.filter((call) => call.path === postPath)).toHaveLength(1);
+        calls = [];
+        const withOption = await runIn(note({ body: body(MARKER) }), DRAFT2);
+        expect(withOption.outcome).toMatch(/^commented /);
+        expect(calls.filter((call) => call.method === "GET" && call.path === postPath)).toHaveLength(1); // one read of the thread: the rounds and this draft's own post
+      });
+
+      it("INPUT_ROUND: a caller-chosen (reply N) in the input is refused on every path, with or without the option; an env variable does not set a round", async () => {
+        for (const marker of [round2, `Filed for ${OURS}#45 (reply 9)`]) {
+          const result = await run(note({ body: body(marker) }));
+          expect(result.code).toBe(1);
+          expect(result.stderr).toContain("takes no (reply N)");
+          expect(calls).toEqual([]);
+          const inProcess = await runIn(note({ body: body(marker) }), DRAFT3);
+          expect(inProcess.code).toBe(1);
+          expect(inProcess.message).toContain("takes no (reply N)");
+          expect(calls).toEqual([]);
+        }
+        // A create is refused the same way.
+        expect((await run(issue({ body: `### Summary\n\n${BODY_MARK}\n\n${MARKER} (reply 3)\n` }))).stderr).toContain("takes no (reply N)");
+        // No variable of the environment is read as a round: with the child process (no option) the reply is round 1.
+        thread(at(4242, T1, MARKER));
+        const envRound = await run(note({ body: body(MARKER) }), { UPSTREAM_REPLY_BEFORE: String(DRAFT3), REPLY_BEFORE: String(DRAFT3), UPSTREAM_ROUND: "3" });
+        expect(envRound.stdout).toContain("existing");
+        expect(post()).toEqual([]);
+      });
+
+      it("LIMITS: an unreadable thread, a full tenth page, and more than 98 earlier comments refuse instead of guessing", async () => {
+        const filler = Array.from({ length: 100 }, (_, i) => at(100 + i, T1, "plain"));
+        for (let page = 1; page <= 10; page++) answers.set(`GET ${postPath}?page=${page}`, [200, filler]);
+        const many = await runIn(note({ body: body(MARKER) }), DRAFT3);
+        expect(many.code).toBe(1);
+        expect(many.message).toContain("cannot");
+        calls = [];
+        answers = new Map();
+        thread(at(300, T1, `Filed for ${OURS}#45 (reply 99)`));
+        const full = await runIn(note({ body: body(MARKER) }), DRAFT3);
+        expect(full.code).toBe(1);
+        expect(full.message).toContain("limit is 98");
+        expect(post()).toEqual([]);
+        // Round 98 on the thread still leaves room for round 99.
+        calls = [];
+        thread(at(300, T1, `Filed for ${OURS}#45 (reply 98)`));
+        expect((await runIn(note({ body: body(MARKER) }), DRAFT3)).outcome).toMatch(/^commented /);
+        expect(post()[0]?.body).toEqual({ body: body(`Filed for ${OURS}#45 (reply 99)`) });
+      });
+
+      it("HIGHEST: the reply is one above the highest earlier round, not one above their number (comments of round 1 only give round 2)", async () => {
+        thread(at(1, T1, MARKER), at(2, T1, MARKER), at(3, T1, `${MARKER}\n\nand again\n${MARKER}`));
+        const result = await runIn(note({ body: body(MARKER) }), DRAFT3);
+        expect(result.outcome, result.message).toMatch(/^commented /);
+        expect(post()[0]?.body).toEqual({ body: body(round2) });
+      });
+
+      it("DELETED_ROUND_1: round 1 was deleted upstream: the re-label of the posted reply (round 2) returns its comment and posts nothing; a new draft after it is round 3", async () => {
+        thread(at(4243, T2, round2));
+        const again = await runIn(note({ body: body(MARKER) }), DRAFT2);
+        expect(again.outcome).toBe(`existing https://github.com/${TARGET}/issues/${NOTE_ISSUE}#issuecomment-4243`);
+        expect(post()).toEqual([]);
+        const next = await runIn(note({ body: body(MARKER) }), DRAFT3);
+        expect(next.outcome, next.message).toMatch(/^commented /);
+        expect(post()[0]?.body).toEqual({ body: body(`Filed for ${OURS}#45 (reply 3)`) });
+      });
+
+      it("EDITED_OLD_COMMENT: a marker added later to an older owner comment does not shift the round of a re-label: this draft's own post is returned", async () => {
+        thread(at(4242, T1, MARKER), at(5, "2026-10-21T10:00:00Z", `an old remark\n${MARKER}`), at(4243, T2, round2));
+        const again = await runIn(note({ body: body(MARKER) }), DRAFT2);
+        expect(again.outcome).toContain("#issuecomment-4243");
+        expect(post()).toEqual([]);
+      });
+
+      it("OWN_POST: the earliest marked comment at or after the draft is its post, whatever its round; a later one does not matter", async () => {
+        thread(at(4242, T1, MARKER), at(4243, T2, round2), at(4244, "2026-10-26T10:00:00Z", `Filed for ${OURS}#45 (reply 3)`));
+        expect((await runIn(note({ body: body(MARKER) }), DRAFT2)).outcome).toContain("#issuecomment-4243");
+        expect(post()).toEqual([]);
+      });
+
+      it("PAGES: a marked comment on page 2 is read (page 1 holds 100 plain comments): the reply is round 2", async () => {
+        answers.set(`GET ${postPath}?page=1`, [200, Array.from({ length: 100 }, (_, i) => at(100 + i, T1, "plain"))]);
+        answers.set(`GET ${postPath}?page=2`, [200, [at(4242, T1, MARKER)]]);
+        const result = await runIn(note({ body: body(MARKER) }), DRAFT2);
+        expect(result.outcome, result.message).toMatch(/^commented /);
+        expect(post()[0]?.body).toEqual({ body: body(round2) });
+        expect(calls.filter((call) => call.method === "GET" && call.path === postPath).map((call) => call.search)).toEqual(["?per_page=100&page=1", "?per_page=100&page=2"]);
+      });
+
+      it("NOT_A_LIST: a non-list answer from the thread read fails closed with its own message, after exactly one read, and posts nothing", async () => {
+        answers.set(`GET ${postPath}`, [200, { message: "not a list" }]);
+        const result = await runIn(note({ body: body(MARKER) }), DRAFT2);
+        expect(result.code).toBe(1);
+        expect(result.message).toContain("the thread could not be read to number the reply");
+        expect(calls.filter((call) => call.path === postPath)).toHaveLength(1);
+        expect(post()).toEqual([]);
+        // The dispatch path's own read has its own message.
+        calls = [];
+        const dispatch = await runIn(note({ body: body(MARKER) }));
+        expect(dispatch.message).toContain("the comments could not be read");
+        expect(dispatch.message).not.toContain("to number the reply");
+      });
     });
 
     it("a comment of someone else, or with another marker, or a marker only inside a line, does not count: the comment is posted", async () => {

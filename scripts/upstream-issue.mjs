@@ -21,7 +21,11 @@
 // Labels: GitHub drops, without an error, labels that a user without triage rights sets; the log says which were applied.
 // Comment guards (ticket 3.24), on top of the above (same approval check of the marker's issue, same actors, attempt, and limits): the
 // target issue must exist, not be a pull request, and have been opened by the token's user (the owner commenting on their own report);
-// idempotent: a comment by the token's user on that issue that already carries the same `Filed for` line is returned, not repeated
+// idempotent: a comment by the token's user on that issue that already carries the same `Filed for` line (same round: a later reply
+// carries `(reply N)`, ticket 3.26) is returned, not repeated. The input never carries a round (validate refuses it); the Upstream
+// post workflow passes `replyBefore` to run(), and the round is then 1 plus the highest round among the token user's comments on the
+// target thread that name the same issue of ours and were created before that time; such a comment at or after it is this draft's
+// own post, returned as existing (readReplyRounds)
 // (listed before anything is written, fail closed past MAX_COMMENT_PAGES pages); a cap refuses a sixth comment in 24 hours by the
 // token's user across the target (counted on the token user's own issues there, the only ones this operation can reach). The one
 // write is `POST /issues/<n>/comments`: it never edits, closes, reopens, or labels anything.
@@ -59,7 +63,8 @@ const DAY_MS = 24 * 60 * 60 * 1000;
 const APPROVED = "status:approved";
 const CONTROL = /[\u0000-\u001f\u007f-\u009f\u2028\u2029]/; // a title or a label
 const BODY_CONTROL = /[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/; // a body may hold newlines and tabs
-const MARKER_LINE = /^Filed for ([A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+)#([1-9]\d{0,8})[ \t\r]*$/gm;
+// An optional round for a later reply on the same target (ticket 3.26): `Filed for <repo>#<n> (reply 2)`. No suffix is round 1.
+const MARKER_LINE = /^Filed for ([A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+)#([1-9]\d{0,8})(?: \(reply ([2-9]|[1-9]\d)\))?[ \t\r]*$/gm;
 
 const refuse = (message) => new WriteError(message, { refused: true });
 const isObject = (value) => value !== null && typeof value === "object" && !Array.isArray(value);
@@ -88,9 +93,9 @@ function readConfig(env) {
   };
 }
 
-/** The `Filed for <repo>#<n>` lines of a body: `[{repo, number}]`. */
+/** The `Filed for <repo>#<n>` lines of a body: `[{repo, number, round}]` (`round` is 1 without a `(reply N)` suffix). */
 export function markers(body) {
-  return [...String(body ?? "").matchAll(MARKER_LINE)].map((match) => ({ repo: match[1], number: Number(match[2]) }));
+  return [...String(body ?? "").matchAll(MARKER_LINE)].map((match) => ({ repo: match[1], number: Number(match[2]), round: match[3] === undefined ? 1 : Number(match[3]) }));
 }
 
 const KEYS = { create: ["repo", "title", "body", "labels"], comment: ["repo", "issue", "body"] };
@@ -130,6 +135,8 @@ export function validate(text, ourRepo) {
   const found = markers(raw.body);
   if (found.length !== 1) throw refuse(`the body must hold exactly one line "Filed for ${ourRepo}#<n>" (found ${found.length})`);
   if (lower(found[0].repo) !== lower(ourRepo)) throw refuse(`the marker line must name ${ourRepo}, the issue this serves`);
+  // A round is never chosen by the caller (input, env, or an agent's draft): the Upstream post workflow numbers a reply through the `replyBefore` option of run().
+  if (found[0].round !== 1) throw refuse("the marker line takes no (reply N); the Upstream post workflow numbers later replies itself");
   if (op === "comment") return { op, repo, issue: raw.issue, body: raw.body, marker: found[0] };
   let labels = [];
   if (raw.labels !== undefined) {
@@ -223,7 +230,8 @@ async function create(client, issue) {
   return { number: data.number, applied };
 }
 
-const sameMarker = (body, wanted) => markers(body).some((found) => lower(found.repo) === lower(wanted.repo) && found.number === wanted.number);
+// A comment is the same one when marker and round agree: a later reply (round 2, 3, ...) on the same target is a new comment.
+const sameMarker = (body, wanted) => markers(body).some((found) => lower(found.repo) === lower(wanted.repo) && found.number === wanted.number && found.round === wanted.round);
 const commentUrl = (repo, issue, id) => `${issueUrl(repo, issue)}#issuecomment-${id}`;
 
 /**
@@ -255,6 +263,46 @@ export async function findExistingComment(client, request, login) {
     if (list.length < 100) return null;
   }
   throw refuse(`${request.repo}#${request.issue} has more than ${MAX_COMMENT_PAGES * 100} comments; cannot rule out a duplicate`);
+}
+
+/**
+ * Reads the target thread to number a reply (ticket 3.26): the comments by the token's user whose marker line names the same issue of
+ * ours (any round; no suffix is round 1). Returns `{ highest, posted }`:
+ *   - `highest`: the highest round among those created strictly before `beforeMs` (the creation time of the draft being posted), 0 when
+ *     there is none. The reply is round `highest + 1`. A deleted comment or a marker added later to an old comment cannot shift a reply
+ *     that is already posted, because of `posted`.
+ *   - `posted`: the earliest such comment created at or after `beforeMs`, `{id}`, else null. It can only be this draft's own post (a
+ *     dispatch posts round 1 only, and the draft is the latest implementation comment), so the draft is already posted.
+ * The thread is written only with the owner's token, so neither an agent nor the state of our own comments can change the answer. Fails
+ * closed on an unreadable answer or past MAX_COMMENT_PAGES pages.
+ */
+export async function readReplyRounds(client, request, login, beforeMs) {
+  let highest = 0;
+  let posted = null;
+  for (let page = 1; page <= MAX_COMMENT_PAGES; page++) {
+    const list = (await client.rest("GET", `/repos/${request.repo}/issues/${request.issue}/comments?per_page=100&page=${page}`)).data;
+    if (!Array.isArray(list)) throw new WriteError(`GET /issues/${request.issue}/comments: the thread could not be read to number the reply`);
+    for (const item of list) {
+      if (!isObject(item) || !isObject(item.user) || lower(item.user.login) !== lower(login) || !Number.isSafeInteger(item.id) || item.id <= 0) continue;
+      const created = typeof item.created_at === "string" ? Date.parse(item.created_at) : Number.NaN;
+      if (!Number.isFinite(created)) continue;
+      const rounds = markers(item.body).filter((found) => lower(found.repo) === lower(request.marker.repo) && found.number === request.marker.number).map((found) => found.round);
+      if (rounds.length === 0) continue;
+      if (created < beforeMs) highest = Math.max(highest, ...rounds);
+      else if (posted === null || created < posted.created) posted = { id: item.id, created };
+    }
+    if (list.length < 100) return { highest, posted: posted === null ? null : { id: posted.id } };
+  }
+  throw refuse(`${request.repo}#${request.issue} has more than ${MAX_COMMENT_PAGES * 100} comments; cannot number the reply`);
+}
+
+const MAX_ROUND = 99;
+const FIRST_MARKER = /^Filed for [A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+#[1-9]\d{0,8}[ \t\r]*$/m;
+
+/** The request with `(reply N)` on its one marker line (round 2 or later); round 1 stays as it is. */
+function withRound(request, round) {
+  if (round === 1) return request;
+  return { ...request, body: request.body.replace(FIRST_MARKER, (line) => `${line.trimEnd()} (reply ${round})`), marker: { ...request.marker, round } };
 }
 
 /**
@@ -314,14 +362,27 @@ async function postComment(client, request) {
 }
 
 /** The comment operation: approval of the marker's issue, then the target issue, an existing comment, the daily cap, the one POST. */
-async function runComment({ config, issue, client, ours, log, now, finish, fail, nothing }) {
+async function runComment({ config, issue: asked, client, ours, log, now, finish, fail, nothing, replyBefore }) {
   let login;
   let existing;
+  let issue = asked;
   try {
     checkNamesTarget(await checkApproved(ours, config, issue.marker.number), config, issue);
     login = await readUser(client);
     await checkTarget(client, issue, login);
-    existing = await findExistingComment(client, issue, login);
+    // The workflow that numbers replies passes the creation time of its draft: the round is 1 plus the comments of ours already on the thread.
+    if (replyBefore !== undefined) {
+      const { highest, posted } = await readReplyRounds(client, issue, login, replyBefore);
+      if (posted !== null) {
+        existing = posted; // this draft's own post
+      } else {
+        if (highest + 1 > MAX_ROUND) throw refuse(`this thread already holds replies up to round ${highest} for ${config.repo}#${issue.marker.number}; the limit is ${MAX_ROUND - 1}`);
+        issue = withRound(issue, highest + 1);
+        existing = null; // nothing of ours at or after the draft, and every earlier round is lower than this one
+      }
+    } else {
+      existing = await findExistingComment(client, issue, login);
+    }
     if (existing === null) {
       const recent = await countRecentComments(client, issue, login, now);
       if (recent >= COMMENT_CAP) throw refuse(`${recent} comments by the token's user were posted in ${issue.repo} in the last 24 hours (${COMMENT_CAP} or more are refused); wait, or comment by hand`);
@@ -358,7 +419,9 @@ const asksForComment = (text) => {
  * Runs the whole input. `log(line)` is called with each progress line. Returns `{code, outcome, message, url, number, repo, ...}`;
  * it writes nothing itself. A missing or malformed variable throws a WriteError with code 2.
  */
-export async function run(env, log = () => {}, now = Date.now) {
+export async function run(env, log = () => {}, now = Date.now, options = {}) {
+  // Only the Upstream post workflow passes `replyBefore` (ms): the creation time of its draft. It is an option of this call, never read from env or input.
+  const replyBefore = Number.isFinite(options?.replyBefore) ? options.replyBefore : undefined;
   const config = readConfig(env);
   const base = { repo: config.repo, actor: config.actor, target: "", url: "", number: 0 };
   const finish = (code, outcome, message = "", extra = {}) => ({ code, outcome, message, ...base, ...extra });
@@ -386,7 +449,7 @@ export async function run(env, log = () => {}, now = Date.now) {
     const safe = error instanceof WriteError;
     return finish(1, safe && error.refused ? nothing : stage, safe ? clean(error.message) : "unexpected error", { target: issue.repo });
   };
-  if (comment) return runComment({ config, issue, client, ours, log, now, finish, fail, nothing });
+  if (comment) return runComment({ config, issue, client, ours, log, now, finish, fail, nothing, replyBefore });
   let found;
   try {
     await checkApproved(ours, config, issue.marker.number);

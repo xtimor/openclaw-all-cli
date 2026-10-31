@@ -36,6 +36,12 @@
 - name: "status:declined"
   color: "cfd3d7"
   description: "An agent cannot or will not fix it; open until the owner decides"
+- name: "status:awaiting-post"
+  color: "6f42c1"
+  description: "Owner: an upstream draft is ready; review it and add upstream:post"
+- name: "status:upstream"
+  color: "0075ca"
+  description: "The draft was published upstream; waiting for the maintainers"
 
 # Type.
 - name: "type:bug"

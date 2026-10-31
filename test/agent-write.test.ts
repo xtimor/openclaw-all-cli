@@ -731,6 +731,25 @@ describe("agent-write", () => {
     }
   });
 
+  it("UPSTREAM_STATUS: an agent may set status:awaiting-post and remove status:upstream, but never add status:upstream (the Upstream post workflow's, ticket 3.26)", async () => {
+    const ok = await run([{ op: "labels", issue: 12, add: ["status:awaiting-post"], remove: ["status:upstream", "status:in-progress"] }]);
+    expect(ok.code, ok.stderr).toBe(0);
+    expect(calls.find((call) => call.method === "POST" && call.path.endsWith("/issues/12/labels"))?.body).toEqual({ labels: ["status:awaiting-post"] });
+    for (const add of [["status:upstream"], ["status:awaiting-post", "status:upstream"]]) {
+      calls = [];
+      const result = await run([{ op: "comment", issue: 12, body: "hi" }, { op: "labels", issue: 12, add }]);
+      expect(result.code).toBe(1);
+      expect(result.stderr).toContain("status:upstream is set by the Upstream post workflow");
+      expect(calls).toEqual([]);
+    }
+    // Other spellings are refused by the label rule itself.
+    for (const name of ["Status:Upstream", " status:upstream ", "STATUS:UPSTREAM", "status:upstream\n"]) {
+      calls = [];
+      expect((await run([{ op: "labels", issue: 12, add: [name] }])).code, name).toBe(1);
+      expect(calls).toEqual([]);
+    }
+  });
+
   it("UPSTREAM_POST: the owner's upstream:post label is never added or removed by the relay, in any spelling (ticket 3.25)", async () => {
     for (const name of ["upstream:post", "Upstream:Post", " upstream:post ", "UPSTREAM:POST", "upstream:post\n", "upstream%3Apost"]) {
       for (const key of ["add", "remove"]) {
