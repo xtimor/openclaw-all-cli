@@ -845,7 +845,7 @@ describe("upstream-issue: comment on the owner's own issue (ticket 3.24)", () =>
         calls = [];
         const withOption = await runIn(note({ body: body(MARKER) }), DRAFT2);
         expect(withOption.outcome).toMatch(/^commented /);
-        expect(calls.filter((call) => call.method === "GET" && call.path === postPath)).toHaveLength(2); // the count, then the idempotency read
+        expect(calls.filter((call) => call.method === "GET" && call.path === postPath)).toHaveLength(1); // one read of the thread: the rounds and this draft's own post
       });
 
       it("INPUT_ROUND: a caller-chosen (reply N) in the input is refused on every path, with or without the option; an env variable does not set a round", async () => {
@@ -876,11 +876,69 @@ describe("upstream-issue: comment on the owner's own issue (ticket 3.24)", () =>
         expect(many.message).toContain("cannot");
         calls = [];
         answers = new Map();
-        thread(...Array.from({ length: 99 }, (_, i) => at(200 + i, T1, MARKER)));
+        thread(at(300, T1, `Filed for ${OURS}#45 (reply 99)`));
         const full = await runIn(note({ body: body(MARKER) }), DRAFT3);
         expect(full.code).toBe(1);
         expect(full.message).toContain("limit is 98");
         expect(post()).toEqual([]);
+        // Round 98 on the thread still leaves room for round 99.
+        calls = [];
+        thread(at(300, T1, `Filed for ${OURS}#45 (reply 98)`));
+        expect((await runIn(note({ body: body(MARKER) }), DRAFT3)).outcome).toMatch(/^commented /);
+        expect(post()[0]?.body).toEqual({ body: body(`Filed for ${OURS}#45 (reply 99)`) });
+      });
+
+      it("HIGHEST: the reply is one above the highest earlier round, not one above their number (comments of round 1 only give round 2)", async () => {
+        thread(at(1, T1, MARKER), at(2, T1, MARKER), at(3, T1, `${MARKER}\n\nand again\n${MARKER}`));
+        const result = await runIn(note({ body: body(MARKER) }), DRAFT3);
+        expect(result.outcome, result.message).toMatch(/^commented /);
+        expect(post()[0]?.body).toEqual({ body: body(round2) });
+      });
+
+      it("DELETED_ROUND_1: round 1 was deleted upstream: the re-label of the posted reply (round 2) returns its comment and posts nothing; a new draft after it is round 3", async () => {
+        thread(at(4243, T2, round2));
+        const again = await runIn(note({ body: body(MARKER) }), DRAFT2);
+        expect(again.outcome).toBe(`existing https://github.com/${TARGET}/issues/${NOTE_ISSUE}#issuecomment-4243`);
+        expect(post()).toEqual([]);
+        const next = await runIn(note({ body: body(MARKER) }), DRAFT3);
+        expect(next.outcome, next.message).toMatch(/^commented /);
+        expect(post()[0]?.body).toEqual({ body: body(`Filed for ${OURS}#45 (reply 3)`) });
+      });
+
+      it("EDITED_OLD_COMMENT: a marker added later to an older owner comment does not shift the round of a re-label: this draft's own post is returned", async () => {
+        thread(at(4242, T1, MARKER), at(5, "2026-10-21T10:00:00Z", `an old remark\n${MARKER}`), at(4243, T2, round2));
+        const again = await runIn(note({ body: body(MARKER) }), DRAFT2);
+        expect(again.outcome).toContain("#issuecomment-4243");
+        expect(post()).toEqual([]);
+      });
+
+      it("OWN_POST: the earliest marked comment at or after the draft is its post, whatever its round; a later one does not matter", async () => {
+        thread(at(4242, T1, MARKER), at(4243, T2, round2), at(4244, "2026-10-26T10:00:00Z", `Filed for ${OURS}#45 (reply 3)`));
+        expect((await runIn(note({ body: body(MARKER) }), DRAFT2)).outcome).toContain("#issuecomment-4243");
+        expect(post()).toEqual([]);
+      });
+
+      it("PAGES: a marked comment on page 2 is read (page 1 holds 100 plain comments): the reply is round 2", async () => {
+        answers.set(`GET ${postPath}?page=1`, [200, Array.from({ length: 100 }, (_, i) => at(100 + i, T1, "plain"))]);
+        answers.set(`GET ${postPath}?page=2`, [200, [at(4242, T1, MARKER)]]);
+        const result = await runIn(note({ body: body(MARKER) }), DRAFT2);
+        expect(result.outcome, result.message).toMatch(/^commented /);
+        expect(post()[0]?.body).toEqual({ body: body(round2) });
+        expect(calls.filter((call) => call.method === "GET" && call.path === postPath).map((call) => call.search)).toEqual(["?per_page=100&page=1", "?per_page=100&page=2"]);
+      });
+
+      it("NOT_A_LIST: a non-list answer from the thread read fails closed with its own message, after exactly one read, and posts nothing", async () => {
+        answers.set(`GET ${postPath}`, [200, { message: "not a list" }]);
+        const result = await runIn(note({ body: body(MARKER) }), DRAFT2);
+        expect(result.code).toBe(1);
+        expect(result.message).toContain("the thread could not be read to number the reply");
+        expect(calls.filter((call) => call.path === postPath)).toHaveLength(1);
+        expect(post()).toEqual([]);
+        // The dispatch path's own read has its own message.
+        calls = [];
+        const dispatch = await runIn(note({ body: body(MARKER) }));
+        expect(dispatch.message).toContain("the comments could not be read");
+        expect(dispatch.message).not.toContain("to number the reply");
       });
     });
 

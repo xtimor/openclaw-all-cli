@@ -23,8 +23,9 @@
 // target issue must exist, not be a pull request, and have been opened by the token's user (the owner commenting on their own report);
 // idempotent: a comment by the token's user on that issue that already carries the same `Filed for` line (same round: a later reply
 // carries `(reply N)`, ticket 3.26) is returned, not repeated. The input never carries a round (validate refuses it); the Upstream
-// post workflow passes `replyBefore` to run(), and the round is then 1 plus the token user's comments on the target thread that name
-// the same issue of ours and were created before that time (countOwnReplies)
+// post workflow passes `replyBefore` to run(), and the round is then 1 plus the highest round among the token user's comments on the
+// target thread that name the same issue of ours and were created before that time; such a comment at or after it is this draft's
+// own post, returned as existing (readReplyRounds)
 // (listed before anything is written, fail closed past MAX_COMMENT_PAGES pages); a cap refuses a sixth comment in 24 hours by the
 // token's user across the target (counted on the token user's own issues there, the only ones this operation can reach). The one
 // write is `POST /issues/<n>/comments`: it never edits, closes, reopens, or labels anything.
@@ -265,23 +266,32 @@ export async function findExistingComment(client, request, login) {
 }
 
 /**
- * The number of comments by the token's user on the target issue whose marker line names the same issue of ours (any round) and that
- * were created strictly before `beforeMs` (the creation time of the draft being posted). A reply is round 1 plus this count: it is read
- * from the target thread itself, which only the owner's token writes to, so neither an agent nor the state of our own comments can change
- * it. Fails closed on an unreadable answer or past MAX_COMMENT_PAGES pages.
+ * Reads the target thread to number a reply (ticket 3.26): the comments by the token's user whose marker line names the same issue of
+ * ours (any round; no suffix is round 1). Returns `{ highest, posted }`:
+ *   - `highest`: the highest round among those created strictly before `beforeMs` (the creation time of the draft being posted), 0 when
+ *     there is none. The reply is round `highest + 1`. A deleted comment or a marker added later to an old comment cannot shift a reply
+ *     that is already posted, because of `posted`.
+ *   - `posted`: the earliest such comment created at or after `beforeMs`, `{id}`, else null. It can only be this draft's own post (a
+ *     dispatch posts round 1 only, and the draft is the latest implementation comment), so the draft is already posted.
+ * The thread is written only with the owner's token, so neither an agent nor the state of our own comments can change the answer. Fails
+ * closed on an unreadable answer or past MAX_COMMENT_PAGES pages.
  */
-export async function countOwnReplies(client, request, login, beforeMs) {
-  let count = 0;
+export async function readReplyRounds(client, request, login, beforeMs) {
+  let highest = 0;
+  let posted = null;
   for (let page = 1; page <= MAX_COMMENT_PAGES; page++) {
     const list = (await client.rest("GET", `/repos/${request.repo}/issues/${request.issue}/comments?per_page=100&page=${page}`)).data;
-    if (!Array.isArray(list)) throw new WriteError(`GET /issues/${request.issue}/comments: the comments could not be read`);
+    if (!Array.isArray(list)) throw new WriteError(`GET /issues/${request.issue}/comments: the thread could not be read to number the reply`);
     for (const item of list) {
-      if (!isObject(item) || !isObject(item.user) || lower(item.user.login) !== lower(login)) continue;
+      if (!isObject(item) || !isObject(item.user) || lower(item.user.login) !== lower(login) || !Number.isSafeInteger(item.id) || item.id <= 0) continue;
       const created = typeof item.created_at === "string" ? Date.parse(item.created_at) : Number.NaN;
-      if (!Number.isFinite(created) || created >= beforeMs) continue;
-      if (markers(item.body).some((found) => lower(found.repo) === lower(request.marker.repo) && found.number === request.marker.number)) count += 1;
+      if (!Number.isFinite(created)) continue;
+      const rounds = markers(item.body).filter((found) => lower(found.repo) === lower(request.marker.repo) && found.number === request.marker.number).map((found) => found.round);
+      if (rounds.length === 0) continue;
+      if (created < beforeMs) highest = Math.max(highest, ...rounds);
+      else if (posted === null || created < posted.created) posted = { id: item.id, created };
     }
-    if (list.length < 100) return count;
+    if (list.length < 100) return { highest, posted: posted === null ? null : { id: posted.id } };
   }
   throw refuse(`${request.repo}#${request.issue} has more than ${MAX_COMMENT_PAGES * 100} comments; cannot number the reply`);
 }
@@ -362,11 +372,17 @@ async function runComment({ config, issue: asked, client, ours, log, now, finish
     await checkTarget(client, issue, login);
     // The workflow that numbers replies passes the creation time of its draft: the round is 1 plus the comments of ours already on the thread.
     if (replyBefore !== undefined) {
-      const round = (await countOwnReplies(client, issue, login, replyBefore)) + 1;
-      if (round > MAX_ROUND) throw refuse(`this thread already holds ${round - 1} replies for ${config.repo}#${issue.marker.number}; the limit is ${MAX_ROUND - 1}`);
-      issue = withRound(issue, round);
+      const { highest, posted } = await readReplyRounds(client, issue, login, replyBefore);
+      if (posted !== null) {
+        existing = posted; // this draft's own post
+      } else {
+        if (highest + 1 > MAX_ROUND) throw refuse(`this thread already holds replies up to round ${highest} for ${config.repo}#${issue.marker.number}; the limit is ${MAX_ROUND - 1}`);
+        issue = withRound(issue, highest + 1);
+        existing = null; // nothing of ours at or after the draft, and every earlier round is lower than this one
+      }
+    } else {
+      existing = await findExistingComment(client, issue, login);
     }
-    existing = await findExistingComment(client, issue, login);
     if (existing === null) {
       const recent = await countRecentComments(client, issue, login, now);
       if (recent >= COMMENT_CAP) throw refuse(`${recent} comments by the token's user were posted in ${issue.repo} in the last 24 hours (${COMMENT_CAP} or more are refused); wait, or comment by hand`);
