@@ -57,7 +57,7 @@ At the start of a run, before any GitHub write.
    ```json
    [
      {"op": "comment", "issue": 12, "body": "<!-- issue-triage -->\n**Status:** ..."},
-     {"op": "labels", "issue": 12, "add": ["type:bug", "status:triaged"], "remove": ["status:new"]}
+     {"op": "labels", "issue": 12, "add": ["type:bug", "status:triaged"], "remove": ["status:todo"]}
    ]
    ```
 

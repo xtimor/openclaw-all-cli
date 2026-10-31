@@ -1,7 +1,7 @@
 name: Idea
 description: Propose a feature or an improvement
 title: "[Idea]: "
-labels: ["type:idea", "status:new"]
+labels: ["type:idea", "status:todo"]
 body:
   - type: markdown
     attributes:

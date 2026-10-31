@@ -7,7 +7,7 @@
 
 /** The 11 states of .github/labels.yml, in lifecycle order. Exactly one is set on an open issue. */
 export const STATUS_LABELS = Object.freeze([
-  "status:new",
+  "status:todo",
   "status:needs-info",
   "status:triaged",
   "status:approved",
@@ -20,7 +20,15 @@ export const STATUS_LABELS = Object.freeze([
   "status:upstream",
 ]);
 
-export const NEW = "status:new";
+/** Waiting for triage: filed, reopened, or answered by the author (ticket 3.27 renamed it from `new`). */
+export const TODO = "status:todo";
+/**
+ * Former status names. GitHub label events keep the name a label had when the event happened, so the history of a renamed
+ * label still says the old name; every place that reads label events counts it as the current name.
+ */
+export const LEGACY_STATUS = Object.freeze({ "status:new": TODO });
+/** The status a label name stands for: the current name of a renamed one, else the name itself. */
+const canonical = (label) => (typeof label === "string" && Object.hasOwn(LEGACY_STATUS, label) ? LEGACY_STATUS[label] : label);
 export const NEEDS_INFO = "status:needs-info";
 export const APPROVED = "status:approved";
 export const IN_PROGRESS = "status:in-progress";
@@ -67,7 +75,7 @@ const LOGIN_RE = /^[A-Za-z0-9](?:[A-Za-z0-9_-]{0,38})$/;
 export function staleComment(login) {
   const author = typeof login === "string" && LOGIN_RE.test(login) ? login : null;
   const subject = author === null ? "This issue has" : `@${author}, this issue has`;
-  return `${MARKER}\n${subject} been in \`${NEEDS_INFO}\` for ${STALE_DAYS} days without a reply, so it is closed as not planned. Reopen it to continue; it returns to \`${NEW}\`.`;
+  return `${MARKER}\n${subject} been in \`${NEEDS_INFO}\` for ${STALE_DAYS} days without a reply, so it is closed as not planned. Reopen it to continue; it returns to \`${TODO}\`.`;
 }
 
 /**
@@ -82,7 +90,7 @@ export function declinedStaleComment(login, owners = []) {
     return ok;
   });
   const who = people.length === 0 ? "This issue has" : `${people.map((name) => `@${name}`).join(", ")}: this issue has`;
-  return `${MARKER}\n${who} been in \`${DECLINED}\` for ${STALE_DAYS} days without a decision, so it is closed as not planned. Reopen it to continue; it returns to \`${NEW}\`.`;
+  return `${MARKER}\n${who} been in \`${DECLINED}\` for ${STALE_DAYS} days without a decision, so it is closed as not planned. Reopen it to continue; it returns to \`${TODO}\`.`;
 }
 
 const isStatus = (label) => STATUS_LABELS.includes(label);
@@ -150,8 +158,9 @@ export function normalizeTimeline(raw) {
   for (const item of raw) {
     const kind = item?.event ?? item?.kind ?? "labeled";
     if (!item || (kind !== "labeled" && kind !== "unlabeled")) continue;
-    const label = typeof item.label === "string" ? item.label : item.label?.name;
-    if (typeof label !== "string") continue;
+    const named = typeof item.label === "string" ? item.label : item.label?.name;
+    if (typeof named !== "string") continue;
+    const label = canonical(named);
     const time = Date.parse(item.createdAt ?? item.created_at ?? "");
     entries.push({
       id: item.id ?? null,
@@ -192,8 +201,9 @@ function latestLabeled(timeline, event) {
     if (entry.kind === "labeled" && isStatus(entry.label)) latest.set(entry.label, { rank, actor: entry.actor, id: entry.id, time: entry.time, viaApp: entry.viaApp });
   });
   // The event being handled counts as the newest one when the timeline does not show it (not read, or lagging).
-  if (event?.action === "labeled" && isStatus(event.label) && !latest.has(event.label)) {
-    latest.set(event.label, { rank: Number.POSITIVE_INFINITY, actor: event.actor ?? null, id: "event", time: Number.POSITIVE_INFINITY });
+  const eventLabel = canonical(event?.label);
+  if (event?.action === "labeled" && isStatus(eventLabel) && !latest.has(eventLabel)) {
+    latest.set(eventLabel, { rank: Number.POSITIVE_INFINITY, actor: event.actor ?? null, id: "event", time: Number.POSITIVE_INFINITY });
   }
   return { latest, entries };
 }
@@ -212,7 +222,7 @@ function replacedBefore(entries, rank) {
  * so parallel runs for one issue converge: a closed issue has no status; every `status:approved` whose latest
  * `labeled` event is by a non-owner, or by an owner through a GitHub App (`performed_via_github_app`), is dropped (one comment per event); of the status labels left, the most recently
  * labeled one stays (labels with no event rank below those with one, then by lifecycle order); none left means the
- * status the foreign approval replaced (the last one unlabeled before it), else `new`.
+ * status the foreign approval replaced (the last one unlabeled before it), else `todo`.
  */
 function reconcile(issue, { timeline, owners, event }) {
   if (issue.state === "closed") return clearStatus(issue);
@@ -232,7 +242,7 @@ function reconcile(issue, { timeline, owners, event }) {
   const rank = (label) => latest.get(label)?.rank ?? Number.NEGATIVE_INFINITY;
   const restored = kept.length === 0 && reverted ? replacedBefore(entries, reverted.rank) : null;
   const target =
-    kept.length === 0 ? (restored ?? NEW) : kept.reduce((best, label) => (rank(label) > rank(best) || (rank(label) === rank(best) && order(label) > order(best)) ? label : best));
+    kept.length === 0 ? (restored ?? TODO) : kept.reduce((best, label) => (rank(label) > rank(best) || (rank(label) === rank(best) && order(label) > order(best)) ? label : best));
   const actions = setStatus(issue, target);
   if (reverted) actions.push(approvalComment(reverted.id ?? "event"));
   return actions;
@@ -242,11 +252,11 @@ function onIssues(event, issue, owners, timeline) {
   if (isBot(event.actor)) return [];
   if (event.action === "opened" || event.action === "reopened") {
     if (issue.state !== "open") return clearStatus(issue);
-    // `new` unless a current status was labeled after this event (that run's label wins, whichever run is first).
+    // `todo` unless a current status was labeled after this event (that run's label wins, whichever run is first).
     const at = Date.parse(event.at ?? "");
     const { latest } = latestLabeled(timeline, null);
     const later = Number.isFinite(at) && issue.labels.some((label) => isStatus(label) && (latest.get(label)?.time ?? Number.NEGATIVE_INFINITY) > at);
-    return later ? reconcile(issue, { timeline, owners, event }) : setStatus(issue, NEW);
+    return later ? reconcile(issue, { timeline, owners, event }) : setStatus(issue, TODO);
   }
   // closed, labeled, unlabeled: settle the status from the issue as it is now, whatever the event was.
   if (event.action === "closed" || event.action === "labeled" || event.action === "unlabeled") return reconcile(issue, { timeline, owners, event });
@@ -262,7 +272,7 @@ function onComment(event, issue, owners, agents) {
   if (event.action !== "created" || isBot(event.actor) || (event.agent === true && (isOwner(event.actor, owners) || isOwner(event.actor, agents)))) return [];
   if (issue.state !== "open" || !issue.labels.includes(NEEDS_INFO)) return [];
   if (lower(event.actor) === "" || lower(event.actor) !== lower(issue.author)) return [];
-  return setStatus(issue, NEW);
+  return setStatus(issue, TODO);
 }
 
 function onPullRequest(event, issue, owners) {

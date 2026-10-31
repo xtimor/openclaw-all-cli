@@ -62,7 +62,7 @@ Triage needs info:
 <!-- issue-triage -->
 **Status:** `status:needs-info`: details are missing
 **Waiting for:** @<author-login>: answers to the questions below
-**Next:** when you reply, the issue goes back to `status:new` and the next triage run decides; after 30 days in `status:needs-info` it is closed as not planned and you are notified
+**Next:** when you reply, the issue goes back to `status:todo` and the next triage run decides; after 30 days in `status:needs-info` it is closed as not planned and you are notified
 **What happened:** the steps do not show which `cursor-agent` version is installed.
 **Evidence:** not reproduced on `main` with 2026.10.19.
 **Questions:** 1. Output of `cursor-agent --version`? 2. Does it fail on the first turn or later?
@@ -150,7 +150,7 @@ Triage or implementation declined (the agent cannot or will not fix it; the issu
 ```markdown
 <!-- issue-triage -->
 **Status:** `status:declined`: cannot be fixed in this plugin
-**Waiting for:** @<owner-login>: close it, or add what is missing and move it to another status (`status:new` for a new look, `status:approved` to build it)
+**Waiting for:** @<owner-login>: close it, or add what is missing and move it to another status (`status:todo` for a new look, `status:approved` to build it)
 **Next:** nobody changes it until you decide; after 30 days with no change the daily job closes it as not planned and notifies you and the author
 **What happened:** the stale tool list comes from OpenClaw's catalog timing; the plugin has no hook to change it.
 **Evidence:** `MEMORY.md` (turn 2 restart): no plugin-side lever; `test/host-contract.test.ts` pins the host behavior.

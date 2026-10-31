@@ -416,3 +416,48 @@ describe("upstream drafts and the upstream:post label (ticket 3.25)", () => {
     expect(writer).toContain("const LABEL_RE = /^(status|type|priority|source):[a-z0-9-]{1,40}$/;");
   });
 });
+
+describe("status:new is gone from live code and docs (ticket 3.27)", () => {
+  const OLD = "status:new";
+  // Live code, docs, and the design docs. Not scanned: the changelog, MEMORY.md, plans, tickets, and run logs (history), and the tests.
+  const ROOTS = [".github", "scripts", "docs", "README.md", "src", join("_bmad-output", "initiative-openclaw-all-cli", "epic-distribution", "issue-flow.md"), join("_bmad-output", "initiative-openclaw-all-cli", "epic-distribution", "epic-distribution.md")];
+  // The two places that must name it: the label file's `renamed_from` key and the history alias in the state automation.
+  const ALLOWED = /renamed_from:|LEGACY_STATUS/;
+
+  function files(path: string): string[] {
+    let names: string[];
+    try {
+      names = readdirSync(join(ROOT, path));
+    } catch {
+      return [path];
+    }
+    return names.flatMap((name) => files(join(path, name)));
+  }
+
+  it("only the label file's renamed_from line and the history alias name status:new", () => {
+    const scanned = ROOTS.flatMap((root) => files(root)).filter((file) => !/\.(png|svg|ico|tgz)$/.test(file));
+    expect(scanned.length).toBeGreaterThan(40);
+    const hits: string[] = [];
+    for (const file of scanned) {
+      let text: string;
+      try {
+        text = read(file);
+      } catch {
+        continue;
+      }
+      text.split("\n").forEach((line, index) => {
+        if (line.includes(OLD) && !ALLOWED.test(line)) hits.push(`${file}:${index + 1}: ${line.trim().slice(0, 100)}`);
+      });
+    }
+    expect(hits).toEqual([]);
+    // The two allowed places exist, so the pin is not passing because nothing names it at all.
+    expect(read(".github", "labels.yml")).toContain(`renamed_from: "${OLD}"`);
+    expect(read("scripts", "issue-flow", "transitions.mjs")).toContain(`LEGACY_STATUS = Object.freeze({ "${OLD}": TODO })`);
+  });
+
+  it("the docs call the waiting-for-triage status status:todo", () => {
+    expect(issues).toMatch(/\| `status:todo` \| Filed or reopened, or the author answered a question; waiting for triage/);
+    expect(triage).toContain("Only open issues labelled `status:todo`");
+    expect(issues).toContain('`renamed_from: "<old name>"`');
+  });
+});

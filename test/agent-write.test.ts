@@ -178,10 +178,10 @@ describe("agent-write", () => {
   it("COMMENT_THEN_LABEL: posts the comment, then the labels, then deletes the removed one, in that order, as the app", async () => {
     const result = await run([
       { op: "comment", issue: 12, body: `hello ${BODY_MARK}` },
-      { op: "labels", issue: 12, add: ["status:triaged", "priority:p2"], remove: ["status:new"] },
+      { op: "labels", issue: 12, add: ["status:triaged", "priority:p2"], remove: ["status:todo"] },
     ]);
     expect(result).toMatchObject({ code: 0, stderr: "" });
-    expect(seen()).toEqual(["POST /issues/12/comments", "POST /issues/12/labels", "DELETE /issues/12/labels/status:new"]);
+    expect(seen()).toEqual(["POST /issues/12/comments", "POST /issues/12/labels", "DELETE /issues/12/labels/status:todo"]);
     expect(calls[0]?.body).toEqual({ body: `hello ${BODY_MARK}` });
     expect(calls[1]?.body).toEqual({ labels: ["status:triaged", "priority:p2"] });
     expect(calls.every((call) => call.auth === `Bearer ${TOKEN}`)).toBe(true);
@@ -189,17 +189,17 @@ describe("agent-write", () => {
     expect(result.stdout).toContain(`agent-write: acting as ${BOT}\n`);
     expect(result.summary).toContain("Applied 2 operation(s)");
     expect(result.summary).toContain("comment 9001 created");
-    expect(result.summary).toContain("added status:triaged, priority:p2; removed status:new");
+    expect(result.summary).toContain("added status:triaged, priority:p2; removed status:todo");
     expect(leaked(result)).toEqual([]);
   });
 
   it("LABELS: removing a label the issue lacks is fine; any other 404 stops the run", async () => {
-    answers.set(`DELETE /repos/${REPO}/issues/12/labels/status:new`, [404, { message: "Label does not exist" }]);
-    const fine = await run([{ op: "labels", issue: 12, remove: ["status:new"] }]);
+    answers.set(`DELETE /repos/${REPO}/issues/12/labels/status:todo`, [404, { message: "Label does not exist" }]);
+    const fine = await run([{ op: "labels", issue: 12, remove: ["status:todo"] }]);
     expect(fine.code).toBe(0);
-    expect(fine.summary).toContain("status:new (was not set)");
-    answers.set(`DELETE /repos/${REPO}/issues/12/labels/status:new`, [404, { message: "Not Found" }]);
-    const bad = await run([{ op: "labels", issue: 12, remove: ["status:new"] }]);
+    expect(fine.summary).toContain("status:todo (was not set)");
+    answers.set(`DELETE /repos/${REPO}/issues/12/labels/status:todo`, [404, { message: "Not Found" }]);
+    const bad = await run([{ op: "labels", issue: 12, remove: ["status:todo"] }]);
     expect(bad).toMatchObject({ code: 1 });
     expect(bad.summary).toContain("failed");
   });

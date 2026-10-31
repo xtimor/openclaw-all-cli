@@ -25,8 +25,8 @@ A person installs the plugin with one command from npmjs.com, and every release 
 3. In an isolated OpenClaw, `openclaw plugins install` of the published package gives a working `cursor-cli` turn with an OpenClaw tool call.
 4. The Control UI settings form for the plugin has labels and help for every field, marks the API key sensitive, and groups the limits as advanced.
 5. `docs/setup.md` starts with the short npm install and keeps the build-from-source path for contributors; a release section in `docs/` says how to cut one.
-6. A person or an agent files a bug or an idea through a form or as `docs/issues.md` says, and it gets `status:new`.
-7. Twice a day the triage agent leaves every `status:new` issue in `needs-info`, `triaged` (with priority), or closed with a reason; a dry run writes nothing.
+6. A person or an agent files a bug or an idea through a form or as `docs/issues.md` says, and it gets `status:todo`.
+7. Twice a day the triage agent leaves every `status:todo` issue in `needs-info`, `triaged` (with priority), or closed with a reason; a dry run writes nothing.
 8. Only the owner's `status:approved` starts an implementation run, which ends in a PR with `Fixes #N` (or a course-correction proposal PR) or in `status:blocked` with a reason; merging the PR closes the issue.
 9. Every change an issue leads to is a BMAD ticket with a build plan and a review in the ticket store (`bmad-ticket`, `bmad-build-auto`, `bmad-correct-course`); no agent changes code outside that flow.
 

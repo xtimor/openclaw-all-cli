@@ -16,15 +16,15 @@ One `status:*` label per open issue, always exactly one. A closed issue has none
 
 | State | Meaning | Who moves it out |
 | --- | --- | --- |
-| `status:new` | Filed or reopened, not yet triaged, or the author answered a question | triage agent |
-| `status:needs-info` | Either agent (or the owner) asked the author for details or a check only the author can do | author's reply (back to `new`), or the stale timer (30 days from the latest `needs-info` label; the closing comment mentions the author) |
+| `status:todo` | Filed or reopened, not yet triaged, or the author answered a question | triage agent |
+| `status:needs-info` | Either agent (or the owner) asked the author for details or a check only the author can do | author's reply (back to `todo`), or the stale timer (30 days from the latest `needs-info` label; the closing comment mentions the author) |
 | `status:triaged` | The agent accepts it: problem confirmed, priority set, scope written. Waits for the owner, unless triage carried an earlier approval over a `needs-info` round | owner, or the implementation run (carried approval) |
 | `status:approved` | The owner approved it for development | implementation run |
 | `status:planned` | A course correction for it is merged; its BMAD tickets exist but are not built yet | implementation run (the owner's earlier approval covers it) |
 | `status:in-progress` | The implementation agent is working on it | implementation run (stops with `needs-info` for the author or `blocked` for the owner), PR events |
 | `status:in-review` | A pull request that fixes it is open | GitHub's `Batch merge` workflow (merges it on green), or the owner (closes the PR) |
 | `status:blocked` | The owner must decide (scope beyond the approval, protected files, product direction, repeated failure), or the PR was closed unmerged; the comment mentions the owner and says why | owner |
-| `status:declined` | An agent cannot or will not fix it (cannot be fixed in the plugin, out of scope, a duplicate, already fixed by a done ticket); the comment gives the reason and the evidence and mentions the owner (decided 2026-10-28, after triage closed #45 on its own). The issue stays open | owner (closes it, or adds information and moves it to `new`, `approved`, ...), or the stale timer (30 days from the latest `declined` label; the closing comment mentions the author and the owner) |
+| `status:declined` | An agent cannot or will not fix it (cannot be fixed in the plugin, out of scope, a duplicate, already fixed by a done ticket); the comment gives the reason and the evidence and mentions the owner (decided 2026-10-28, after triage closed #45 on its own). The issue stays open | owner (closes it, or adds information and moves it to `todo`, `approved`, ...), or the stale timer (30 days from the latest `declined` label; the closing comment mentions the author and the owner) |
 | `status:awaiting-post` | An implementation agent left an upstream draft in this issue (an `op=create` issue or an `op=comment` reply on the owner's own `openclaw/openclaw` issue). Only the owner acts: review the draft and add `upstream:post` with their own click, or edit or decline it. Not an owner decision about scope (that is `blocked`). Decided 2026-10-30 | owner (the `Upstream post` workflow then moves it to `upstream`; a refusal leaves it here with the reason in the result comment), never stale |
 | `status:upstream` | The draft was published upstream (set only by the `Upstream post` workflow after it made a post: created or commented, or found this draft already posted (`existing`); a refusal changes no status). The upstream maintainers act; every routine run reads the thread (see [Watching upstream](#watching-upstream)) | the implementation agent when the thread asks for an answer (back to `awaiting-post` with a new reply draft), or the owner (closes the issue when upstream settles, or approves a follow-up), never stale |
 
@@ -35,22 +35,22 @@ Closed reasons: `completed` (PR merged, or the owner's call), `not planned` (the
 ## Transitions
 
 ```
-opened ─────────────────────────────► new
-reopened (any closed issue) ────────► new
+opened ─────────────────────────────► todo
+reopened (any closed issue) ────────► todo
 
-new ──triage: confirmed, accepted──► triaged          (+ priority, + type, triage comment)
-new ──triage: details missing──────► needs-info       (questions in the triage comment)
-new ──triage: cannot or will not fix (rejected, duplicate, fixed by a done ticket)─► declined (reason and evidence in the triage comment, owner mentioned)
-new ──triage: security report──────► closed not planned (fixed pointer to SECURITY.md, no detail; the only agent close)
+todo ──triage: confirmed, accepted──► triaged          (+ priority, + type, triage comment)
+todo ──triage: details missing──────► needs-info       (questions in the triage comment)
+todo ──triage: cannot or will not fix (rejected, duplicate, fixed by a done ticket)─► declined (reason and evidence in the triage comment, owner mentioned)
+todo ──triage: security report──────► closed not planned (fixed pointer to SECURITY.md, no detail; the only agent close)
 
-needs-info ──author comments───────► new   (also after an implementation question)
+needs-info ──author comments───────► todo   (also after an implementation question)
 needs-info ──30 days in the status─► closed not planned (stale, author mentioned; reopening brings it back)
 
 triaged ──owner sets approved──────► approved
 triaged ──owner rejects────────────► closed not planned
 
 declined ──owner closes the issue────► closed (any reason)
-declined ──owner adds information─────► new / approved / ... (latest status wins)
+declined ──owner adds information─────► todo / approved / ... (latest status wins)
 declined ──30 days in the status──────► closed not planned (stale, author and owner mentioned; reopening brings it back)
 in-progress ──run finds it cannot or should not be built─► declined (comment mentions the owner; the ticket stays blocked)
 triaged ──owner asks a question────► needs-info
@@ -67,7 +67,7 @@ awaiting-post ──owner adds `upstream:post`, workflow publishes─► upstrea
 awaiting-post ──owner approves again─────► approved (the agent rewrites the draft)
 upstream ──thread asks the reporter for something─► awaiting-post   (a new reply draft; the owner labels it again, next round)
 upstream ──upstream settles─────────────► closed (the owner closes it) / approved (a follow-up)
-new ──triage: approved before, owner approval newer than last close/reopen, answer settles the impl question, scope unchanged─► triaged ("Approval: carried over", short comment)
+todo ──triage: approved before, owner approval newer than last close/reopen, answer settles the impl question, scope unchanged─► triaged ("Approval: carried over", short comment)
 new ──triage: approved before, but scope or path changed─► triaged ("a new approval is needed")
 triaged (approval carried over) ──run starts, no new approval─► in-progress
 in-review ──PR merged──────────────► closed completed
@@ -92,7 +92,7 @@ An agent declines on its own but never closes (a reporter without write access c
 
 Runner: a Claude Code scheduled task on the owner's account (frequency set by the owner, twice a day by default), each firing a fresh cloud session on this repository that follows `docs/agents/triage.md` and reaches GitHub as the agent app (`docs/agents/identity.md`), or through the owner's connector when no app is set up. A firing note `dry run` makes it report without writing.
 
-Takes every open issue in `status:new`, oldest first, at most 20 per run. For each one:
+Takes every open issue in `status:todo`, oldest first, at most 20 per run. For each one:
 
 1. **Duplicate.** Search open and closed issues; a clear duplicate is declined (`declined`, "duplicate of #N" with a link) and the owner closes it.
 2. **Problem exists.** Bug: read the code on `main`, run the unit tests or a focused test of the agent's own, reason from the reported steps without executing anything taken from the issue; record reproduced, explained by code, or not reproduced. Idea: check it against the spec's capabilities and non-goals and the architecture invariants. Live Cursor checks do not run in CI; say so when they would be needed.
@@ -115,7 +115,7 @@ Skills are the ones in `.claude/skills/` (mirrored in `.agents/skills/`); the ti
 
 | Issue state | Who | BMAD skills and agents | Output |
 | --- | --- | --- | --- |
-| `new` (triage) | triage agent | Reads the spec, architecture, `MEMORY.md`, and the ticket store (`tickets.py status`) for duplicates and scope. Bug: the single-ticket check of `bmad-ticket` (the "Ticket" section of `references/validate-checks.md`) to judge whether it is a real, buildable bug. Idea: checked against the spec's capabilities and non-goals; the lenses of `bmad-forge-idea` frame the questions. Sizes the work into a path: **standalone** (one bug or story), **epic entry** (fits an existing epic), **course correction** (changes an epic, the spec, or the architecture), or **existing ticket** (an open BMAD ticket already covers it). | Triage comment: verdict, evidence, priority, path, draft ticket text. Nothing is written to the repo. |
+| `todo` (triage) | triage agent | Reads the spec, architecture, `MEMORY.md`, and the ticket store (`tickets.py status`) for duplicates and scope. Bug: the single-ticket check of `bmad-ticket` (the "Ticket" section of `references/validate-checks.md`) to judge whether it is a real, buildable bug. Idea: checked against the spec's capabilities and non-goals; the lenses of `bmad-forge-idea` frame the questions. Sizes the work into a path: **standalone** (one bug or story), **epic entry** (fits an existing epic), **course correction** (changes an epic, the spec, or the architecture), or **existing ticket** (an open BMAD ticket already covers it). | Triage comment: verdict, evidence, priority, path, draft ticket text. Nothing is written to the repo. |
 | `needs-info` | author, then triage agent | None; the questions come from the triage step above, or from the implementation agent when a build stops on something only the author can answer (its ticket stays `blocked`; after the reply triage re-checks the scope and carries the approval over, and the Retry path builds it). | Questions in the agent comment, with the author mentioned. |
 | `triaged` | owner | None. The owner reads the triage comment and may change priority or path. | `approved`, reject, or a question. |
 | `declined` | owner | None. The comment holds the agent's reason and evidence. The ticket, if one exists, stays `blocked`; the owner's close as not planned makes the housekeeping row below mark it `dropped`. | Owner closes it or moves its status; untouched for 30 days it is closed as not planned by the daily job. |

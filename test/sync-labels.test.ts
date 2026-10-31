@@ -132,17 +132,23 @@ function tempLabelsFile(text: string): string {
 }
 
 /** The entries of the real labels file, read with the same restricted format. */
-function fileLabels(): { name: string; color: string; description: string }[] {
-  const entries: { name: string; color: string; description: string }[] = [];
+function fileLabels(): { name: string; color: string; description: string; renamedFrom?: string }[] {
+  const entries: { name: string; color: string; description: string; renamedFrom?: string }[] = [];
   for (const line of readFileSync(LABELS_FILE, "utf8").split("\n")) {
-    const match = /^(- |  )(name|color|description): (".*")\s*$/.exec(line);
+    const match = /^(- |  )(name|color|description|renamed_from): (".*")\s*$/.exec(line);
     if (!match) continue;
     const value = JSON.parse(match[3] as string) as string;
     if (match[2] === "name") entries.push({ name: value, color: "", description: "" });
+    else if (match[2] === "renamed_from") (entries[entries.length - 1] as { renamedFrom?: string }).renamedFrom = value;
     else (entries[entries.length - 1] as Record<string, string>)[match[2] as string] = value;
   }
   return entries;
 }
+
+/** The three keys the API gets, without the file-only `renamedFrom`. */
+const apiShape = (entry: { name: string; color: string; description: string }) => ({ name: entry.name, color: entry.color, description: entry.description });
+const TODO = "status:todo";
+const OLD = "status:new";
 
 describe("labels file", () => {
   it("has exactly the labels issue-flow.md names plus the owner's upstream:post, each with a color and a description", () => {
@@ -160,6 +166,13 @@ describe("labels file", () => {
     }
   });
 
+  it("has status:todo renamed from status:new, and no status:new entry (ticket 3.27)", () => {
+    const entries = fileLabels();
+    expect(entries.find((entry) => entry.name === TODO)?.renamedFrom).toBe(OLD);
+    expect(entries.some((entry) => entry.name === OLD)).toBe(false);
+    expect(entries.filter((entry) => entry.renamedFrom !== undefined).map((entry) => entry.name)).toEqual([TODO]);
+  });
+
   it("passes the script's own validation (dry run)", async () => {
     const result = await run(["--dry-run"]);
     expect(result.code).toBe(0);
@@ -172,9 +185,9 @@ describe("issue forms", () => {
     ["bug.yml", "type:bug"],
     ["idea.yml", "type:idea"],
   ] as const) {
-    it(`${file} sets ${type} and status:new and has the agent checkbox`, () => {
+    it(`${file} sets ${type} and status:todo and has the agent checkbox`, () => {
       const text = readFileSync(join(ROOT, ".github", "ISSUE_TEMPLATE", file), "utf8");
-      expect(text).toContain(`labels: ["${type}", "status:new"]`);
+      expect(text).toContain(`labels: ["${type}", "status:todo"]`);
       expect(text).toContain("type: checkboxes");
       expect(text).toContain("label: Filed by an agent");
     });
@@ -195,7 +208,7 @@ describe("sync-labels.mjs", () => {
     const posts = writes();
     expect(posts).toHaveLength(wanted.length);
     expect(posts.every((call) => call.method === "POST")).toBe(true);
-    expect(posts.map((call) => call.body)).toEqual(wanted.map((entry) => ({ name: entry.name, color: entry.color, description: entry.description })));
+    expect(posts.map((call) => call.body)).toEqual(wanted.map(apiShape));
     expect(labels).toHaveLength(wanted.length);
     expect(calls.every((call) => call.auth === `Bearer ${TOKEN}`)).toBe(true);
     expect(result.stdout + result.stderr).not.toContain(TOKEN);
@@ -279,6 +292,102 @@ describe("sync-labels.mjs", () => {
     expect(writes()).toHaveLength(wanted.length - 1);
   });
 
+  describe("RENAME: renamed_from renames the old label in place (ticket 3.27)", () => {
+    const FORMER = { name: OLD, color: "ededed", description: "Filed or reopened, not triaged yet" };
+    const fileText = '- name: "status:todo"\n  color: "ededed"\n  description: "Waiting for triage"\n  renamed_from: "status:new"\n- name: "type:bug"\n  color: "d73a4a"\n  description: "Broken"\n';
+
+    it("only the old label exists: one PATCH of the old label renames it, nothing is created or deleted", async () => {
+      labels.push({ ...FORMER });
+      const result = await run();
+      expect(result.code, result.stderr).toBe(0);
+      const todo = fileLabels().find((entry) => entry.name === TODO);
+      const patches = writes().filter((call) => call.method === "PATCH");
+      expect(patches).toHaveLength(1);
+      expect(patches[0]).toMatchObject({ path: "/repos/owner/repo/labels/status%3Anew", body: { new_name: TODO, color: todo?.color, description: todo?.description } });
+      expect(writes().some((call) => call.method === "POST" && call.body?.name === TODO)).toBe(false);
+      expect(calls.some((call) => call.method === "DELETE")).toBe(false);
+      expect(labels.map((label) => label.name)).toContain(TODO);
+      expect(labels.map((label) => label.name)).not.toContain(OLD);
+      expect(labels.filter((label) => label.name === TODO)).toHaveLength(1);
+      expect(result.stdout).toContain(`renamed  ${TODO} (was ${OLD})`);
+    });
+
+    it("the old label is found whatever its case", async () => {
+      labels.push({ ...FORMER, name: "Status:New" });
+      const result = await run();
+      expect(result.code, result.stderr).toBe(0);
+      expect(labels.map((label) => label.name)).toContain(TODO);
+      expect(labels.some((label) => label.name.toLowerCase() === OLD)).toBe(false);
+    });
+
+    it("the file's renamed_from may differ in case from the repository's label", async () => {
+      labels.push({ ...FORMER });
+      const result = await run(["--file", tempLabelsFile(fileText.replace('"status:new"', '"Status:New"'))]);
+      expect(result.code, result.stderr).toBe(0);
+      expect(writes().filter((call) => call.method === "PATCH").map((call) => call.path)).toEqual(["/repos/owner/repo/labels/status%3Anew"]);
+      expect(labels.map((label) => label.name)).toContain(TODO);
+    });
+
+    it("only the new label exists: nothing is written for it (the key does nothing once the old label is gone)", async () => {
+      expect((await run()).code).toBe(0);
+      expect(labels.map((label) => label.name)).toContain(TODO);
+      calls = [];
+      const again = await run();
+      expect(again.code, again.stderr).toBe(0);
+      expect(writes()).toEqual([]);
+      expect(again.stdout).toContain(`ok       ${TODO}`);
+    });
+
+    it("neither exists: the new label is created, not renamed", async () => {
+      const result = await run(["--file", tempLabelsFile(fileText)]);
+      expect(result.code, result.stderr).toBe(0);
+      expect(writes().map((call) => [call.method, call.body?.name])).toEqual([
+        ["POST", TODO],
+        ["POST", "type:bug"],
+      ]);
+    });
+
+    it("both exist: nothing is written for them, the run fails naming both, the other labels still sync", async () => {
+      labels.push({ ...FORMER }, { name: TODO, color: "ededed", description: "Waiting for triage" });
+      const result = await run(["--file", tempLabelsFile(fileText)]);
+      expect(result.code).not.toBe(0);
+      expect(result.stderr).toContain(`FAILED   ${TODO}`);
+      expect(result.stderr).toContain(`"${OLD}"`);
+      expect(result.stderr).toContain(`"${TODO}"`);
+      expect(result.stderr).toMatch(/label\(s\) failed: status:todo/);
+      expect(writes().map((call) => [call.method, call.body?.name])).toEqual([["POST", "type:bug"]]);
+      expect(labels.filter((label) => label.name === OLD || label.name === TODO)).toHaveLength(2);
+      expect(calls.some((call) => call.method === "DELETE")).toBe(false);
+    });
+
+    it("both exist: a dry run fails too and writes nothing", async () => {
+      labels.push({ ...FORMER }, { name: TODO, color: "ededed", description: "Waiting for triage" });
+      const result = await run(["--dry-run", "--file", tempLabelsFile(fileText)]);
+      expect(result.code).not.toBe(0);
+      expect(result.stderr).toContain(`FAILED   ${TODO}`);
+      expect(writes()).toEqual([]);
+    });
+
+    it("a dry run says it would rename and writes nothing", async () => {
+      labels.push({ ...FORMER });
+      const result = await run(["--dry-run", "--file", tempLabelsFile(fileText)]);
+      expect(result.code, result.stderr).toBe(0);
+      expect(writes()).toEqual([]);
+      expect(result.stdout).toContain(`would rename from ${OLD}: ${TODO}`);
+      expect(result.stdout).toContain("1 to rename");
+    });
+
+    it("a failed rename exits non-zero and names the label; the old label stays", async () => {
+      labels.push({ ...FORMER });
+      failNames.add(OLD);
+      const result = await run(["--file", tempLabelsFile(fileText)]);
+      expect(result.code).not.toBe(0);
+      expect(result.stderr).toContain(TODO);
+      expect(result.stderr).toContain("422");
+      expect(labels.map((label) => label.name)).toContain(OLD);
+    });
+  });
+
   it("--dry-run prints the plan and writes nothing", async () => {
     labels.push({ name: "type:bug", color: "000000", description: "old" });
     const result = await run(["--dry-run"]);
@@ -303,6 +412,16 @@ describe("sync-labels.mjs", () => {
       ["an unquoted value", "- name: type:bug\n  color: d73a4a\n  description: d\n", /double-quoted string/],
       ["an unknown key", '- name: "type:bug"\n  color: "d73a4a"\n  description: "d"\n  emoji: "x"\n', /unknown key "emoji"/],
       ["no entries", "# only a comment\n", /no entries/],
+      ["an empty renamed_from", '- name: "type:bug"\n  color: "d73a4a"\n  description: "d"\n  renamed_from: " "\n', /type:bug.*empty renamed_from/],
+      ["a renamed_from equal to the name", '- name: "type:bug"\n  color: "d73a4a"\n  description: "d"\n  renamed_from: "type:bug"\n', /type:bug.*renamed_from is the label's own name/],
+      ["a renamed_from equal to the name in another case", '- name: "type:bug"\n  color: "d73a4a"\n  description: "d"\n  renamed_from: "Type:Bug"\n', /renamed_from is the label's own name/],
+      [
+        "a renamed_from that is another entry",
+        '- name: "type:bug"\n  color: "d73a4a"\n  description: "d"\n  renamed_from: "type:idea"\n- name: "type:idea"\n  color: "a2eeef"\n  description: "e"\n',
+        /type:bug.*renamed_from "type:idea" is also an entry/,
+      ],
+      ["a renamed_from that is not a string", '- name: "type:bug"\n  color: "d73a4a"\n  description: "d"\n  renamed_from: 3\n', /"renamed_from" must be a string/],
+      ["a duplicate renamed_from key", '- name: "type:bug"\n  color: "d73a4a"\n  description: "d"\n  renamed_from: "a"\n  renamed_from: "b"\n', /duplicate key "renamed_from"/],
     ];
     for (const [title, text, message] of cases) {
       it(title, async () => {
