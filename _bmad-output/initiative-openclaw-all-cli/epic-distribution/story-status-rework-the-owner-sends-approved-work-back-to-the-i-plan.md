@@ -38,6 +38,13 @@ deferred:
       docs/issues.md States, issue-flow.md Transitions
     severity: low
   - summary: >-
+      L5: when the handled owner-only label's event never shows in the events list after the retries, the state automation still takes it as the owner's own click (fail open).
+    evidence: |-
+      With no event the author and the app flag are unknown, so the event's actor (the webhook sender) stands in, as it did before. Failing closed would revert a real owner click after a lag. The retries (4 reads) make it rare; the implementation agent checks the click itself and asks the owner when it cannot verify it (Rework item 1). Deferred by the owner's decision of 2026-10-31.
+    location: >-
+      scripts/issue-flow/transitions.mjs latestLabeled
+    severity: low
+  - summary: >-
       "The owner's own comment" is judged from the comment's user type and performed_via_github_app; a REST answer that omits the field would read as a person's comment.
     evidence: |-
       Issue comments carry performed_via_github_app in the REST API today (the event check for status:rework itself is also done by the state automation). Not verifiable offline.
@@ -111,6 +118,11 @@ Decisions:
 
 ## Plan Change Log
 
+### 2026-10-31 -- independent review (opus) and the owner's decision
+- Triggering findings: M2 (a rework issue with no own-click approval in its history was skipped silently; the owner decided that the owner's own click on `status:rework` is itself the authorization, exactly like an own-click approval, so no earlier approval is required), M3 (`Batch merge` could merge a batch pull request whose issue the owner had just sent back), M4 (a resumed rework was found by `Issue: #N` alone, which also matches the tickets of earlier rounds), L1, L2, L3, L4, L8.
+- Amended (supersedes the Always clause "the owner's earlier own-click `status:approved` must exist, newer than the last close or reopen" of the intent contract and the Implementation Notes decision on the earlier approval; the contract text itself is read-only and stays as written): Rework item 1 has no approval check; an unverifiable click, a missing earlier result, or a missing owner comment gives `status:blocked` ("add status:rework again by your own click"), never a silent skip; `batch-merge.mjs` holds a batch pull request while any linked issue is in `status:rework`, so a rework fix's answer and `status:in-review` go out before `pr_edit`/`pr_ready`; a resumed rework is found only by `Issue: #N` and `Rework of <ref>` on tickets the resumed draft adds; an owner comment edited after creation counts only if its GraphQL `editor` is an owner; the answer comment is posted before the status (safest: the answer is posted and the issue stays in `rework`, and the next run finishes the status named in the answer); checklist items 2 and 9 and the Rework section carry the no-commit exception; the events list is read again (4 reads) when the handled label's event is missing; the revert comments say the issue keeps its status (or `status:todo`); the workflow comment and the upstream-post status line name `status:rework`.
+- Known-bad states avoided: a silent skip of the owner's click; a merge racing a send-back; a rework build attributed to an earlier round; an instruction edited by someone else; a lost answer or a lost status after a failed dispatch. KEEP: the owner-only revert, the relay refusal, never stale, triage skip, the no-claim decision.
+
 ## Review Triage Log
 
 ### 2026-10-31 -- Review pass (quick, in this session: the worker has no subagent tool and the caller asked for an in-session review)
@@ -125,6 +137,21 @@ Decisions:
   - `[false]` `[reject]` "The relay lets an agent remove `status:rework`, so it could clear an owner's request unanswered" -- removing is allowed for `status:approved` as well; the label is replaced by any outcome anyway (latest wins), and the agent's only way to leave a rework issue is one of the three outcomes by the docs.
 - Mutation checks (each applied alone, tests run, change reverted): 26 mutations, all killed: rework dropped from `OWNER_ONLY_STATUSES`; the app-made-click check removed (also rework-only); the actor check removed (also rework-only); `needsTimeline` without rework; restore may return an owner-only status; restore anchored on the latest reverted label (found a gap: added the earliest-label test); the rework once-key equal to the approval's; no revert comment; rework made stale; `STATUS_LABELS` without it; the relay accepting it; the relay refusing its removal; the label file without it; and 11 doc-pin mutations (rework first, list step, instruction author, baseline, app-made comments, question and draft outcomes, triage skip, triage scope, Send it back, identity.md).
 
+### 2026-10-31 -- Independent review (opus) of the first build, fixed in a follow-up
+- verdicts: 9 findings for this ticket -- high 0, medium 3, low 5, false 0, maybe-false 0 (one low deferred)
+- findings:
+  - `[medium]` `[patch]` M2 authorization: the first build skipped a rework issue without an own-click approval; per the owner's decision the own click is the authorization -- patched in implement.md, issues.md, issue-flow.md, the label description, with pins (`rework` item 1 asks the owner to click again, never skips).
+  - `[medium]` `[patch]` M3 a batch could merge while its issue was sent back -- patched: `scripts/batch-merge.mjs` `checkNotSentBack` (Fixes/Closes/Resolves/Refs links, unreadable issue holds, 404 does not), tests in `test/batch-merge.test.ts`; the docs give the owner's moves (label before the merge; reopen then label after it); a rework fix's status goes out before `pr_ready`.
+  - `[medium]` `[patch]` M4 a resumed rework was found by `Issue: #N` only -- patched: both notes, on tickets the resumed draft adds; pinned.
+  - `[low]` `[patch]` L1 edited owner comments -- patched in docs (GraphQL `editor`; unreadable is data); pinned.
+  - `[low]` `[patch]` L2 partial failure -- patched: comment first, then status; the next run finishes the status named in the answer.
+  - `[low]` `[patch]` L3 checklist items 2 and 9 -- patched with the no-commit exception; housekeeping commits still need the batch.
+  - `[low]` `[patch]` L4 events lag -- patched in `apply.mjs` (4 reads, `ISSUE_FLOW_EVENT_DELAY_MS`), tests with a lagging list.
+  - `[low]` `[patch]` L8 the revert comments said the previous status was "restored" even when it was kept -- patched for both.
+  - `[low]` `[defer]` L5 fail open on a missing event after the retries -- deferred by the owner's decision (recorded in `deferred`).
+  - Nits patched: the `ISSUE_FLOW_OWNERS` comment in `.github/workflows/issue-flow.yml`; the `Upstream post` status line.
+- Mutation checks (follow-up): 17 mutations, all killed: batch-merge never reading linked issues, holding only `Fixes`, ignoring an unreadable issue, holding on any label; events never re-read, re-read when shown; the revert comment saying "restored"; 10 doc pins (earlier approval back, silent skip, edited comments, status before comment, no half-done recovery, `Issue:` note only, status after `pr_ready`, checklist exception, Merging section hold).
+
 ## Verification
 
 **Commands:**
@@ -138,6 +165,8 @@ Status: built.
 Summary: `status:rework` exists (label, `STATUS_LABELS`, `REWORK`, `OWNER_ONLY_STATUSES`), counts only as the owner's own click (the state automation reverts a non-owner's or an app's, with its own comment and once-key; the relay refuses adding it), is never stale, and triage skips it. The implementation agent's procedure is the new `## Rework` section of `docs/agents/implement.md`: picked first, instructions are only the owner's own comments after its latest impl comment, three endings (fix through the batch, new draft in `awaiting-post`, question in `blocked`). Docs: implement.md, triage.md, issues.md (states table, "Send it back"), comments.md (examples), identity.md, issue-flow.md, MEMORY, CHANGELOG.
 
 Review: quick, run in this session (no subagent tool in this worker). 7 findings: 2 medium patched (doc gaps in the run procedure), 4 low deferred, 1 false. Follow-up review recommended: true. Patched counts by verdict: medium 2, high 0. The unverified risk: the Rework procedure is prompt-following in a scheduled agent run (item 2 reads comment authors by REST, item 3 keeps the status, item 4 chooses the ending); only the code half (revert, relay, stale, triage scope text) is tested, and no run has followed the new section yet.
+
+Follow-up (2026-10-31): the independent review's M2, M3, M4, L1 to L4, L8, and the nits are fixed (Plan Change Log, second triage entry); L5 is deferred. Follow-up review recommended: true: the Rework procedure is still prompt-following (the GraphQL editor read, the comment-first order and its recovery, the no-claim rule have not been followed by a real run), and the `Batch merge` hold has only run against the stub.
 
 Verification: the four touched test files, then `npm run ci` (plan gate, typecheck, 1659 unit tests, build, package allowlist, pack, install smoke): all passed.
 
