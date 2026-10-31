@@ -309,3 +309,15 @@ after = [25]
 hitl = false
 risk = "medium"
 references = ["epic-distribution.md", "issue-flow.md"]
+
+[[entry]]
+id = 27
+type = "story"
+title = "Rename `status:new` to `status:todo`"
+description = "Owner decision 2026-10-31: `status:new` reads as \"just filed\", but the status also holds reopened issues, an author's answer to a question, and work sent back to be redone; `status:todo` says what it means: waiting for triage to pick it up. Rename everywhere, with the same meaning and transitions: `.github/labels.yml` (description covers filed, reopened, answered, sent back), the issue forms (`.github/ISSUE_TEMPLATE/*.yml`), `scripts/issue-flow/transitions.mjs` (the constant and every place that sets or reads it), the relay allow-list if it names it, docs (`docs/issues.md`, `docs/agents/*.md`, issue-flow.md, MEMORY), tests. GitHub side: rename the existing label instead of creating a second one, so issues and history keep it: `scripts/sync-labels.mjs` gets an optional `renamed_from` key per entry (if the old name exists and the new one does not, PATCH the old label to the new name; if both exist, fail with a clear message; never delete). Label history: GitHub label events keep the name used at the time, so code that reads label events (latest status wins, the reverted-approval restore, stale timing) treats a historical `status:new` as `status:todo`. Any other place that sends work back for rework and today picks a different status stays as is; record it in the plan if the owner might want it to land in `status:todo` too."
+verify = "Tests: labels file has `status:todo` with `renamed_from = status:new` and no `status:new` entry; sync renames when only the old exists, no-ops when only the new exists, fails when both exist (API stubs); transitions set `status:todo` for opened, reopened, author reply, none left; a label history with `status:new` events settles as `status:todo` (latest wins, approval revert restore); forms set `status:todo`; a grep pin that no live code or doc outside the changelog, history, and `renamed_from` names `status:new`; `npm run ci` passes; live: after merge the label sync renames the label on GitHub (closed issues show `status:todo`)."
+covers = []
+after = [26]
+hitl = false
+risk = "medium"
+references = ["epic-distribution.md", "issue-flow.md"]
