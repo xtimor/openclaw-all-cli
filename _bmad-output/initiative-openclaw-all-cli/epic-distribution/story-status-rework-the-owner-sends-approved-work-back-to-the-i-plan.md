@@ -17,6 +17,13 @@ context: ['{project-root}/AGENTS.md', '{project-root}/MEMORY.md', '{project-root
 warnings: []
 deferred:
   - summary: >-
+      An issue can be left with two status labels after the state automation applied nothing for an owner-only label whose event never showed; nothing reconciles it until the next label event.
+    evidence: |-
+      M1 of the re-review made issue-flow skip an owner-only label it cannot attribute (4 reads). The owner's next label event or any later run on the issue settles it; a daily reconcile job (like the stale job) would settle it without waiting. Deferred by the coordinator on 2026-10-31.
+    location: >-
+      scripts/issue-flow/apply.mjs runEvent
+    severity: low
+  - summary: >-
       A post that is already published upstream cannot be edited, so a rework of it posts the corrected text as the next reply on the thread.
     evidence: |-
       The Upstream post workflow and scripts/upstream-issue.mjs create or comment only (never edit, by design of 3.23-3.25). The rework docs say so to the owner and the agent.
@@ -171,6 +178,14 @@ Decisions:
   - `[low]` `[patch]` L3 removing the label by hand gives `status:todo`; cancel by setting the wanted status -- documented (implement.md, issues.md); pinned.
   - `[low]` `[patch]` L4 an in-review answer already posted before `pr_ready` gets no second comment -- documented; pinned.
 - Mutation checks (follow-up): 18 mutations, all killed: the rework hold dropped from the ready close; no carrier for a held batch; no apply-time recheck; a ready/draft flip allowed; another title and another author closable; relay merge ignoring the hold; an unreadable linked issue ignored; the old any-earlier-event re-read; an owner-only label with no event applied; every status label skipped when no event (found a gap: added `NO_EVENT_OTHER_STATUS`); 8 doc pins.
+
+### 2026-10-31 -- Third review: N1 (blocker) and a low
+- verdicts: 2 findings -- high 1, medium 0, low 1, false 0, maybe-false 0 (plus one deferred item)
+- findings:
+  - `[high]` `[patch]` N1 the apply-time recheck of the held-batch close read the links from the re-read pull request, but the same dispatch's `pr_edit` had stripped `Fixes`/`Refs` from its body, so the close was always refused and the old pull request stayed open, green and unlinked, for Batch merge to merge (defeating the hold) -- patched: `prepare` records the linked issue numbers (`linkedIssueNumbers`) in `closing`; the apply-time recheck (`reworkAmong`) reads only those issues' labels. Tests: the stub now returns the edited body after `PATCH /pulls/21`; the full dispatch succeeds and re-reads issue 7; it is refused when the label is gone at apply time (the edit stripped the links); mutations that read the links from the re-read body, drop the recorded links, or drop the recheck are all killed.
+  - `[low]` `[patch]` `requireCarried` accepted a carrier PR of any title -- patched: it must start with `Issue batch`; a test case added, the mutation is killed.
+  - `[low]` `[defer]` A daily reconcile for issues left with two statuses after an "apply nothing" (an owner-only label whose event never showed) -- deferred, recorded in `deferred`.
+- Mutation checks (third pass): 4 mutations, all killed.
 
 ## Verification
 
