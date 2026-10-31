@@ -199,8 +199,7 @@ describe("upstream-post: the published path", () => {
       `GET ${OURS_API}/issues/45/events`,
       "GET /user",
       `GET /repos/${TARGET}/issues/${NOTE_ISSUE}`,
-      `GET /repos/${TARGET}/issues/${NOTE_ISSUE}/comments`, // the number of our earlier comments on the thread (the round)
-      `GET /repos/${TARGET}/issues/${NOTE_ISSUE}/comments`, // the same marker and round already there
+      `GET /repos/${TARGET}/issues/${NOTE_ISSUE}/comments`, // the thread: the highest round of ours before the draft, and this draft's own post
       `GET /repos/${TARGET}/issues`, // the cap
       `POST /repos/${TARGET}/issues/${NOTE_ISSUE}/comments`,
       `GET ${OURS_API}/issues/45`, // the status line of the result comment: is the issue open
@@ -256,7 +255,7 @@ describe("upstream-post: the published path", () => {
   });
 
   it("EXISTING: a comment with the same marker line is returned, nothing is posted upstream, the label is still removed", async () => {
-    answers.set(`GET /repos/${TARGET}/issues/${NOTE_ISSUE}/comments`, [200, [{ id: 8123, user: { login: "xtimor" }, body: `earlier\n${MARKER}\n` }]]);
+    answers.set(`GET /repos/${TARGET}/issues/${NOTE_ISSUE}/comments`, [200, [{ id: 8123, user: { login: "xtimor" }, created_at: "2026-10-29T08:30:00Z", body: `earlier\n${MARKER}\n` }]]);
     const result = await run();
     expect(result.code, result.stderr).toBe(0);
     expect(upstreamWrites()).toEqual([]);
@@ -763,14 +762,15 @@ describe("upstream-post: the status after the post (ticket 3.26)", () => {
     expect(posted()).toContain("**Status:** `status:upstream`");
   });
 
-  it("EXISTING: nothing new went upstream, so the status stays (the issue may hold a newer draft in awaiting-post), and the comment says so", async () => {
-    answers.set(`GET /repos/${TARGET}/issues/${NOTE_ISSUE}/comments`, [200, [{ id: 8123, user: { login: "xtimor" }, body: `earlier\n${MARKER}\n` }]]);
+  it("EXISTING: this draft is already posted, so the status moves to upstream again (it recovers a failed earlier move), and the comment says so", async () => {
+    answers.set(`GET /repos/${TARGET}/issues/${NOTE_ISSUE}/comments`, [200, [{ id: 8123, user: { login: "xtimor" }, created_at: "2026-10-29T08:30:00Z", body: `earlier\n${MARKER}\n` }]]);
     const existing = await run();
     expect(existing.code, existing.stderr).toBe(0);
     expect(posted()).toContain("nothing new was posted");
-    expect(statusWrites()).toEqual([]);
-    expect(posted()).toContain("**Status:** unchanged.");
-    expect(posted()).not.toContain("status:upstream");
+    expect(upstreamWrites()).toEqual([]);
+    expect(statusAdds()).toEqual([{ labels: ["status:upstream"] }]);
+    expect(statusRemovals()).toEqual(["status:awaiting-post"]);
+    expect(posted()).toContain("**Status:** `status:upstream`");
     expect(labelRemovals()).toHaveLength(1);
   });
 
@@ -879,7 +879,7 @@ describe("upstream-post: later replies on the same target, numbered from the ups
     expect(upstreamWrites()[0]?.body).toEqual({ body: `### Retest 2\n\n${BODY_MARK}\n\n${MARKER} (reply 3)\n` });
   });
 
-  it("RELABEL_ROUND_2: the same reply labeled again after it was posted keeps round 2, returns that comment, posts nothing, and leaves the status", async () => {
+  it("RELABEL_ROUND_2: the same reply labeled again after it was posted keeps round 2, returns that comment, posts nothing, and moves the status again", async () => {
     setComments(draft1, reply());
     thread(round1, round2);
     const again = await run();
@@ -888,7 +888,7 @@ describe("upstream-post: later replies on the same target, numbered from the ups
     expect(posted()).toContain("nothing new was posted");
     expect(posted()).toContain("#issuecomment-8124");
     expect(again.stdout).toContain("existing");
-    expect(statusAdds()).toEqual([]);
+    expect(statusAdds()).toEqual([{ labels: ["status:upstream"] }]);
   });
 
   it("RELABEL_ROUND_1: the first draft labeled again keeps round 1 and returns the first comment, not the reply", async () => {
@@ -909,6 +909,28 @@ describe("upstream-post: later replies on the same target, numbered from the ups
     thread(threadComment(8123, "2026-10-29T09:39:59Z", `first\n${MARKER}\n`));
     expect((await run()).code).toBe(0);
     expect(upstreamWrites()[0]?.body).toEqual({ body: `### Retest 2\n\n${BODY_MARK}\n\n${MARKER} (reply 2)\n` });
+  });
+
+  it("DELETED_ROUND_1: round 1 was deleted upstream: the re-label of the posted reply returns it and posts nothing; a new draft after it is (reply 3)", async () => {
+    setComments(draft1, reply());
+    thread(round2);
+    const again = await run();
+    expect(again.code, again.stderr).toBe(0);
+    expect(upstreamWrites()).toEqual([]);
+    expect(posted()).toContain("#issuecomment-8124");
+    calls = [];
+    setComments(draft1, reply(), reply(`### Retest 3\n\n${BODY_MARK}`, "2026-10-29T09:55:00Z"));
+    expect((await run()).code).toBe(0);
+    expect(upstreamWrites()[0]?.body).toEqual({ body: `### Retest 3\n\n${BODY_MARK}\n\n${MARKER} (reply 3)\n` });
+  });
+
+  it("EDITED_OLD_COMMENT: a marker added later to an older owner comment does not shift a re-label of the posted reply", async () => {
+    setComments(draft1, reply());
+    thread(round1, threadComment(5, "2026-10-29T08:00:00Z", `an old remark\n${MARKER}`), round2);
+    const again = await run();
+    expect(again.code, again.stderr).toBe(0);
+    expect(upstreamWrites()).toEqual([]);
+    expect(posted()).toContain("#issuecomment-8124");
   });
 
   it("OUR_COMMENTS_DO_NOT_COUNT: result comments on our issue (published, edited, forged, any author) never change the round", async () => {

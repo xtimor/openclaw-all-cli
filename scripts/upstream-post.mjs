@@ -8,10 +8,10 @@
 // What it does, in order (every write is to THIS repository, with the job's GITHUB_TOKEN, except the one upstream call):
 //   1. Replay and withdrawal: attempt not 1, a triggering actor who is not an owner, or the label no longer on the issue: exit 1 and
 //      change nothing (a re-run is not a new signal from the owner, and removing the label cancels the request).
-//   2. From here every outcome ends the same way: one result comment on our issue and the label removed. A publish (created,
-//      commented) then moves our issue to `status:upstream` (ticket 3.26): it adds that label, then removes every other `status:*`
-//      label, with the job token and after the comment. An `existing` result, a refusal, and a closed issue leave the statuses as they
-//      are, and the comment's Status line says which happened.
+//   2. From here every outcome ends the same way: one result comment on our issue and the label removed. A post (created,
+//      commented, or existing: this draft was posted before) then moves our issue to `status:upstream` (ticket 3.26): it adds that label, then removes every other `status:*`
+//      label, with the job token and after the comment. A refusal and a closed issue leave the statuses as they are, and the
+//      comment's Status line says which happened.
 //   3. The labeler (`github.event.sender`) must be the workflow's actor, an owner (ISSUE_FLOW_OWNERS), a User, not a bot.
 //   4. The draft: the LATEST comment of our issue whose first line is `<!-- issue-impl -->` and whose author is the agent app (the
 //      login in .github/agent-identity.json, type Bot). It must hold exactly one draft block and must not have been edited after the
@@ -315,10 +315,11 @@ async function checkLabelEvent(ours, config) {
 }
 
 /**
- * Whether a result moves our issue to `status:upstream` (ticket 3.26): only a post that was just made (created or commented), never an
- * `existing` one (nothing new went upstream, and the issue may hold a newer draft in `status:awaiting-post`), never a refusal.
+ * Whether a result moves our issue to `status:upstream` (ticket 3.26): a post that was just made (created or commented) and an
+ * `existing` one, never a refusal. An `existing` comment result means this very draft (the latest implementation comment) is already
+ * posted, so moving again recovers an earlier move that failed; a newer draft would be a later reply with its own round and its own post.
  */
-const movesStatus = (result) => result.code === 0 && RESULT_URL.test(result.url) && (result.kind === "created" || result.kind === "commented");
+const movesStatus = (result) => result.code === 0 && RESULT_URL.test(result.url) && ["created", "commented", "existing"].includes(result.kind);
 
 /** Reads our issue's labels and state just before the result comment: `{move, names}`; a closed issue has no status, so it is not moved. */
 async function planMove(ours, config) {
