@@ -3,7 +3,7 @@ title: 'Rename `status:new` to `status:todo`'
 type: 'chore'
 ticket: 27
 created: '2026-10-31'
-status: built
+status: done
 baseline_revision: '67315361cf08c9c88d35511198eefe5ad3bcbe3a'
 route: 'oneshot'
 route_source: 'pinned'

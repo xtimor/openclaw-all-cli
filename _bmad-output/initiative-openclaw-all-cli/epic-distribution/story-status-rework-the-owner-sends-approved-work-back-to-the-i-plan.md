@@ -3,7 +3,7 @@ title: '`status:rework`: the owner sends approved work back to the implementatio
 type: 'feature'
 ticket: 28
 created: '2026-10-31'
-status: built
+status: done
 baseline_revision: '242c4c4fbc6f3f17a67f848cc6b392259e414ca1'
 route: 'oneshot'
 route_source: 'pinned'
