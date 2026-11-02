@@ -16,7 +16,7 @@ One shape for every comment of the triage agent and the implementation agent on 
 
 Rules:
 
-- Comments are English and short. The marker is the first line; the state automation ignores a marker comment by an owner or by an agent app login (`ISSUE_FLOW_AGENTS`) as the author's reply, so a marker anywhere else (or by anyone else) counts as a reply.
+- Comments are English and short. The marker is the first line; the state automation ignores a marker comment by an owner or by an agent app login (`ISSUE_FLOW_AGENTS`) as a reply, so a marker anywhere else (or by anyone else) counts as a reply. A reply to `status:needs-info` is a comment by the issue's author, or by an owner as a person (not through an app); it moves the issue back to `status:todo`.
 - `**Waiting for:**` names one person with `@login`: the author for questions, the owner (the owner's login, not the app's) for decisions. Mention them so GitHub notifies them. Use the login the issue shows; do not guess.
 - `**Status:**` is the label the issue has after the run's label step, or, for the one issue an agent closes (a security report, no status label), `closed (not planned)`. Questions for the reporter are `status:needs-info`, and so is a live check only the owner can run (the owner in `Waiting for`). `status:blocked` is only for the owner's decisions. `status:awaiting-post` means an upstream draft is ready and only the owner acts (add `upstream:post`); `status:upstream` is set by the `Upstream post` workflow after it publishes, never by an agent, and every run then watches the thread. `status:rework` is the owner's own click (never an agent's): the owner sent a result back, and the answer to it is a new comment, not an edit (see "Implementation rework answers" below). `status:declined` is an agent's "cannot or will not fix" with the reason and evidence, the owner in `Waiting for`; an agent never closes an issue, the owner does.
 - An edited comment sends no notification: when an edit adds questions or a request, also post a short new comment with the marker, the mention, and the same `Waiting for` line.
@@ -91,7 +91,7 @@ Triage needs info from the owner (a bug that needs a live check the run cannot d
 <!-- issue-triage -->
 **Status:** `status:needs-info`: the bug could not be reproduced here; it needs a live check
 **Waiting for:** @<owner-login>: run `NODE_USE_ENV_PROXY=1 OPENCLAW_ALL_CLI_LIVE=1 npx vitest run test/live/session-resume.live.test.ts` with your login and paste the output
-**Next:** comment the result, then set `status:todo` (your comment does not move the issue); the next triage reads it and reproduces or declines. After 30 days in `status:needs-info` the daily job closes it as not planned
+**Next:** comment the result or the log (your comment moves the issue back to `status:todo`); the next triage reads it and reproduces or declines. After 30 days in `status:needs-info` the daily job closes it as not planned and notifies you and the author
 **What happened:** the report is complete, but the failure needs a real `cursor-agent` turn and this run has no login.
 **Evidence:** the focused unit tests on `main` pass; no unit test reaches the live turn.
 **Reproduction:** not reproduced. `main` at `<40-character commit SHA>`; live check not run: `CURSOR_API_KEY` is not set.

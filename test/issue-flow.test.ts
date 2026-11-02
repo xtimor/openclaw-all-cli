@@ -34,6 +34,7 @@ interface Event {
   headRepo?: string | null;
   author?: string | null;
   agent?: boolean;
+  viaApp?: boolean;
 }
 interface Transitions {
   STATUS_LABELS: string[];
@@ -49,7 +50,7 @@ interface Transitions {
   STALE_STATUSES: string[];
   AGENT_MARKER_RE: RegExp;
   NON_OWNER_APPROVAL_COMMENT: string;
-  staleComment(login: unknown): string;
+  staleComment(login: unknown, owners?: unknown): string;
   declinedStaleComment(login: unknown, owners?: unknown): string;
   staleStatus(issue: IssueIn): string | null;
   statusSince(events: unknown, label?: string): number | null;
@@ -600,8 +601,31 @@ describe("decide: issue_comment", () => {
 
   it("AUTHOR_REPLY: a comment by someone else does nothing", () => {
     expect(t.decide(comment("bob"), issue(["status:needs-info"]))).toEqual([]);
-    expect(t.decide(comment("xtimor"), issue(["status:needs-info"]), { owners: OWNERS })).toEqual([]);
+    expect(t.decide(comment("xtimor"), issue(["status:needs-info"]))).toEqual([]); // no owner list: nobody is an owner
     expect(t.decide(comment(null), issue(["status:needs-info"], { user: undefined }))).toEqual([]);
+    expect(t.decide(comment(null), issue(["status:needs-info"], { user: undefined }), { owners: OWNERS })).toEqual([]);
+    expect(t.decide({ ...comment("bob"), viaApp: false }, issue(["status:needs-info"]), { owners: OWNERS })).toEqual([]);
+  });
+
+  it("OWNER_REPLY (ticket 3.29): an owner's own comment on needs-info moves it to todo, any case, so a live check can be answered", () => {
+    const moved = [add("status:todo"), remove("status:needs-info")];
+    expect(t.decide(comment("xtimor"), issue(["status:needs-info"]), { owners: OWNERS })).toEqual(moved);
+    expect(t.decide(comment("XTimor"), issue(["status:needs-info", "type:bug"]), { owners: OWNERS })).toEqual(moved);
+    expect(t.decide({ ...comment("xtimor"), viaApp: false }, issue(["status:needs-info"]), { owners: OWNERS })).toEqual(moved);
+  });
+
+  it("OWNER_REPLY: an owner's comment made through a GitHub App, or a stranger's, or an owner's marker comment, moves nothing", () => {
+    const open = issue(["status:needs-info"]);
+    expect(t.decide({ ...comment("xtimor"), viaApp: true }, open, { owners: OWNERS })).toEqual([]);
+    expect(t.decide(comment("mallory"), open, { owners: OWNERS })).toEqual([]);
+    expect(t.decide({ ...comment("xtimor"), agent: true }, open, { owners: OWNERS })).toEqual([]);
+    // The author's own reply still counts through an app flag (unchanged); only the owner path needs a person.
+    expect(t.decide({ ...comment("alice"), viaApp: true }, open, { owners: OWNERS })).toEqual([add("status:todo"), remove("status:needs-info")]);
+  });
+
+  it("OWNER_REPLY: other states are unchanged (declined and triaged never move on an owner's comment; closed does nothing)", () => {
+    for (const state of [["status:declined"], ["status:triaged"], ["status:blocked"]]) expect(t.decide(comment("xtimor"), issue(state), { owners: OWNERS })).toEqual([]);
+    expect(t.decide(comment("xtimor"), issue(["status:needs-info"], { state: "closed" }), { owners: OWNERS })).toEqual([]);
   });
 
   it("AUTHOR_REPLY: the author's comment in any other state does nothing", () => {
@@ -943,7 +967,7 @@ describe("staleIssues and decide: stale", () => {
 
   it("STALE: closes as not planned with a comment that mentions the author and keeps no status", () => {
     expect(t.decide({ name: "stale" }, needsInfo(1, 31))).toEqual([
-      { op: "comment", body: t.staleComment("alice") },
+      { op: "comment", body: t.staleComment("alice", []) },
       remove("status:needs-info"),
       { op: "close", reason: "not_planned" },
     ]);
@@ -1018,8 +1042,12 @@ describe("staleIssues and decide: stale", () => {
     expect(plain).not.toMatch(/\$\{|@\w/);
   });
 
-  it("DECLINED: a needs-info stale close still mentions only the author", () => {
-    expect(t.decide({ name: "stale" }, needsInfo(1, 31), { owners: OWNERS })[0]).toEqual({ op: "comment", body: t.staleComment("alice") });
+  it("OWNER_REPLY (ticket 3.29): a needs-info stale close mentions the author and the owners, each once", () => {
+    expect(t.decide({ name: "stale" }, needsInfo(1, 31), { owners: OWNERS })[0]).toEqual({ op: "comment", body: t.staleComment("alice", OWNERS) });
+    expect(t.staleComment("alice", OWNERS)).toContain("@alice, @xtimor, this issue has been in `status:needs-info` for 30 days");
+    expect(t.staleComment("alice", "xtimor, ALICE, bob")).toContain("@alice, @xtimor, @bob, this issue has");
+    expect(t.staleComment("", ["xtimor"])).toMatch(/^<!-- issue-flow -->\n@xtimor, this issue has/);
+    expect(t.staleComment("alice", ["-bad", "a b", "@x"])).toBe(t.staleComment("alice"));
   });
 });
 
@@ -1320,6 +1348,19 @@ describe("runEvent", () => {
     expect(fake.labelsOf(12)).toEqual(["status:todo"]);
   });
 
+  it("OWNER_REPLY: runEvent moves a needs-info issue on the owner's own comment, not on one made through a GitHub App", async () => {
+    const send = async (login: string, via: unknown) => {
+      const fake = fakeGithub([{ number: 12, state: "open", labels: ["status:needs-info"], user: { login: "alice" } }]);
+      const payload = { action: "created", sender: { login }, comment: { user: { login }, body: "result of the live check", ...(via === undefined ? {} : { performed_via_github_app: via }) }, issue: { number: 12 } };
+      await apply.runEvent({ github: fake.github, context: ctx("issue_comment", payload), core: fakeCore(), env: { ISSUE_FLOW_OWNERS: "xtimor" } });
+      return fake.labelsOf(12);
+    };
+    expect(await send("xtimor", undefined)).toEqual(["status:todo"]);
+    expect(await send("xtimor", null)).toEqual(["status:todo"]);
+    expect(await send("xtimor", { slug: "claude" })).toEqual(["status:needs-info"]);
+    expect(await send("mallory", undefined)).toEqual(["status:needs-info"]);
+  });
+
   it("AUTHOR_REPLY: runEvent reads the marker at the start of the body, for the owner only", async () => {
     const send = async (login: string, body: string, owners: string) => {
       const fake = fakeGithub([{ number: 12, state: "open", labels: ["status:needs-info"], user: { login } }]);
@@ -1594,7 +1635,7 @@ describe("runStale", () => {
       expect(await apply.runStale({ github: fake.github, context: ctx("schedule", {}), core: fakeCore(), dryRun: false, now: NOW, env })).toEqual([3, 1]);
       expect(fake.comments(1)).toEqual([t.declinedStaleComment("alice", ["xtimor"])]);
       expect(fake.comments(1)[0]).toContain("@alice, @xtimor: this issue");
-      expect(fake.comments(3)).toEqual([t.staleComment("carol")]);
+      expect(fake.comments(3)).toEqual([t.staleComment("carol", ["xtimor"])]);
       expect(fake.state(1)).toBe("closed");
       expect(fake.labelsOf(1)).toEqual(["type:bug"]);
       expect(fake.state(2)).toBe("open");
@@ -1613,7 +1654,7 @@ describe("runStale", () => {
       const both: FakeIssue = { number: 7, state: "open", labels: ["status:needs-info", "status:declined"], updated_at: daysAgo(40), user: { login: "alice" } };
       const fake = fakeGithub([both]);
       expect(await apply.runStale({ github: fake.github, context: ctx("schedule", {}), core: fakeCore(), dryRun: false, now: NOW, env })).toEqual([7]);
-      expect(fake.comments(7)).toEqual([t.staleComment("alice")]);
+      expect(fake.comments(7)).toEqual([t.staleComment("alice", ["xtimor"])]);
       expect(fake.calls.filter((call) => call.startsWith("update"))).toEqual(["update 7 closed not_planned"]);
     });
 

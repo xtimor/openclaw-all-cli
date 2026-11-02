@@ -686,8 +686,13 @@ describe("a triaged bug is reproduced (ticket 3.29)", () => {
       mutation: mutate("triage", "`Waiting for` the author, concrete numbered questions", "`Waiting for` nobody"),
     },
     {
-      name: "not reproduced, route 2: needs-info to the owner naming the exact live check, who sets status:todo themself",
-      holds: (d) => /needs a live environment this run lacks[^\n]*`Waiting for` the owner \(`@login`\), with the exact live check/.test(step5(d)) && /a comment by the owner does not move the issue \(only the author's does\)/.test(step5(d)) && /sets `status:todo`/.test(step5(d)),
+      name: "not reproduced, route 2: needs-info to the owner naming the exact live check; the owner just comments",
+      holds: (d) => /needs a live environment this run lacks[^\n]*`Waiting for` the owner \(`@login`\), with the exact live check/.test(step5(d)) && /the owner just comments the result or log of the check: an owner's own comment \(not through an app, not a marker comment\) moves the issue back to `status:todo`/.test(step5(d)) && !/does not move the issue/.test(step5(d)) && !/sets `status:todo`/.test(step5(d)),
+      mutation: mutate("triage", "the owner just comments the result or log of the check", "the owner sets `status:todo` by hand"),
+    },
+    {
+      name: "the exact live check is named in the owner route",
+      holds: (d) => /with the exact live check: the command or steps, the output that would show the bug, and what to paste back/.test(step5(d)),
       mutation: mutate("triage", "with the exact live check: the command or steps", "with a vague request: some steps"),
     },
     {
@@ -717,7 +722,7 @@ describe("a triaged bug is reproduced (ticket 3.29)", () => {
     },
     {
       name: "comments.md: the accepted example shows the Reproduction part (commit, test code, failing output) and the owner-check example waits for the owner",
-      holds: (d) => /\*\*Reproduction:\*\* on `main` at/.test(acceptedExample(d)) && /```ts/.test(acceptedExample(d)) && /Failing output/.test(acceptedExample(d)) && /Verify: `npx vitest run test\/models-context\.test\.ts`/.test(acceptedExample(d)) && /\*\*Waiting for:\*\* @<owner-login>: run `[^`]+`/.test(ownerExample(d)) && /set `status:todo` \(your comment does not move the issue\)/.test(ownerExample(d)) && /`\*\*Reproduction:\*\*` part/.test(d.comments),
+      holds: (d) => /\*\*Reproduction:\*\* on `main` at/.test(acceptedExample(d)) && /```ts/.test(acceptedExample(d)) && /Failing output/.test(acceptedExample(d)) && /Verify: `npx vitest run test\/models-context\.test\.ts`/.test(acceptedExample(d)) && /\*\*Waiting for:\*\* @<owner-login>: run `[^`]+`/.test(ownerExample(d)) && /comment the result or the log \(your comment moves the issue back to `status:todo`\)/.test(ownerExample(d)) && /`\*\*Reproduction:\*\*` part/.test(d.comments),
       mutation: mutate("comments", "Failing output (", "Output ("),
     },
     {
@@ -727,13 +732,17 @@ describe("a triaged bug is reproduced (ticket 3.29)", () => {
         /Reading the code alone never makes a bug `triaged`/.test(row(d.issues, "status:triaged")) &&
         /a bug must be reproduced on `main` with a failing test the agent writes itself, never the reporter's code/.test(d.issues) &&
         /a bug that triage could not reproduce because it needs a live environment the run lacks/.test(row(d.issues, "status:needs-info")) &&
-        /your comment does not move it: run the check, comment the result, and set `status:todo` yourself/.test(row(d.issues, "status:needs-info")),
+        /just comment the result or log of the check: your own comment \(not through an app\) moves it back to `todo` too/.test(row(d.issues, "status:needs-info")) &&
+        /so does a comment by an owner \(`ISSUE_FLOW_OWNERS`\) made as a person, not through a GitHub App/.test(d.issues) &&
+        /Its comment mentions the author and the owner/.test(d.issues),
       mutation: mutate("issues", "Reading the code alone never makes a bug `triaged`.", ""),
     },
     {
       name: "issue-flow.md: the triaged row, the triage steps, and the transitions say the same",
       holds: (d) =>
         /a bug is accepted only when the agent \*\*reproduced it on current `main`\*\*/.test(row(d.flow, "status:triaged")) &&
+        /the owner's own comment \(back to `todo`; the owner answers the live check just by commenting\)/.test(row(d.flow, "status:needs-info")) &&
+        /needs-info ──owner comments \(a person, not through an app, not a marker comment\)─► todo/.test(d.flow) &&
         /"explained by code" alone is no longer an accept/.test(d.flow) &&
         /A bug that is not reproduced takes one of three routes: `needs-info` to the author[^\n]*`needs-info` to the owner[^\n]*`declined` with the evidence/.test(d.flow) &&
         /triage: bug not reproduced, needs a live environment the run lacks─► needs-info \(waiting for the owner/.test(d.flow) &&

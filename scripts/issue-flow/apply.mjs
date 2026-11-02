@@ -133,7 +133,7 @@ export async function runEvent({ github, context, core, env = process.env }) {
     const actor = isComment ? (payload.comment?.user?.login ?? sender) : sender;
     // The time of an opened/reopened event: the issue's creation, or its last update (the reopen) as the event carried it.
     const at = payload.action === "opened" ? payload.issue.created_at : payload.issue.updated_at;
-    await handle(payload.issue.number, { name: context.eventName, action: payload.action, actor, label: payload.label?.name, at, agent: isComment && AGENT_MARKER_RE.test(payload.comment?.body ?? "") });
+    await handle(payload.issue.number, { name: context.eventName, action: payload.action, actor, label: payload.label?.name, at, agent: isComment && AGENT_MARKER_RE.test(payload.comment?.body ?? ""), viaApp: isComment && payload.comment?.performed_via_github_app != null && payload.comment.performed_via_github_app !== false });
     return results;
   }
 

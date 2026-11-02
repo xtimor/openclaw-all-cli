@@ -17,7 +17,7 @@ One `status:*` label per open issue, always exactly one. A closed issue has none
 | State | Meaning | Who moves it out |
 | --- | --- | --- |
 | `status:todo` | Filed or reopened, not yet triaged, or the author answered a question | triage agent |
-| `status:needs-info` | Either agent (or the owner) asked the author for details or a check only the author can do; or triage could not reproduce a bug because it needs a live environment the run lacks, and asks the owner for the exact check (decided 2026-11-02) | author's reply (back to `todo`; when the owner is awaited, the owner sets `todo` after running the check, since their comment does not move it), or the stale timer (30 days from the latest `needs-info` label; the closing comment mentions the author) |
+| `status:needs-info` | Either agent (or the owner) asked the author for details or a check only the author can do; or triage could not reproduce a bug because it needs a live environment the run lacks, and asks the owner for the exact check (decided 2026-11-02) | author's reply, or the owner's own comment (back to `todo`; the owner answers the live check just by commenting), or the stale timer (30 days from the latest `needs-info` label; the closing comment mentions the author and the owners) |
 | `status:triaged` | The agent accepts it: priority set, scope written; a bug is accepted only when the agent **reproduced it on current `main`** (a failing test of its own, or live output for a bug that only shows live; owner decision 2026-11-02, ticket 3.29), so the comment carries a `Reproduction:` part and the draft ticket's verify line names that test. Waits for the owner, unless triage carried an earlier approval over a `needs-info` round | owner, or the implementation run (carried approval) |
 | `status:approved` | The owner approved it for development | implementation run |
 | `status:planned` | A course correction for it is merged; its BMAD tickets exist but are not built yet | implementation run (the owner's earlier approval covers it) |
@@ -42,12 +42,13 @@ reopened (any closed issue) ────────► todo
 todo ──triage: confirmed, accepted──► triaged          (+ priority, + type, triage comment)
 todo ──triage: details missing──────► needs-info       (questions in the triage comment)
 todo ──triage: bug not reproduced, the author can add what is missing─► needs-info (questions for the author)
-todo ──triage: bug not reproduced, needs a live environment the run lacks─► needs-info (waiting for the owner: the exact live check; the owner sets todo after running it)
+todo ──triage: bug not reproduced, needs a live environment the run lacks─► needs-info (waiting for the owner: the exact live check; the owner's comment with the result moves it to todo)
 todo ──triage: cannot or will not fix (rejected, duplicate, fixed by a done ticket, a bug that does not reproduce on `main` with the code showing why)─► declined (reason and evidence in the triage comment, owner mentioned)
 todo ──triage: security report──────► closed not planned (fixed pointer to SECURITY.md, no detail; the only agent close)
 
 needs-info ──author comments───────► todo   (also after an implementation question)
-needs-info ──30 days in the status─► closed not planned (stale, author mentioned; reopening brings it back)
+needs-info ──owner comments (a person, not through an app, not a marker comment)─► todo   (the answer to a live check triage asked of the owner, ticket 3.29)
+needs-info ──30 days in the status─► closed not planned (stale, author and owners mentioned; reopening brings it back)
 
 triaged ──owner sets approved──────► approved
 triaged ──owner rejects────────────► closed not planned
@@ -109,7 +110,7 @@ Takes every open issue in `status:todo`, oldest first, at most 20 per run. For e
 
 It writes one triage comment per issue, marked `<!-- issue-triage -->`, and edits that same comment on a later pass. The run summary lists every decision.
 
-**Comment shape (both agents).** Every agent comment starts with its marker (`<!-- issue-triage -->` or `<!-- issue-impl -->`) and then states the status label, who is awaited (`@login`) and for what, and what happens next (`docs/agents/comments.md`). The state automation never counts an owner's marker comment as the author's reply. **Carried approval:** only when the owner's latest `labeled status:approved` is later than the issue's last close and reopen, the implementation agent then set `needs-info` with a question, and the author's reply answers it; triage then posts a short `<!-- issue-triage -->` comment with `**Approval:** carried over (owner approved <date>; scope unchanged)` (it does not edit the main comment) and sets `triaged`. If the answer changes the draft ticket or the path, it re-triages normally and writes "a new approval is needed". The implementation run takes such an issue when the latest triage comment has the carried line and the same two event conditions hold, and the owner's `labeled status:approved` event is in the history. A second `needs-info` stop on one ticket, or a bot or deleted author, goes to `blocked`. The automation does not check the carried line: it rests on the agents following the prompts. No new label, and triage still never sets `approved`.
+**Comment shape (both agents).** Every agent comment starts with its marker (`<!-- issue-triage -->` or `<!-- issue-impl -->`) and then states the status label, who is awaited (`@login`) and for what, and what happens next (`docs/agents/comments.md`). The state automation never counts an owner's marker comment as a reply (an owner's other comment, made as a person, is a reply on `needs-info`, so the owner can answer a live check). **Carried approval:** only when the owner's latest `labeled status:approved` is later than the issue's last close and reopen, the implementation agent then set `needs-info` with a question, and the author's reply answers it; triage then posts a short `<!-- issue-triage -->` comment with `**Approval:** carried over (owner approved <date>; scope unchanged)` (it does not edit the main comment) and sets `triaged`. If the answer changes the draft ticket or the path, it re-triages normally and writes "a new approval is needed". The implementation run takes such an issue when the latest triage comment has the carried line and the same two event conditions hold, and the owner's `labeled status:approved` event is in the history. A second `needs-info` stop on one ticket, or a bot or deleted author, goes to `blocked`. The automation does not check the carried line: it rests on the agents following the prompts. No new label, and triage still never sets `approved`.
 
 ## Implementation run
 

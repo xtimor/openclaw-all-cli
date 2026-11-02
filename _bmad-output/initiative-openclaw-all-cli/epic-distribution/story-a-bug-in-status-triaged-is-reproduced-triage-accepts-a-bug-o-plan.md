@@ -15,14 +15,7 @@ review_loop_iteration: 0
 followup_review_recommended: false
 context: ['{project-root}/AGENTS.md', '{project-root}/MEMORY.md', '{project-root}/docs/agents/triage.md']
 warnings: []
-deferred:
-  - summary: >-
-      A `needs-info` that waits for the owner is only moved by the owner setting `status:todo`, and its 30-day stale close mentions the author only.
-    evidence: |-
-      The state automation counts a comment as a reply only from the issue's author (`onComment` in `scripts/issue-flow/transitions.mjs`), and `staleComment(login)` mentions the author. The ticket asks for `needs-info` with `Waiting for: @owner`, so the docs say what the owner does; changing the automation is a protected-file change (`scripts/`) outside this ticket.
-    location: >-
-      scripts/issue-flow/transitions.mjs onComment, staleComment
-    severity: medium
+deferred: []
 ---
 
 <intent-contract>
@@ -42,29 +35,34 @@ Route is `oneshot`, pinned: the work is documents plus doc pins, and this worker
 Decisions:
 - All bug accepts need the reproduction (every path, regressions, carried-over approvals). A carried-over approval re-runs the main comment's test on current `main`; an older main comment without `Reproduction:` is a normal re-triage.
 - The implementation run hands the test to the build through the ticket (description of a new ticket, a note on an existing one), because the build reads the ticket and plan, not GitHub, and a red test file committed earlier would break `npm test` for every other ticket of the batch. The build adds it first, sees it fail, fixes, commits it with the fix. A test that already passes on the branch blocks the issue for the owner. An approved older comment without `Reproduction:` builds as before.
-- Owner route stays `needs-info` as the ticket says; the docs tell the owner to set `status:todo` after commenting (the automation moves only on the author's reply). Left as a deferred finding for the owner.
+- Owner route stays `needs-info` as the ticket says. The first build left it needing the owner's `status:todo` click (deferred); the owner decided to fix it in this ticket (see the Plan Change Log): the state automation now takes an owner's own comment as the reply.
 - No `CHANGELOG.md` line: agent-flow change only (docs/release.md, Changelog).
 - Pins are predicates with one mutation each; the test applies the mutation and requires the pin to fail, and throws if a mutation no longer matches (stale).
 
-Files touched: `docs/agents/{triage,comments,implement}.md`, `docs/issues.md`, `epic-distribution/issue-flow.md`, `MEMORY.md`, `test/agent-flow-docs.test.ts`, this plan.
+Files touched: `docs/agents/{triage,comments,implement}.md`, `docs/issues.md`, `epic-distribution/issue-flow.md`, `MEMORY.md`, `test/agent-flow-docs.test.ts`, `scripts/issue-flow/{transitions,apply}.mjs`, `test/issue-flow.test.ts`, this plan.
 
 ## Plan Change Log
+
+### 2026-11-02 -- owner decision 2026-11-02, via the orchestrator
+- Triggering finding: the deferred medium finding of the first review (an owner-awaited `needs-info` is not moved by the owner's comment, and its stale close mentions only the author).
+- Amended: scope now includes `scripts/issue-flow/transitions.mjs` `onComment` (on `status:needs-info`, a comment by the author or by an owner as a person, `performed_via_github_app` null, moves the issue to `status:todo`; marker comments of an owner or an agent login still never count; `declined` unchanged), `apply.mjs` (passes `viaApp` from the comment payload), and `staleComment(login, owners)` (mentions the author and the owners). The docs drop "set `status:todo` by hand": the owner just comments.
+- Known-bad state avoided: an owner-awaited `needs-info` that only moves on a label click and is stale-closed with no mention of the owner. KEEP: the three routes, the `Reproduction:` part, the pins.
 
 ## Review Triage Log
 
 ### 2026-11-02 -- Review pass (quick, in this session: the worker has no subagent tool and the caller asked for an in-session review)
-- verdicts: 4 findings -- high 0, medium 1, low 2, false 1, maybe-false 0
+- verdicts: 4 findings -- high 0, medium 1, low 2, false 1, maybe-false 0 (the medium was deferred first, then patched on the owner's decision)
 - findings:
-  - `[medium]` `[defer]` Owner-route `needs-info`: the owner's comment does not move the issue and the stale close mentions only the author (see `deferred`). The docs state the owner's step; an automation change is for the owner to decide.
+  - `[medium]` `[patch]` Owner-route `needs-info`: the owner's comment did not move the issue and the stale close mentioned only the author -- first deferred, then patched on the owner's decision (Plan Change Log): `onComment`, `apply.mjs`, `staleComment`, docs, tests.
   - `[low]` `[patch]` `triage.md` step 6.1 said `Waiting for` is the author for needs info only, and `comments.md` said needs-info questions are for the reporter only -- patched: both name the owner's live check.
   - `[low]` `[patch]` The triage rules still said live checks go "into the draft ticket's verify line" and let a long reproduction be decided "with what you have" -- patched: a bug that needs more time is not reproduced and never `triaged`.
   - `[false]` `[reject]` "The implementation run may run untrusted test code from a comment" -- the comment is the agent's own (identity.md definition of yours), the rule tells the run to read it first and rewrite it if it does more than test the plugin offline; the issue text itself is never run.
-- Mutation checks: 16 pins, each with one mutation (a phrase removed or inverted); the suite applies each and requires the pin to fail (a stale mutation throws). All 16 killed.
+- Mutation checks: 17 doc pins, each with one mutation (a phrase removed or inverted); the suite applies each and requires the pin to fail (a stale mutation throws). All killed. Code mutations of the owner reply, each applied alone to `transitions.mjs`/`apply.mjs`, tests run, reverted: owner path off; owner path without the app check; any non-app comment counts; marker exclusion removed; stale comment without owners; `viaApp` never passed. All killed by `test/issue-flow.test.ts`.
 
 ## Verification
 
 **Commands:**
-- `npx vitest run test/agent-flow-docs.test.ts` -- all pass
+- `npx vitest run test/agent-flow-docs.test.ts test/issue-flow.test.ts` -- all pass
 - `npm run ci` -- passes
 
 ## Auto Run Result
@@ -73,10 +71,10 @@ Status: built.
 
 Summary: triage accepts a bug only when it reproduced it on current `main`; the rules, steps 3 and 5, the comment fields (`Reproduction:`), the draft ticket's verify line, the three not-reproduced routes, the carried-over re-run, the implementation run's handling of the test, and the user and design docs say so.
 
-Files changed: `docs/agents/triage.md` (rules, steps 2 to 5, fields), `docs/agents/comments.md` (rule, accepted example with a Reproduction part, owner-check example), `docs/agents/implement.md` (rule "Reproduction test"), `docs/issues.md` (triaged and needs-info rows, triage and implementation steps), `epic-distribution/issue-flow.md` (states, transitions, triage and implementation text), `MEMORY.md`, `test/agent-flow-docs.test.ts` (16 pins with mutation checks).
+Files changed: `docs/agents/triage.md` (rules, steps 2 to 5, fields), `docs/agents/comments.md` (rule, accepted example with a Reproduction part, owner-check example), `docs/agents/implement.md` (rule "Reproduction test"), `docs/issues.md` (triaged and needs-info rows, triage and implementation steps), `epic-distribution/issue-flow.md` (states, transitions, triage and implementation text), `MEMORY.md`, `test/agent-flow-docs.test.ts` (17 pins with mutation checks), `scripts/issue-flow/transitions.mjs` and `apply.mjs` (owner reply on `needs-info`, `staleComment` mentions owners), `test/issue-flow.test.ts`.
 
-Review: quick, run in this session (no subagent tool in this worker). 4 findings: 2 patched, 1 deferred (medium), 1 rejected as false.
+Review: quick, run in this session (no subagent tool in this worker). 4 findings: 3 patched (the medium one on the owner's decision), 1 rejected as false. Nothing deferred.
 
-Verification: `npx vitest run test/agent-flow-docs.test.ts` (56 tests) and `npm run ci` (plan gate, typecheck, unit tests, build, package allowlist, pack, install smoke): all passed. Live Cursor check: not run (docs-only change; nothing live applies).
+Verification: `npx vitest run test/agent-flow-docs.test.ts test/issue-flow.test.ts` and `npm run ci` (plan gate, typecheck, 1701 unit tests, build, package allowlist, pack, install smoke): all passed. Live Cursor check: not run (docs-only change; nothing live applies).
 
-Residual risks: not run live: the next bug the routine triages should show a `Reproduction:` part; the routine's prompt is unchanged. The owner-route `needs-info` needs the owner's `status:todo` click (deferred finding).
+Residual risks: not run live: the next bug the routine triages should show a `Reproduction:` part; the routine's prompt is unchanged. The owner reply is not verified live: an owner's real comment on a `needs-info` issue should move it to `todo` after the merge.
