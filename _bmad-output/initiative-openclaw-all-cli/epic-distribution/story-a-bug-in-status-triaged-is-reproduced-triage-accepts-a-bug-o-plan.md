@@ -3,7 +3,7 @@ title: 'A bug in `status:triaged` is reproduced: triage accepts a bug only with 
 type: 'feature'
 ticket: 29
 created: '2026-11-02'
-status: built
+status: done
 baseline_revision: '72fb186f2fe16c136ce8af4481aa0f6acd3fc8a7'
 route: 'oneshot'
 route_source: 'pinned'
