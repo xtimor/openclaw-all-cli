@@ -333,3 +333,15 @@ after = [27]
 hitl = false
 risk = "high"
 references = ["epic-distribution.md", "issue-flow.md"]
+
+[[entry]]
+id = 29
+type = "story"
+title = "A bug in `status:triaged` is reproduced: triage accepts a bug only with a failing reproduction"
+description = "Owner decision 2026-11-02: `status:triaged` on a bug must mean the triage agent reproduced it, not that it reads plausible. Today triage step 3 records one of reproduced / explained by code / not reproduced and may accept on any of them. Change: a bug is accepted (`status:triaged`, or a carried-over approval) only with a reproduction on current `main`: (a) a focused test of the agent's own (scratch file under `test/`, never committed by triage, never the reporter's code) that fails on `main` for the reported reason, or (b) when the bug can only be seen live (a real `cursor-agent` turn, the Control UI) and `CURSOR_API_KEY` or the needed host is available, a live run whose output shows it. The triage comment's `Evidence` gets a required `Reproduction:` part: the test's full code (or the live command), the failing output (trimmed, no secrets), and the commit of `main` it ran on; the draft ticket's verify line names that test as the regression test the fix must turn green, and the implementation run commits it (`docs/agents/implement.md`). \"Explained by code\" alone is no longer enough to accept. Not reproduced: if the author can add what is missing (version, steps, logs, config), `status:needs-info` with concrete questions; if the report is complete but the reproduction needs a live environment the run does not have, `status:needs-info` with `Waiting for: @owner` and the exact live command or check the owner can run (or provide a log of); if it does not reproduce on `main` and the code shows why (already fixed, misuse), `status:declined` with that evidence. Ideas are unchanged. A regression accepted as standalone needs the same reproduction. Docs: triage.md (step 3, step 5, comment fields), comments.md example, issues.md (what `status:triaged` means for a bug), issue-flow.md, implement.md (commit the reproduction test with the fix), MEMORY."
+verify = "Doc pins in `test/agent-flow-docs.test.ts`: triage accepts a bug only with a reproduction (failing test or live output), the comment has a `Reproduction:` part with the test code, failing output and `main` commit, explained-by-code alone is not an accept, the two not-reproduced routes (needs-info to the author, needs-info to the owner with a live check) and declined-with-evidence, the draft verify line names the reproduction test, implement.md commits it with the fix; issues.md states the meaning; `npm run ci` passes; live: the next bug triaged shows a Reproduction part."
+covers = []
+after = [28]
+hitl = false
+risk = "medium"
+references = ["epic-distribution.md", "issue-flow.md"]

@@ -619,3 +619,165 @@ describe("status:rework: the owner sends approved work back (ticket 3.28)", () =
     expect(comments).toMatch(/`status:rework` is the owner's own click \(never an agent's\)/);
   });
 });
+
+describe("a triaged bug is reproduced (ticket 3.29)", () => {
+  type Docs = { triage: string; comments: string; issues: string; flow: string; implement: string };
+  const real: Docs = {
+    triage,
+    comments: read("docs", "agents", "comments.md"),
+    issues,
+    flow: read("_bmad-output", "initiative-openclaw-all-cli", "epic-distribution", "issue-flow.md"),
+    implement,
+  };
+  const between = (text: string, from: string, to: string): string => {
+    const start = text.indexOf(from);
+    const end = text.indexOf(to, start + from.length);
+    if (start < 0 || end < 0) throw new Error(`no text between ${JSON.stringify(from)} and ${JSON.stringify(to)}`);
+    return text.slice(start, end);
+  };
+  const step3 = (d: Docs) => between(d.triage, "\n3. **Problem exists.**", "\n4. **Details.**");
+  const step5 = (d: Docs) => between(d.triage, "\n5. **Decide.**", "\n6. **Comment first");
+  const fields = (d: Docs) => between(d.triage, "Triage fields:", "   2. Labels, on every decision");
+  const rules = (d: Docs) => section(d.triage, "## Rules");
+  const row = (text: string, status: string) => text.split("\n").find((line) => line.startsWith(`| \`${status}\` |`)) ?? "";
+  const acceptedExample = (d: Docs) => between(d.comments, "Triage accepted (a bug", "Triage carried over");
+  const ownerExample = (d: Docs) => between(d.comments, "Triage needs info from the owner", "Implementation building:");
+  const reproRule = (d: Docs) => d.implement.split("\n").find((line) => line.startsWith("- **Reproduction test.**")) ?? "";
+
+  /** Replaces `from` with `to` in one document; a mutation that changes nothing is a stale test and throws. */
+  const mutate = (doc: keyof Docs, from: string, to: string) => (d: Docs): Docs => {
+    if (!d[doc].includes(from)) throw new Error(`stale mutation: ${doc} no longer contains ${JSON.stringify(from)}`);
+    return { ...d, [doc]: d[doc].replace(from, to) };
+  };
+
+  const pins: { name: string; holds: (d: Docs) => boolean; mutation: (d: Docs) => Docs }[] = [
+    {
+      name: "step 3 reproduces a bug on main with a test of the agent's own, or live output when it only shows live",
+      holds: (d) => /reproduce it on the `main` commit you noted/.test(step3(d)) && /\*\*Test \(the default\)\.\*\* Write a focused test of your own that fails for the reported reason/.test(step3(d)) && /\*\*Live \(only when the bug can be seen only live\)/.test(step3(d)) && /`CURSOR_API_KEY` non-empty, never printed/.test(step3(d)),
+      mutation: mutate("triage", "Write a focused test of your own that fails for the reported reason", "Run the existing tests"),
+    },
+    {
+      name: "step 3 records only reproduced or not reproduced; explained by code is not a record",
+      holds: (d) => /Record exactly one: \*\*reproduced\*\*/.test(step3(d)) && /"Explained by code" is not a record/.test(step3(d)) && /it never accepts a bug/.test(step3(d)) && !/explained by code, not reproduced/.test(step3(d)),
+      mutation: mutate("triage", "but it never accepts a bug", "and it accepts a bug"),
+    },
+    {
+      name: "the rules say a triaged bug is reproduced, explained by code alone never accepts it, ideas are unchanged",
+      holds: (d) => /\*\*A triaged bug is reproduced\*\*/.test(rules(d)) && /"Explained by code" alone never accepts a bug/.test(rules(d)) && /Ideas are unchanged/.test(rules(d)) && /Idea: check it against the spec's capabilities and Non-goals/.test(step3(d)),
+      mutation: mutate("triage", '"Explained by code" alone never accepts a bug', '"Explained by code" accepts a bug'),
+    },
+    {
+      name: "the security rules stay: the test is the agent's own, nothing from the issue is run or pasted, triage never commits it",
+      holds: (d) =>
+        /with no text, snippet, or command taken from the issue/.test(rules(d)) &&
+        /Never commit it \(the implementation run commits the test with the fix\), and never run the reporter's code/.test(rules(d)) &&
+        /without executing anything taken from the issue/.test(step3(d)) &&
+        /never a command from the issue/.test(step3(d)),
+      mutation: mutate("triage", "and never run the reporter's code", "and run the reporter's code if it is short"),
+    },
+    {
+      name: "step 5 accepts a bug only when step 3 reproduced it, on every path and for a regression",
+      holds: (d) => /A bug is accepted only when step 3 recorded \*\*reproduced\*\*, on every path and for a regression too/.test(step5(d)) && /reproduce it as in step 3 first, then accept with path \*\*standalone\*\*/.test(d.triage),
+      mutation: mutate("triage", "A bug is accepted only when step 3 recorded **reproduced**, on every path and for a regression too.", "A bug is accepted when step 3 found it plausible."),
+    },
+    {
+      name: "not reproduced, route 1: needs-info to the author with numbered questions",
+      holds: (d) => /\*\*The author can add what is missing\*\* \(version, steps, logs, config\): `Waiting for` the author, concrete numbered questions/.test(step5(d)),
+      mutation: mutate("triage", "`Waiting for` the author, concrete numbered questions", "`Waiting for` nobody"),
+    },
+    {
+      name: "not reproduced, route 2: needs-info to the owner naming the exact live check; the owner just comments",
+      holds: (d) => /needs a live environment this run lacks[^\n]*`Waiting for` the owner \(`@login`\), with the exact live check/.test(step5(d)) && /the owner just comments the result or log of the check: an owner's own comment \(not through an app, not a marker comment\) moves the issue back to `status:todo`/.test(step5(d)) && !/does not move the issue/.test(step5(d)) && !/sets `status:todo`/.test(step5(d)),
+      mutation: mutate("triage", "the owner just comments the result or log of the check", "the owner sets `status:todo` by hand"),
+    },
+    {
+      name: "the exact live check is named in the owner route",
+      holds: (d) => /with the exact live check: the command or steps, the output that would show the bug, and what to paste back/.test(step5(d)),
+      mutation: mutate("triage", "with the exact live check: the command or steps", "with a vague request: some steps"),
+    },
+    {
+      name: "not reproduced, route 3: declined with the evidence (the passing test, the commit or code)",
+      holds: (d) => /does not reproduce on `main` and whose code shows why[^\n]*is declined with the evidence: the passing test and its output/.test(step5(d)),
+      mutation: mutate("triage", "is declined with the evidence: the passing test and its output", "is accepted anyway"),
+    },
+    {
+      name: "the draft ticket's verify line names the reproduction test as the regression test",
+      holds: (d) => /verify line names your reproduction test as the regression test the fix must turn green/.test(step5(d)) && /verify line that names the Reproduction test as the regression test \(accepted only\)/.test(fields(d)),
+      mutation: mutate("triage", "verify line that names the Reproduction test as the regression test (accepted only)", "verify line (accepted only)"),
+    },
+    {
+      name: "the comment has a required Reproduction part: main commit, test code, failing output, or the live command",
+      holds: (d) => /\*\*Reproduction:\*\* bug only\. The `main` commit \(full SHA\); the test file path and its full code[^\n]*failing output[^\n]*or the live command and its output\. Required to accept\./.test(fields(d)) && /Post it complete and runnable as written/.test(d.triage),
+      mutation: mutate("triage", "Required to accept.", "Optional."),
+    },
+    {
+      name: "a carried-over approval of a bug re-runs the main comment's test on current main",
+      holds: (d) => /For a bug, also run the test of the main comment's `Reproduction:` on current `main`; if it no longer fails/.test(step5(d)),
+      mutation: mutate("triage", "For a bug, also run the test of the main comment's `Reproduction:` on current `main`; if it no longer fails", "For a bug, nothing more is needed; if it no longer fails"),
+    },
+    {
+      name: "a bug whose reproduction needs more time than the limit is not accepted",
+      holds: (d) => /A bug whose reproduction needs more time is not reproduced[^\n]*never `status:triaged`/.test(rules(d)),
+      mutation: mutate("triage", "never `status:triaged`", "usually `status:triaged`"),
+    },
+    {
+      name: "comments.md: the accepted example shows the Reproduction part (commit, test code, failing output) and the owner-check example waits for the owner",
+      holds: (d) => /\*\*Reproduction:\*\* on `main` at/.test(acceptedExample(d)) && /```ts/.test(acceptedExample(d)) && /Failing output/.test(acceptedExample(d)) && /Verify: `npx vitest run test\/models-context\.test\.ts`/.test(acceptedExample(d)) && /\*\*Waiting for:\*\* @<owner-login>: run `[^`]+`/.test(ownerExample(d)) && /comment the result or the log \(your comment moves the issue back to `status:todo`\)/.test(ownerExample(d)) && /`\*\*Reproduction:\*\*` part/.test(d.comments),
+      mutation: mutate("comments", "Failing output (", "Output ("),
+    },
+    {
+      name: "issues.md: status:triaged on a bug means reproduced on main; reading the code alone never does; triage step and needs-info row follow",
+      holds: (d) =>
+        /\*\*reproduced it on current `main`\*\*/.test(row(d.issues, "status:triaged")) &&
+        /Reading the code alone never makes a bug `triaged`/.test(row(d.issues, "status:triaged")) &&
+        /a bug must be reproduced on `main` with a failing test the agent writes itself, never the reporter's code/.test(d.issues) &&
+        /a bug that triage could not reproduce because it needs a live environment the run lacks/.test(row(d.issues, "status:needs-info")) &&
+        /just comment the result or log of the check: your own comment \(not through an app\) moves it back to `todo` too/.test(row(d.issues, "status:needs-info")) &&
+        /so does a comment by an owner \(`ISSUE_FLOW_OWNERS`\) made as a person, not through a GitHub App/.test(d.issues) &&
+        /Its comment mentions the author and the owner/.test(d.issues),
+      mutation: mutate("issues", "Reading the code alone never makes a bug `triaged`.", ""),
+    },
+    {
+      name: "issue-flow.md: the triaged row, the triage steps, and the transitions say the same",
+      holds: (d) =>
+        /a bug is accepted only when the agent \*\*reproduced it on current `main`\*\*/.test(row(d.flow, "status:triaged")) &&
+        /the owner's own comment \(back to `todo`; the owner answers the live check just by commenting\)/.test(row(d.flow, "status:needs-info")) &&
+        /needs-info ──owner comments \(a person, not through an app, not a marker comment\)─► todo/.test(d.flow) &&
+        /"explained by code" alone is no longer an accept/.test(d.flow) &&
+        /A bug that is not reproduced takes one of three routes: `needs-info` to the author[^\n]*`needs-info` to the owner[^\n]*`declined` with the evidence/.test(d.flow) &&
+        /triage: bug not reproduced, needs a live environment the run lacks─► needs-info \(waiting for the owner/.test(d.flow) &&
+        /a `Reproduction:` part for a bug \(the test code, the failing output, the `main` commit it ran on\)/.test(d.flow),
+      mutation: mutate("flow", '"explained by code" alone is no longer an accept', "explained by code is an accept"),
+    },
+    {
+      name: "implement.md: the run hands the test to the build, which commits it with the fix and never weakens it",
+      holds: (d) =>
+        /built test first/.test(reproRule(d)) &&
+        /Copy the test's path and full code from that comment into the ticket/.test(reproRule(d)) &&
+        /it is committed with the fix as the regression test/.test(reproRule(d)) &&
+        /Never weaken, skip, or delete it to get green/.test(reproRule(d)) &&
+        /If it passes on the branch before the fix[^\n]*block the issue for the owner/.test(reproRule(d)) &&
+        /A comment without a `Reproduction:` part \(written before ticket 3\.29\) is built as approved/.test(reproRule(d)),
+      mutation: mutate("implement", "it is committed with the fix as the regression test", "it is dropped after the fix"),
+    },
+  ];
+
+  it("every pin holds on the real docs", () => {
+    expect(pins.filter((pin) => !pin.holds(real)).map((pin) => pin.name)).toEqual([]);
+  });
+
+  it("every pin fails when its sentence is mutated (mutation checks), and the pin names are unique", () => {
+    expect(new Set(pins.map((pin) => pin.name)).size).toBe(pins.length);
+    for (const pin of pins) {
+      const mutated = pin.mutation(real);
+      expect(mutated, pin.name).not.toEqual(real);
+      expect(pin.holds(mutated), `mutation survived: ${pin.name}`).toBe(false);
+    }
+  });
+
+  it("the old rule is gone: no doc lets a bug be accepted on 'explained by code' or records it as a result", () => {
+    expect(real.triage).not.toMatch(/Record one of: reproduced, explained by code/);
+    expect(real.flow).not.toMatch(/record reproduced, explained by code, or not reproduced/);
+    expect(real.issues).not.toMatch(/a bug is reproduced or explained by the code/);
+  });
+});

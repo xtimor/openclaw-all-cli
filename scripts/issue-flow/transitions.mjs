@@ -84,12 +84,18 @@ export function reworkComment(eventId) {
 const LOGIN_RE = /^[A-Za-z0-9](?:[A-Za-z0-9_-]{0,38})$/;
 
 /**
- * The comment for a stale close. A valid human login is mentioned, so GitHub notifies the author; an empty, bot, or
- * malformed login gives the same text without a mention. The login is checked against LOGIN_RE and is the only issue data used.
+ * The comment for a stale close. A valid human login is mentioned, so GitHub notifies the author and every owner (an owner may be
+ * the one awaited, ticket 3.29); an empty, bot, or malformed login gives no mention, and no valid login gives the same text without
+ * one. Logins are checked against LOGIN_RE and are the only issue data used.
  */
-export function staleComment(login) {
-  const author = typeof login === "string" && LOGIN_RE.test(login) ? login : null;
-  const subject = author === null ? "This issue has" : `@${author}, this issue has`;
+export function staleComment(login, owners = []) {
+  const seen = new Set();
+  const people = [login, ...parseOwners(owners)].filter((name) => {
+    const ok = typeof name === "string" && LOGIN_RE.test(name) && !seen.has(name.toLowerCase());
+    if (ok) seen.add(name.toLowerCase());
+    return ok;
+  });
+  const subject = people.length === 0 ? "This issue has" : `${people.map((name) => `@${name}`).join(", ")}, this issue has`;
   return `${MARKER}\n${subject} been in \`${NEEDS_INFO}\` for ${STALE_DAYS} days without a reply, so it is closed as not planned. Reopen it to continue; it returns to \`${TODO}\`.`;
 }
 
@@ -315,7 +321,14 @@ function onComment(event, issue, owners, agents) {
   // comment is never the author's reply. Anyone else's is. An agent login is not an owner, so it can never approve.
   if (event.action !== "created" || isBot(event.actor) || (event.agent === true && (isOwner(event.actor, owners) || isOwner(event.actor, agents)))) return [];
   if (issue.state !== "open" || !issue.labels.includes(NEEDS_INFO)) return [];
-  if (lower(event.actor) === "" || lower(event.actor) !== lower(issue.author)) return [];
+  // The author's comment is the reply. So is an owner's own comment, because triage may ask the owner for a live check (ticket 3.29,
+  // owner decision 2026-11-02); one made through a GitHub App (a Claude session acting with the owner's login) is not. A marker
+  // comment of an owner or an agent never gets here (above). Other people's comments change nothing.
+  const actor = lower(event.actor);
+  if (actor === "") return [];
+  const authorReply = actor === lower(issue.author);
+  const ownerReply = isOwner(event.actor, owners) && event.viaApp !== true;
+  if (!authorReply && !ownerReply) return [];
   return setStatus(issue, TODO);
 }
 
@@ -351,7 +364,7 @@ export function staleStatus(rawIssue) {
 function onStale(issue, owners) {
   const status = staleStatus(issue);
   if (status === null) return [];
-  const body = status === DECLINED ? declinedStaleComment(issue.author, owners) : staleComment(issue.author);
+  const body = status === DECLINED ? declinedStaleComment(issue.author, owners) : staleComment(issue.author, owners);
   return [comment(body), ...clearStatus(issue), { op: "close", reason: "not_planned" }];
 }
 
