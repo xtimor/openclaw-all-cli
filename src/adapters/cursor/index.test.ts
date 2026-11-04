@@ -1,5 +1,5 @@
 import { inspectProcess } from "../../core/pid-locks.ts";
-import { mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { lstatSync, mkdirSync, mkdtempSync, readlinkSync, readdirSync, existsSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
@@ -16,7 +16,7 @@ import {
   type PermissionRequest,
 } from "../../core/ports.ts";
 import { PARITY_ROWS } from "../../core/ports.ts";
-import { CURSOR_CLEAR_ENV, CURSOR_PERMISSIONS, cursorAdapter, parseStatusOutput } from "./index.ts";
+import { CURSOR_CLEAR_ENV, CURSOR_PERMISSIONS, CURSOR_RESTRICTED_PERMISSIONS, cursorAdapter, parseStatusOutput } from "./index.ts";
 import { CURSOR_MIN_VERSION, cursorManifest } from "./manifest.ts";
 
 const open: CliSession[] = [];
@@ -523,6 +523,50 @@ describe("cursor adapter", () => {
       expect(CURSOR_PERMISSIONS).toEqual({
         allow: ["Read(**)", "Mcp(openclaw:*)"],
         deny: ["Shell(*)", "Write(**)", "WebFetch(*)"],
+      });
+    });
+
+    describe("restricted profile", () => {
+      const restrictedDir = (home: string) => join(home, "profiles", "restricted");
+
+      it("has its own config dir that denies Read(*) and shares the home's data dir", async () => {
+        const home = join(root, "a");
+        const env = await cursorAdapter.prepareHome(home, "restricted");
+        expect(env).toEqual({ CURSOR_CONFIG_DIR: restrictedDir(home), CURSOR_DATA_DIR: join(home, "data") });
+        const written = read(restrictedDir(home)) as { permissions: typeof CURSOR_RESTRICTED_PERMISSIONS };
+        expect(written).toEqual({ permissions: CURSOR_RESTRICTED_PERMISSIONS });
+        expect(written.permissions.deny).toEqual(expect.arrayContaining(["Read(*)", ...CURSOR_PERMISSIONS.deny]));
+        expect(written.permissions.allow).toEqual(["Mcp(openclaw:*)"]);
+        expect(existsSync(configOf(home))).toBe(false);
+      });
+
+      it("links the chat store to the default profile's, so a chat resumes under either", async () => {
+        const home = join(root, "a");
+        await cursorAdapter.prepareHome(home);
+        await cursorAdapter.prepareHome(home, "restricted");
+        const link = join(restrictedDir(home), "acp-sessions");
+        expect(lstatSync(link).isSymbolicLink()).toBe(true);
+        expect(readlinkSync(link)).toBe(join(home, "acp-sessions"));
+        mkdirSync(join(home, "acp-sessions", "chat-1"), { recursive: true });
+        expect(readdirSync(link)).toEqual(["chat-1"]);
+        await cursorAdapter.discardSession!({ env: { CURSOR_CONFIG_DIR: restrictedDir(home) }, sessionId: "chat-1" });
+        expect(readdirSync(join(home, "acp-sessions"))).toEqual([]);
+      });
+
+      it("stays valid and static when many turns prepare it at once, and keeps Cursor's keys", async () => {
+        const home = join(root, "a");
+        mkdirSync(restrictedDir(home), { recursive: true });
+        writeFileSync(configOf(restrictedDir(home)), JSON.stringify({ version: 1 }));
+        await Promise.all(Array.from({ length: 25 }, () => cursorAdapter.prepareHome(home, "restricted")));
+        expect(read(restrictedDir(home))).toEqual({ version: 1, permissions: CURSOR_RESTRICTED_PERMISSIONS });
+        expect(readdirSync(restrictedDir(home)).sort()).toEqual(["acp-sessions", "cli-config.json"]);
+      });
+
+      it("leaves the default profile's file alone", async () => {
+        const home = join(root, "a");
+        await cursorAdapter.prepareHome(home);
+        await cursorAdapter.prepareHome(home, "restricted");
+        expect(read(home)).toEqual({ permissions: CURSOR_PERMISSIONS });
       });
     });
 

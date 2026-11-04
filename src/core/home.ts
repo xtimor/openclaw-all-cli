@@ -7,6 +7,8 @@ export type AgentHome = {
   dir: string;
   /** Env additions that point the CLI at `dir`. */
   env: HomeEnv;
+  /** The adapter's permission profile for this run; unset is the default profile. */
+  profile?: string;
 };
 
 /** `<agentDir>/openclaw-all-cli/<backendId>/`: the one path rule for every adapter. */
@@ -25,6 +27,7 @@ export async function prepareAgentHome(
   backendId: string,
   agentDir: string | undefined,
   warn: (message: string) => void = () => {},
+  profile?: string,
 ): Promise<AgentHome> {
   if (!agentDir?.trim()) {
     throw new CliError({
@@ -35,7 +38,7 @@ export async function prepareAgentHome(
   const dir = homeDirFor(agentDir, backendId);
   await reapOnce(dir, warn);
   try {
-    return { dir, env: await adapter.prepareHome(dir) };
+    return { dir, env: await adapter.prepareHome(dir, profile), ...(profile ? { profile } : {}) };
   } catch (error) {
     if (error instanceof CliError) throw error;
     throw new CliError(

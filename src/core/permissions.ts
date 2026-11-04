@@ -107,3 +107,20 @@ export function unenforceableNativeTools(
 ): string[] {
   return alwaysOn.filter((name) => !availability.native.includes(name));
 }
+
+/**
+ * Picks the adapter's permission profile for a run's native selection (AD-9). All always-on tools
+ * selected: the default profile (`profile` unset). None selected and the adapter declares a
+ * restricted profile: that profile. Anything else is blocked, naming the tools that stayed on.
+ */
+export function selectNativeProfile(
+  availability: ExecuteContext["toolAvailability"],
+  alwaysOn: readonly string[],
+  restrictedId?: string,
+): { profile?: string; blocked: string[] } {
+  if (!availability) return { blocked: [] };
+  const blocked = unenforceableNativeTools(availability, alwaysOn);
+  if (blocked.length === 0) return { blocked };
+  if (restrictedId && blocked.length === alwaysOn.length) return { profile: restrictedId, blocked: [] };
+  return { blocked };
+}

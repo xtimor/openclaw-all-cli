@@ -85,9 +85,9 @@ export type ExecuteOptions = {
   imageRoots?: readonly string[];
 };
 
-/** AD-13: model, mode, working directory, home, auth profile, and thinking level. The native session ID is checked on the session. */
+/** AD-13: model, mode, working directory, home, permission profile, auth profile, and thinking level. The native session ID is checked on the session. */
 function reuseKey(ctx: ExecuteContext, home: AgentHome, authProfileId: string | undefined, hostShell: boolean, thinkingLevel: string | undefined): string {
-  return JSON.stringify([ctx.modelId, modeOf(ctx), hostShell, ctx.cwd, home.dir, authProfileId ?? null, thinkingLevel ?? null]);
+  return JSON.stringify([ctx.modelId, modeOf(ctx), hostShell, ctx.cwd, home.dir, home.profile ?? null, authProfileId ?? null, thinkingLevel ?? null]);
 }
 
 /** The error's core code, for the timing line. */

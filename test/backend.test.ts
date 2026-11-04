@@ -212,8 +212,10 @@ describe("tool availability (AD-9)", () => {
       expect(resolve({ hostOwnedTools: ["exec", "process"] })).toEqual([...base, HOST_SHELL_ARG]);
       expect(resolve({ hostOwnedTools: ["process"] })).toBe(base);
       expect(resolve({ hostOwnedTools: [] })).toBe(base);
-      // An unenforceable selection still makes the host fail the run.
-      expect(resolve({ hostOwnedTools: ["exec"], toolAvailability: { native: [], openClaw: [] } })).toBeUndefined();
+      // A partial selection still makes the host fail the run.
+      expect(resolve({ hostOwnedTools: ["exec"], toolAvailability: { native: ["read"], openClaw: [] } })).toBeUndefined();
+      // The empty selection is served by the restricted profile.
+      expect(resolve({ hostOwnedTools: ["exec"], toolAvailability: { native: [], openClaw: [] } })).toEqual([...base, HOST_SHELL_ARG]);
     });
 
     it("returns them for a selection that keeps the native tools Cursor cannot switch off", () => {
@@ -221,13 +223,12 @@ describe("tool availability (AD-9)", () => {
       expect(resolve({ toolAvailability: { native: ["read", "grep", "glob", "exec"], openClaw: [] } })).toBe(base);
     });
 
-    it.each([[[]], [["read"]], [["grep", "glob", "exec"]]])("returns nothing for a selection of native tools %j, so the host fails the run", (native) => {
+    it.each([[["read"]], [["grep", "glob", "exec"]]])("returns nothing for a selection of native tools %j, so the host fails the run", (native) => {
       expect(resolve({ toolAvailability: { native, openClaw: [] } })).toBeUndefined();
     });
   });
 
   it.each([
-    [[], "read, grep, glob"],
     [["read"], "grep, glob"],
     [["grep", "glob", "exec"], "read"],
   ])("refuses a selection of native tools %j, which Cursor cannot honor", async (native, blocked) => {
@@ -1343,8 +1344,47 @@ describe("session resume and side questions (P4, P5, P18)", () => {
       backend.prepareExecution!({
         agentDir: join(scratch, "refuse-agent"),
         executionMode: "side-question",
-        toolAvailability: { native: [], openClaw: [] },
+        toolAvailability: { native: ["read"], openClaw: [] },
       } as never),
+    ).rejects.toThrow(/keeps native grep, glob on/);
+  });
+});
+
+describe("empty native selection", () => {
+  it("serves a run whose native selection is empty instead of refusing it", async () => {
+    const backend = buildCliBackend(cursorAdapter, { settings: {} });
+    const agentDir = mkdtempSync(join(tmpdir(), "oac-"));
+    const prepared = await backend.prepareExecution!({
+      agentDir,
+      toolAvailability: { native: [], openClaw: [] },
+    } as never);
+    expect(prepared).toBeTruthy();
+  });
+
+  const configOf = (dir: string) => JSON.parse(readFileSync(join(dir, "cli-config.json"), "utf8"));
+
+  it("picks the default profile for a full or absent selection and the restricted one for an empty selection", async () => {
+    const backend = buildCliBackend(cursorAdapter, { settings: {} });
+    const home = (agentDir: string) => join(agentDir, "openclaw-all-cli", "cursor-cli");
+    const full = mkdtempSync(join(tmpdir(), "oac-"));
+    await backend.prepareExecution!({ agentDir: full, toolAvailability: { native: ["read", "grep", "glob"], openClaw: [] } } as never);
+    expect(configOf(home(full)).permissions).toEqual(CURSOR_PERMISSIONS);
+    const absent = mkdtempSync(join(tmpdir(), "oac-"));
+    await backend.prepareExecution!({ agentDir: absent } as never);
+    expect(configOf(home(absent)).permissions).toEqual(CURSOR_PERMISSIONS);
+    expect(existsSync(join(home(absent), "profiles"))).toBe(false);
+    const empty = mkdtempSync(join(tmpdir(), "oac-"));
+    await backend.prepareExecution!({ agentDir: empty, toolAvailability: { native: [], openClaw: [] } } as never);
+    const restricted = configOf(join(home(empty), "profiles", "restricted")).permissions;
+    expect(restricted.deny).toContain("Read(*)");
+    expect(restricted.allow).not.toContain("Read(**)");
+  });
+
+  it("still refuses an empty selection for an adapter without a restricted profile", async () => {
+    const { restrictedProfileId: _unused, ...plain } = cursorAdapter;
+    const backend = buildCliBackend(plain as CliAdapter, { settings: {} });
+    await expect(
+      backend.prepareExecution!({ agentDir: mkdtempSync(join(tmpdir(), "oac-")), toolAvailability: { native: [], openClaw: [] } } as never),
     ).rejects.toThrow(/keeps native read, grep, glob on/);
   });
 });

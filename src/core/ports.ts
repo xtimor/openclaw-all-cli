@@ -408,6 +408,12 @@ export interface CliAdapter {
    */
   readonly alwaysOnNativeTools: readonly string[];
   /**
+   * Optional. Id of a second static permission profile that closes all `alwaysOnNativeTools`. The
+   * core passes it to `prepareHome` for a run whose native selection contains none of them. Without
+   * it such a run is refused.
+   */
+  readonly restrictedProfileId?: string;
+  /**
    * How long the CLI's MCP client waits for one tool call before it gives up without hanging up, in
    * ms. When set, the core's proxy stops a call 5 s before that (see `StartMcpProxyOptions`).
    */
@@ -436,9 +442,9 @@ export interface CliAdapter {
   /**
    * Sets up the per-agent home (AD-6): the directory is the core's choice, the CLI's variable
    * names and file format are the adapter's. Writes only static permissions (AD-9), safe to call
-   * for the same home from parallel turns. Returns the env additions that point the CLI at it.
+   * for the same home from parallel turns. `profile` is `restrictedProfileId` or unset (default). Returns the env additions that point the CLI at it.
    */
-  prepareHome(home: string): Promise<HomeEnv>;
+  prepareHome(home: string, profile?: string): Promise<HomeEnv>;
   /** Starts the process and the native session. Throws `CliError` only. */
   open(params: OpenParams): Promise<CliSession>;
   /**

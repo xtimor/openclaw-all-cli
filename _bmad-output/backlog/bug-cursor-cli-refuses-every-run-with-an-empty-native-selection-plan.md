@@ -3,14 +3,14 @@ title: 'cursor-cli refuses every run with an empty native selection although Cur
 type: 'bugfix'
 ticket: 20
 created: '2026-11-04'
-status: 'in-progress'
+status: 'built'
 baseline_revision: 'faf92b6f381e0f160d93384b769b593948a434fa'
 route: 'full'
 route_source: 'auto'
 risk: 'medium'
-review: ''
-review_source: ''
-lenses_ran: []
+review: 'quick'
+review_source: 'pinned'
+lenses_ran: [quick]
 review_loop_iteration: 0
 followup_review_recommended: false
 context:
@@ -18,7 +18,28 @@ context:
   - '{project-root}/_bmad-output/backlog/bug-cursor-cli-refuses-every-run-with-an-empty-native-selection.md'
   - '{project-root}/_bmad-output/initiative-openclaw-all-cli/change-permission-profiles-for-cursor-native-tools/change-permission-profiles-for-cursor-native-tools.md'
 warnings: []
-deferred: []
+deferred:
+  - summary: >-
+      linkChatStore ignores EEXIST when acp-sessions in the restricted config dir is a real directory, so chats would not be shared.
+    evidence: |-
+      Nothing creates that directory today; Cursor writes sessions only where the link points. Needs a check that the entry is the expected symlink.
+    location: >-
+      src/adapters/cursor/index.ts linkChatStore
+    severity: low
+  - summary: >-
+      symlink(..., "dir") may fail on Windows without privileges, failing empty-selection runs there.
+    evidence: |-
+      Windows is not a supported host of the plugin today (docs/setup.md); unverified.
+    location: >-
+      src/adapters/cursor/index.ts linkChatStore
+    severity: low (unverified)
+  - summary: >-
+      An agent switching profiles may hold two live cursor-agent processes until idle reaping.
+    evidence: |-
+      By design (profile in reuse key, criterion 4); the owner's comment on #67 also asks for a cap rule. pool.ts not read. Needs an owner decision on a cap.
+    location: >-
+      src/core/execute.ts reuseKey
+    severity: medium (unverified)
 ---
 
 <intent-contract>
@@ -97,6 +118,28 @@ it("serves a run whose native selection is empty instead of refusing it", async 
 ## Plan Change Log
 
 ## Review Triage Log
+
+### 2026-11-04 — Review pass
+- verdicts: 9 findings — high 0, medium 2, low 3, false 2, maybe-false 2
+- findings:
+  - `[medium]` `[patch]` docs/providers/cursor.md Shell limits still says a capped run is refused — fixed: now says it starts in the restricted profile
+  - `[medium]` `[patch]` docs/providers/cursor.md side-question paragraph stale about native readers — fixed
+  - `[low]` `[defer]` linkChatStore leaves a real acp-sessions directory — see deferred
+  - `[maybe-false]` `[defer]` Windows symlink — see deferred
+  - `[maybe-false]` `[defer]` two live processes on profile switch — see deferred
+  - `[low]` `[reject]` side question under restricted profile not tested through execute — discardSession is covered through the link; criterion 4/5 are met at reuse-key and link level; not worth a new harness
+  - `[false]` `[reject]` test import order — style only, no rule
+  - `[false]` `[reject]` plan checkboxes and bookkeeping untouched — the build sets them at finalize
+  - `[low]` `[reject]` MEMORY.md not updated — recorded below in this run's notes instead; MEMORY entry added by the run
+
+## Auto Run Result
+
+Status: built
+Summary: an empty native selection is served by the adapter's restricted permission profile (one `Read(*)` deny); the core picks the profile (`selectNativeProfile`), keeps it in the reuse key, and the restricted config dir links `acp-sessions` to the default one. Partial selections stay refused.
+Files: src/core/{permissions,backend,home,execute,ports}.ts, src/adapters/cursor/{index,manifest,permissions}.ts, tests (backend, permissions, home, execute, cursor index), parity matrix, docs/providers/cursor.md, docs/setup.md, CHANGELOG.md.
+Review: 2 patches (docs), 3 deferred, 4 rejected. followup_review_recommended false (no high patched, two medium were doc-only).
+Verification: `npm run ci` passes; the reproduction test passes.
+Residual risk: criterion 8 (live check with a Cursor login) NOT RUN: no login on this host; `Read(*)` closing native read/grep/glob rests on the issue's measurements.
 
 ## Design Notes
 
