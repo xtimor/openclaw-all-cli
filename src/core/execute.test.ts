@@ -283,6 +283,19 @@ describe("createExecute", () => {
     expect(opens).toHaveLength(2);
   });
 
+  it("opens a new process when the permission profile differs, and reuses it for the same profile", async () => {
+    const { adapter, opens } = makeAdapter();
+    const { live } = makeLive();
+    const restricted = { ...HOME, profile: "restricted" };
+    const turn = (home: typeof HOME, sessionId: string) =>
+      run(createExecute(adapter, { home }), makeCtx({ liveSession: live, env: usableEnv, useResume: true, sessionId }));
+    await run(createExecute(adapter, { home: HOME }), makeCtx({ liveSession: live, env: usableEnv }));
+    await turn(restricted, "native-1");
+    expect(opens).toHaveLength(2);
+    await turn(restricted, "native-2");
+    expect(opens).toHaveLength(2);
+  });
+
   it("adds the home's env to the process env, over the host's", async () => {
     const { adapter, opens } = makeAdapter();
     await run(createExecute(adapter, { home: HOME }), makeCtx({ env: { PATH: "/bin", ACME_HOME: "/host" } }));

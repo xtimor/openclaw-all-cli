@@ -3,7 +3,7 @@ import { parseJsonlEvent } from "./events.ts";
 import { HOST_SHELL_ARG, createExecute, errorRecord, type ExecuteOptions } from "./execute.ts";
 import { prepareAgentHome } from "./home.ts";
 import { deriveFlags } from "./manifest.ts";
-import { unenforceableNativeTools } from "./permissions.ts";
+import { selectNativeProfile } from "./permissions.ts";
 import type { CliAdapter } from "./ports.ts";
 import { ProcessPool } from "./pool.ts";
 import { SYSTEM_PROMPT_TRANSPORT_MARKER } from "./system-prompt.ts";
@@ -124,7 +124,7 @@ export function buildCliBackend(adapter: CliAdapter, options: BuildBackendOption
  */
 function resolveExecutionArgsFor(adapter: CliAdapter): NonNullable<CliBackendPlugin["resolveExecutionArgs"]> {
   const enforceableSelection = (availability: PrepareExecutionContext["toolAvailability"]): boolean =>
-    !availability || unenforceableNativeTools(availability, adapter.alwaysOnNativeTools).length === 0;
+    selectNativeProfile(availability, adapter.alwaysOnNativeTools, adapter.restrictedProfileId).blocked.length === 0;
   return (ctx) =>
     !enforceableSelection(ctx.toolAvailability)
       ? undefined
@@ -144,11 +144,13 @@ function prepareExecutionFor(
   options: BuildBackendOptions,
 ): NonNullable<CliBackendPlugin["prepareExecution"]> {
   return async (ctx) => {
-    // The run's native selection must be one the adapter enforces: it cannot switch off the
-    // tools its permission file keeps open. Refuse before any process starts (AD-9).
-    const blocked = ctx.toolAvailability
-      ? unenforceableNativeTools(ctx.toolAvailability, adapter.alwaysOnNativeTools)
-      : [];
+    // The run's native selection must be one a permission profile enforces: the full one, or none
+    // when the adapter has a restricted profile. Refuse before any process starts (AD-9).
+    const { profile, blocked } = selectNativeProfile(
+      ctx.toolAvailability,
+      adapter.alwaysOnNativeTools,
+      adapter.restrictedProfileId,
+    );
     if (blocked.length > 0) {
       throw new Error(
         `${backendIdFor(adapter)} keeps native ${blocked.join(", ")} on in every turn and cannot switch ${blocked.length > 1 ? "them" : "it"} off for this run. ` +
@@ -156,7 +158,7 @@ function prepareExecutionFor(
       );
     }
     try {
-      const home = await prepareAgentHome(adapter, backendIdFor(adapter), ctx.agentDir, options.warn);
+      const home = await prepareAgentHome(adapter, backendIdFor(adapter), ctx.agentDir, options.warn, profile);
       return {
         execute: createExecute(adapter, {
           ...options.execute,

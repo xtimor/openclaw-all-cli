@@ -1,5 +1,5 @@
 import { isDeepStrictEqual } from "node:util";
-import { rm } from "node:fs/promises";
+import { mkdir, rm, symlink } from "node:fs/promises";
 import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 import { AcpSession } from "../../transports/acp/session.ts";
@@ -155,21 +155,30 @@ async function checkVersion(params: CheckVersionParams): Promise<"ok" | { warnin
   return "ok";
 }
 
-/** AD-9: the same for every agent. Native read, grep, and glob stay open; the MCP proxy is allowed. */
+/** AD-9, `default` profile: the same for every agent. Native read, grep, and glob stay open; the MCP proxy is allowed. */
 export const CURSOR_PERMISSIONS = {
   allow: ["Read(**)", "Mcp(openclaw:*)"],
   deny: ["Shell(*)", "Write(**)", "WebFetch(*)"],
 } as const;
 
+/** AD-9, `restricted` profile: one `Read(*)` deny closes native read, grep, and glob (cursor-agent 2026.10.22). The MCP proxy stays allowed. */
+export const CURSOR_RESTRICTED_PERMISSIONS = {
+  allow: ["Mcp(openclaw:*)"],
+  deny: ["Read(*)", "Shell(*)", "Write(**)", "WebFetch(*)"],
+} as const;
+
+export const CURSOR_RESTRICTED_PROFILE = "restricted";
+
 const CONFIG_FILE = "cli-config.json";
+const CHAT_STORE = "acp-sessions";
 
 /**
- * Points Cursor's config and chat store at the per-agent home (AD-6) and writes the static
- * permissions there. Keys Cursor wrote stay; the file is rewritten only when its permissions
- * differ, and always by atomic rename so parallel turns never leave a partial file.
+ * Writes `permissions` into `<dir>/cli-config.json`. Keys Cursor wrote stay; the file is rewritten
+ * only when its permissions differ, and always by atomic rename so parallel turns never leave a
+ * partial file.
  */
-async function prepareHome(home: string): Promise<HomeEnv> {
-  const file = join(home, CONFIG_FILE);
+async function writePermissions(dir: string, permissions: object): Promise<void> {
+  const file = join(dir, CONFIG_FILE);
   // Only a missing or invalid file starts fresh; an unreadable one must not drop Cursor's keys.
   const existing =
     (await readJsonObject(file).catch((error: unknown) => {
@@ -181,10 +190,39 @@ async function prepareHome(home: string): Promise<HomeEnv> {
         { cause: error },
       );
     })) ?? {};
-  if (!isDeepStrictEqual(existing.permissions, CURSOR_PERMISSIONS)) {
-    await writeJsonAtomic(file, { ...existing, permissions: CURSOR_PERMISSIONS });
+  if (!isDeepStrictEqual(existing.permissions, permissions)) {
+    await writeJsonAtomic(file, { ...existing, permissions });
   }
-  return { CURSOR_CONFIG_DIR: home, CURSOR_DATA_DIR: join(home, "data") };
+}
+
+/**
+ * Points the restricted profile's chat store at the default profile's, so a chat resumes under
+ * either profile. An existing link or directory is left alone (parallel turns race here).
+ */
+async function linkChatStore(home: string, configDir: string): Promise<void> {
+  const target = join(home, CHAT_STORE);
+  await mkdir(target, { recursive: true, mode: 0o700 });
+  await mkdir(configDir, { recursive: true, mode: 0o700 });
+  await symlink(target, join(configDir, CHAT_STORE), "dir").catch((error: unknown) => {
+    if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
+  });
+}
+
+/**
+ * Points Cursor's config and chat store at the per-agent home (AD-6) and writes the static
+ * permissions of the run's profile. `restricted` has its own config dir under the home, whose chat
+ * store is the home's; `CURSOR_DATA_DIR` is the home's in both.
+ */
+async function prepareHome(home: string, profile?: string): Promise<HomeEnv> {
+  const data = join(home, "data");
+  if (profile === CURSOR_RESTRICTED_PROFILE) {
+    const configDir = join(home, "profiles", CURSOR_RESTRICTED_PROFILE);
+    await linkChatStore(home, configDir);
+    await writePermissions(configDir, CURSOR_RESTRICTED_PERMISSIONS);
+    return { CURSOR_CONFIG_DIR: configDir, CURSOR_DATA_DIR: data };
+  }
+  await writePermissions(home, CURSOR_PERMISSIONS);
+  return { CURSOR_CONFIG_DIR: home, CURSOR_DATA_DIR: data };
 }
 
 /** The ACP `McpServer` shape for an HTTP server: headers are a name/value list. */
@@ -337,6 +375,7 @@ export const cursorAdapter: CliAdapter = {
   modelAliases: { "default[]": "auto", default: "auto" },
   manifest: cursorManifest,
   alwaysOnNativeTools: CURSOR_ALWAYS_ON_NATIVE_TOOLS,
+  restrictedProfileId: CURSOR_RESTRICTED_PROFILE,
   // Cursor's MCP client gives up on a tool call after 60 s and never hangs up (live probe).
   mcpCallTimeoutMs: 60_000,
   clearEnv: CURSOR_CLEAR_ENV,
