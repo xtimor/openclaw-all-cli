@@ -1,0 +1,64 @@
+---
+title: 'Document cursor-cli under tools.fs.workspaceOnly'
+type: 'chore'
+ticket: '19'
+created: '2026-11-04'
+status: 'ready-for-dev'
+baseline_revision: ''
+route: 'oneshot'
+route_source: 'auto'
+risk: 'low'
+review: ''
+review_source: ''
+lenses_ran: []
+review_loop_iteration: 0
+followup_review_recommended: false
+context: []
+warnings: []
+deferred: []
+---
+
+<intent-contract>
+
+## Intent
+
+**Problem:** An agent bound to `cursor-cli` with `tools.fs.workspaceOnly: true` is unenforced on OpenClaw 2026.10.3 (Cursor's native `read`, `grep`, `glob` reach outside the workspace) and refused at preflight on 2026.10.9 (the host asks for an exact tool list, the plugin's `prepareExecution` throws its existing `cursor-cli keeps native read, grep, glob on in every turn ... OpenClaw did not start the run.`, the fallback chain logs `candidate_failed`). No user doc says so (issue #65).
+
+**Approach:** Docs only, worded as current behavior (issue #67 changes it later). Scope and acceptance criteria are the ticket's (`_bmad-output/backlog/story-document-cursor-cli-under-tools-fs-workspaceonly.md`, AC 1-5):
+
+1. `docs/providers/cursor.md`: a new `### Workspace-only file access (tools.fs.workspaceOnly)` subsection at the end of `## Permissions and tool availability` (before `## Shell commands`). It states: `cursor-cli` keeps native `read`, `grep`, `glob` on in every turn and cannot honour `tools.fs.workspaceOnly`; unenforced on OpenClaw 2026.10.3 and earlier (the run starts, nothing narrows the native tools); refused at preflight on 2026.10.9 and later releases that carry the host-side handling (also seen on 2026.10.8; the first such release is not named); the refusal is a model failure in fallback decisions (`candidate_failed`, then the next fallback), not a configuration error at `config set` time (config accepts it); the advice: do not combine `workspaceOnly: true` with a `cursor-cli` primary, run an agent that needs the boundary on the embedded runtime (an API model), or accept the refusal and configure a fallback model on purpose, knowing the fallback answers without the CLI backend. Quote the message as in `src/core/backend.ts` `prepareExecutionFor`.
+2. Same file, `## Known limits`: one bullet naming the limit and pointing to the new subsection.
+3. `docs/setup.md` Troubleshooting: the existing `cursor-cli keeps native read, grep, glob on in every turn...` row gains `tools.fs.workspaceOnly: true` (OpenClaw 2026.10.9) in its cause and a link `providers/cursor.md#workspace-only-file-access-toolsfsworkspaceonly` in its fix.
+4. `CHANGELOG.md` `## Unreleased` `### Changed`: one plain `Docs: ...` line with `([#65](https://github.com/xtimor/openclaw-all-cli/issues/65))`, matching the neighbouring lines' style.
+
+Must not change: plugin code, the preflight message, tests' expectations.
+
+</intent-contract>
+
+## Implementation Notes
+
+Oneshot route: about 15 lines of prose in three docs files, no code; below the 100-line threshold.
+
+- Decision: the ticket's AC 5 names `npm run check`, which `package.json` does not define; the plan verifies with `npm run typecheck` and `npm run ci` (`scripts/ci-check.sh`, which also runs `npm test`) in its place.
+- Decision: the doc adds that 2026.10.8 also refused (MEMORY.md, upstream follow-up #55, probed 2026-10-29) without claiming the first release; this keeps AC 1's "2026.10.9 and later" and the ticket's note not to name a first release.
+- Decision: extend the existing Troubleshooting row (same symptom text) instead of adding a duplicate row; add a Known limits bullet because every limit in `cursor.md` is listed there.
+- Live Cursor check: not needed (docs only); not run.
+
+## Plan Change Log
+
+## Review Triage Log
+
+## Verification
+
+**Commands:**
+- `grep -n workspaceOnly docs/providers/cursor.md` -- expected: hits in the new subsection and the Known limits bullet
+- `grep -n 'workspace-only-file-access' docs/setup.md` -- expected: the Troubleshooting row's link; the anchor matches GitHub's slug of the new heading
+- `git diff --stat` -- expected: only `docs/providers/cursor.md`, `docs/setup.md`, `CHANGELOG.md` (plus this plan)
+- `npm test` -- expected: pass (includes `test/changelog.test.ts` and `test/parity-suite.test.ts`, which read these files)
+- `npm run typecheck` and `npm run ci` -- expected: pass
+
+## Auto Run Result
+
+Status: ready-for-dev
+Blocking condition: none
+Halted after planning, as the invocation directed. Route oneshot (auto), risk low. Live Cursor check: not needed (docs only), not run.
