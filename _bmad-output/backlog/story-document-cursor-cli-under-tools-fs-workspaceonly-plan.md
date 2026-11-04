@@ -3,8 +3,8 @@ title: 'Document cursor-cli under tools.fs.workspaceOnly'
 type: 'chore'
 ticket: '19'
 created: '2026-11-04'
-status: 'ready-for-dev'
-baseline_revision: ''
+status: blocked
+baseline_revision: '3d7fe1316952a4bde493d1ccec0d44bba1240072'
 route: 'oneshot'
 route_source: 'auto'
 risk: 'low'
@@ -16,6 +16,8 @@ followup_review_recommended: false
 context: []
 warnings: []
 deferred: []
+blocked_at: "2026-11-04"
+blocked_reason: "no subagents"
 ---
 
 <intent-contract>
@@ -59,6 +61,9 @@ Oneshot route: about 15 lines of prose in three docs files, no code; below the 1
 
 ## Auto Run Result
 
-Status: ready-for-dev
-Blocking condition: none
-Halted after planning, as the invocation directed. Route oneshot (auto), risk low. Live Cursor check: not needed (docs only), not run.
+Status: blocked
+Blocking condition: no subagents
+Implemented and verified; the review step (quick lens, a context-free subagent) was not run because this worker has no tool to launch a subagent. Re-dispatch the plan (status `blocked` needs a manual reset to `in-review`) from a session that can launch subagents.
+Implementation: commit 4da61955a3dab45552bcb0b44319e8f09ef16ee1 (baseline 3d7fe1316952a4bde493d1ccec0d44bba1240072). Added `### Workspace-only file access (tools.fs.workspaceOnly)` in `docs/providers/cursor.md`, a Known limits bullet there, the Troubleshooting row link in `docs/setup.md`, and one `Docs:` line in `CHANGELOG.md` (#65).
+Verification: `npm run typecheck` pass; `npm run ci` pass ("All checks passed"); `grep -n workspaceOnly docs/providers/cursor.md` finds the section and bullet; the setup link anchor matches the new heading slug. Live Cursor check: not needed (docs only), not run.
+Earlier note: halted after planning, as the invocation directed. Route oneshot (auto), risk low. Live Cursor check: not needed (docs only), not run.
