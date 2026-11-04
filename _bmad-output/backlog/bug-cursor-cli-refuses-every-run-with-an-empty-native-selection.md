@@ -104,3 +104,4 @@ AD-9 and `alwaysOnNativeTools` treat native `read`, `grep`, and `glob` as imposs
 - Decision: approved by the owner's approval of the issue; the batch pull request merges on green checks.
 - Check outside the criteria: the live check of criterion 8 on a host with a Cursor login (the numbers in the issue come from `cursor-agent` 2026.10.22 and were not re-measured when this ticket was written).
 - Decision: depends on the proposal merging first (AD-9 already edited).
+- Decision: the owner's session comment of 2026-11-04 (13:58 UTC) on issue #67 asks for more live measurements (isolated config dir, host allow/deny control, `CURSOR_CONFIG_DIR` vs binary, `--force`, `--sandbox`, `--add-dir`, a cap for profile-keyed processes). It came after the approval and is not a click, so it is outside this approved scope; the build does not take it. It stays open for the owner to confirm, and the live check of criterion 8 stays not run without a Cursor login.
