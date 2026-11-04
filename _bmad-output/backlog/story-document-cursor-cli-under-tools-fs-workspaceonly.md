@@ -38,7 +38,7 @@ An agent bound to `cursor-cli` with `tools.fs.workspaceOnly: true` is unenforced
    **Then** Troubleshooting links to the section, and `## Unreleased` has one plain line with the link to issue #65
 5. **Checks pass**
    **Given** the branch
-   **When** `npm test` and `npm run check` run
+   **When** `npm test` and `npm run typecheck` run
    **Then** both pass, and `grep -n workspaceOnly docs/providers/cursor.md` finds the section
 
 ## Boundaries

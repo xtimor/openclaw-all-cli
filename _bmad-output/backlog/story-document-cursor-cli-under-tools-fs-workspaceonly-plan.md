@@ -3,21 +3,19 @@ title: 'Document cursor-cli under tools.fs.workspaceOnly'
 type: 'chore'
 ticket: '19'
 created: '2026-11-04'
-status: blocked
+status: built
 baseline_revision: '3d7fe1316952a4bde493d1ccec0d44bba1240072'
 route: 'oneshot'
 route_source: 'auto'
 risk: 'low'
-review: ''
-review_source: ''
-lenses_ran: []
+review: 'quick'
+review_source: 'pinned'
+lenses_ran: [quick]
 review_loop_iteration: 0
 followup_review_recommended: false
 context: []
 warnings: []
 deferred: []
-blocked_at: "2026-11-04"
-blocked_reason: "no subagents"
 ---
 
 <intent-contract>
@@ -59,11 +57,21 @@ Oneshot route: about 15 lines of prose in three docs files, no code; below the 1
 - `npm test` -- expected: pass (includes `test/changelog.test.ts` and `test/parity-suite.test.ts`, which read these files)
 - `npm run typecheck` and `npm run ci` -- expected: pass
 
+## Review Triage Log
+
+### 2026-11-04 — Review pass
+- verdicts: 6 findings — high 0, medium 0, low 3, false 1, maybe-false 0 (plus 2 patched lows counted below)
+- findings:
+  - `[false]` `[reject]` Review step not done — the review ran in this pass (first worker had no subagents); the finding describes the earlier blocked state.
+  - `[low]` `[patch]` Ticket AC 5 names `npm run check`, which does not exist — ticket now says `npm run typecheck`.
+  - `[low]` `[patch]` Setup row says "2026.10.9" only while cursor.md says "2026.10.9 and later" — setup row now says "2026.10.9 and later".
+  - `[low]` `[reject]` "2026.10.3 and earlier" only evidenced for 2026.10.3 — the wording is the ticket's AC 1; rejected, not worth more words.
+  - `[low]` `[reject]` "see above" pointer is vague — the preceding paragraph in the same section; fix would not change meaning.
+  - `[low]` `[reject]` Quoted message is the full three-tool text — correct for an empty native selection, which is what `workspaceOnly` produces.
+
 ## Auto Run Result
 
-Status: blocked
-Blocking condition: no subagents
-Implemented and verified; the review step (quick lens, a context-free subagent) was not run because this worker has no tool to launch a subagent. Re-dispatch the plan (status `blocked` needs a manual reset to `in-review`) from a session that can launch subagents.
-Implementation: commit 4da61955a3dab45552bcb0b44319e8f09ef16ee1 (baseline 3d7fe1316952a4bde493d1ccec0d44bba1240072). Added `### Workspace-only file access (tools.fs.workspaceOnly)` in `docs/providers/cursor.md`, a Known limits bullet there, the Troubleshooting row link in `docs/setup.md`, and one `Docs:` line in `CHANGELOG.md` (#65).
-Verification: `npm run typecheck` pass; `npm run ci` pass ("All checks passed"); `grep -n workspaceOnly docs/providers/cursor.md` finds the section and bullet; the setup link anchor matches the new heading slug. Live Cursor check: not needed (docs only), not run.
-Earlier note: halted after planning, as the invocation directed. Route oneshot (auto), risk low. Live Cursor check: not needed (docs only), not run.
+Status: built
+Implementation: commit 4da61955a3dab45552bcb0b44319e8f09ef16ee1 (baseline 3d7fe1316952a4bde493d1ccec0d44bba1240072). Added `### Workspace-only file access (tools.fs.workspaceOnly)` in `docs/providers/cursor.md`, a Known limits bullet there, the Troubleshooting row link in `docs/setup.md`, and one `Docs:` line in `CHANGELOG.md` (#65). Review patches: setup row wording, ticket AC 5 command.
+Review: quick lens ran (context-free subagent); 2 low findings patched, 4 rejected (see triage log).
+Verification: `npm run typecheck` and `npm run ci` pass; live Cursor check not needed (docs only), not run.
