@@ -4,6 +4,8 @@ What changed for people who use the plugin, newest first. Format: [Keep a Change
 
 ## Unreleased
 
+## 0.1.5 - 2026-11-05
+
 ### Added
 
 - The plugin icon now shows next to the OAC / Cursor-CLI choices on the model setup page of the Control UI, not a letter avatar. The chat picker, provider cards, and Connect dialog still show a letter avatar until OpenClaw changes. ([#45](https://github.com/xtimor/openclaw-all-cli/issues/45))
