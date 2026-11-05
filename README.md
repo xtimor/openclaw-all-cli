@@ -60,6 +60,7 @@ Early release. Cursor CLI only. To build from source, see [Build from source](ht
 - [Release](https://github.com/xtimor/openclaw-all-cli/blob/main/docs/release.md): cut a release (on the owner's approval, or from a tag), dry run, first release, rollback, rotating the credential.
 - [Issues](https://github.com/xtimor/openclaw-all-cli/blob/main/docs/issues.md): file a bug or an idea (people and agents), the states, what happens when, security reports.
 - [Cursor provider](https://github.com/xtimor/openclaw-all-cli/blob/main/docs/providers/cursor.md): how `cursor-cli/<model>` runs and how it compares with `claude-cli`.
+- [Cursor provider card on OpenClaw latest](https://github.com/xtimor/openclaw-all-cli/blob/main/docs/providers/cursor-card-latest.md): what the Control UI provider card shows for `cursor-cli`, measured on 2026.10.10.
 
 ## References
 
