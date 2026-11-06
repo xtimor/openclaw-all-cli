@@ -14,6 +14,10 @@ What changed for people who use the plugin, newest first. Format: [Keep a Change
 - Docs: Cursor's 1M context variants ("Claude Opus 5.5 1M" and similar) cannot be picked as `cursor-cli/...` models, because Cursor refuses a `context=1m` model ID over ACP (checked live: `Invalid model value`), so the plugin lists no 1M model and leaves every existing model name unchanged. The 300k shown for these models is Cursor's ACP default, not their limit. If Cursor starts listing a 1M row, the plugin shows it as its own model with a 1,000,000 window. Details in the [Cursor provider](https://github.com/xtimor/openclaw-all-cli/blob/main/docs/providers/cursor.md#1m-context-variants) docs. ([#46](https://github.com/xtimor/openclaw-all-cli/issues/46))
 - Issues: the triage and implementation agents no longer close an issue they cannot or will not fix. They give the reason and the evidence under the new `status:declined`, mention the maintainer, and leave the issue open; the maintainer closes it or moves it on, and an untouched declined issue closes as not planned after 30 days. Security reports are still closed at once with a pointer to the security policy. See [Issues](https://github.com/xtimor/openclaw-all-cli/blob/main/docs/issues.md).
 
+### Fixed
+
+- A `cursor-cli` turn whose native tool selection is empty now runs instead of being refused. Cursor's own permission file can close its native read, grep and glob (one `Read(*)` deny takes all three down, checked live against `cursor-agent` 2026.10.22), and its MCP path stays open under that deny, so the model reaches files through OpenClaw's own tools, where the run's boundary applies. An agent with `tools.fs.workspaceOnly: true` therefore keeps its model and its boundary. A selection that takes only part of those three is still refused before Cursor starts, and the message names the native tools that stayed on. ([#67](https://github.com/xtimor/openclaw-all-cli/issues/67))
+
 ## 0.1.4 - 2026-10-27
 
 ### Changed

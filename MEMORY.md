@@ -34,7 +34,8 @@
 
 - `cursor-agent -p` reads project `.cursor/mcp.json` only at the workspace's git root, and ignores project `.cursor/cli.json` permissions; permissions work from `CURSOR_CONFIG_DIR/cli-config.json`.
 - `cursor-agent acp` honors `session/new.mcpServers` (HTTP + headers), asks permission for shell, auto-applies edits unless `Write(**)` is denied, and reports no usage.
-- `deny: Read(**)` does not block grep/glob.
+- `deny: Read(**)` does not block grep/glob. But `deny: Read(*)` (a deny of the whole set, not of a path pattern) takes native read, grep and glob down together, because one rule governs the three (live-checked against cursor-agent 2026.10.22, in ask and in agent mode), and Cursor's MCP path stays open under it. The permission file is read once per process, so a permission change needs a new process.
+- Cursor rejects an incomplete `cli-config.json`: it writes a `.bad` copy and falls back to the default configuration, where `deny` is empty. Accepted: `{version, permissions}` and `{permissions}`; `selectedModel` without `parameters` is rejected. A first failed configuration therefore silently drops every deny, and a later measurement looks as if the deny did nothing.
 - OpenClaw mints a new loopback MCP token per run; a warm session needs the per-turn MCP proxy (AD-12).
 - OpenClaw owns session binding (`ctx.sessionId`/`useResume`) and per-session lanes with `liveSession`; do not duplicate them.
 - Sandboxed shells can't read the Cursor login from the Keychain; run `cursor-agent` with full permissions.
