@@ -3,19 +3,33 @@ title: 'A denied native shell call tells the model nothing about OpenClaw exec'
 type: 'bugfix'
 ticket: '23'
 created: '2026-11-09'
-status: 'in-progress'
+status: done
 baseline_revision: '12b384f30ee04b831ddef6c37f567446ee55d04a'
 route: 'oneshot'
 route_source: 'pinned'
 risk: 'low'
-review: ''
-review_source: ''
-lenses_ran: []
+review: 'quick'
+review_source: 'auto'
+lenses_ran: [quick]
 review_loop_iteration: 0
 followup_review_recommended: false
 context: []
 warnings: []
-deferred: []
+deferred:
+  - summary: >-
+      A warm process keeps the shell sentence it got at open even if a later turn's tool list drops process or exec while the host-shell marker stays.
+    evidence: |-
+      Reuse is keyed on the host-shell marker, not on the tool list; whether the host fingerprint changes with the tool list is unverified.
+    location: >-
+      src/core/execute.ts
+    severity: low (unverified)
+  - summary: >-
+      A new process for the same chat sends the sentence again, so a long chat can collect copies.
+    evidence: |-
+      Decision of the build (told once per process); the continuity note behaves the same.
+    location: >-
+      src/core/execute.ts
+    severity: low
 ---
 
 <intent-contract>
@@ -51,6 +65,16 @@ Oneshot: one core sentence, one field on the live entry, three doc places.
 
 ## Review Triage Log
 
+### 2026-11-09 — Review pass
+- verdicts: 6 findings — high 0, medium 0, low 6, false 0, maybe-false 2
+- findings:
+  - `[low]` `[patch]` doc said the sentence "starts" the first prompt; it comes after the system block and the continuity note — wording fixed in the doc and MEMORY.
+  - `[low]` `[patch]` MEMORY line 108 contradicted the new entry — a correction note added.
+  - `[low]` `[patch]` no test that the sentence names no CLI — test added.
+  - `[maybe-false]` `[defer]` warm process keeps a stale sentence after a tool-list change — deferred.
+  - `[low]` `[defer]` repeated sentence per new process — deferred.
+  - `[low]` `[reject]` the staged patch lacked the parity-matrix hunk — an artifact of the staged diff (the file is in the commit).
+
 ## Verification
 
 **Commands:**
@@ -59,3 +83,14 @@ Oneshot: one core sentence, one field on the live entry, three doc places.
 
 **Manual checks:**
 - Live Cursor turn not run: no `cursor-agent` login on this host.
+
+## Auto Run Result
+
+Status: built
+
+- Summary: when OpenClaw serves `exec`, the first prompt of a process carries one neutral sentence: the native shell is disabled, run commands with `exec` (long ones in the background, polled with `process`). No sentence without `exec`. P8 text corrected in the manifest, the parity matrix and the provider doc.
+- Files: `src/core/turn-prompt.ts`, `src/core/live-entry.ts`, `src/core/execute.ts`, `src/adapters/cursor/manifest.ts`, `test/shell-hint.test.ts`, `docs/providers/cursor.md`, the parity matrix, `CHANGELOG.md`, `MEMORY.md`.
+- Review: quick, one lens. 6 findings: 3 low patched, 2 deferred, 1 rejected.
+- Follow-up review recommended: false.
+- Verification: reproduction test failed first (`expected 'do it' to match /exec/`), then green; `npm run ci` passed; live Cursor check not run (no login), so whether a real model follows the sentence is unverified.
+- Residual risks: a warm process can keep an outdated sentence after a tool-list change; the sentence repeats per new process.

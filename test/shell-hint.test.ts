@@ -2,6 +2,7 @@ import { createServer } from "node:http";
 import type { AddressInfo } from "node:net";
 import { describe, expect, it } from "vitest";
 import { createExecute, HOST_SHELL_ARG } from "../src/core/execute.ts";
+import { shellNote } from "../src/core/turn-prompt.ts";
 import { createManifest, type CliAdapter, type CliSession, type NormalizedEvent, type OpenParams } from "../src/core/ports.ts";
 import type { LiveSessionCapability, LiveSessionHandle } from "../src/core/sdk-types.ts";
 import { MCP_CONFIG_TEST_KEY, withHostMcp } from "./fixtures/host-mcp.ts";
@@ -137,5 +138,11 @@ describe("the docs say what ships", () => {
     const text = readFileSync(join(import.meta.dirname, "..", file), "utf8");
     expect(text).not.toMatch(/Use OpenClaw exec/i);
     expect(text).toMatch(/first prompt of the process/);
+  });
+});
+
+describe("the shell sentence", () => {
+  it.each([true, false])("names no CLI (process listed: %s)", (hasProcess) => {
+    expect(shellNote(hasProcess)).not.toMatch(/cursor|acme|claude|gemini/i);
   });
 });
