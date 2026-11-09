@@ -10,7 +10,7 @@ import { requiredCapabilities } from "./manifest.ts";
 import { boundTurnUsage, readTurnUsage } from "./usage.ts";
 import { DeliveredPrompts, deliveredFileFor, planDelivery } from "./system-prompt.ts";
 import { ProcessPool, type TurnSlot } from "./pool.ts";
-import { CONTINUITY_NOTE, HOST_SHELL_TOOL, composePrompt, modeOf, splitHostShell } from "./turn-prompt.ts";
+import { CONTINUITY_NOTE, HOST_PROCESS_TOOL, HOST_SHELL_TOOL, composePrompt, modeOf, shellNote, splitHostShell } from "./turn-prompt.ts";
 import { ToolLedger } from "./tool-ledger.ts";
 import { CliError, type CliAdapter, type NormalizedEvent } from "./ports.ts";
 import type { CliBackendExecute, ExecuteContext, LiveSessionCapability } from "./sdk-types.ts";
@@ -259,6 +259,7 @@ export function createExecute(adapter: CliAdapter, options: ExecuteOptions): Cli
       const marked = shell.hostShell && turnTarget.ok;
       const listed = marked && turnTarget.ok ? await listToolNames(turnTarget.target, ctx.abortSignal) : undefined;
       const hostShell = listed?.includes(HOST_SHELL_TOOL) === true;
+      if (hostShell) fresh.shellNote = shellNote(listed?.includes(HOST_PROCESS_TOOL) === true);
       // The host may serve exec but the list could not be read (an error, a cold cache): this
       // process opened in the restrictive mode. Never reuse it, so the next turn reads the list again.
       if (marked && listed === undefined) fresh.degraded = true;
@@ -396,8 +397,10 @@ export function createExecute(adapter: CliAdapter, options: ExecuteOptions): Cli
     let closed = false;
     // Each event goes to the host as it arrives; nothing waits for the turn to end.
     // The note goes once, on the first prompt of a fresh chat; it is not part of the host's transcript.
-    const note = active.freshChat ? CONTINUITY_NOTE : undefined;
+    // The shell sentence goes the same way: once per process, after the continuity note.
+    const note = [active.freshChat ? CONTINUITY_NOTE : undefined, active.shellNote].filter(Boolean).join("\n\n") || undefined;
     active.freshChat = false;
+    active.shellNote = undefined;
     const delivery = planDelivery({
       enabled: deliversSystemPrompt,
       systemPrompt: ctx.systemPrompt,

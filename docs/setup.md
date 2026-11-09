@@ -138,7 +138,7 @@ All settings are optional. They live under `plugins.entries.openclaw-all-cli.con
 | `cursor-cli.command` | `cursor-agent` | Path or name of the Cursor CLI. Set it when the Gateway's `PATH` does not include `cursor-agent`. |
 | `cursor-cli.env` | none | Variables for the `cursor-agent` process only, such as `CURSOR_API_KEY`. Kept out of the environment `exec` starts commands with only; not out of its reach (same user, and Cursor writes the key to `~/.config/cursor/auth.json`; see [The API key](#the-api-key)). |
 | `cursor-cli.maxConcurrentTurns` | `4` | Turns that run at once (1 to 64). More wait in order for a free slot. |
-| `cursor-cli.maxProcesses` | `8` | `cursor-agent` processes alive at once, idle ones included (1 to 64, at least `maxConcurrentTurns`). At the cap the least recently used idle process is closed. |
+| `cursor-cli.maxProcesses` | `8` | `cursor-agent` processes alive at once, idle ones included (1 to 64, at least `maxConcurrentTurns`). At the cap the least recently used idle process is closed. A process is also closed when its conversation ends, and after 15 idle minutes. |
 
 The OpenClaw Control UI shows these settings as a form for the plugin, with a label and help for each field; `cursor-cli.env` values are hidden as secrets there and in `openclaw config get`, and the two limits sit under advanced.
 

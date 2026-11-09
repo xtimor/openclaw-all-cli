@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { releaseChat } from "./chat-registry.ts";
+import { conversationOf } from "./conversation.ts";
 import { startMcpProxy, type McpProxy, type McpTarget } from "./mcp-proxy.ts";
 import type { PermissionTurn } from "./permissions.ts";
 import { CliError, type CliSession } from "./ports.ts";
@@ -40,6 +41,11 @@ export type LiveEntry = {
   stopOpening: AbortController;
   /** The process opened a fresh agent chat and has not sent its first prompt yet (P15). */
   freshChat?: boolean;
+  /**
+   * The process opened for a turn that serves the host's `exec`: the sentence that says where commands
+   * run, until its first prompt sends it. The process's mode cannot change, so once is enough.
+   */
+  shellNote?: string;
   busy: boolean;
   idleTimer?: NodeJS.Timeout;
 };
@@ -72,6 +78,7 @@ export async function createLiveEntry(
       // A process that died while idle is evictable too: it has nothing left to lose.
       isIdle: () => !entry.busy && Boolean(entry.session),
       lastUsed: Date.now(),
+      conversation: conversationOf(ctx.systemPrompt),
       close: () => entry.handle.close("idle"),
       exited: async () => {
         await entry.opening?.then(
@@ -92,10 +99,13 @@ export async function createLiveEntry(
         entry.stopOpening.abort();
         clearTimeout(entry.idleTimer);
         pool.remove(entry.member);
-        releaseChat(entry);
-        live?.remove(entry.handle);
-        void entry.session?.close();
-        void entry.proxy?.close();
+        try {
+          releaseChat(entry);
+          live?.remove(entry.handle);
+        } finally {
+          void entry.session?.close();
+          void entry.proxy?.close();
+        }
       },
       waitForExit: () => entry.session?.waitForExit() ?? Promise.resolve(),
     },

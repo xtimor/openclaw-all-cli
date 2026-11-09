@@ -1,5 +1,6 @@
 import { backendIdFor, buildCliBackend } from "./backend.ts";
 import { closeListings } from "./catalog.ts";
+import { RELEASING_REASONS } from "./conversation.ts";
 import { buildConfigSchema, capsOf, readBackendConfig } from "./config.ts";
 import { homeDirFor } from "./home.ts";
 import { reapOnce } from "./pid-locks.ts";
@@ -55,6 +56,13 @@ export function registerAdapters(api: OpenClawPluginApi, adapters: readonly CliA
   // `lifecycle.onDispose`; `registerRuntimeLifecycle.dispose` does not run. `closeAll` is
   // idempotent, so a host version that runs both is fine.
   api.lifecycle?.onDispose?.(closeAll);
+  // A finished conversation releases its process (AD-14). `session_end` is a metadata hook: it needs
+  // no conversation access. A host without hooks keeps the idle close.
+  api.on?.("session_end", (event, ctx) => {
+    const key = event.sessionKey || ctx.sessionKey;
+    if (!key || !event.reason || !RELEASING_REASONS.has(event.reason)) return;
+    for (const pool of pools) pool.releaseConversation(key);
+  });
   api.registerService?.({ id: "openclaw-all-cli-processes", start: () => {}, stop: closeAll });
 }
 
