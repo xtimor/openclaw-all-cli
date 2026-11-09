@@ -4,6 +4,8 @@ What changed for people who use the plugin, newest first. Format: [Keep a Change
 
 ## Unreleased
 
+## 0.1.6 - 2026-11-09
+
 ### Fixed
 
 - When OpenClaw serves `structured_output` for a Cursor turn (a run with an output schema), the first prompt now tells the model to give its final answer through that tool, so GPT models no longer end such runs with `structured_output was not called`. A model may still skip it: there is no re-prompt. ([#75](https://github.com/xtimor/openclaw-all-cli/issues/75))
