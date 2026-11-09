@@ -21,6 +21,8 @@ export type PoolMember = {
   isIdle(): boolean;
   /** When it last served a turn, in ms. The least recently used idle process is evicted first. */
   lastUsed: number;
+  /** The conversation (the host's session key) it serves, when known. Set once, before the process counts. */
+  conversation?: string | undefined;
   /** Starts closing it. It leaves the pool by calling `pool.remove` itself. Safe to call twice. */
   close(): void;
   /** Resolves when the process has exited (or at once when it never started). */
@@ -160,6 +162,27 @@ export class ProcessPool {
 
   remove(member: PoolMember): void {
     this.members.delete(member);
+  }
+
+  /**
+   * Starts closing the idle processes of an ended conversation and returns how many. A process in a
+   * turn stays: the idle close or a later release ends it. It never waits for an exit, so the caller
+   * (a host hook) is not held; a failing close is dropped. A closing pool has closed everything.
+   */
+  releaseConversation(conversation: string): number {
+    if (this.closing) return 0;
+    let released = 0;
+    for (const member of [...this.members]) {
+      if (member.conversation !== conversation || !member.isIdle()) continue;
+      this.members.delete(member);
+      released += 1;
+      try {
+        member.close();
+      } catch {
+        // The process is already off the pool; the idle close and the unload still find its handle.
+      }
+    }
+    return released;
   }
 
   /**

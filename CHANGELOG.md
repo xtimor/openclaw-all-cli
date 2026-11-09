@@ -4,6 +4,10 @@ What changed for people who use the plugin, newest first. Format: [Keep a Change
 
 ## Unreleased
 
+### Fixed
+
+- A Cursor process now closes when its conversation ends (`/new`, a reset, a deletion, an idle or daily rollover), not up to 15 minutes later, so ended chats no longer pile up processes and memory. ([#74](https://github.com/xtimor/openclaw-all-cli/issues/74))
+
 ## 0.1.5 - 2026-11-05
 
 ### Added

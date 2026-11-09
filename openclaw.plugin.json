@@ -113,7 +113,7 @@
     },
     "cursor-cli.maxProcesses": {
       "label": "Max cursor-agent processes",
-      "help": "cursor-agent processes alive at once, idle ones included (1 to 64, default 8, at least the concurrent turns). At the cap the least recently used idle process is closed.",
+      "help": "cursor-agent processes alive at once, idle ones included (1 to 64, default 8, at least the concurrent turns). At the cap the least recently used idle process is closed. A process is also closed when its conversation ends, and after 15 idle minutes.",
       "advanced": true
     }
   }

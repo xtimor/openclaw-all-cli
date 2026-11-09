@@ -2,11 +2,12 @@ import { describe, expect, it, vi } from "vitest";
 import { ProcessPool, type PoolMember } from "./pool.ts";
 import { CliError } from "./ports.ts";
 
-function member(options: { idle?: boolean; lastUsed?: number; exit?: Promise<void> } = {}) {
+function member(options: { idle?: boolean; lastUsed?: number; exit?: Promise<void>; conversation?: string } = {}) {
   const state = { idle: options.idle ?? true, closed: 0 };
   const m: PoolMember = {
     isIdle: () => state.idle,
     lastUsed: options.lastUsed ?? 0,
+    conversation: options.conversation,
     close: vi.fn(() => {
       state.closed += 1;
     }),
@@ -222,5 +223,51 @@ describe("ProcessPool.closeAll", () => {
     expect(a).toBe(b);
     await a;
     expect(good.state.closed).toBe(1);
+  });
+});
+
+describe("ProcessPool.releaseConversation", () => {
+  it("closes the idle members of the conversation, leaves the others, and frees their slots", async () => {
+    const pool = new ProcessPool({ maxTurns: 4, maxProcesses: 4 });
+    const a = member({ conversation: "k1" });
+    const a2 = member({ conversation: "k1" });
+    const b = member({ conversation: "k2" });
+    const none = member();
+    for (const x of [a, a2, b, none]) await pool.add(x.m);
+    expect(pool.releaseConversation("k1")).toBe(2);
+    expect([a.state.closed, a2.state.closed, b.state.closed, none.state.closed]).toEqual([1, 1, 0, 0]);
+    expect(pool.processes).toBe(2);
+  });
+
+  it("keeps a member that runs a turn", async () => {
+    const pool = new ProcessPool({ maxTurns: 4, maxProcesses: 4 });
+    const busy = member({ conversation: "k1", idle: false });
+    await pool.add(busy.m);
+    expect(pool.releaseConversation("k1")).toBe(0);
+    expect(busy.state.closed).toBe(0);
+    busy.state.idle = true;
+    expect(pool.releaseConversation("k1")).toBe(1);
+  });
+
+  it("does not wait for the exit and survives a failing close", async () => {
+    const pool = new ProcessPool({ maxTurns: 4, maxProcesses: 4 });
+    const stuck = member({ conversation: "k1", exit: new Promise(() => {}) });
+    const broken = member({ conversation: "k1" });
+    (broken.m.close as ReturnType<typeof vi.fn>).mockImplementation(() => {
+      throw new Error("boom");
+    });
+    await pool.add(stuck.m);
+    await pool.add(broken.m);
+    expect(pool.releaseConversation("k1")).toBe(2);
+    expect(pool.processes).toBe(0);
+  });
+
+  it("does nothing once the pool is closing", async () => {
+    const pool = new ProcessPool({ maxTurns: 4, maxProcesses: 4 });
+    const m = member({ conversation: "k1" });
+    await pool.add(m.m);
+    await pool.closeAll();
+    expect(pool.releaseConversation("k1")).toBe(0);
+    expect(m.state.closed).toBe(1);
   });
 });

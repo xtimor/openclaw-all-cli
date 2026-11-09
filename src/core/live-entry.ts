@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { releaseChat } from "./chat-registry.ts";
+import { conversationOf } from "./conversation.ts";
 import { startMcpProxy, type McpProxy, type McpTarget } from "./mcp-proxy.ts";
 import type { PermissionTurn } from "./permissions.ts";
 import { CliError, type CliSession } from "./ports.ts";
@@ -72,6 +73,7 @@ export async function createLiveEntry(
       // A process that died while idle is evictable too: it has nothing left to lose.
       isIdle: () => !entry.busy && Boolean(entry.session),
       lastUsed: Date.now(),
+      conversation: conversationOf(ctx.systemPrompt),
       close: () => entry.handle.close("idle"),
       exited: async () => {
         await entry.opening?.then(
