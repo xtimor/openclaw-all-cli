@@ -38,6 +38,17 @@ export function shellNote(hasProcess: boolean): string {
   );
 }
 
+/** The tool a run with an `outputSchema` must end by calling; the host fails the run without that call. */
+export const HOST_STRUCTURED_TOOL = "structured_output";
+
+/**
+ * AD-2: names OpenClaw and its tool, never a CLI. A model that does not infer the need from the tool's
+ * description answers in prose and the run fails, so the prompt says it (issue #75). No re-prompt follows.
+ */
+export function structuredOutputNote(): string {
+  return "[OpenClaw] Give your final answer by calling the OpenClaw `structured_output` tool. An answer in prose alone fails the run.";
+}
+
 /**
  * What the host put into the launch args: whether it serves a shell tool for this turn, the path of
  * its MCP config file, and the launch args without any of that (the CLI must not see the host's flags).
