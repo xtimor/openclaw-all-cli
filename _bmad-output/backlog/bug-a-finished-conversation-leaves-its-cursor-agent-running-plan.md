@@ -3,7 +3,7 @@ title: 'A finished conversation leaves its cursor-agent running'
 type: 'bugfix'
 ticket: 'bug-a-finished-conversation-leaves-its-cursor-agent-running'
 created: '2026-11-09'
-status: 'in-progress'
+status: blocked
 baseline_revision: '943150046a6c65f5fbbfbd5229811e0e94ca62c8'
 route: 'oneshot'
 route_source: 'auto'
@@ -16,6 +16,8 @@ followup_review_recommended: false
 context: []
 warnings: []
 deferred: []
+blocked_at: "2026-11-09"
+blocked_reason: "no subagents"
 ---
 
 <intent-contract>
@@ -91,3 +93,14 @@ Decision: the pool key is the native Cursor id, but `execute` sees neither OpenC
 
 **Manual checks (if no CLI):**
 - Isolated Gateway with the fake agent: after `/new` the `fake-cursor-agent` process is gone. Live Cursor check not run (no login).
+
+## Auto Run Result
+
+Status: blocked
+Blocking condition: no subagents. The thorough review (four lenses) needs subagents and this session has no tool to launch one. Review not run. The implementation is built, committed, and verified.
+
+- Summary: a `session_end` hook closes the idle pool members of the ended conversation (reasons `new`, `reset`, `deleted`, `idle`, `daily`); the member's conversation is the `session=<key>` of the host's Runtime line in the system prompt.
+- Files: `src/core/conversation.ts` (parser, reasons), `src/core/pool.ts` (`releaseConversation`), `src/core/live-entry.ts` (member conversation), `src/core/register.ts` (hook), tests in `test/session-end-release.test.ts` (repro first, then one per criterion with the real adapter and the ACP stand-in), `src/core/pool.test.ts`, `src/core/conversation.test.ts`; docs in `docs/providers/cursor.md`, `docs/setup.md`, `openclaw.plugin.json`, AD-14, `CHANGELOG.md`, `MEMORY.md`.
+- Verification: the repro test failed first with `expected [] to include 'session_end'`, green after the fix; mutation of the key/idle check fails three tests; `npm run ci` passed; live in the isolated Gateway with the fake agent: after `/new` the ended chat's process was gone and the other chat's stayed. Live Cursor check not run (no login).
+- Residual risks: the Runtime line is a host text format (a change only loses the early release); a race where the successor's turn is idle before the hook runs would close its warm process (a restart, no data loss).
+- Open for the orchestrator: run the thorough review (`bmad-build-auto` on the plan, status then follows step 4).
