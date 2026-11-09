@@ -3,7 +3,7 @@ title: 'GPT models under cursor-cli never call structured_output'
 type: 'bugfix'
 ticket: '24'
 created: '2026-11-09'
-status: built
+status: done
 baseline_revision: '0f239b65675043605e33c9d4a75d2d1f0f3dde67'
 route: 'oneshot'
 route_source: 'auto'
