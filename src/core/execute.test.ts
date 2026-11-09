@@ -666,11 +666,14 @@ describe("createExecute MCP proxy (AD-12)", () => {
       const chunks: Buffer[] = [];
       req.on("data", (chunk: Buffer) => chunks.push(chunk));
       req.on("end", () => {
-        seen.push({
-          authorization: req.headers.authorization,
-          capture: req.headers["x-openclaw-cli-capture-key"] as string | undefined,
-          body: Buffer.concat(chunks).toString(),
-        });
+        const body = Buffer.concat(chunks).toString();
+        // The core reads the tool list itself (`tools/list`); `seen` holds what the CLI sent.
+        if (!body.includes('"method":"tools/list"'))
+          seen.push({
+            authorization: req.headers.authorization,
+            capture: req.headers["x-openclaw-cli-capture-key"] as string | undefined,
+            body,
+          });
         res.writeHead(200, { "Content-Type": "application/json" });
         res.end(JSON.stringify({ jsonrpc: "2.0", id: 1, result: {} }));
       });

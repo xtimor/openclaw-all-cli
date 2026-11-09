@@ -46,6 +46,13 @@ export type LiveEntry = {
    * run, until its first prompt sends it. The process's mode cannot change, so once is enough.
    */
   shellNote?: string;
+  /**
+   * The sentence that says the final answer goes through `structured_output`, until a prompt sends
+   * it. Pending only when the host's tool list held the tool at open.
+   */
+  structuredNote?: string;
+  /** A prompt of this process carried the `structured_output` sentence: it is not sent again. */
+  structuredSent?: boolean;
   busy: boolean;
   idleTimer?: NodeJS.Timeout;
 };
