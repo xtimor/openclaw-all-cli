@@ -41,6 +41,11 @@ export type LiveEntry = {
   stopOpening: AbortController;
   /** The process opened a fresh agent chat and has not sent its first prompt yet (P15). */
   freshChat?: boolean;
+  /**
+   * The process opened for a turn that serves the host's `exec`: the sentence that says where commands
+   * run, until its first prompt sends it. The process's mode cannot change, so once is enough.
+   */
+  shellNote?: string;
   busy: boolean;
   idleTimer?: NodeJS.Timeout;
 };

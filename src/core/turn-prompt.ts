@@ -21,6 +21,23 @@ export const HOST_SHELL_ARG = "--openclaw-all-cli:host-shell";
 /** The tool whose presence in the host's tool list makes a turn a host-shell turn. */
 export const HOST_SHELL_TOOL = "exec";
 
+/** The tool that polls a command `exec` moved to the background. */
+export const HOST_PROCESS_TOOL = "process";
+
+/**
+ * AD-2: names OpenClaw and its tools, never a CLI. The CLI's own shell is refused by its config
+ * without the host being asked, so the model learns where commands run from this sentence (issue #76).
+ * Without `process` a command cannot be polled, so the text says to keep commands short instead.
+ */
+export function shellNote(hasProcess: boolean): string {
+  return (
+    "[OpenClaw] The native shell is disabled in this chat. Run commands with the OpenClaw `exec` tool. " +
+    (hasProcess
+      ? "Run long commands in the background and poll them with the OpenClaw `process` tool."
+      : "Keep commands short: a command that runs too long is stopped.")
+  );
+}
+
 /**
  * What the host put into the launch args: whether it serves a shell tool for this turn, the path of
  * its MCP config file, and the launch args without any of that (the CLI must not see the host's flags).

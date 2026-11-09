@@ -6,6 +6,7 @@ What changed for people who use the plugin, newest first. Format: [Keep a Change
 
 ### Fixed
 
+- When OpenClaw serves `exec` for a Cursor turn, the first prompt now tells the model that Cursor's own shell is disabled and commands run through `exec` (long ones in the background, polled with `process`), so weaker models no longer lose a turn on a refused shell call. The docs no longer say OpenClaw answers a denied shell call. ([#76](https://github.com/xtimor/openclaw-all-cli/issues/76))
 - A Cursor process now closes when its conversation ends (`/new`, a reset, a deletion, an idle or daily rollover), not up to 15 minutes later, so ended chats no longer pile up processes and memory. ([#74](https://github.com/xtimor/openclaw-all-cli/issues/74))
 
 ## 0.1.5 - 2026-11-05

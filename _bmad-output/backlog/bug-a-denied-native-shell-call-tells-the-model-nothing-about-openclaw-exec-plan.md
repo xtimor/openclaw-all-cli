@@ -36,7 +36,16 @@ deferred: []
 
 ## Implementation Notes
 
-Oneshot: one core sentence, one flag on the live entry, three doc rows.
+Oneshot: one core sentence, one field on the live entry, three doc places.
+
+- Reproduction first (`test/shell-hint.test.ts`, commit e097ff4): failed with `expected 'do it' to match /exec/`, the reported reason.
+- Decision: the sentence goes in the turn prompt (core, neutral text, `shellNote` in `src/core/turn-prompt.ts`), not the system prompt: it works for any adapter and needs no delivery ledger. It is sent once per process (`LiveEntry.shellNote`, cleared at the first prompt, set in `openFresh` from the tool list the CLI will read), after the continuity note; a process cannot change mode, and a restart (resumed chat) gets it again. Not per turn: the ticket says "told once".
+- Decision: when `process` is not in the tool list the sentence says to keep commands short instead of naming `process`, so the model is not sent to a tool it does not have.
+- Tests: criterion 1, criterion 2 (no `exec`, unreadable list, no marker), no-`process` variant, once per process, and a doc pin for the manifest, the matrix, and `docs/providers/cursor.md`. Mutation-checked: never clearing the flag, ignoring the tool list, ignoring `process` each failed a test.
+- Docs: P8 in `src/adapters/cursor/manifest.ts`, the parity matrix, and `docs/providers/cursor.md` (P8 row, Shell commands, Permissions table, No `exec` limit) say the plugin tells the model in the prompt; none claims the host answers a denied native shell. `CHANGELOG.md` line under Unreleased (#76).
+- Files: `src/core/turn-prompt.ts`, `src/core/live-entry.ts`, `src/core/execute.ts`, `test/shell-hint.test.ts`, the three doc files, `CHANGELOG.md`, `MEMORY.md`.
+- Live Cursor check not run: no `cursor-agent` login on this host. The fake agent proves wiring only; whether a real model follows the sentence is unverified.
+- Review (step 4) not run here: no subagents; the orchestrator runs it. Plan left `in-progress`.
 
 ## Plan Change Log
 
