@@ -34,7 +34,7 @@ writeFileSync(mcpFile, JSON.stringify({ mcpServers: { openclaw: { url: "http://1
 type EndEvent = { sessionId: string; sessionKey?: string; reason?: string };
 type Host = {
   backend: CliBackendPlugin;
-  end: (event: EndEvent) => void;
+  end: (event: EndEvent, ctxKey?: string) => void;
   stop: () => Promise<void>;
   /** Runs one turn of a conversation, with a live-session capability that keeps its process warm. */
   turn: (conversation: string, options?: { prompt?: string; agent?: string }) => Promise<void>;
@@ -64,7 +64,8 @@ function host(extraEnv: Record<string, string> = {}): Host {
   const runtimeLine = (key: string) => `Runtime: agent=main | session=${key} | host=openclaw | os=Linux`;
   return {
     backend,
-    end: (event) => hook(event, { sessionId: event.sessionId, ...(event.sessionKey ? { sessionKey: event.sessionKey } : {}) }),
+    end: (event, ctxKey?: string) =>
+      hook(event, { sessionId: event.sessionId, ...(ctxKey ? { sessionKey: ctxKey } : event.sessionKey ? { sessionKey: event.sessionKey } : {}) }),
     stop: () => stop(),
     pids: () =>
       existsSync(log)
@@ -146,6 +147,18 @@ describe("a finished conversation releases its process (ticket 22)", () => {
       h.end({ sessionId: "s1", sessionKey: "agent:main:explicit:a", reason: "new" });
       expect(await gone(a!)).toBe(true);
       expect(alive(b!)).toBe(true);
+    } finally {
+      await h.stop();
+    }
+  });
+
+  it("takes the key from the hook context when the event has none", async () => {
+    const h = host();
+    try {
+      await h.turn("agent:main:explicit:a");
+      const [pid] = h.pids();
+      h.end({ sessionId: "s1", reason: "new" } as never, "agent:main:explicit:a");
+      expect(await gone(pid!)).toBe(true);
     } finally {
       await h.stop();
     }

@@ -59,7 +59,7 @@ export function registerAdapters(api: OpenClawPluginApi, adapters: readonly CliA
   // A finished conversation releases its process (AD-14). `session_end` is a metadata hook: it needs
   // no conversation access. A host without hooks keeps the idle close.
   api.on?.("session_end", (event, ctx) => {
-    const key = event.sessionKey ?? ctx.sessionKey;
+    const key = event.sessionKey || ctx.sessionKey;
     if (!key || !event.reason || !RELEASING_REASONS.has(event.reason)) return;
     for (const pool of pools) pool.releaseConversation(key);
   });

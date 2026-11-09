@@ -94,10 +94,13 @@ export async function createLiveEntry(
         entry.stopOpening.abort();
         clearTimeout(entry.idleTimer);
         pool.remove(entry.member);
-        releaseChat(entry);
-        live?.remove(entry.handle);
-        void entry.session?.close();
-        void entry.proxy?.close();
+        try {
+          releaseChat(entry);
+          live?.remove(entry.handle);
+        } finally {
+          void entry.session?.close();
+          void entry.proxy?.close();
+        }
       },
       waitForExit: () => entry.session?.waitForExit() ?? Promise.resolve(),
     },
