@@ -20,7 +20,7 @@ covers = ["CAP-3"]
 after = [1]
 hitl = false
 risk = "high"
-notes = ["нужно попробовать найти способ (я думаю он там есть), идти без usage можно, но в крайнем случае"]
+notes = ["Owner: we need to try to find a way (I think there is one); going without usage is allowed, but only as a last resort."]
 
 [[entry]]
 id = 2
