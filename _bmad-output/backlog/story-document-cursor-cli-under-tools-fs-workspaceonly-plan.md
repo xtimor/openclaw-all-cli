@@ -3,7 +3,7 @@ title: 'Document cursor-cli under tools.fs.workspaceOnly'
 type: 'chore'
 ticket: '19'
 created: '2026-11-04'
-status: built
+status: done
 baseline_revision: '3d7fe1316952a4bde493d1ccec0d44bba1240072'
 route: 'oneshot'
 route_source: 'auto'

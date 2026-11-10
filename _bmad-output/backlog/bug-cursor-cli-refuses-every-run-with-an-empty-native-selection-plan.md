@@ -3,7 +3,7 @@ title: 'cursor-cli refuses every run with an empty native selection although Cur
 type: 'bugfix'
 ticket: 20
 created: '2026-11-04'
-status: 'built'
+status: done
 baseline_revision: 'faf92b6f381e0f160d93384b769b593948a434fa'
 route: 'full'
 route_source: 'auto'
