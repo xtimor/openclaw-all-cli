@@ -4,6 +4,10 @@ What changed for people who use the plugin, newest first. Format: [Keep a Change
 
 ## Unreleased
 
+### Added
+
+- OpenClaw's usage surfaces can now show your Cursor plan quota (plan name, used share of the total, Auto + Composer, and API models, reset date, and spend this cycle) when `CURSOR_API_KEY` is set in the Gateway's environment; it is cached for 60 s, shows the last reading marked stale when Cursor does not answer, and never runs from a chat turn. ([#82](https://github.com/xtimor/openclaw-all-cli/issues/82))
+
 ### Fixed
 
 - Docs: the update steps no longer say a running Gateway is refreshed by `openclaw plugins update`, which current OpenClaw refuses. With the Gateway running, reinstall with `--force`; or stop the Gateway, run `plugins update`, and start it again. OpenClaw 2026.10.3 still accepts `plugins update` with the Gateway running. ([#80](https://github.com/xtimor/openclaw-all-cli/issues/80))

@@ -1,6 +1,6 @@
 # Cursor provider
 
-What `cursor-cli/<model>` does in OpenClaw and how it compares with `claude-cli`. Setup is in [Setup](../setup.md); this page is reference and you do not need it to install. Sections: [How it runs](#how-it-runs), [Sessions](#sessions-resume-and-side-questions), [Chat continuity](#chat-continuity-across-a-model-switch), [OpenClaw tools](#openclaw-tools), [System prompt and skills](#system-prompt-and-skills), [Images](#images), [Compaction](#compaction), [Streaming](#streaming-and-tool-progress), [Permissions](#permissions-and-tool-availability), [Shell commands](#shell-commands-openclaw-exec), [Provider list and sign-in methods](#provider-list-and-sign-in-methods), [Models](#models), [Operations](#operations), [Usage](#usage), [Parity with `claude-cli`](#parity-with-claude-cli), [Known limits](#known-limits), [Check it works](#check-it-works).
+What `cursor-cli/<model>` does in OpenClaw and how it compares with `claude-cli`. Setup is in [Setup](../setup.md); this page is reference and you do not need it to install. Sections: [How it runs](#how-it-runs), [Sessions](#sessions-resume-and-side-questions), [Chat continuity](#chat-continuity-across-a-model-switch), [OpenClaw tools](#openclaw-tools), [System prompt and skills](#system-prompt-and-skills), [Images](#images), [Compaction](#compaction), [Streaming](#streaming-and-tool-progress), [Permissions](#permissions-and-tool-availability), [Shell commands](#shell-commands-openclaw-exec), [Provider list and sign-in methods](#provider-list-and-sign-in-methods), [Models](#models), [Operations](#operations), [Usage](#usage), [Plan quota](#plan-quota), [Parity with `claude-cli`](#parity-with-claude-cli), [Known limits](#known-limits), [Check it works](#check-it-works).
 
 > **Status:** early release, installed from npm ([Setup](../setup.md)). Rows marked *spike* or *planned* in the parity table change as the plugin grows; each change to a row updates this page and that row's live test together.
 
@@ -453,6 +453,24 @@ After a turn ends with a result, the plugin exchanges `CURSOR_API_KEY` for a sho
 
 Live test: `test/live/usage.live.test.ts`.
 
+## Plan quota
+
+OpenClaw's usage surfaces (the Control UI Models and Usage pages, `/status`, `openclaw status --usage`, `openclaw models status`) can show how much of your Cursor plan is used. The plugin answers OpenClaw's `resolveUsageAuth` and `fetchUsageSnapshot` hooks for `cursor-cli`. The hooks run only when you open one of those surfaces: a chat turn never asks Cursor for the quota, and a quota failure never touches a turn or the per-turn usage above.
+
+- **What is shown.** Only values Cursor reports; the plugin estimates and prices nothing. The plan name (for example `Ultra`); three windows, each with the share used in percent and the end of the billing cycle as the reset time: `Total`, `Auto + Composer`, and `API models`; and one line with the spend this cycle against the included amount, plus the bonus spend when Cursor reports one. A part Cursor does not report is left out. The `Total` percent is Cursor's own number: spend can pass the included amount through bonus usage, so it is not spend divided by the limit.
+- **Source.** The same key exchange as the [usage ledger](#usage) (`POST /auth/exchange_user_api_key`, a token that lives 1 hour and is reused), then two calls to Cursor's undocumented dashboard API: `GetPlanInfo` and `GetCurrentPeriodUsage` (`POST https://api2.cursor.sh/aiserver.v1.DashboardService/<method>`). Spike: `_bmad-output/initiative-openclaw-all-cli/epic-cursor-cli/spike-cursor-plan-quota-dashboard-api.md`. The plan name is optional: without it the windows still show.
+- **Cache.** A reading is kept 60 s per key, so any number of refreshes in that time, concurrent ones included, make one set of Cursor requests. OpenClaw's own Control UI cache is 60 s per agent as well.
+- **Failures.** On 429, 5xx, a network error, a rejected key (401 or 403 at the exchange), a token Cursor rejects twice, or an answer whose shape changed, the plugin shows the last reading marked stale (`(stale)` after each window label, and a summary that says when it was read), or a row that says the quota is unavailable when it has none. It logs one warning (the path and HTTP status, never the key, a token, or a response body) and does not ask Cursor again for 10 minutes. A later read after that tries again.
+- **Where the key comes from.** The key in the plugin config `cursor-cli.env.CURSOR_API_KEY`, then `CURSOR_API_KEY` in the Gateway environment, then a key OpenClaw holds for the provider.
+- **Limits.**
+  - **A key only in the plugin config shows no quota on OpenClaw 2026.10.3.** OpenClaw calls `resolveUsageAuth` only when it already sees a credential for the provider: a `models.providers.cursor-cli.apiKey`, `CURSOR_API_KEY` in the Gateway's environment, or an auth profile. A key kept only in the plugin config (the preferred way, see [Setup](../setup.md#the-api-key)) is none of these, so set `CURSOR_API_KEY` in the Gateway's environment to see the quota (the plugin declares it as the provider's usage variable). Mind the exposure to `exec` described in Setup.
+  - **A login only shows no quota.** Without a key the plugin has nothing to exchange, and it does not read the login's token files. `resolveUsageAuth` answers "handled" and the provider has no quota row.
+  - **Behind an HTTP proxy** the Gateway needs `NODE_USE_ENV_PROXY=1`, as for usage.
+  - **Team accounts and a key against a login-only account are untested.** The calls were made with a personal Ultra account.
+  - **The dashboard API is undocumented.** Cursor can change it; the plugin then shows the last reading, stale, and backs off.
+
+Tests: `test/quota.test.ts`. A live check needs a key; the surfaces above were not driven in a running Gateway.
+
 ## Parity with `claude-cli`
 
 | # | Feature | Status | Notes |
@@ -498,6 +516,7 @@ Live test: `test/live/usage.live.test.ts`.
 - **No separator around a tool call.** Cursor's message chunks carry no break between the text before and after a tool call, so a reply can read `...sentence.Next text`. The plugin passes the text through unchanged.
 - **Usage and a skewed clock.** A host clock more than 5 s off Cursor's makes usage 0 until the cooldown (see Usage).
 - **Usage needs an API key.** With a Cursor login only (no `CURSOR_API_KEY`), OpenClaw records 0 tokens for a turn. See Usage.
+- **Plan quota needs the key in the Gateway's environment.** A key only in the plugin config, or a login only, shows no plan quota on OpenClaw 2026.10.3. See Plan quota.
 - **The context tile can read too high, or show `~`.** Cursor's usage is a sum over the turn's model requests, and OpenClaw reads it as the context size. Above the model's window the plugin marks it unknown and the tile keeps the earlier reading with `~`; below the window a turn with tool calls still reads high. See Usage.
 - **HEIC, AVIF, SVG, TIFF, and empty images are not sent.** They get a one-line note. See Images.
 - **No image delivery on Windows.** Without a process uid the plugin cannot check file owners, so it leaves the prompt as it is. See Images.

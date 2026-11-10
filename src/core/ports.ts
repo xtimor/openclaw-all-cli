@@ -384,6 +384,32 @@ export type UsageQuery = {
 /** `usage` is absent when the adapter has none; `warning` is a short log line (no secrets, no response bodies). */
 export type UsageReport = { usage?: NormalizedUsage; warning?: string };
 
+/** One quota window a CLI reports: the share used (0 to 100) and when it resets (epoch ms). */
+export type QuotaWindow = { label: string; usedPercent: number; resetAt?: number };
+
+/** What a CLI reported about the account's plan quota. Only reported values: the plugin estimates nothing. */
+export type QuotaSnapshot = {
+  /** Plan name as the CLI's vendor shows it. */
+  plan?: string;
+  /** Limits the vendor reports. Empty when it reports none. */
+  windows: QuotaWindow[];
+  /** One plain line, such as spend against the spend limit, for what no window can show. */
+  summary?: string;
+  /** Set when this is an earlier reading, because the vendor could not be asked now: epoch ms of that reading. */
+  staleSince?: number;
+};
+
+/** What the core asks of an adapter for a quota reading. */
+export type QuotaQuery = {
+  /** The account's API key. Never logged. */
+  apiKey: string;
+  /** Aborts when the caller stops waiting; a request that other callers share goes on. */
+  signal?: AbortSignal;
+};
+
+/** `snapshot` is absent when the adapter has nothing to show; `warning` is a short log line (no secrets, no response bodies). */
+export type QuotaReport = { snapshot?: QuotaSnapshot; warning?: string };
+
 /** What one CLI provider supplies to the core. Adapters import only this module and transports. */
 export interface CliAdapter {
   /** Short CLI name, for example `acme`. The backend ID is `<id>-cli`. */
@@ -461,6 +487,13 @@ export interface CliAdapter {
    * usage; by contract it does not throw, and the core treats a throw as no usage.
    */
   readUsage?(query: UsageQuery): Promise<UsageReport>;
+  /**
+   * Optional. Reads the account's plan quota for OpenClaw's usage surfaces. It is never called from
+   * a turn. The adapter caches, merges concurrent calls, backs off after a failure, and answers
+   * the last snapshot marked `staleSince` (or none) then; by contract it does not throw, and the
+   * core treats a throw as no snapshot. Absent: the provider offers no quota.
+   */
+  readQuota?(query: QuotaQuery): Promise<QuotaReport>;
   /**
    * Optional. Removes what the CLI stored for a throwaway native session: one that was created and
    * then refused (a capability mismatch the transport could not see earlier), and a side
