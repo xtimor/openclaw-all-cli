@@ -20,6 +20,16 @@
   "nonSecretAuthMarkers": [
     "openclaw:cursor-cli-native-auth"
   ],
+  "providerUsageAuthEnvVars": {
+    "cursor-cli": [
+      "CURSOR_API_KEY"
+    ]
+  },
+  "contracts": {
+    "usageProviders": [
+      "cursor-cli"
+    ]
+  },
   "providerAuthChoices": [
     {
       "provider": "cursor-cli",

@@ -1,9 +1,7 @@
 ---
 title: "Show Cursor plan quota in OpenClaw"
 ticket: 26
-status: blocked
-blocked_at: "2026-11-10"
-blocked_reason: "no subagents"
+status: draft
 ---
 
 ## Auto Run Result

@@ -14,8 +14,8 @@ import type { NormalizedUsage, UsageQuery, UsageReport } from "../../core/ports.
 /** Env var that moves the ledger calls elsewhere (tests). It is in `CURSOR_CLEAR_ENV`, so the host strips it from turns. */
 export const USAGE_URL_ENV = "OPENCLAW_ALL_CLI_CURSOR_USAGE_URL";
 
-const DEFAULT_BASE_URL = "https://api2.cursor.sh";
-const EXCHANGE_PATH = "/auth/exchange_user_api_key";
+export const DEFAULT_BASE_URL = "https://api2.cursor.sh";
+export const EXCHANGE_PATH = "/auth/exchange_user_api_key";
 const EVENTS_PATH = "/aiserver.v1.DashboardService/GetFilteredUsageEvents";
 
 /** A token is renewed this long before its JWT `exp` (option `tokenMarginMs`). */
@@ -128,7 +128,7 @@ type KeyState = {
   misses: number;
 };
 
-function tokenExpiry(token: string, now: number, marginMs: number): number {
+export function tokenExpiry(token: string, now: number, marginMs: number): number {
   try {
     const payload = JSON.parse(Buffer.from(token.split(".")[1] ?? "", "base64url").toString("utf8")) as { exp?: unknown };
     const exp = asMillis(payload.exp);

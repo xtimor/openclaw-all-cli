@@ -5,6 +5,7 @@ import { buildConfigSchema, capsOf, readBackendConfig } from "./config.ts";
 import { homeDirFor } from "./home.ts";
 import { reapOnce } from "./pid-locks.ts";
 import { ProcessPool } from "./pool.ts";
+import { createUsageHooks } from "./quota.ts";
 import { createAuthProvider } from "./provider-auth.ts";
 import type { CliAdapter } from "./ports.ts";
 import type { OpenClawPluginApi } from "./sdk-types.ts";
@@ -37,7 +38,8 @@ export function registerAdapters(api: OpenClawPluginApi, adapters: readonly CliA
     pools.push(pool);
     api.registerCliBackend(buildCliBackend(adapter, { settings, warn, debug, pool }));
     // The Control UI's provider list and `models auth login` read the provider's auth methods.
-    api.registerProvider(createAuthProvider(adapter, PLUGIN_ID));
+    // An adapter with a quota reader also offers OpenClaw's usage surfaces a plan-quota snapshot.
+    api.registerProvider({ ...createAuthProvider(adapter, PLUGIN_ID), ...createUsageHooks(adapter, PLUGIN_ID, warn) });
     if (api.registrationMode === "full") {
       for (const agentId of configuredAgentIds(api.config)) {
         try {

@@ -24,6 +24,7 @@ import { buildCursorCatalog, cursorContextCeiling, selectCursorModel } from "./m
 import { CURSOR_ALWAYS_ON_NATIVE_TOOLS, toCanonicalRequest } from "./permissions.ts";
 import { classifyCursorReplyError } from "./errors.ts";
 import { describeCursorToolCall } from "./tool-display.ts";
+import { createCursorQuotaReader } from "./quota.ts";
 import { createCursorUsageReader, USAGE_URL_ENV } from "./usage.ts";
 
 const PROBE_TIMEOUT_MS = 5_000;
@@ -363,6 +364,8 @@ async function removeListingSession(env: Record<string, string | undefined>, ses
 
 /** One reader per plugin: its token cache and cooldowns outlive a turn. */
 const usageReader = createCursorUsageReader();
+/** One quota reader per plugin: its cache, token, and back-off outlive a request. */
+const quotaReader = createCursorQuotaReader();
 
 export const cursorAdapter: CliAdapter = {
   id: "cursor",
@@ -388,4 +391,5 @@ export const cursorAdapter: CliAdapter = {
   listModels,
   discardSession: ({ env, sessionId }) => removeListingSession(env, sessionId),
   readUsage: usageReader.read,
+  readQuota: quotaReader.read,
 };
