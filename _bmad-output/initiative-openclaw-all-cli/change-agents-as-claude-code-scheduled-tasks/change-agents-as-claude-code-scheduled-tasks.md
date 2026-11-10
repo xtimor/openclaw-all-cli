@@ -30,7 +30,7 @@ Entries 8 and 9 of epic-distribution planned the triage agent and the implementa
 Direct adjustment. The agents' logic lives in the repo as agent-neutral prompts (`docs/agents/triage.md`, `docs/agents/implement.md`), so any runner can use them. The runner is two Claude Code scheduled tasks on the owner's account, each firing a fresh cloud session on this repository:
 
 - **Triage:** 06:00 and 18:00 UTC (jittered a few minutes earlier, as the scheduler advises), prompt "follow `docs/agents/triage.md`". A dry-run switch is a line in the firing prompt (`dry run: write nothing, report`).
-- **Implementation:** every 3 hours, plus on demand when the owner asks in chat ("бери #N" fires the task at once). The prompt follows `docs/agents/implement.md`; with no approved issue it ends at once.
+- **Implementation:** every 3 hours, plus on demand when the owner asks in chat to take issue #N (that fires the task at once). The prompt follows `docs/agents/implement.md`; with no approved issue it ends at once.
 - The tasks are created by the agent with the scheduling tool (`create_trigger`, fresh session per firing, this repository), not stored in GitHub. Their ids are recorded in `MEMORY.md` and `docs/issues.md` says how to pause them.
 
 Effort: 3.8 and 3.9 shrink (no workflow YAML, no secret, no `uv` setup in CI); risk stays high for 3.9 (it writes code and PRs). Timeline: unchanged.
