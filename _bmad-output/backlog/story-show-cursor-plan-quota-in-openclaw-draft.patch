@@ -1,0 +1,492 @@
+diff --git a/openclaw.plugin.json b/openclaw.plugin.json
+index 189f79f..a816545 100644
+--- a/openclaw.plugin.json
++++ b/openclaw.plugin.json
+@@ -20,6 +20,16 @@
+   "nonSecretAuthMarkers": [
+     "openclaw:cursor-cli-native-auth"
+   ],
++  "providerUsageAuthEnvVars": {
++    "cursor-cli": [
++      "CURSOR_API_KEY"
++    ]
++  },
++  "contracts": {
++    "usageProviders": [
++      "cursor-cli"
++    ]
++  },
+   "providerAuthChoices": [
+     {
+       "provider": "cursor-cli",
+diff --git a/src/adapters/cursor/index.ts b/src/adapters/cursor/index.ts
+index 4ac27ab..b8c7d5b 100644
+--- a/src/adapters/cursor/index.ts
++++ b/src/adapters/cursor/index.ts
+@@ -24,6 +24,7 @@ import { buildCursorCatalog, cursorContextCeiling, selectCursorModel } from "./m
+ import { CURSOR_ALWAYS_ON_NATIVE_TOOLS, toCanonicalRequest } from "./permissions.ts";
+ import { classifyCursorReplyError } from "./errors.ts";
+ import { describeCursorToolCall } from "./tool-display.ts";
++import { createCursorQuotaReader } from "./quota.ts";
+ import { createCursorUsageReader, USAGE_URL_ENV } from "./usage.ts";
+ 
+ const PROBE_TIMEOUT_MS = 5_000;
+@@ -363,6 +364,8 @@ async function removeListingSession(env: Record<string, string | undefined>, ses
+ 
+ /** One reader per plugin: its token cache and cooldowns outlive a turn. */
+ const usageReader = createCursorUsageReader();
++/** One quota reader per plugin: its cache, token, and back-off outlive a request. */
++const quotaReader = createCursorQuotaReader();
+ 
+ export const cursorAdapter: CliAdapter = {
+   id: "cursor",
+@@ -388,4 +391,5 @@ export const cursorAdapter: CliAdapter = {
+   listModels,
+   discardSession: ({ env, sessionId }) => removeListingSession(env, sessionId),
+   readUsage: usageReader.read,
++  readQuota: quotaReader.read,
+ };
+diff --git a/src/adapters/cursor/usage.ts b/src/adapters/cursor/usage.ts
+index 0904113..914183f 100644
+--- a/src/adapters/cursor/usage.ts
++++ b/src/adapters/cursor/usage.ts
+@@ -14,8 +14,8 @@ import type { NormalizedUsage, UsageQuery, UsageReport } from "../../core/ports.
+ /** Env var that moves the ledger calls elsewhere (tests). It is in `CURSOR_CLEAR_ENV`, so the host strips it from turns. */
+ export const USAGE_URL_ENV = "OPENCLAW_ALL_CLI_CURSOR_USAGE_URL";
+ 
+-const DEFAULT_BASE_URL = "https://api2.cursor.sh";
+-const EXCHANGE_PATH = "/auth/exchange_user_api_key";
++export const DEFAULT_BASE_URL = "https://api2.cursor.sh";
++export const EXCHANGE_PATH = "/auth/exchange_user_api_key";
+ const EVENTS_PATH = "/aiserver.v1.DashboardService/GetFilteredUsageEvents";
+ 
+ /** A token is renewed this long before its JWT `exp` (option `tokenMarginMs`). */
+@@ -128,7 +128,7 @@ type KeyState = {
+   misses: number;
+ };
+ 
+-function tokenExpiry(token: string, now: number, marginMs: number): number {
++export function tokenExpiry(token: string, now: number, marginMs: number): number {
+   try {
+     const payload = JSON.parse(Buffer.from(token.split(".")[1] ?? "", "base64url").toString("utf8")) as { exp?: unknown };
+     const exp = asMillis(payload.exp);
+diff --git a/src/core/ports.ts b/src/core/ports.ts
+index 4119d58..52a0f8f 100644
+--- a/src/core/ports.ts
++++ b/src/core/ports.ts
+@@ -384,6 +384,32 @@ export type UsageQuery = {
+ /** `usage` is absent when the adapter has none; `warning` is a short log line (no secrets, no response bodies). */
+ export type UsageReport = { usage?: NormalizedUsage; warning?: string };
+ 
++/** One quota window a CLI reports: the share used (0 to 100) and when it resets (epoch ms). */
++export type QuotaWindow = { label: string; usedPercent: number; resetAt?: number };
++
++/** What a CLI reported about the account's plan quota. Only reported values: the plugin estimates nothing. */
++export type QuotaSnapshot = {
++  /** Plan name as the CLI's vendor shows it. */
++  plan?: string;
++  /** Limits the vendor reports. Empty when it reports none. */
++  windows: QuotaWindow[];
++  /** One plain line, such as spend against the spend limit, for what no window can show. */
++  summary?: string;
++  /** Set when this is an earlier reading, because the vendor could not be asked now: epoch ms of that reading. */
++  staleSince?: number;
++};
++
++/** What the core asks of an adapter for a quota reading. */
++export type QuotaQuery = {
++  /** The account's API key. Never logged. */
++  apiKey: string;
++  /** Aborts when the caller stops waiting; a request that other callers share goes on. */
++  signal?: AbortSignal;
++};
++
++/** `snapshot` is absent when the adapter has nothing to show; `warning` is a short log line (no secrets, no response bodies). */
++export type QuotaReport = { snapshot?: QuotaSnapshot; warning?: string };
++
+ /** What one CLI provider supplies to the core. Adapters import only this module and transports. */
+ export interface CliAdapter {
+   /** Short CLI name, for example `acme`. The backend ID is `<id>-cli`. */
+@@ -461,6 +487,13 @@ export interface CliAdapter {
+    * usage; by contract it does not throw, and the core treats a throw as no usage.
+    */
+   readUsage?(query: UsageQuery): Promise<UsageReport>;
++  /**
++   * Optional. Reads the account's plan quota for OpenClaw's usage surfaces. It is never called from
++   * a turn. The adapter caches, merges concurrent calls, backs off after a failure, and answers
++   * the last snapshot marked `staleSince` (or none) then; by contract it does not throw, and the
++   * core treats a throw as no snapshot. Absent: the provider offers no quota.
++   */
++  readQuota?(query: QuotaQuery): Promise<QuotaReport>;
+   /**
+    * Optional. Removes what the CLI stored for a throwaway native session: one that was created and
+    * then refused (a capability mismatch the transport could not see earlier), and a side
+diff --git a/src/core/register.ts b/src/core/register.ts
+index cd5f47b..8d19c46 100644
+--- a/src/core/register.ts
++++ b/src/core/register.ts
+@@ -5,6 +5,7 @@ import { buildConfigSchema, capsOf, readBackendConfig } from "./config.ts";
+ import { homeDirFor } from "./home.ts";
+ import { reapOnce } from "./pid-locks.ts";
+ import { ProcessPool } from "./pool.ts";
++import { createUsageHooks } from "./quota.ts";
+ import { createAuthProvider } from "./provider-auth.ts";
+ import type { CliAdapter } from "./ports.ts";
+ import type { OpenClawPluginApi } from "./sdk-types.ts";
+@@ -37,7 +38,8 @@ export function registerAdapters(api: OpenClawPluginApi, adapters: readonly CliA
+     pools.push(pool);
+     api.registerCliBackend(buildCliBackend(adapter, { settings, warn, debug, pool }));
+     // The Control UI's provider list and `models auth login` read the provider's auth methods.
+-    api.registerProvider(createAuthProvider(adapter, PLUGIN_ID));
++    // An adapter with a quota reader also offers OpenClaw's usage surfaces a plan-quota snapshot.
++    api.registerProvider({ ...createAuthProvider(adapter, PLUGIN_ID), ...createUsageHooks(adapter, PLUGIN_ID, warn) });
+     if (api.registrationMode === "full") {
+       for (const agentId of configuredAgentIds(api.config)) {
+         try {
+diff --git a/src/adapters/cursor/quota.ts b/src/adapters/cursor/quota.ts
+new file mode 100644
+index 0000000..6561fc0
+--- /dev/null
++++ b/src/adapters/cursor/quota.ts
+@@ -0,0 +1,255 @@
++import { createHash } from "node:crypto";
++import type { QuotaQuery, QuotaReport, QuotaSnapshot, QuotaWindow } from "../../core/ports.ts";
++import { DEFAULT_BASE_URL, EXCHANGE_PATH, tokenExpiry } from "./usage.ts";
++
++/**
++ * The account's plan quota from Cursor's dashboard API (ticket 26, issue #82), for OpenClaw's usage
++ * surfaces. Spike 2026-11-10 (cursor-agent 2026.10.22 account, API key): with the access token that
++ * `exchange_user_api_key` returns, `GetPlanInfo` answers the plan name and the billing cycle end,
++ * and `GetCurrentPeriodUsage` the cycle's start and end, the spend in cents, and the used percent
++ * of the included total, of Auto + Composer, and of API models. Nothing here is computed from
++ * anything but those fields.
++ *
++ * Calls are cached per key for `ttlMs`, merged while one is in flight, and held off for `backoffMs`
++ * after a failure (the last reading is answered, marked stale). The access token is reused until
++ * shortly before its expiry. Secrets: the key and the token stay in memory; warnings name only an
++ * endpoint path and an HTTP status, never a response body. The turn path never calls this.
++ */
++
++const PLAN_PATH = "/aiserver.v1.DashboardService/GetPlanInfo";
++const PERIOD_PATH = "/aiserver.v1.DashboardService/GetCurrentPeriodUsage";
++
++export type CursorQuotaOptions = {
++  /** A reading is served for this long without asking Cursor again. */
++  ttlMs?: number;
++  /** After a failure Cursor is not asked for this long. */
++  backoffMs?: number;
++  requestTimeoutMs?: number;
++  /** A cached token is replaced this long before its expiry. */
++  tokenMarginMs?: number;
++  now?: () => number;
++  /** Transport; tests inject an in-memory one. Defaults to the global `fetch`, looked up per call. */
++  fetch?: (url: string, init: RequestInit) => Promise<Response>;
++  baseUrl?: string;
++};
++
++/** How a call failed. The message holds the path and status only. */
++class QuotaError extends Error {
++  readonly kind: "rejected" | "changed" | "transient";
++  constructor(kind: QuotaError["kind"], path: string, status?: number) {
++    super(`${path}: ${status === undefined ? "network error" : `HTTP ${status}`}`);
++    this.kind = kind;
++  }
++}
++
++class Unauthorized extends Error {}
++
++type Reading = { snapshot: QuotaSnapshot; at: number };
++
++type KeyState = {
++  token?: { value: string; expiresAt: number };
++  reading?: Reading;
++  inflight?: Promise<void>;
++  /** No request before this time; 0 when the last request succeeded. */
++  holdUntil: number;
++  /** The last failure's log line, until a caller takes it. */
++  warning?: string;
++};
++
++const isRecord = (value: unknown): value is Record<string, unknown> =>
++  typeof value === "object" && value !== null && !Array.isArray(value);
++
++/** A finite number from a JSON number or a numeric string (Cursor sends 64-bit values as strings). */
++const asNumber = (value: unknown): number | undefined => {
++  const n = typeof value === "string" && value.trim() ? Number(value) : value;
++  return typeof n === "number" && Number.isFinite(n) ? n : undefined;
++};
++
++const dollars = (cents: number): string => `$${(cents / 100).toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
++
++/**
++ * Cursor's two answers as a snapshot. Windows come from the percentages Cursor reports; the
++ * summary line from the spend it reports (cents). Anything missing is left out. Throws when the
++ * period answer has neither a window nor a spend value: the shape changed.
++ */
++export function toSnapshot(plan: unknown, period: unknown): QuotaSnapshot {
++  const usage = isRecord(period) && isRecord(period.planUsage) ? period.planUsage : undefined;
++  if (!isRecord(period) || !usage) throw new QuotaError("changed", PERIOD_PATH, 200);
++  const resetAt = asNumber(period.billingCycleEnd) ?? (isRecord(plan) && isRecord(plan.planInfo) ? asNumber(plan.planInfo.billingCycleEnd) : undefined);
++  const windows: QuotaWindow[] = [];
++  const add = (label: string, percent: unknown) => {
++    const usedPercent = asNumber(percent);
++    if (usedPercent !== undefined) windows.push({ label, usedPercent, ...(resetAt !== undefined ? { resetAt } : {}) });
++  };
++  add("Total", usage.totalPercentUsed);
++  add("Auto + Composer", usage.autoPercentUsed);
++  add("API models", usage.apiPercentUsed);
++
++  const total = asNumber(usage.totalSpend);
++  const included = asNumber(usage.includedSpend);
++  const limit = asNumber(usage.limit);
++  const bonus = asNumber(usage.bonusSpend);
++  let summary: string | undefined;
++  if (included !== undefined && limit !== undefined && limit > 0) {
++    summary = `Spend this cycle: ${dollars(included)} of ${dollars(limit)} included` + (bonus ? `, ${dollars(bonus)} bonus` : "");
++  } else if (total !== undefined) {
++    summary = `Spend this cycle: ${dollars(total)}`;
++  }
++  if (windows.length === 0 && summary === undefined) throw new QuotaError("changed", PERIOD_PATH, 200);
++
++  const info = isRecord(plan) && isRecord(plan.planInfo) ? plan.planInfo : undefined;
++  const name = typeof info?.planName === "string" && info.planName.trim() ? info.planName.trim() : undefined;
++  return { ...(name ? { plan: name } : {}), windows, ...(summary ? { summary } : {}) };
++}
++
++export function createCursorQuotaReader(options: CursorQuotaOptions = {}) {
++  const ttlMs = options.ttlMs ?? 60_000;
++  const backoffMs = options.backoffMs ?? 600_000;
++  const requestTimeoutMs = options.requestTimeoutMs ?? 6000;
++  const tokenMarginMs = options.tokenMarginMs ?? 5 * 60_000;
++  const now = options.now ?? (() => Date.now());
++  const send = options.fetch ?? ((url, init) => fetch(url, init));
++  const baseUrl = (options.baseUrl ?? DEFAULT_BASE_URL).replace(/\/+$/, "");
++
++  const keys = new Map<string, KeyState>();
++  const stateFor = (key: string): KeyState => {
++    const id = createHash("sha256").update(key).digest("hex");
++    let state = keys.get(id);
++    if (!state) {
++      state = { holdUntil: 0 };
++      keys.set(id, state);
++    }
++    return state;
++  };
++
++  async function post(path: string, bearer: string, body: string): Promise<unknown> {
++    let response: Response;
++    try {
++      response = await send(baseUrl + path, {
++        method: "POST",
++        headers: { "Content-Type": "application/json", Authorization: `Bearer ${bearer}`, "Connect-Protocol-Version": "1" },
++        body,
++        // The key must not follow a redirect to another host.
++        redirect: "error",
++        signal: AbortSignal.timeout(requestTimeoutMs),
++      });
++    } catch {
++      throw new QuotaError("transient", path);
++    }
++    const status = response.status;
++    if (status !== 200) await response.body?.cancel().catch(() => {});
++    if (status === 401) throw new Unauthorized(path);
++    if (status === 403 && path === EXCHANGE_PATH) throw new QuotaError("rejected", path, status);
++    if (status === 400 || status === 404 || status === 415) throw new QuotaError("changed", path, status);
++    if (status !== 200) throw new QuotaError("transient", path, status);
++    try {
++      return (await response.json()) as unknown;
++    } catch {
++      throw new QuotaError("changed", path, status);
++    }
++  }
++
++  async function accessToken(key: string, state: KeyState, fresh: boolean): Promise<string> {
++    if (!fresh && state.token && state.token.expiresAt > now()) return state.token.value;
++    state.token = undefined;
++    let body: unknown;
++    try {
++      body = await post(EXCHANGE_PATH, key, "{}");
++    } catch (error) {
++      // The key is the credential here: a 401 means it is rejected.
++      if (error instanceof Unauthorized) throw new QuotaError("rejected", EXCHANGE_PATH, 401);
++      throw error;
++    }
++    const value = isRecord(body) ? body.accessToken : undefined;
++    if (typeof value !== "string" || !value) throw new QuotaError("changed", EXCHANGE_PATH, 200);
++    state.token = { value, expiresAt: tokenExpiry(value, now(), tokenMarginMs) };
++    return value;
++  }
++
++  /** Both dashboard calls with one token; a 401 renews the token once and repeats both. */
++  async function fetchReading(key: string, state: KeyState): Promise<Reading> {
++    for (let attempt = 0; ; attempt += 1) {
++      const token = await accessToken(key, state, attempt > 0);
++      try {
++        const [plan, period] = await Promise.all([
++          // The plan name is a nicety: only a rejected token stops the reading.
++          post(PLAN_PATH, token, "{}").catch((error: unknown) => {
++            if (error instanceof Unauthorized) throw error;
++            return undefined;
++          }),
++          post(PERIOD_PATH, token, "{}"),
++        ]);
++        return { snapshot: toSnapshot(plan, period), at: now() };
++      } catch (error) {
++        if (!(error instanceof Unauthorized)) throw error;
++        state.token = undefined;
++        if (attempt > 0) throw new QuotaError("rejected", PERIOD_PATH, 401);
++      }
++    }
++  }
++
++  const stale = (state: KeyState): QuotaSnapshot | undefined => {
++    const reading = state.reading;
++    return reading ? { ...reading.snapshot, staleSince: reading.at } : undefined;
++  };
++
++  /** The one request of a key: it records its own outcome, so it counts even when every caller stopped waiting. */
++  function start(key: string, state: KeyState): Promise<void> {
++    const request = (async () => {
++      try {
++        state.reading = await fetchReading(key, state);
++        state.holdUntil = 0;
++      } catch (error) {
++        state.holdUntil = now() + backoffMs;
++        if (error instanceof QuotaError) {
++          const what = error.kind === "rejected" ? "the API key was rejected" : error.kind === "changed" ? "unexpected dashboard answer" : "request failed";
++          state.warning = `Cursor quota: ${what} (${error.message}); not asked again for ${Math.round(backoffMs / 60_000)} min`;
++        } else {
++          state.warning = `Cursor quota: internal error; not asked again for ${Math.round(backoffMs / 60_000)} min`;
++        }
++      } finally {
++        state.inflight = undefined;
++      }
++    })();
++    state.inflight = request;
++    return request;
++  }
++
++  /** The newest reading, or the stale one when the last request failed; the failure's warning goes out once. */
++  function answer(state: KeyState): QuotaReport {
++    const warning = state.warning;
++    state.warning = undefined;
++    const ok = state.reading && state.holdUntil === 0;
++    const snapshot = ok ? state.reading?.snapshot : stale(state);
++    return { ...(snapshot ? { snapshot } : {}), ...(warning ? { warning } : {}) };
++  }
++
++  async function read(query: QuotaQuery): Promise<QuotaReport> {
++    const key = query.apiKey.trim();
++    if (!key) return {};
++    const state = stateFor(key);
++    const time = now();
++    if (state.reading && state.holdUntil === 0 && time - state.reading.at < ttlMs) return { snapshot: state.reading.snapshot };
++    if (state.holdUntil > time) return answer(state);
++    const settled = await waitFor(state.inflight ?? start(key, state), query.signal);
++    if (settled === undefined && query.signal?.aborted) return pick(stale(state));
++    return answer(state);
++  }
++
++  return { read };
++}
++
++const pick = (snapshot: QuotaSnapshot | undefined): QuotaReport => (snapshot ? { snapshot } : {});
++
++/** `true` once the shared request has settled, or `undefined` when the caller's signal aborts first. */
++function waitFor(promise: Promise<void>, signal?: AbortSignal): Promise<true | undefined> {
++  if (signal?.aborted) return Promise.resolve(undefined);
++  return new Promise((resolve) => {
++    const onAbort = () => resolve(undefined);
++    signal?.addEventListener("abort", onAbort, { once: true });
++    void promise.then(() => {
++      signal?.removeEventListener("abort", onAbort);
++      resolve(true);
++    });
++  });
++}
+diff --git a/src/core/quota.ts b/src/core/quota.ts
+new file mode 100644
+index 0000000..ad4a7ca
+--- /dev/null
++++ b/src/core/quota.ts
+@@ -0,0 +1,80 @@
++import { backendIdFor } from "./backend.ts";
++import { readBackendConfig } from "./config.ts";
++import type { CliAdapter, QuotaSnapshot } from "./ports.ts";
++
++/** OpenClaw's usage snapshot, reduced to the fields the plugin sets. */
++type UsageSnapshot = {
++  provider: string;
++  displayName: string;
++  windows: Array<{ label: string; usedPercent: number; resetAt?: number }>;
++  summary?: string;
++  plan?: string;
++  error?: string;
++};
++
++/** The hook contexts, reduced to what the plugin reads. */
++type UsageAuthContext = {
++  config?: { plugins?: { entries?: Record<string, { config?: Record<string, unknown> } | undefined> } };
++  env?: Record<string, string | undefined>;
++  resolveApiKeyFromConfigAndStore?: (params?: { providerIds?: string[] }) => string | undefined;
++};
++type UsageFetchContext = { token: string; signal?: AbortSignal };
++
++const two = (n: number) => String(n).padStart(2, "0");
++/** `2026-11-10 14:03 UTC`: the stale reading's time in a form that needs no locale. */
++const utcStamp = (ms: number) => {
++  const d = new Date(ms);
++  return `${d.getUTCFullYear()}-${two(d.getUTCMonth() + 1)}-${two(d.getUTCDate())} ${two(d.getUTCHours())}:${two(d.getUTCMinutes())} UTC`;
++};
++
++/** An adapter snapshot in OpenClaw's shape; a stale one says so in every label and in the summary. */
++export function toUsageSnapshot(adapter: CliAdapter, snapshot: QuotaSnapshot): UsageSnapshot {
++  const stale = snapshot.staleSince;
++  const note = stale === undefined ? undefined : `Stale: ${adapter.displayName} did not answer, showing the reading of ${utcStamp(stale)}`;
++  const summary = [note, snapshot.summary].filter(Boolean).join(". ");
++  return {
++    provider: backendIdFor(adapter),
++    displayName: adapter.displayName,
++    windows: snapshot.windows.map((w) => ({ ...w, label: stale === undefined ? w.label : `${w.label} (stale)` })),
++    ...(summary ? { summary } : {}),
++    ...(snapshot.plan ? { plan: snapshot.plan } : {}),
++  };
++}
++
++/**
++ * OpenClaw's provider usage hooks for an adapter that can read its plan quota (`readQuota`), or
++ * `undefined` for one that cannot: such a provider offers no snapshot. The hooks run only when a
++ * usage surface asks, never from a turn.
++ *
++ * - `resolveUsageAuth` picks the API key the way the CLI process gets it: the backend's plugin
++ *   config `env`, then the host environment, then a key OpenClaw holds for the provider. With none
++ *   (a login only) it answers `handled`, so no generic fallback runs and the provider has no row.
++ * - `fetchUsageSnapshot` asks the adapter. A failure or an empty answer is a row with a short
++ *   error text, never a throw.
++ */
++export function createUsageHooks(adapter: CliAdapter, pluginId: string, warn: (message: string) => void) {
++  const readQuota = adapter.readQuota?.bind(adapter);
++  const keyVar = adapter.apiKeyEnvVar;
++  if (!readQuota || !keyVar) return undefined;
++  const backendId = backendIdFor(adapter);
++  return {
++    resolveUsageAuth(context: UsageAuthContext): { token: string } | { handled: true } {
++      const settings = readBackendConfig(context.config?.plugins?.entries?.[pluginId]?.config, backendId, () => {});
++      const key =
++        settings.env?.[keyVar]?.trim() ||
++        context.env?.[keyVar]?.trim() ||
++        context.resolveApiKeyFromConfigAndStore?.({ providerIds: [backendId] })?.trim();
++      return key ? { token: key } : { handled: true };
++    },
++    async fetchUsageSnapshot(context: UsageFetchContext): Promise<UsageSnapshot> {
++      try {
++        const report = await readQuota({ apiKey: context.token, ...(context.signal ? { signal: context.signal } : {}) });
++        if (report.warning) warn(report.warning);
++        if (report.snapshot) return toUsageSnapshot(adapter, report.snapshot);
++      } catch {
++        // By contract the adapter does not throw; a throw is treated as no snapshot.
++      }
++      return { provider: backendId, displayName: adapter.displayName, windows: [], error: `${adapter.displayName} quota unavailable` };
++    },
++  };
++}
