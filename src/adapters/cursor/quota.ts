@@ -4,7 +4,7 @@ import { DEFAULT_BASE_URL, EXCHANGE_PATH, tokenExpiry } from "./usage.ts";
 
 /**
  * The account's plan quota from Cursor's dashboard API (ticket 26, issue #82), for OpenClaw's usage
- * surfaces. Spike 2026-11-10 (cursor-agent 2026.10.22 account, API key): with the access token that
+ * surfaces. Spike 2026-11-10 (an Ultra personal account, API key only): with the access token that
  * `exchange_user_api_key` returns, `GetPlanInfo` answers the plan name and the billing cycle end,
  * and `GetCurrentPeriodUsage` the cycle's start and end, the spend in cents, and the used percent
  * of the included total, of Auto + Composer, and of API models. Nothing here is computed from
@@ -69,17 +69,18 @@ const dollars = (cents: number): string => `$${(cents / 100).toLocaleString("en-
 
 /**
  * Cursor's two answers as a snapshot. Windows come from the percentages Cursor reports; the
- * summary line from the spend it reports (cents). Anything missing is left out. Throws when the
- * period answer has neither a window nor a spend value: the shape changed.
+ * summary line from the spend it reports (cents). A percent Cursor leaves out is 0 (proto3 JSON drops defaults). Throws when the
+ * period answer has no `planUsage` object: the shape changed.
  */
 export function toSnapshot(plan: unknown, period: unknown): QuotaSnapshot {
   const usage = isRecord(period) && isRecord(period.planUsage) ? period.planUsage : undefined;
   if (!isRecord(period) || !usage) throw new QuotaError("changed", PERIOD_PATH, 200);
   const resetAt = asNumber(period.billingCycleEnd) ?? (isRecord(plan) && isRecord(plan.planInfo) ? asNumber(plan.planInfo.billingCycleEnd) : undefined);
   const windows: QuotaWindow[] = [];
+  // Proto3 JSON leaves out a field that holds its default, so a missing percent is 0 (a new cycle, no API use).
   const add = (label: string, percent: unknown) => {
-    const usedPercent = asNumber(percent);
-    if (usedPercent !== undefined) windows.push({ label, usedPercent, ...(resetAt !== undefined ? { resetAt } : {}) });
+    const usedPercent = asNumber(percent) ?? 0;
+    windows.push({ label, usedPercent, ...(resetAt !== undefined ? { resetAt } : {}) });
   };
   add("Total", usage.totalPercentUsed);
   add("Auto + Composer", usage.autoPercentUsed);
@@ -95,7 +96,6 @@ export function toSnapshot(plan: unknown, period: unknown): QuotaSnapshot {
   } else if (total !== undefined) {
     summary = `Spend this cycle: ${dollars(total)}`;
   }
-  if (windows.length === 0 && summary === undefined) throw new QuotaError("changed", PERIOD_PATH, 200);
 
   const info = isRecord(plan) && isRecord(plan.planInfo) ? plan.planInfo : undefined;
   const name = typeof info?.planName === "string" && info.planName.trim() ? info.planName.trim() : undefined;

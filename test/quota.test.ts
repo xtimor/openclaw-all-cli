@@ -107,18 +107,25 @@ describe("snapshot mapping", () => {
     }
   });
 
-  it("leaves out what Cursor did not report: no estimate, no zero", () => {
-    const period = { planUsage: { totalPercentUsed: 7 } };
-    expect(toSnapshot(undefined, period)).toEqual({ windows: [{ label: "Total", usedPercent: 7 }] });
-    expect(toSnapshot({ planInfo: { planName: "  " } }, { billingCycleEnd: "5", planUsage: { totalSpend: 1234 } })).toEqual({
-      windows: [],
+  it("reads a field Cursor leaves out (proto3 default) as 0 and estimates nothing", () => {
+    const zero = (label: string, usedPercent = 0) => ({ label, usedPercent });
+    expect(toSnapshot(undefined, { planUsage: { totalPercentUsed: 7 } })).toEqual({
+      windows: [zero("Total", 7), zero("Auto + Composer"), zero("API models")],
+    });
+    expect(toSnapshot(undefined, { planUsage: {} })).toEqual({ windows: [zero("Total"), zero("Auto + Composer"), zero("API models")] });
+    expect(toSnapshot({ planInfo: { planName: "  " } }, { billingCycleEnd: "5", planUsage: { totalSpend: 1234 } })).toMatchObject({
       summary: "Spend this cycle: $12.34",
     });
   });
 
   it("takes the reset time from the plan answer when the period has none, and numeric strings as numbers", () => {
     const snapshot = toSnapshot({ planInfo: { planName: "Pro", billingCycleEnd: "1790000000000" } }, { planUsage: { autoPercentUsed: "3.5" } });
-    expect(snapshot).toEqual({ plan: "Pro", windows: [{ label: "Auto + Composer", usedPercent: 3.5, resetAt: 1_790_000_000_000 }] });
+    expect(snapshot.plan).toBe("Pro");
+    expect(snapshot.windows.map((w) => [w.label, w.usedPercent, w.resetAt])).toEqual([
+      ["Total", 0, 1_790_000_000_000],
+      ["Auto + Composer", 3.5, 1_790_000_000_000],
+      ["API models", 0, 1_790_000_000_000],
+    ]);
   });
 
   it("shows a plain spend line when the included limit is zero or missing", () => {
@@ -228,7 +235,7 @@ describe("failures degrade and back off", () => {
     { name: "a token rejected twice (401 after a renewal)", arrange: (fake) => void (fake.statuses[PERIOD] = [401, 401]) },
     { name: "a network error", arrange: (fake) => void fake.networkError.add(PERIOD) },
     { name: "a changed shape: no planUsage", arrange: (fake) => void (fake.queue[PERIOD] = [JSON.stringify({ billingCycleEnd: "1" })]) },
-    { name: "a changed shape: nothing to show", arrange: (fake) => void (fake.queue[PERIOD] = [JSON.stringify({ planUsage: {} })]) },
+    { name: "a changed shape: planUsage is not an object", arrange: (fake) => void (fake.queue[PERIOD] = [JSON.stringify({ planUsage: "x" })]) },
     { name: "a changed shape: not JSON", arrange: (fake) => void (fake.queue[PERIOD] = ["<html>"]) },
     { name: "a changed shape: 404", arrange: (fake) => void (fake.statuses[PERIOD] = [404]) },
     { name: "a changed shape: an exchange with no token", arrange: (fake) => void (fake.queue[EXCHANGE] = ["{}"]) },

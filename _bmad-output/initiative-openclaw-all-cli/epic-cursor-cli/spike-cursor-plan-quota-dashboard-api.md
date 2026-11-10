@@ -32,6 +32,6 @@ Empty (`{}`): `GetUsageBasedPremiumRequests`, `GetCreditGrantsBalance`, `GetTeam
 - **Gate:** the host calls `resolveUsageAuth` only when it sees a credential source for the provider: a `models.providers.<id>.apiKey`, a provider auth env var set in the Gateway's env, a manifest `providerUsageAuthEnvVars` entry set in the Gateway's env, or an auth profile for the provider (`models auth paste-api-key`). A key held only in the plugin config (`cursor-cli.env`, the preferred setup) opens none of these, so the quota shows only with one of the others; that must be in the docs.
 - The Control UI caches usage for 60 s per agent.
 
-## Draft
+## Build
 
-A first implementation (port `readQuota`, `src/adapters/cursor/quota.ts`, `src/core/quota.ts`, wiring in `register.ts`, manifest entries) was written and kept as `_bmad-output/backlog/story-show-cursor-plan-quota-in-openclaw-draft.patch`; it is untested and unreviewed (see the plan's Auto Run Result).
+Built in ticket 26: port `readQuota`, `src/adapters/cursor/quota.ts`, `src/core/quota.ts`, wiring in `register.ts`, manifest entries, `test/quota.test.ts`, docs. Tested offline; live read with the key returned a snapshot.
