@@ -3,14 +3,14 @@ title: 'Show Cursor plan quota in OpenClaw'
 type: 'feature'
 ticket: 'story-show-cursor-plan-quota-in-openclaw'
 created: '2026-11-10'
-status: 'in-progress'
+status: 'in-review'
 baseline_revision: '9a81c89787d35978df0897b1de00ba485af3b093'
 route: 'full'
 route_source: 'pinned'
 risk: 'medium'
-review: ''
-review_source: ''
-lenses_ran: []
+review: 'quick'
+review_source: 'pinned'
+lenses_ran: [quick]
 review_loop_iteration: 0
 followup_review_recommended: false
 context:
