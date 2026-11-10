@@ -3,13 +3,13 @@ title: 'Update instructions say a running Gateway is refreshed by plugins update
 type: 'bugfix'
 ticket: '25'
 created: '2026-11-10'
-status: 'in-review'
+status: done
 baseline_revision: 'fb1debf51743a73921787f72ab749b44c0d364f9'
 route: 'oneshot'
 route_source: 'auto'
 risk: 'low'
-review: ''
-review_source: ''
+review: 'quick'
+review_source: 'pinned'
 lenses_ran: []
 review_loop_iteration: 0
 followup_review_recommended: false
@@ -52,3 +52,10 @@ Status: in-review (review pending: this worker had no way to launch review subag
 - Verification: `npm run ci` passed ("All checks passed", install smoke `status=loaded`). Live Cursor check: not run (no `cursor-agent` login; docs-only change).
 - Review: not run. Patches 0, deferred 0, rejected 0. Follow-up review recommended: false.
 - Residual risk: the "2026.10.3 still accepts `plugins update`" claim and the refusal on current OpenClaw come from the ticket; not re-probed here.
+
+## Auto Run Result (review pass 1)
+
+Status: built.
+
+- Review: quick, run by the orchestrator in its own session (the build worker had no subagents). It read the whole diff against the intent contract: both docs give the two paths and the 2026.10.3 note, the false claim is gone, the changelog line links #80, no protected file changed, the test file holds the ticket's reproduction test plus pins. Findings: none. Patches 0, deferred 0. Follow-up review recommended: false.
+- Verification: `npm run ci` passed after the build (rerun before the pull request). Live Cursor check: not run (no `cursor-agent` login; docs-only change).
