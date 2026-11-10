@@ -44,7 +44,8 @@ for (const [file, heading] of [
   });
 }
 
-it("CHANGELOG.md lists the Gateway update docs fix under Unreleased with issue 80", () => {
-  const unreleased = section("CHANGELOG.md", "## Unreleased");
-  expect(unreleased).toMatch(/issues\/80\)/);
+// Not pinned to Unreleased: a release stamps the line into its version section.
+it("CHANGELOG.md lists the Gateway update docs fix with issue 80", () => {
+  const changelog = readFileSync("CHANGELOG.md", "utf8");
+  expect(changelog).toMatch(/plugins update.*issues\/80\)/);
 });
