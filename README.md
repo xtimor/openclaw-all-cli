@@ -42,12 +42,21 @@ All settings are optional and live under `plugins.entries.openclaw-all-cli.confi
 
 ## Update
 
+Current OpenClaw refuses `plugins update` while the Gateway runs. Pick one path.
+
+With the Gateway running, reinstall the latest release over the old one:
+
 ```sh
-openclaw plugins update openclaw-all-cli
-openclaw plugins list | grep openclaw-all-cli   # shows the installed version
+openclaw plugins install openclaw-all-cli --accept-capabilities --force
 ```
 
-A running local Gateway is refreshed by the update; otherwise the new version loads at the next Gateway start. If you installed a fixed version (`openclaw-all-cli@X.Y.Z`), `update` keeps it; to follow the latest release again, run the install command above. What changed in each version: [Changelog](https://github.com/xtimor/openclaw-all-cli/blob/main/CHANGELOG.md).
+Or stop the Gateway through its service owner (`openclaw gateway stop`, or stop the Gateway container for Docker Compose), update, and start it again:
+
+```sh
+openclaw plugins update openclaw-all-cli
+```
+
+Either way, check the installed version with `openclaw plugins list | grep openclaw-all-cli`. OpenClaw 2026.10.3 still accepts `plugins update` with the Gateway running. With no Gateway running, the new version loads at the next Gateway start. If you installed a fixed version (`openclaw-all-cli@X.Y.Z`), `update` keeps it; the install command above follows the latest release again. What changed in each version: [Changelog](https://github.com/xtimor/openclaw-all-cli/blob/main/CHANGELOG.md).
 
 ## Status
 

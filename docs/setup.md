@@ -117,11 +117,13 @@ openclaw plugins install openclaw-all-cli --accept-capabilities --force
 
 OpenClaw downloads the package from npm and warns that it is outside ClawHub review. `--force` confirms that warning (without it a terminal asks, and a script or agent shell gets `Install cancelled; rerun with --force`) and also replaces an earlier install. With a local Gateway running, OpenClaw applies the install through it; with none, it prints `Saved for the next Gateway start`. Each release carries npm provenance (built by this repository's GitHub Actions); the tarball also hangs on the [GitHub release](https://github.com/xtimor/openclaw-all-cli/releases) with its sha256.
 
-To update to the latest release (a running local Gateway is refreshed by the update):
+To update to the latest release, pick one path. Current OpenClaw refuses `plugins update` while the Gateway runs. With the Gateway running, run the install command above again (`--force` replaces the earlier install). Or stop the Gateway through its service owner (`openclaw gateway stop`, or stop the Gateway container for Docker Compose), update, and start it again:
 
 ```sh
 openclaw plugins update openclaw-all-cli
 ```
+
+OpenClaw 2026.10.3 still accepts `plugins update` with the Gateway running.
 
 To install a fixed version: `openclaw plugins install openclaw-all-cli@X.Y.Z --accept-capabilities --force`. A pinned install stays on that version when you run `plugins update`; to follow the latest release again, run `openclaw plugins install openclaw-all-cli --accept-capabilities --force`. To run your own build instead, see [Build from source](#build-from-source).
 

@@ -4,6 +4,10 @@ What changed for people who use the plugin, newest first. Format: [Keep a Change
 
 ## Unreleased
 
+### Fixed
+
+- Docs: the update steps no longer say a running Gateway is refreshed by `openclaw plugins update`, which current OpenClaw refuses. With the Gateway running, reinstall with `--force`; or stop the Gateway, run `plugins update`, and start it again. OpenClaw 2026.10.3 still accepts `plugins update` with the Gateway running. ([#80](https://github.com/xtimor/openclaw-all-cli/issues/80))
+
 ## 0.1.6 - 2026-11-09
 
 ### Fixed
