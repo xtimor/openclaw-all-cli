@@ -4,6 +4,8 @@ What changed for people who use the plugin, newest first. Format: [Keep a Change
 
 ## Unreleased
 
+## 0.1.7 - 2026-11-10
+
 ### Added
 
 - OpenClaw's usage surfaces can now show your Cursor plan quota (plan name, used share of the total, Auto + Composer, and API models, reset date, and spend this cycle) when `CURSOR_API_KEY` is set in the Gateway's environment; it is cached for 60 s, shows the last reading marked stale when Cursor does not answer, and never runs from a chat turn. ([#82](https://github.com/xtimor/openclaw-all-cli/issues/82))
