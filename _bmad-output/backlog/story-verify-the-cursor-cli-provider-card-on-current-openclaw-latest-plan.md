@@ -3,7 +3,7 @@ title: 'Verify the cursor-cli provider card on current OpenClaw latest'
 type: 'chore'
 ticket: 21
 created: '2026-11-05'
-status: built
+status: done
 baseline_revision: '7a315009cecd12acc41595e2b34a222cb036e1ce'
 route: 'oneshot'
 route_source: 'auto'
