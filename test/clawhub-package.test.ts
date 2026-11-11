@@ -33,7 +33,7 @@ describe("ClawHub package metadata", () => {
     const ci = read(".github/workflows/ci.yml");
     expect(ci).toMatch(/^\s*CLAWHUB_VERSION:\s*\d+\.\d+\.\d+\s*$/m);
     expect(ci).toContain('npx --yes "clawhub@${CLAWHUB_VERSION}" package validate');
-    expect(ci).toContain('npx --yes "clawhub@${CLAWHUB_VERSION}" package publish');
+    expect(ci).toContain('npx --yes "clawhub@${CLAWHUB_VERSION}" package publish "$PWD"/');
   });
 
   it("declares exactly one ClawHub catalog category: models", () => {

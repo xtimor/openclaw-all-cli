@@ -77,9 +77,10 @@ jobs:
         run: >-
           npx --yes "clawhub@${CLAWHUB_VERSION}" package validate clawhub-pack/package
           --openclaw-version "$OPENCLAW_VERSION" --out "$RUNNER_TEMP/clawhub-reports"
+      # An absolute path: the CLI reads a relative `dir/file.tgz` as a GitHub `owner/repo`.
       - name: ClawHub publish dry run
         run: >-
-          npx --yes "clawhub@${CLAWHUB_VERSION}" package publish clawhub-pack/*.tgz
+          npx --yes "clawhub@${CLAWHUB_VERSION}" package publish "$PWD"/clawhub-pack/*.tgz
           --family code-plugin --dry-run
           --source-repo "$GITHUB_REPOSITORY" --source-commit "$GITHUB_SHA" --source-ref "$GITHUB_REF"
       - if: always()
