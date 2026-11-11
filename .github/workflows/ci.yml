@@ -38,3 +38,55 @@ jobs:
             .spike/openclaw
           key: spike-${{ runner.os }}-node${{ env.NODE_VERSION }}-openclaw${{ env.OPENCLAW_VERSION }}
       - run: scripts/ci-check.sh
+
+  # The packed plugin for the ClawHub check below (ticket 3.30): built and packed like scripts/release.sh does, without
+  # the tests, so a package ClawHub refuses turns the ClawHub job red even when a unit test fails first.
+  # The version stays 0.0.0 here; a release stamps the real one before it packs.
+  clawhub-pack:
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            .spike/node
+            .spike/openclaw
+          key: spike-${{ runner.os }}-node${{ env.NODE_VERSION }}-openclaw${{ env.OPENCLAW_VERSION }}
+      - name: Build and pack
+        run: |
+          scripts/dev-openclaw.sh setup
+          export PATH="$PWD/.spike/node/bin:$PATH"
+          npm ci --no-audit --no-fund
+          npm run build
+          mkdir -p clawhub-pack
+          npm pack --ignore-scripts --pack-destination clawhub-pack
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: clawhub-package
+          path: clawhub-pack/*.tgz
+          if-no-files-found: error
+          retention-days: 3
+
+  # ClawHub's own checks on that tarball: Plugin Inspector (`clawhub package validate`) and
+  # `clawhub package publish --family code-plugin --dry-run`. Never publishes, needs no secret; the OIDC token only
+  # lets the reusable workflow resolve its own source, so a pull request from a fork (no OIDC) skips it.
+  # Pinned to a commit of openclaw/clawhub.
+  clawhub:
+    needs: clawhub-pack
+    permissions:
+      actions: read
+      contents: read
+      id-token: write
+    uses: openclaw/clawhub/.github/workflows/package-publish.yml@9df44b87850c142bee56db44d86417be0c0f0efd
+    with:
+      dry_run: true
+      family: code-plugin
+      package_artifact_name: clawhub-package
+      inspector_artifact_name: clawhub-plugin-inspector
+      publish_json_artifact_name: clawhub-dry-run-json
