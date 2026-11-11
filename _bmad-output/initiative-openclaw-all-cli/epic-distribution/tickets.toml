@@ -345,3 +345,39 @@ after = [28]
 hitl = false
 risk = "medium"
 references = ["epic-distribution.md", "issue-flow.md"]
+
+[[entry]]
+id = 30
+type = "story"
+title = "A package ClawHub accepts, checked on every pull request"
+description = "Owner decision 2026-11-11 (change publish-on-clawhub): publish on ClawHub as well as npm. Make the packed `.tgz` a valid ClawHub code plugin: add `openclaw.build.openclawVersion` to `package.json` (the OpenClaw version the build and tests run against; keep `openclaw.compat.pluginApi`), declare one plugin category in `openclaw.plugin.json` `categories` from ClawHub's current slug list (for example `agent-runtimes` or `developer-tools`; choose the one that names why people install it), and confirm `assets/icon.png` ships (PNG, at most 512 KiB). Settle the ClawHub name with a dry run: keep `openclaw-all-cli` if ClawHub accepts it unscoped under the owner's account, else `@xtimor/openclaw-all-cli` on ClawHub only (npm name and runtime id unchanged); record which and why in MEMORY.md. CI: on pull requests, run `clawhub package validate` and `clawhub package publish <tgz> --family code-plugin --dry-run` on the packed tarball, with the `clawhub` CLI pinned to an exact version (or the reusable `openclaw/clawhub` `package-publish.yml` with `dry_run: true`, pinned by commit SHA); no secret. Do not run a real publish."
+verify = "`npm pack` tarball contains `package.json` with `openclaw.compat.pluginApi` and `openclaw.build.openclawVersion`, `openclaw.plugin.json` with exactly one category, `dist/plugin.js`, and `assets/icon.png` (an allowlist test); a pull request shows the ClawHub validate and dry-run step green, and a deliberately removed `openclaw.build.openclawVersion` turns it red; the chosen ClawHub name is in MEMORY.md with the dry-run output that decided it; `npm run ci` passes."
+covers = []
+after = [29]
+hitl = false
+risk = "medium"
+references = ["epic-distribution.md", "../change-publish-on-clawhub/change-publish-on-clawhub.md"]
+
+[[entry]]
+id = 31
+type = "story"
+title = "Each release also publishes to ClawHub"
+description = "Change publish-on-clawhub: `release.yml` publishes the same `.tgz` it sends to npm and attaches to the GitHub release to ClawHub, in the same run, after the npm publish succeeds. Use the reusable `openclaw/clawhub/.github/workflows/package-publish.yml` pinned by commit SHA (or the pinned `clawhub` CLI if the reusable workflow cannot take an exact artifact), family `code-plugin`, waiting for publication (security checks) with the default deadline; a failed or blocked ClawHub publish fails the run with a clear summary but does not undo npm. A dry run publishes nothing and prints what it would publish. Credentials: the first publish uses the repository secret `CLAWHUB_TOKEN` (the owner creates it once: sign in at clawhub.ai with GitHub, create an API token, save the secret); after that first publish the workflow sets the trusted publisher (`clawhub package trusted-publisher set <name> --repository xtimor/openclaw-all-cli --workflow-filename release.yml`, or the file name the OIDC claim carries) and later runs publish through OIDC (`id-token: write`, `workflow_dispatch`) with no token; then the owner deletes `CLAWHUB_TOKEN`. The release summary lists the npm version, the ClawHub version and its status, and one sha256 for all three. `docs/release.md` gets a ClawHub section (first publish, trusted publisher, what a blocked review means, rollback)."
+verify = "Tests for the release script or workflow inputs: a dry run touches neither npm nor ClawHub and prints the ClawHub command; a real run publishes ClawHub only after npm; the reusable workflow or CLI is pinned to a SHA or exact version; `docs/release.md` has the ClawHub section; `npm run ci` passes. Live: the first release after the owner adds `CLAWHUB_TOKEN` shows the package on ClawHub (public after review) with the same sha256 as npm and the GitHub release; the next release publishes through trusted publishing with the token deleted."
+covers = []
+after = [30]
+hitl = true
+risk = "high"
+references = ["epic-distribution.md", "../change-publish-on-clawhub/change-publish-on-clawhub.md"]
+
+[[entry]]
+id = 32
+type = "story"
+title = "Install from ClawHub proven and documented"
+description = "Change publish-on-clawhub: once the first ClawHub release is public, prove `openclaw plugins search openclaw-all-cli` finds it and `openclaw plugins install clawhub:<name>` installs it into an isolated OpenClaw on the current stable release, then run a `cursor-cli` turn with an OpenClaw tool call (live with a Cursor login or key, else record as not run). Check what changes for the user: whether the outside-review warning and `--force` are still needed, whether `plugin provenance-invalid` disappears, whether `plugins update` follows ClawHub, and how an existing npm install moves to ClawHub. Rewrite README Install and Update and `docs/setup.md` to lead with ClawHub and keep npm as the fallback; correct the review, `--force`, and provenance notes to what was measured; record the findings in MEMORY.md; add a changelog line."
+verify = "In an isolated current OpenClaw, search finds the plugin and install from `clawhub:` gives a loaded plugin (`plugins list` shows the version); the measured warning, `--force`, provenance, and update behaviour are written in `docs/setup.md` and MEMORY.md; README and `docs/setup.md` show the ClawHub command first and npm second; doc tests pin both commands; `npm run ci` passes."
+covers = []
+after = [31]
+hitl = false
+risk = "medium"
+references = ["epic-distribution.md", "../change-publish-on-clawhub/change-publish-on-clawhub.md"]

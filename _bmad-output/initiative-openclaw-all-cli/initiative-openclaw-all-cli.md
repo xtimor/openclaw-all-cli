@@ -45,7 +45,8 @@ Capability boundary: one epic per CLI provider; the shared core is built inside 
 - Decision: a Cursor API key is optional, not required (user, 2026-10-16).
 - Decision: the agent makes design decisions; the user decides strategy only (user, 2026-10-15).
 - ~~Decision: no public release (npm or ClawHub) in this initiative (user, 2026-10-16).~~ Superseded 2026-10-22 by the next line.
-- Decision: publish to npmjs.com from GitHub Actions, as epic-distribution; ClawHub stays out (user, 2026-10-22).
+- Decision: publish to npmjs.com from GitHub Actions, as epic-distribution; ~~ClawHub stays out~~ (user, 2026-10-22). ClawHub part superseded 2026-11-11 by the next line.
+- Decision: publish on ClawHub, the OpenClaw marketplace, as well as npm; epic-distribution stories 30 to 32 (user, 2026-11-11; change publish-on-clawhub).
 - Decision: GitHub issues are the intake for bugs and ideas; a triage agent runs twice a day, the owner approves development, an agent implements as a PR; in epic-distribution (user, 2026-10-22).
 - Decision: every development, bug fix, and course correction goes through the BMAD flow in this repo (`_bmad/`, `bmad-*` skills, the ticket store), for people's sessions and for CI agents alike (user, 2026-10-22).
 - Decision: Cursor usage must be found; shipping without usage is a last resort (user, 2026-10-16).
