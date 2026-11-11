@@ -18,6 +18,8 @@ env:
   # Same defaults as scripts/dev-openclaw.sh, which reads these two variables (through ci-check.sh).
   NODE_VERSION: 24.22.0
   OPENCLAW_VERSION: 2026.10.3
+  # The ClawHub CLI the clawhub job runs, pinned to an exact version.
+  CLAWHUB_VERSION: 0.25.1
 
 jobs:
   check:
@@ -39,11 +41,15 @@ jobs:
           key: spike-${{ runner.os }}-node${{ env.NODE_VERSION }}-openclaw${{ env.OPENCLAW_VERSION }}
       - run: scripts/ci-check.sh
 
-  # The packed plugin for the ClawHub check below (ticket 3.30): built and packed like scripts/release.sh does, without
-  # the tests, so a package ClawHub refuses turns the ClawHub job red even when a unit test fails first.
-  # The version stays 0.0.0 here; a release stamps the real one before it packs.
-  clawhub-pack:
-    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
+  # ClawHub's own checks on the packed plugin (ticket 3.30), with the `clawhub` CLI pinned to an exact version and run
+  # under Node: Plugin Inspector (`clawhub package validate`) on the unpacked tarball, then
+  # `clawhub package publish --family code-plugin --dry-run`, which applies ClawHub's package.json rules locally and
+  # never calls the registry. No secret, no OIDC, so pull requests from forks run it too. Built and packed like
+  # scripts/release.sh does, without the tests, so a package ClawHub refuses turns this job red even when a unit test
+  # fails first. The version stays 0.0.0 here; a release stamps the real one before it packs.
+  # Not ClawHub's reusable package-publish.yml: at openclaw/clawhub 9df44b8 it runs `package validate` under Bun,
+  # which that command refuses ("requires Node.js"), so it fails for every code plugin.
+  clawhub:
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
@@ -64,29 +70,22 @@ jobs:
           export PATH="$PWD/.spike/node/bin:$PATH"
           npm ci --no-audit --no-fund
           npm run build
-          mkdir -p clawhub-pack
+          mkdir -p clawhub-pack/package
           npm pack --ignore-scripts --pack-destination clawhub-pack
-      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+          tar -xzf clawhub-pack/*.tgz -C clawhub-pack
+      - name: ClawHub validate (Plugin Inspector)
+        run: >-
+          npx --yes "clawhub@${CLAWHUB_VERSION}" package validate clawhub-pack/package
+          --openclaw-version "$OPENCLAW_VERSION" --out "$RUNNER_TEMP/clawhub-reports"
+      - name: ClawHub publish dry run
+        run: >-
+          npx --yes "clawhub@${CLAWHUB_VERSION}" package publish clawhub-pack/*.tgz
+          --family code-plugin --dry-run
+          --source-repo "$GITHUB_REPOSITORY" --source-commit "$GITHUB_SHA" --source-ref "$GITHUB_REF"
+      - if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
-          name: clawhub-package
-          path: clawhub-pack/*.tgz
-          if-no-files-found: error
-          retention-days: 3
-
-  # ClawHub's own checks on that tarball: Plugin Inspector (`clawhub package validate`) and
-  # `clawhub package publish --family code-plugin --dry-run`. Never publishes, needs no secret; the OIDC token only
-  # lets the reusable workflow resolve its own source, so a pull request from a fork (no OIDC) skips it.
-  # Pinned to a commit of openclaw/clawhub.
-  clawhub:
-    needs: clawhub-pack
-    permissions:
-      actions: read
-      contents: read
-      id-token: write
-    uses: openclaw/clawhub/.github/workflows/package-publish.yml@9df44b87850c142bee56db44d86417be0c0f0efd
-    with:
-      dry_run: true
-      family: code-plugin
-      package_artifact_name: clawhub-package
-      inspector_artifact_name: clawhub-plugin-inspector
-      publish_json_artifact_name: clawhub-dry-run-json
+          name: clawhub-reports
+          path: ${{ runner.temp }}/clawhub-reports
+          if-no-files-found: ignore
+          retention-days: 7

@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Every local check a pull request must pass, in one place: `npm run ci` locally, the same script in GitHub Actions.
-# GitHub Actions adds the ClawHub validate and dry-run publish (`.github/workflows/ci.yml`, jobs clawhub-pack and clawhub).
+# GitHub Actions adds the ClawHub validate and dry-run publish (`.github/workflows/ci.yml`, job clawhub).
 # Agent-neutral and fail-fast. Needs no Cursor login; live tests (`npm run test:live`) are not part of it.
 #
 #   isolated Node 24 + OpenClaw in .spike/, npm ci, the plan gate, typecheck, unit tests, build,

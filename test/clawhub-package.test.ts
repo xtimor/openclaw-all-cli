@@ -29,6 +29,13 @@ describe("ClawHub package metadata", () => {
     expect(read("scripts/dev-openclaw.sh")).toContain(`OPENCLAW_VERSION="\${OPENCLAW_VERSION:-${built}}"`);
   });
 
+  it("runs ClawHub's CLI in CI at an exact version", () => {
+    const ci = read(".github/workflows/ci.yml");
+    expect(ci).toMatch(/^\s*CLAWHUB_VERSION:\s*\d+\.\d+\.\d+\s*$/m);
+    expect(ci).toContain('npx --yes "clawhub@${CLAWHUB_VERSION}" package validate');
+    expect(ci).toContain('npx --yes "clawhub@${CLAWHUB_VERSION}" package publish');
+  });
+
   it("declares exactly one ClawHub catalog category: models", () => {
     expect(manifest.categories).toEqual(["models"]);
   });
