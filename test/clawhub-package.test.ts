@@ -6,7 +6,8 @@ import { describe, expect, it } from "vitest";
 /**
  * ClawHub accepts a code plugin only with `openclaw.compat.pluginApi` and `openclaw.build.openclawVersion` in
  * package.json, and takes at most one catalog category from the manifest (ticket 3.30). CI also runs ClawHub's own
- * validate and dry-run publish on the packed tarball (`.github/workflows/ci.yml`, job `clawhub`).
+ * validate and dry-run publish on the packed tarball (`.github/workflows/ci.yml`, job `clawhub`); a release publishes
+ * the same tarball with the same pinned CLI (`scripts/release.sh`, ticket 3.31).
  */
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
@@ -34,6 +35,15 @@ describe("ClawHub package metadata", () => {
     expect(ci).toMatch(/^\s*CLAWHUB_VERSION:\s*\d+\.\d+\.\d+\s*$/m);
     expect(ci).toContain('npx --yes "clawhub@${CLAWHUB_VERSION}" package validate');
     expect(ci).toContain('npx --yes "clawhub@${CLAWHUB_VERSION}" package publish "$PWD"/');
+  });
+
+  it("pins the same clawhub CLI version in CI, the release workflow, and the release script", () => {
+    // ci.yml checks the package with this CLI; scripts/release.sh publishes with it (ticket 3.31).
+    const pinned = (path: string) => read(path).match(/^\s*CLAWHUB_VERSION:\s*(\S+)\s*$/m)?.[1];
+    const ci = pinned(".github/workflows/ci.yml");
+    expect(ci).toMatch(/^\d+\.\d+\.\d+$/);
+    expect(pinned(".github/workflows/release.yml")).toBe(ci);
+    expect(read("scripts/release.sh")).toContain(`CLAWHUB_VERSION="\${CLAWHUB_VERSION:-${ci}}"`);
   });
 
   it("declares exactly one ClawHub catalog category: models", () => {
