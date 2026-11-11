@@ -18,6 +18,8 @@ env:
   # Same defaults as scripts/dev-openclaw.sh, which reads these two variables (through ci-check.sh).
   NODE_VERSION: 24.22.0
   OPENCLAW_VERSION: 2026.10.3
+  # The ClawHub CLI the clawhub job runs, pinned to an exact version.
+  CLAWHUB_VERSION: 0.25.1
 
 jobs:
   check:
@@ -38,3 +40,53 @@ jobs:
             .spike/openclaw
           key: spike-${{ runner.os }}-node${{ env.NODE_VERSION }}-openclaw${{ env.OPENCLAW_VERSION }}
       - run: scripts/ci-check.sh
+
+  # ClawHub's own checks on the packed plugin (ticket 3.30), with the `clawhub` CLI pinned to an exact version and run
+  # under Node: Plugin Inspector (`clawhub package validate`) on the unpacked tarball, then
+  # `clawhub package publish --family code-plugin --dry-run`, which applies ClawHub's package.json rules locally and
+  # never calls the registry. No secret, no OIDC, so pull requests from forks run it too. Built and packed like
+  # scripts/release.sh does, without the tests, so a package ClawHub refuses turns this job red even when a unit test
+  # fails first. The version stays 0.0.0 here; a release stamps the real one before it packs.
+  # Not ClawHub's reusable package-publish.yml: at openclaw/clawhub 9df44b8 it runs `package validate` under Bun,
+  # which that command refuses ("requires Node.js"), so it fails for every code plugin.
+  clawhub:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            .spike/node
+            .spike/openclaw
+          key: spike-${{ runner.os }}-node${{ env.NODE_VERSION }}-openclaw${{ env.OPENCLAW_VERSION }}
+      - name: Build and pack
+        run: |
+          scripts/dev-openclaw.sh setup
+          export PATH="$PWD/.spike/node/bin:$PATH"
+          npm ci --no-audit --no-fund
+          npm run build
+          mkdir -p clawhub-pack/package
+          npm pack --ignore-scripts --pack-destination clawhub-pack
+          tar -xzf clawhub-pack/*.tgz -C clawhub-pack
+      - name: ClawHub validate (Plugin Inspector)
+        run: >-
+          npx --yes "clawhub@${CLAWHUB_VERSION}" package validate clawhub-pack/package
+          --openclaw-version "$OPENCLAW_VERSION" --out "$RUNNER_TEMP/clawhub-reports"
+      # An absolute path: the CLI reads a relative `dir/file.tgz` as a GitHub `owner/repo`.
+      - name: ClawHub publish dry run
+        run: >-
+          npx --yes "clawhub@${CLAWHUB_VERSION}" package publish "$PWD"/clawhub-pack/*.tgz
+          --family code-plugin --dry-run
+          --source-repo "$GITHUB_REPOSITORY" --source-commit "$GITHUB_SHA" --source-ref "$GITHUB_REF"
+      - if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: clawhub-reports
+          path: ${{ runner.temp }}/clawhub-reports
+          if-no-files-found: ignore
+          retention-days: 7

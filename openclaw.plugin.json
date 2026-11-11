@@ -2,6 +2,7 @@
   "id": "openclaw-all-cli",
   "name": "OpenClaw All CLI",
   "description": "Run local coding CLIs as OpenClaw models. Cursor first.",
+  "categories": ["models"],
   "providers": [
     "cursor-cli"
   ],
