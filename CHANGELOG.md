@@ -4,6 +4,10 @@ What changed for people who use the plugin, newest first. Format: [Keep a Change
 
 ## Unreleased
 
+### Changed
+
+- The plugin is now on ClawHub, the OpenClaw plugin catalog: install it with `openclaw plugins install clawhub:openclaw-all-cli --accept-capabilities` (no `--force` needed); npm stays available. The README and setup guide lead with ClawHub and explain the security audit OpenClaw shows before the install and how to move an npm install over.
+
 ## 0.1.7 - 2026-11-10
 
 ### Added
