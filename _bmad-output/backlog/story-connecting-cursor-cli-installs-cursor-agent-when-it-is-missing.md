@@ -52,16 +52,21 @@ A user who connects the `cursor-cli` provider on a Gateway host without the Curs
    **Given** Windows, Linux musl, another architecture, or OpenClaw in Nix mode
    **When** either Connect method finds no `cursor-agent`
    **Then** no install is offered and the method shows why and the manual install instructions
-8. **The pin is maintained in the repo**
+8. **Removing the key offers to remove the managed CLI**
+   **Given** a saved key in `cursor-cli.env`, a managed `cursor-agent`, or both
+   **When** the user runs the provider's remove method (Control UI **Connect provider** or `openclaw models auth login --provider cursor-cli --method remove`)
+   **Then** it asks whether to remove the saved key, and, when a managed install exists, separately whether to remove it too, naming its folder and size
+   **And** a yes to the key removes `CURSOR_API_KEY` from `cursor-cli.env` and keeps the other settings; a yes to the CLI removes the managed folder and unsets `cursor-cli.command` only when it points there; a `cursor-agent` the plugin did not install is never removed
+9. **The pin is maintained in the repo**
    **Given** the repository
    **When** a maintainer runs the pin script
    **Then** it reads the current version from Cursor's install script and each platform's `.sha256`, and writes them as adapter data
    **And** CI fails when a pinned URL no longer answers or its checksum no longer matches
-9. **Docs, spine, and log**
-   **Given** the change
-   **When** the docs are read
-   **Then** `docs/setup.md` and `docs/providers/cursor.md` describe the managed install (what is downloaded, from where, where it goes, how to update and remove it, the proxy setting, the unsupported hosts), README states it in one line, the spine has AD-17, and `CHANGELOG.md` has one plain line under `## Unreleased`
-10. **Checks pass**
+10. **Docs, spine, and log**
+    **Given** the change
+    **When** the docs are read
+    **Then** `docs/setup.md` and `docs/providers/cursor.md` describe the managed install (what is downloaded, from where, where it goes, how to update it, how to remove it with the remove method or by hand, the proxy setting, the unsupported hosts), README states it in one line, the spine has AD-17, and `CHANGELOG.md` has one plain line under `## Unreleased`
+11. **Checks pass**
     **Given** the branch
     **When** the focused tests and `npm test` run
     **Then** they pass with a local HTTP stub serving a small package (good, bad hash, truncated, oversized, cancelled); a live install of the real package with a real key turn runs where Cursor is reachable and is recorded as not run otherwise
@@ -82,6 +87,7 @@ A user who connects the `cursor-cli` provider on a Gateway host without the Curs
 ## Notes
 
 - Decision (owner, 2026-11-12): explore and plan the feature; build only after the owner approves this ticket.
+- Decision (owner, 2026-11-12): removing the key must also offer to remove the Cursor CLI. OpenClaw's own **Remove key** button (Models, provider card; `models.authLogout`) deletes only OpenClaw auth profiles and `models.providers.<id>.apiKey`, calls no plugin code, and asks nothing (checked in OpenClaw 2026.11.3), and this plugin's key is in neither place. So the plugin adds its own remove method beside the two Connect methods. A provider hook on **Remove key** would need an OpenClaw change (upstream request, not this story).
 - Assumption: the first story covers Linux (glibc) and macOS; Windows is a later story (zip, launchers, Git Bash requirement).
 - Assumption: the managed folder is `<state dir>/tools/cursor-agent/<version>/`, as OpenClaw's own Signal setup does for `signal-cli`; older managed versions are removed after a successful switch.
 - Assumption: the pinned version moves with plugin releases; the plugin does not follow Cursor's latest on its own.

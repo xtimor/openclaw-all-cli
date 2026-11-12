@@ -58,3 +58,7 @@ Expected outcome: Install Mechanism becomes "note" or "concern"; the overall ver
 - `extractArchive` limits for a 536 MiB package and that it keeps the executable bits.
 - macOS Gatekeeper on the unpacked binaries (`com.apple.quarantine` is not set by a Node download, so none is expected).
 - How the pinned version and hashes are refreshed: a repo script that reads Cursor's install script for the current version and its `.sha256` files, and a CI check that the pinned URLs still answer.
+
+## Removing the key (added 2026-11-12)
+
+OpenClaw's **Remove key** button on a provider card calls `models.authLogout` with `credentialType: "api_key"`. The Gateway handler deletes the provider's OpenClaw auth profiles of type `api_key` and `models.providers.<id>.apiKey`, aborts nothing else, and calls no plugin code; it is a plain RPC, not a wizard, so nothing can ask the user a question (OpenClaw 2026.11.3, `models-auth-status`, `auth-logout`). This plugin keeps the key in `plugins.entries.openclaw-all-cli.config.cursor-cli.env`, which that button does not touch, and the card reads "Not configured" for `cursor-cli` anyway (MEMORY.md, bug 14). A question "also remove Cursor CLI?" therefore needs a method of the plugin's own: a third provider auth method (`remove`) in the same Connect provider list, which can ask with `confirm` and return a `configPatch`. Hooking the host's **Remove key** would take an OpenClaw change.
