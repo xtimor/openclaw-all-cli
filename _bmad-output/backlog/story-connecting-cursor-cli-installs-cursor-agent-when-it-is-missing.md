@@ -85,7 +85,8 @@ A user who connects the `cursor-cli` provider on a Gateway host without the Curs
 - Assumption: the first story covers Linux (glibc) and macOS; Windows is a later story (zip, launchers, Git Bash requirement).
 - Assumption: the managed folder is `<state dir>/tools/cursor-agent/<version>/`, as OpenClaw's own Signal setup does for `signal-cli`; older managed versions are removed after a successful switch.
 - Assumption: the pinned version moves with plugin releases; the plugin does not follow Cursor's latest on its own.
-- Open question: whether the Control UI wizard shows `confirm` and `progress` for a provider auth method and allows a multi-minute step; if not, the Control UI dialog points at the CLI command and the install runs there only.
+- Decision (owner, 2026-11-12): the install is offered while the provider is being set up (the API key step of Connect provider), never when the plugin itself is installed.
+- Open question: whether a multi-minute download fits the Control UI wizard's step timeout; if not, the Control UI dialog points at the CLI command and the install runs there only. (The Control UI 2026.11.3 wizard does render `confirm` and Gateway-run `progress` steps.)
 - Open question: whether `cursor-agent` updates itself and where it writes then.
 - Open question: whether `extractArchive` from `openclaw/plugin-sdk/setup-tools` handles the 536 MiB package and keeps executable bits, or the core needs its own bounded unpack.
 - Risk high: the plugin downloads and runs third-party binaries, and ClawHub's audit judges an install mechanism. Check outside this ticket: the owner reviews the ClawHub audit of the first release that ships it, and runs the install once on the owner's own macOS or Linux host.

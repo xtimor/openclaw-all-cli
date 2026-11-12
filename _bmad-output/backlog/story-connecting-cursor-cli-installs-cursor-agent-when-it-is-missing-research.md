@@ -11,6 +11,10 @@ Question (owner, 2026-11-12): can the plugin, while the `cursor-cli` provider is
 - `cursor-agent` is the launcher script at the package root (`dist-package/cursor-agent`, mode 0755).
 - There is no documented "latest version" endpoint. The version appears only inside the generated install script. The `downloads.cursor.com/lab/` layout is not documented by Cursor and may change.
 
+## When the install can happen
+
+Only while the provider is being set up, not when the plugin is installed. `openclaw plugins install` runs no plugin code that could install anything: npm-sourced installs run with lifecycle scripts disabled (`--ignore-scripts`), and ClawHub installs copy the package. The plugin's first chance is the Connect provider method, which runs on the Gateway host when the user picks it. That is also the right place: the user has just chosen Cursor and is there to answer the install question.
+
 ## Using an API key
 
 Already built (backlog story "Cursor provider in the Control UI provider list"): the Connect method **Cursor CLI API key (CURSOR_API_KEY)** (`api-key-env`) asks for the key and writes it to `plugins.entries.openclaw-all-cli.config.cursor-cli.env.CURSOR_API_KEY`, which reaches the Cursor process, the probes, and the usage reader only. What is missing is a check of the key before it is saved: `CURSOR_API_KEY=<key> cursor-agent about` prints `User Email` for a good key and `The provided API key is invalid` for a bad one (`cursor-agent status` ignores the key). Running it writes the key and its tokens to `~/.config/cursor/auth.json` (MEMORY.md, "Key on disk"), the same as any turn with the key.
@@ -49,7 +53,7 @@ Expected outcome: Install Mechanism becomes "note" or "concern"; the overall ver
 
 ## Open points for the build
 
-- Whether the Control UI wizard renders `confirm` and `progress` steps for a provider auth method, and whether a multi-minute download fits its step timeout. Fallback: install from `openclaw models auth login` only, and point the Control UI dialog at it.
+- Whether a multi-minute download fits the Control UI wizard's step timeout. The wizard itself renders `confirm` and Gateway-run `progress` steps (Control UI 2026.11.3, `wizard-step-controls` handles `confirm`, `progress`, `text`, `select`, `multiselect`, `note`, `action`). Fallback: install from `openclaw models auth login` only, and point the Control UI dialog at it.
 - Whether `cursor-agent` self-updates and where it writes then (inside the plugin's folder or into `~/.local/share/cursor-agent`).
 - `extractArchive` limits for a 536 MiB package and that it keeps the executable bits.
 - macOS Gatekeeper on the unpacked binaries (`com.apple.quarantine` is not set by a Node download, so none is expected).
