@@ -7,7 +7,7 @@ paradigm: 'hexagonal (ports and adapters)'
 scope: 'The openclaw-all-cli OpenClaw plugin: shared core plus one adapter per coding CLI (Cursor first, Antigravity next)'
 status: final
 created: '2026-10-15'
-updated: '2026-10-20'
+updated: '2026-11-12'
 binds: [CAP-1, CAP-2, CAP-3, CAP-4, CAP-5, CAP-6, CAP-7, CAP-8, CAP-9, CAP-10, CAP-11, CAP-12]
 sources:
   - ../spec-cursor-cli-provider/spec-cursor-cli-provider.md
@@ -183,6 +183,17 @@ flowchart LR
   - **Logs.** No base64, image bytes, or cache path reaches a log, a note, or an error.
   - **Compaction.** The backend declares neither `ownsNativeCompaction` nor `manualCompaction`: the first would switch off the host's compaction, the only one that works; the second needs a summary prompt the CLI does not honor. A host compaction drops the CLI chat binding, and the next turn starts a fresh chat (AD-15 block, P15 note).
 
+### AD-17 — A missing CLI is installed only on a yes, from the adapter's pin, into the plugin's own folder
+
+- **Binds:** CAP-1, CAP-10, CAP-12
+- **Prevents:** a setup that dead-ends on a host without the CLI; a plugin that runs a vendor's install script or a shell, follows a download anywhere, or changes `PATH`, shell profiles, or a CLI the user installed; an install that leaves half a folder or a config pointing at nothing; CLI names in the core.
+- **Rule:** Only the provider's Connect methods install, and only after a `prompter.confirm` yes; never at Gateway start, in a turn, in a probe, or when the plugin is installed. A run that cannot ask installs nothing. The install spec (version, origin, per-platform URL, sha256, size, unpacked size, strip count, launcher path, manual-install link) is adapter data (`CliAdapter.managedInstall`); the core (`src/core/managed-install.ts`, `src/core/tar.ts`) downloads, checks, and unpacks and names no CLI (AD-2).
+  - **Source.** HTTPS from the pinned origin only, `redirect: "error"`, the size checked against the pin, the sha256 checked before unpacking. The pin moves with plugin releases (`scripts/pin-cursor-agent.mjs`); a weekly CI job checks it against the vendor's `.sha256` files.
+  - **Place.** `<state dir>/tools/<command>/<version>/`: unpacked with byte, entry, and depth limits (files and folders only; links, absolute paths, and `..` refused) into a temporary folder there, the launcher's `--version` must print the pinned version, then one rename; older versions are removed after the switch. The method's config patch points `<backend>.command` at the absolute launcher and keeps the other settings. A failure removes the temporary folder and changes no config.
+  - **Hosts.** Linux with glibc (`process.report` header) and macOS, x64 and arm64. Windows, musl, other processors, and OpenClaw's Nix mode get the reason and the manual link.
+  - **Key check.** Before the API key method saves a key, the adapter's optional `checkKey` asks the CLI with the key in its env only (never an argument, log, note, or error); `invalid` and twice-`unknown` refuse the key; without a runnable CLI the key is saved unchecked with a note.
+  - **Removal.** A third method, `remove`, asks separately about the saved key (deleted by a patch value `undefined`, which the host's merge drops) and the managed folder (only `<state dir>/tools/<command>`; idle pool processes closed first; refused while a turn runs; `command` unset only when it points there).
+
 ## Consistency Conventions
 
 | Concern | Convention |
@@ -257,7 +268,7 @@ sequenceDiagram
 
 | Capability / Area | Lives in | Governed by |
 | --- | --- | --- |
-| CAP-1 model selection, auth | `src/plugin.ts`, `src/adapters/cursor/` | AD-1, AD-10 |
+| CAP-1 model selection, auth | `src/plugin.ts`, `src/adapters/cursor/`, `src/core/provider-auth.ts`, `src/core/managed-install.ts` | AD-1, AD-10, AD-17 |
 | CAP-2 streaming | `src/core/` events, `src/transports/acp/` | AD-3, AD-4, AD-11 |
 | CAP-3 usage | adapter `usage` event, or the optional `readUsage` port (core `readTurnUsage`) that fills the result record after a turn; Cursor reads its usage ledger | AD-3, AD-4. The Cursor adapter keeps an in-memory per-session map (bounded to 1000 sessions) of consumed ledger stamps and read end times for usage matching; it is lost on a Gateway restart, which can reopen the overlap case for the first turn after a restart. |
 | CAP-4 resume | host binding, adapter `open` | AD-5, AD-13 |

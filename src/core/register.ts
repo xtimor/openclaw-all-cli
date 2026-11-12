@@ -1,3 +1,5 @@
+import { homedir } from "node:os";
+import { join, resolve } from "node:path";
 import { backendIdFor, buildCliBackend } from "./backend.ts";
 import { closeListings } from "./catalog.ts";
 import { RELEASING_REASONS } from "./conversation.ts";
@@ -6,10 +8,30 @@ import { homeDirFor } from "./home.ts";
 import { reapOnce } from "./pid-locks.ts";
 import { ProcessPool } from "./pool.ts";
 import { createUsageHooks } from "./quota.ts";
-import { createAuthProvider } from "./provider-auth.ts";
+import { createAuthProvider, type PoolControl } from "./provider-auth.ts";
 import type { CliAdapter } from "./ports.ts";
 import type { OpenClawPluginApi } from "./sdk-types.ts";
 import { PLUGIN_ID } from "./synthetic-auth.ts";
+
+/**
+ * The live pools by backend ID, for the remove method (it closes idle processes and refuses while a
+ * turn runs). Best effort: a setup-mode load of the plugin in another module instance sees an empty
+ * map, and removing files under a running process is safe on Linux and macOS.
+ */
+const livePools = new Map<string, PoolControl>();
+
+/** OpenClaw's state directory: the host's own answer, else its documented defaults. */
+export function resolvePluginStateDir(api: Pick<OpenClawPluginApi, "runtime">, env: NodeJS.ProcessEnv = process.env): string {
+  try {
+    const dir = api.runtime?.state?.resolveStateDir?.(env);
+    if (typeof dir === "string" && dir.trim()) return resolve(dir);
+  } catch {
+    // A setup-mode runtime may not offer it: fall back below.
+  }
+  if (env.OPENCLAW_STATE_DIR?.trim()) return resolve(env.OPENCLAW_STATE_DIR.trim());
+  if (env.OPENCLAW_HOME?.trim()) return join(resolve(env.OPENCLAW_HOME.trim()), ".openclaw");
+  return join(homedir(), ".openclaw");
+}
 
 /** Ids of the agents the config names, plus the default `main`. */
 function configuredAgentIds(config: unknown): string[] {
@@ -39,7 +61,15 @@ export function registerAdapters(api: OpenClawPluginApi, adapters: readonly CliA
     api.registerCliBackend(buildCliBackend(adapter, { settings, warn, debug, pool }));
     // The Control UI's provider list and `models auth login` read the provider's auth methods.
     // An adapter with a quota reader also offers OpenClaw's usage surfaces a plan-quota snapshot.
-    api.registerProvider({ ...createAuthProvider(adapter, PLUGIN_ID), ...createUsageHooks(adapter, PLUGIN_ID, warn) });
+    // Only a full load serves turns; a setup-mode load must not replace the live pool.
+    if (api.registrationMode === "full") livePools.set(backendId, pool);
+    const authDeps = {
+      stateDir: () => resolvePluginStateDir(api),
+      // Looked up per call, so a fetch the host sets up later (a proxy dispatcher) is the one used.
+      fetch: ((...args: Parameters<typeof fetch>) => globalThis.fetch(...args)) as typeof fetch,
+      pools: (id: string) => livePools.get(id),
+    };
+    api.registerProvider({ ...createAuthProvider(adapter, PLUGIN_ID, authDeps), ...createUsageHooks(adapter, PLUGIN_ID, warn) });
     if (api.registrationMode === "full") {
       for (const agentId of configuredAgentIds(api.config)) {
         try {
@@ -51,6 +81,7 @@ export function registerAdapters(api: OpenClawPluginApi, adapters: readonly CliA
     }
   }
   const closeAll = async () => {
+    for (const [id, pool] of livePools) if (pools.includes(pool as ProcessPool)) livePools.delete(id);
     // The model listings live outside the pools: abort them too, or their processes outlive the unload.
     await Promise.all([...pools.map((pool) => pool.closeAll()), closeListings()]);
   };

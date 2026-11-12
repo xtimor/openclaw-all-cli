@@ -1,5 +1,5 @@
 import { isDeepStrictEqual } from "node:util";
-import { mkdir, rm, symlink } from "node:fs/promises";
+import { mkdir, mkdtemp, rm, symlink } from "node:fs/promises";
 import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 import { AcpSession } from "../../transports/acp/session.ts";
@@ -9,6 +9,7 @@ import {
   CliError,
   type AuthProbeParams,
   type AuthStatus,
+  type CheckKeyParams,
   type CheckVersionParams,
   type CliAdapter,
   type CliModel,
@@ -19,6 +20,7 @@ import {
   type McpServerSpec,
   type OpenParams,
 } from "../../core/ports.ts";
+import { CURSOR_MANAGED_INSTALL } from "./install.ts";
 import { CURSOR_MIN_VERSION, cursorManifest } from "./manifest.ts";
 import { buildCursorCatalog, cursorContextCeiling, selectCursorModel } from "./models.ts";
 import { CURSOR_ALWAYS_ON_NATIVE_TOOLS, toCanonicalRequest } from "./permissions.ts";
@@ -101,6 +103,55 @@ async function probeAuth(params: AuthProbeParams): Promise<AuthStatus> {
   if (result.kind === "timeout") return "unreadable";
   if (result.code !== 0) return "missing";
   return parseStatusOutput(`${result.stdout}\n${result.stderr}`);
+}
+
+/** Longest `cursor-agent about` may take: it signs in with the key first. */
+const KEY_CHECK_TIMEOUT_MS = 30_000;
+
+/**
+ * Reads `cursor-agent about` output. `User Email <address>` means the key works; `The provided API
+ * key is invalid` (older builds) that Cursor refused it. Anything else is unknown: cursor-agent
+ * 2026.11.11 prints `User Email  Not logged in` both for a refused key and on the first run in a
+ * fresh home (live, 2026-11-12).
+ */
+export function parseAboutOutput(output: string): "valid" | "invalid" | "unknown" {
+  if (/provided API key is invalid/i.test(output)) return "invalid";
+  if (/^\s*User Email\s+(?!Not logged in)\S+@\S+/im.test(output)) return "valid";
+  return "unknown";
+}
+
+/**
+ * Checks a key before the API key method saves it: `cursor-agent about` with the key in the env
+ * only (`status` ignores keys). It runs in a throwaway home: `about` answers from a login or key
+ * already stored in `~/.config/cursor/auth.json` before the env key (live, cursor-agent
+ * 2026.11.11), and a check must not write the key there either. A fresh home answers `Not logged
+ * in` on its first run, so a second run in the same home decides. Nothing of the output is logged
+ * or passed on. (macOS keeps the login in the Keychain, which a throwaway home does not hide.)
+ */
+async function checkKey(params: CheckKeyParams): Promise<"valid" | "invalid" | "unknown"> {
+  const home = await mkdtemp(join(tmpdir(), "oac-key-check-"));
+  try {
+    const env = {
+      ...params.env,
+      HOME: home,
+      XDG_CONFIG_HOME: join(home, ".config"),
+      CURSOR_CONFIG_DIR: join(home, ".cursor"),
+      CURSOR_DATA_DIR: join(home, ".cursor-data"),
+    };
+    let verdict: "valid" | "invalid" | "unknown" = "unknown";
+    for (let run = 0; run < 2 && verdict === "unknown"; run += 1) {
+      const result = await runCommand(params.command, ["about"], {
+        env,
+        timeoutMs: KEY_CHECK_TIMEOUT_MS,
+        ...(params.signal ? { signal: params.signal } : {}),
+      });
+      if (result.kind !== "exit") return "unknown";
+      verdict = parseAboutOutput(`${result.stdout}\n${result.stderr}`);
+    }
+    return verdict;
+  } finally {
+    await rm(home, { recursive: true, force: true }).catch(() => {});
+  }
 }
 
 /** `YYYY.MM.DD` from `cursor-agent --version` (`2026.10.16-e3cb207`), as numbers. */
@@ -384,6 +435,9 @@ export const cursorAdapter: CliAdapter = {
   clearEnv: CURSOR_CLEAR_ENV,
   apiKeyEnvVar: "CURSOR_API_KEY",
   loginCommand: "cursor-agent login",
+  keyCopyPath: "~/.config/cursor/auth.json",
+  managedInstall: CURSOR_MANAGED_INSTALL,
+  checkKey,
   checkVersion,
   probeAuth,
   prepareHome,

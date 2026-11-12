@@ -59,6 +59,20 @@
       "groupId": "cursor-cli",
       "groupLabel": "OAC / Cursor-CLI",
       "groupHint": "cursor-agent login or API key"
+    },
+    {
+      "provider": "cursor-cli",
+      "method": "remove",
+      "choiceId": "cursor-cli-remove",
+      "choiceLabel": "Remove the saved key or the installed Cursor CLI",
+      "choiceHint": "Asks before it removes the key in the plugin config and the cursor-agent the plugin installed",
+      "credentialOnly": true,
+      "appGuidedSecret": true,
+      "assistantPriority": -20,
+      "icon": "https://raw.githubusercontent.com/xtimor/openclaw-all-cli/main/assets/icon.png",
+      "groupId": "cursor-cli",
+      "groupLabel": "OAC / Cursor-CLI",
+      "groupHint": "cursor-agent login or API key"
     }
   ],
   "providerCatalogEntry": "./dist/provider-discovery.js",
