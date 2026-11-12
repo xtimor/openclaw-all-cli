@@ -2,7 +2,7 @@
 
 How to run `cursor-cli/<model>` in your OpenClaw.
 
-> **Status:** early release, on npm as [`openclaw-all-cli`](https://www.npmjs.com/package/openclaw-all-cli). Only Cursor CLI is supported; see [Cursor provider](providers/cursor.md) for what works.
+> **Status:** early release, on [ClawHub](https://clawhub.ai/plugins/openclaw-all-cli) and npm as [`openclaw-all-cli`](https://www.npmjs.com/package/openclaw-all-cli). Only Cursor CLI is supported; see [Cursor provider](providers/cursor.md) for what works.
 
 ## Requirements
 
@@ -111,21 +111,33 @@ In OpenClaw 2026.10.3 the Control UI dialog ends with `<method> did not return a
 
 ## 2. Install the plugin
 
+From ClawHub, the OpenClaw plugin catalog:
+
+```sh
+openclaw plugins install clawhub:openclaw-all-cli --accept-capabilities
+```
+
+`openclaw plugins search openclaw-all-cli` finds the listing (`code-plugin | community`). The install prints the package and its requirements, then ClawHub's security audit of the release. For 0.1.8 it reads "Outcome: Review" (scan `suspicious`): the scanner reports that Cursor's own read, grep, and glob can read any file the Gateway account can read, also in side questions (see [Permissions and tool availability](providers/cursor.md#permissions-and-tool-availability)). The audit does not stop the install. `--accept-capabilities` accepts what the plugin registers (the `cursor-cli` provider, backend, and usage reader); without it OpenClaw prints `requires capability consent` and installs nothing. No `--force` is needed for a first install or to replace an npm install. With a local Gateway running, OpenClaw applies the install through it; with none, it prints `Saved for the next Gateway start`. `openclaw plugins inspect openclaw-all-cli --json` shows `install.source: clawhub` and `install.clawpackSha256`, which equals the sha256 on the [GitHub release](https://github.com/xtimor/openclaw-all-cli/releases). Measured on OpenClaw 2026.11.3 and 2026.10.3.
+
+From npm instead (the same tarball):
+
 ```sh
 openclaw plugins install openclaw-all-cli --accept-capabilities --force
 ```
 
-OpenClaw downloads the package from npm and warns that it is outside ClawHub review. `--force` confirms that warning (without it a terminal asks, and a script or agent shell gets `Install cancelled; rerun with --force`) and also replaces an earlier install. With a local Gateway running, OpenClaw applies the install through it; with none, it prints `Saved for the next Gateway start`. Each release carries npm provenance (built by this repository's GitHub Actions); the tarball also hangs on the [GitHub release](https://github.com/xtimor/openclaw-all-cli/releases) with its sha256.
+OpenClaw warns that an npm package is outside ClawHub review. `--force` confirms that warning (without it a terminal asks, and a script or agent shell gets `Install cancelled; rerun with --force`) and also replaces an earlier install. Each release carries npm provenance (built by this repository's GitHub Actions).
 
-To update to the latest release, pick one path. Current OpenClaw refuses `plugins update` while the Gateway runs. With the Gateway running, run the install command above again (`--force` replaces the earlier install). Or stop the Gateway through its service owner (`openclaw gateway stop`, or stop the Gateway container for Docker Compose), update, and start it again:
+To update to the latest release, pick one path. Current OpenClaw refuses `plugins update` while the Gateway runs. With the Gateway running, run the install command again with `--force` (`openclaw plugins install clawhub:openclaw-all-cli --accept-capabilities --force`; without `--force` OpenClaw says `plugin already exists`). Or stop the Gateway through its service owner (`openclaw gateway stop`, or stop the Gateway container for Docker Compose), update, and start it again:
 
 ```sh
 openclaw plugins update openclaw-all-cli
 ```
 
-OpenClaw 2026.10.3 still accepts `plugins update` with the Gateway running.
+OpenClaw 2026.10.3 still accepts `plugins update` with the Gateway running. `update` fetches from the source of the install, ClawHub or npm.
 
-To install a fixed version: `openclaw plugins install openclaw-all-cli@X.Y.Z --accept-capabilities --force`. A pinned install stays on that version when you run `plugins update`; to follow the latest release again, run `openclaw plugins install openclaw-all-cli --accept-capabilities --force`. To run your own build instead, see [Build from source](#build-from-source).
+**Moving from npm to ClawHub:** run the ClawHub install command above once. It replaces the npm install (no `--force`, and the npm copy is removed), and later updates come from ClawHub.
+
+To install a fixed version: `openclaw plugins install clawhub:openclaw-all-cli@X.Y.Z --accept-capabilities --force` (`--force` replaces an installed version; npm: `openclaw-all-cli@X.Y.Z`, same flags). A pinned install stays on that version when you run `plugins update`; to follow the latest release again, run `openclaw plugins install clawhub:openclaw-all-cli --accept-capabilities --force`. To run your own build instead, see [Build from source](#build-from-source).
 
 The plugin loads the first time a turn selects `cursor-cli/<model>`. It also loads at Gateway start when your config names a `cursor-cli/...` model; the account's models appear in `/model` only once it is loaded, so name one as the default model (see [Start the Gateway](#4-start-the-gateway)).
 
@@ -205,7 +217,7 @@ The first command must report `"status": "loaded"` and `cursor-cli` under `cliBa
 | `Gateway start blocked: existing config is missing gateway.mode` | A fresh OpenClaw has no Gateway config | `openclaw config set gateway.mode local`, then start again |
 | `Another gateway (pid N) already owns this state directory` | A Gateway for the same OpenClaw state is running | Use it, or stop it by pid (`kill -TERM <pid>`; `openclaw gateway stop` stops only a service install, not a `gateway run` process) and start again, or give the new one its own state with `--profile <name>` |
 | The Gateway cannot bind port 18789 | Another program uses the port (wording unverified) | Stop that program, or start the Gateway with `--port <n>` and set `OPENCLAW_GATEWAY_PORT=<n>` for the other commands |
-| `plugin provenance-invalid` warning in the Gateway log ("OpenClaw can't verify where this plugin came from"; `plugins inspect` shows `trust.reason`) | OpenClaw's own trust check: it verifies ClawHub and official sources, not a third-party npm package or a local `.tgz` (seen for the npm install too) | Harmless; ignore it. To check the npm package's signed provenance yourself: `npm audit signatures` in a project that depends on it |
+| `plugin provenance-invalid` warning, or the diagnostic "OpenClaw can't verify where this plugin came from" (`plugins inspect` shows `trust.reason`) | OpenClaw's own trust check: it trusts only official plugins. A ClawHub community install gets `provenance-invalid` (OpenClaw 2026.11.3 and 2026.10.3); on 2026.11.3 an npm install gets `third-party-npm` with no warning, on 2026.10.3 it gets `provenance-invalid` too; so does a local `.tgz` | Harmless; the plugin loads and runs. To check the release yourself: compare `install.clawpackSha256` in `plugins inspect --json` with the sha256 on the GitHub release, or run `npm audit signatures` in a project that depends on the npm package |
 | `remote model catalog refresh failed` in the Gateway log at startup | Behind a proxy OpenClaw cannot refresh its remote model catalog | Harmless; ignore it |
 | `Couldn't connect to OpenClaw.` from `openclaw agent` | No Gateway is running; `agent` without `--local` needs one | Start it ([step 4](#4-start-the-gateway)), or add `--local` |
 | `curl`, `cursor-agent`, or the usage ledger time out or fail TLS behind a proxy | Cursor's hosts are blocked, or Node ignores the proxy | Allow `cursor.com` and `*.cursor.sh`; start the Gateway with `NODE_USE_ENV_PROXY=1` |
@@ -245,7 +257,7 @@ The first command must report `"status": "loaded"` and `cursor-cli` under `cliBa
 | `The CLI refused the request` | Cursor declined the prompt | Rephrase the prompt, or check the plan's content rules |
 | `The working directory "<dir>" does not exist` | The agent's workspace was removed | Recreate the directory or change the agent's workspace |
 | A turn hangs with no output | Known `cursor-agent` transport stalls | Update `cursor-agent`; the OpenClaw watchdog ends the turn |
-| `package install requires compiled runtime output` | The plugin was installed without a build (for example with `--link`) | Install from npm ([step 2](#2-install-the-plugin)), or run `npm run package` and install the `.tgz` |
+| `package install requires compiled runtime output` | The plugin was installed without a build (for example with `--link`) | Install from ClawHub or npm ([step 2](#2-install-the-plugin)), or run `npm run package` and install the `.tgz` |
 
 ## Develop
 
@@ -277,7 +289,7 @@ npm run package          # builds dist/ and writes openclaw-all-cli-<version>.tg
 openclaw plugins install ./openclaw-all-cli-$(node -p "require('./package.json').version").tgz --accept-capabilities --force
 ```
 
-Run `npm link openclaw` after every `npm install`, which removes the link. Without it the build fails with `Cannot find module 'openclaw/plugin-sdk/...'`. After `git pull`, run `npm run package` again and reinstall the same way: the plugin runs from `dist/`, which is not rebuilt for you. Do not install the checkout directory with `--link`: OpenClaw scans the whole directory, and a checkout that also holds a development toolchain fails to load. The Gateway log warns `plugin provenance-invalid` for it, as for the npm package (see Troubleshooting); that is harmless. To go back to the release: `openclaw plugins install openclaw-all-cli --accept-capabilities --force`.
+Run `npm link openclaw` after every `npm install`, which removes the link. Without it the build fails with `Cannot find module 'openclaw/plugin-sdk/...'`. After `git pull`, run `npm run package` again and reinstall the same way: the plugin runs from `dist/`, which is not rebuilt for you. Do not install the checkout directory with `--link`: OpenClaw scans the whole directory, and a checkout that also holds a development toolchain fails to load. The Gateway log warns `plugin provenance-invalid` for it (see Troubleshooting); that is harmless. To go back to the release: `openclaw plugins install clawhub:openclaw-all-cli --accept-capabilities --force`.
 
 ### Versions
 

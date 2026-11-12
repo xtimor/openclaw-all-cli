@@ -26,11 +26,21 @@ The same contract then carries over to other CLIs, Antigravity next. A new provi
 
 ## Install
 
+From ClawHub, the OpenClaw plugin catalog (`openclaw plugins search openclaw-all-cli` finds it):
+
+```sh
+openclaw plugins install clawhub:openclaw-all-cli --accept-capabilities
+```
+
+OpenClaw shows ClawHub's security audit of the release first. It currently reads "Outcome: Review" because Cursor's own read, grep, and glob tools can read files outside the workspace (see [Permissions and tool availability](https://github.com/xtimor/openclaw-all-cli/blob/main/docs/providers/cursor.md#permissions-and-tool-availability)); the install goes on. `--accept-capabilities` accepts what the plugin registers (the `cursor-cli` provider, backend, and usage reader); without it OpenClaw installs nothing. A running local Gateway picks the plugin up; otherwise it loads at the next Gateway start.
+
+From npm instead (the same tarball, same sha256):
+
 ```sh
 openclaw plugins install openclaw-all-cli --accept-capabilities --force
 ```
 
-OpenClaw warns that the package is outside ClawHub review; `--force` confirms it (without it a terminal asks, and a script gets `Install cancelled`) and replaces an earlier install. A running local Gateway picks the plugin up; otherwise it loads at the next Gateway start.
+OpenClaw warns that an npm package is outside ClawHub review; `--force` confirms it (without it a terminal asks, and a script gets `Install cancelled`) and replaces an earlier install.
 
 Then pick a model, e.g. `cursor-cli/auto`:
 
@@ -44,10 +54,10 @@ All settings are optional and live under `plugins.entries.openclaw-all-cli.confi
 
 Current OpenClaw refuses `plugins update` while the Gateway runs. Pick one path.
 
-With the Gateway running, reinstall the latest release over the old one:
+With the Gateway running, reinstall the latest release over the old one (`--force` replaces it; without it OpenClaw says the plugin already exists):
 
 ```sh
-openclaw plugins install openclaw-all-cli --accept-capabilities --force
+openclaw plugins install clawhub:openclaw-all-cli --accept-capabilities --force
 ```
 
 Or stop the Gateway through its service owner (`openclaw gateway stop`, or stop the Gateway container for Docker Compose), update, and start it again:
@@ -56,7 +66,7 @@ Or stop the Gateway through its service owner (`openclaw gateway stop`, or stop 
 openclaw plugins update openclaw-all-cli
 ```
 
-Either way, check the installed version with `openclaw plugins list | grep openclaw-all-cli`. OpenClaw 2026.10.3 still accepts `plugins update` with the Gateway running. With no Gateway running, the new version loads at the next Gateway start. If you installed a fixed version (`openclaw-all-cli@X.Y.Z`), `update` keeps it; the install command above follows the latest release again. What changed in each version: [Changelog](https://github.com/xtimor/openclaw-all-cli/blob/main/CHANGELOG.md).
+Either way, check the installed version with `openclaw plugins list | grep openclaw-all-cli`. OpenClaw 2026.10.3 still accepts `plugins update` with the Gateway running. `update` follows the source you installed from (ClawHub or npm). With no Gateway running, the new version loads at the next Gateway start. If you installed a fixed version (`clawhub:openclaw-all-cli@X.Y.Z`), `update` keeps it; the install command above follows the latest release again. Installed from npm before? Run the ClawHub install command from [Install](#install) once: it replaces the npm install, no `--force` needed, and later updates come from ClawHub. What changed in each version: [Changelog](https://github.com/xtimor/openclaw-all-cli/blob/main/CHANGELOG.md).
 
 ## Status
 
