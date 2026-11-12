@@ -16,7 +16,8 @@ import {
   type PermissionRequest,
 } from "../../core/ports.ts";
 import { PARITY_ROWS } from "../../core/ports.ts";
-import { CURSOR_CLEAR_ENV, CURSOR_PERMISSIONS, CURSOR_RESTRICTED_PERMISSIONS, cursorAdapter, parseStatusOutput } from "./index.ts";
+import { CURSOR_CLEAR_ENV, CURSOR_PERMISSIONS, CURSOR_RESTRICTED_PERMISSIONS, cursorAdapter, parseAboutOutput, parseStatusOutput } from "./index.ts";
+import { CURSOR_MANAGED_INSTALL } from "./install.ts";
 import { CURSOR_MIN_VERSION, cursorManifest } from "./manifest.ts";
 
 const open: CliSession[] = [];
@@ -830,5 +831,50 @@ describe("cursor usage through the core", () => {
   it("clears the base URL override from the host's turn env", () => {
     expect(cursorAdapter.clearEnv).toContain(USAGE_URL_ENV);
     expect(CURSOR_CLEAR_ENV).toContain("OPENCLAW_ALL_CLI_CURSOR_USAGE_URL");
+  });
+});
+
+describe("cursor managed install and key check (story 27)", () => {
+  it("pins Cursor's package for linux and darwin, x64 and arm64, on downloads.cursor.com only", () => {
+    const spec = CURSOR_MANAGED_INSTALL;
+    expect(cursorAdapter.managedInstall).toBe(spec);
+    expect(spec.origin).toBe("https://downloads.cursor.com");
+    expect(Object.keys(spec.platforms).toSorted()).toEqual(["darwin-arm64", "darwin-x64", "linux-arm64", "linux-x64"]);
+    for (const [key, pkg] of Object.entries(spec.platforms)) {
+      const [os, arch] = key.split("-");
+      expect(pkg!.url).toBe(`https://downloads.cursor.com/lab/${spec.version}/${os}/${arch}/agent-cli-package.tar.gz`);
+      expect(pkg!.sha256).toMatch(/^[0-9a-f]{64}$/);
+      expect(pkg!.bytes).toBeGreaterThan(1024 * 1024);
+      expect(pkg!.unpackedBytes).toBeGreaterThan(pkg!.bytes);
+    }
+    expect(spec).toMatchObject({ stripComponents: 1, launcher: "cursor-agent" });
+    expect(spec.docsUrl).toMatch(/docs\/setup\.md#install-the-requirements$/);
+  });
+
+  it("pins a version at or above the adapter's minimum", () => {
+    const parts = (text: string) => /^(\d{4})\.(\d{2})\.(\d{2})/.exec(text)!.slice(1).map(Number);
+    const [pinned, floor] = [parts(CURSOR_MANAGED_INSTALL.version), parts(CURSOR_MIN_VERSION)];
+    expect(pinned[0]! * 10000 + pinned[1]! * 100 + pinned[2]!).toBeGreaterThanOrEqual(floor[0]! * 10000 + floor[1]! * 100 + floor[2]!);
+  });
+
+  it("reads cursor-agent about: User Email is valid, Cursor's refusal is invalid, anything else unknown", () => {
+    expect(parseAboutOutput("About Cursor CLI\n\nCLI Version  2026.11.11\nUser Email   me@example.com\n")).toBe("valid");
+    expect(parseAboutOutput("The provided API key is invalid.")).toBe("invalid");
+    expect(parseAboutOutput("Not logged in")).toBe("unknown");
+    // cursor-agent 2026.11.11 for a refused key, and on the first run in a fresh home.
+    expect(parseAboutOutput("About Cursor CLI\n\nUser Email          Not logged in\n")).toBe("unknown");
+    expect(parseAboutOutput("")).toBe("unknown");
+  });
+
+  it("checks a key through `about` with the key in the env, and answers unknown when the CLI cannot run", async () => {
+    const check = cursorAdapter.checkKey!;
+    expect(await check({ command: FAKE_CURSOR_AGENT, env: fakeEnv({ CURSOR_API_KEY: "k" }) })).toBe("valid");
+    expect(await check({ command: FAKE_CURSOR_AGENT, env: fakeEnv({ CURSOR_API_KEY: "k", FAKE_CURSOR_ABOUT: "invalid" }) })).toBe("invalid");
+    expect(await check({ command: FAKE_CURSOR_AGENT, env: fakeEnv() })).toBe("unknown");
+    expect(await check({ command: "/no/such/cursor-agent", env: fakeEnv({ CURSOR_API_KEY: "k" }) })).toBe("unknown");
+  });
+
+  it("names where Cursor keeps its own copy of a key", () => {
+    expect(cursorAdapter.keyCopyPath).toBe("~/.config/cursor/auth.json");
   });
 });

@@ -12,6 +12,11 @@
 //   FAKE_CURSOR_USAGE=1|<json> session/prompt answers with a small ACP usage, or with this JSON as its usage
 //   FAKE_CURSOR_VERSION=<text>  what `--version` prints (default "2026.10.14-fake")
 //   FAKE_CURSOR_VERSION_EXIT=<n> `--version` exits with this code after printing
+//   FAKE_CURSOR_ABOUT=ok|invalid|unknown  what `about` answers when CURSOR_API_KEY is set (default "ok": a `User Email` line;
+//                               "invalid": Cursor's older refusal; "unknown": "User Email  Not logged in", as cursor-agent 2026.11.11 prints for a
+//                               refused key); without a key it says "Not logged in".
+//                               `about` logs `{method:"about", argv, keyed}` to FAKE_CURSOR_LOG (never the key); a FAKE_CURSOR_ABOUT_COUNT
+//                               file counts the runs, and FAKE_CURSOR_ABOUT_THEN=<answer> is the answer from the second run on
 //   FAKE_CURSOR_DEFAULT_MODEL=m the exact model ID a new session starts with (default "default[]", Cursor's Auto)
 //   FAKE_CURSOR_MODEL_SURFACE=s how the agent reports its models: "both" (default; the `models` state and a
 //                               configOptions select, like cursor-agent), "state" (only `models`, switched
@@ -77,6 +82,28 @@ if (args[0] === "status") {
     process.exit(1);
   }
   console.log("Logged in as fake@example.com");
+  process.exit(0);
+}
+if (args[0] === "about") {
+  const keyed = Boolean(process.env.CURSOR_API_KEY?.trim());
+  log({ method: "about", argv: process.argv.slice(1), keyed });
+  let run = 1;
+  const counter = process.env.FAKE_CURSOR_ABOUT_COUNT;
+  if (counter) {
+    run = (existsSync(counter) ? Number(readFileSync(counter, "utf8")) : 0) + 1;
+    writeFileSync(counter, String(run));
+  }
+  const answer = run > 1 && process.env.FAKE_CURSOR_ABOUT_THEN ? process.env.FAKE_CURSOR_ABOUT_THEN : (process.env.FAKE_CURSOR_ABOUT ?? "ok");
+  log({ method: "about/env", home: process.env.HOME, configDir: process.env.CURSOR_CONFIG_DIR });
+  if (!keyed || answer === "unknown") {
+    console.log("About Cursor CLI\n\nCLI Version         2026.10.14-fake\nUser Email          Not logged in");
+    process.exit(0);
+  }
+  if (answer === "invalid") {
+    console.error("The provided API key is invalid.");
+    process.exit(1);
+  }
+  console.log("About Cursor CLI\n\nCLI Version         2026.10.14-fake\nUser Email          fake@example.com");
   process.exit(0);
 }
 if (args[0] !== "acp") {

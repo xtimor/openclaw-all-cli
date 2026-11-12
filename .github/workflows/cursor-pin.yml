@@ -1,0 +1,28 @@
+name: Cursor pin
+
+# Checks that the cursor-agent package pinned in src/adapters/cursor/install.ts (the managed install of the
+# cursor-cli Connect methods, AD-17) still matches Cursor's published `.sha256` files. Weekly and on demand,
+# not on pull requests; it downloads no package. Move the pin with `node scripts/pin-cursor-agent.mjs`.
+on:
+  schedule:
+    - cron: "17 6 * * 1"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  # Same default as ci.yml and scripts/dev-openclaw.sh.
+  NODE_VERSION: 24.22.0
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+      - name: Compare the pin with Cursor's .sha256 files
+        run: node scripts/pin-cursor-agent.mjs --check

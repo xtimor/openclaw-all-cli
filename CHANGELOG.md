@@ -4,6 +4,10 @@ What changed for people who use the plugin, newest first. Format: [Keep a Change
 
 ## Unreleased
 
+### Added
+
+- Connecting the `cursor-cli` provider on a Linux (glibc) or macOS host without `cursor-agent` now offers to install the version pinned in the plugin (sha256-checked, from `downloads.cursor.com`, into `<state dir>/tools/cursor-agent/`) after you say yes; the API key method checks the key with `cursor-agent about` before saving it, and a new remove method offers to remove the saved key and the installed CLI.
+
 ### Changed
 
 - The plugin is now on ClawHub, the OpenClaw plugin catalog: install it with `openclaw plugins install clawhub:openclaw-all-cli --accept-capabilities` (no `--force` needed); npm stays available. The README and setup guide lead with ClawHub and explain the security audit OpenClaw shows before the install and how to move an npm install over.

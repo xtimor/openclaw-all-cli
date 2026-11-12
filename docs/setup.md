@@ -40,7 +40,7 @@ Skip what `node --version`, `openclaw --version`, and `cursor-agent --version` a
    ```
 
    Make sure the `bin` directory of `npm prefix -g` is on your `PATH`.
-3. **Cursor CLI.**
+3. **Cursor CLI.** You can skip this step on Linux (glibc) or macOS: when the plugin finds no `cursor-agent`, the Connect methods offer to install the version pinned in the plugin into OpenClaw's state folder (see [Let the plugin install cursor-agent](#let-the-plugin-install-cursor-agent)). To install it yourself (Windows, Alpine, Nix, or by choice):
 
    ```sh
    curl https://cursor.com/install -fsS | bash      # behind a proxy it can fail once with SSL_ERROR_SYSCALL: run it again
@@ -50,7 +50,22 @@ Skip what `node --version`, `openclaw --version`, and `cursor-agent --version` a
 
    Add that `PATH` line to your shell profile. The Gateway needs `cursor-agent` on its own `PATH`, or `cursor-cli.command` set (see [Configure](#3-configure)).
 
-Behind a firewall or HTTP proxy, allow `cursor.com` and `*.cursor.sh` (the CLI, the model list, and the usage ledger at `api2.cursor.sh`). Node's `fetch` ignores `HTTPS_PROXY` unless the Gateway starts with `NODE_USE_ENV_PROXY=1`. A proxy that denies `telemetry.openclaw.ai:443` is harmless.
+### Let the plugin install cursor-agent
+
+On a Gateway host without `cursor-agent` (or with one older than 2026.07.06), the two Connect methods of [Sign in from the Control UI or the CLI](#sign-in-from-the-control-ui-or-the-cli) offer to install it, and install only after you say yes:
+
+- **What:** Cursor's official package of the version pinned in the plugin release (`cursor-agent` 2026.11.11-b912975 today), 167 to 174 MiB to download and 527 to 602 MiB unpacked, depending on the platform (Linux packages are the smaller ones); the offer shows the exact sizes and the disk space it needs (726 to 808 MiB: about 730 MiB on Linux, about 790 to 810 MiB on macOS).
+- **From where:** `https://downloads.cursor.com/` only, with redirects refused. The file's sha256 must match the hash pinned in the plugin before it is unpacked. The plugin downloads and unpacks the package itself; it never runs Cursor's install script or a shell.
+- **Where it goes:** `<state dir>/tools/cursor-agent/<version>/`, where `<state dir>` is OpenClaw's state directory (`OPENCLAW_STATE_DIR`, default `~/.openclaw`). The method sets `plugins.entries.openclaw-all-cli.config.cursor-cli.command` to the absolute path of its `cursor-agent`. Nothing else changes: no `PATH`, no shell profile, nothing in `~/.local`, and a `cursor-agent` you installed yourself stays as it is. In Docker, keep the state directory on a volume and the install survives container restarts.
+- **When:** only while you run a Connect method and say yes, never when the plugin is installed, at Gateway start, or during a turn.
+- **Hosts:** Linux with glibc and macOS, on x64 or arm64. Windows, Alpine (musl), other processors, and OpenClaw in Nix mode (`OPENCLAW_NIX_MODE=1`) get no offer: the method says why and points here; install `cursor-agent` by hand (step 3 above).
+- **Behind a proxy:** allow `downloads.cursor.com` and start the Gateway with `NODE_USE_ENV_PROXY=1`, or the download fails with the cause named.
+- **Long downloads:** the Control UI dialog shows the progress. If it times out, run the same method from a terminal on the Gateway host, as the offer says: `openclaw models auth login --provider cursor-cli --method api-key-env` (or `--method login`).
+- **If it fails** (download, proxy, hash, disk space, unpack limit, cancel, or a `cursor-agent` that does not run), the temporary folder is removed, the config is not changed, and an earlier install stays.
+- **Update:** a working `cursor-agent` is never replaced on its own. After a plugin release that pins a newer version, run the remove method below (yes to the CLI; the key can stay), then a Connect method (yes to the install). Older managed versions are removed after a successful install.
+- **Remove:** see [Remove the key and the managed CLI](#remove-the-key-and-the-managed-cli).
+
+Behind a firewall or HTTP proxy, allow `cursor.com`, `downloads.cursor.com` (the plugin's install of `cursor-agent`), and `*.cursor.sh` (the CLI, the model list, and the usage ledger at `api2.cursor.sh`). Node's `fetch` ignores `HTTPS_PROXY` unless the Gateway starts with `NODE_USE_ENV_PROXY=1`. A proxy that denies `telemetry.openclaw.ai:443` is harmless.
 
 ## 1. Sign in to Cursor
 
@@ -98,16 +113,34 @@ It prints `Auth profile: cursor-cli:manual (cursor-cli/api_key)`; remove it with
 
 ### Sign in from the Control UI or the CLI
 
-After [step 2](#2-install-the-plugin) (and a Gateway start), the provider is in the Control UI list: Models, **Connect provider**, group **OAC / Cursor-CLI**. It has two methods (the same two work from `openclaw models auth login --provider cursor-cli --method <id>`):
+After [step 2](#2-install-the-plugin) (and a Gateway start), the provider is in the Control UI list: Models, **Connect provider**, group **OAC / Cursor-CLI**. It has three methods (the same three work from `openclaw models auth login --provider cursor-cli --method <id>`). When `cursor-agent` is missing or too old, the first two offer to install it first ([Let the plugin install cursor-agent](#let-the-plugin-install-cursor-agent)); after a no they go on as below.
 
 | Method (ID) | What it does |
 | --- | --- |
 | **Use the cursor-agent login** (`login`) | Asks for nothing. It runs the same probe as the model list (`cursor-agent status`) and reports **logged in** or **not logged in**, with `cursor-agent login` as the fix. It stores nothing: OpenClaw keeps using the `cursor-agent` login. A `CURSOR_API_KEY` already set for the Cursor process does not count here; the report says the key takes precedence. |
-| **Cursor CLI API key (CURSOR_API_KEY)** (`api-key-env`) | Asks for a key (hidden) and writes it to the plugin config, `plugins.entries.openclaw-all-cli.config.cursor-cli.env.CURSOR_API_KEY`, which is [option 2 of The API key](#the-api-key) done for you: the key reaches the `cursor-agent` process, the probes, and the usage reader only. Other settings under `cursor-cli` are kept. The key is never logged or shown again; the config file and its rotated copies hold it, like any other way of setting it. It does not create an OpenClaw auth profile. |
+| **Cursor CLI API key (CURSOR_API_KEY)** (`api-key-env`) | Asks for a key (hidden), checks it with `cursor-agent about` (the key goes to that process's environment only, in a throwaway home), and writes it to the plugin config, `plugins.entries.openclaw-all-cli.config.cursor-cli.env.CURSOR_API_KEY`, which is [option 2 of The API key](#the-api-key) done for you: the key reaches the `cursor-agent` process, the probes, and the usage reader only. A key Cursor does not confirm (asked twice) is not saved. Without a `cursor-agent` (you declined the install, or the host is unsupported) the key is saved unchecked, with a note. Other settings under `cursor-cli` are kept. The key is never logged or shown again; the config file and its rotated copies hold it, like any other way of setting it. It does not create an OpenClaw auth profile. |
+| **Remove the saved key or the installed Cursor CLI** (`remove`) | Asks whether to remove the saved `CURSOR_API_KEY` from the plugin config, and separately whether to remove the `cursor-agent` the plugin installed (it names the folder and its size). See [Remove the key and the managed CLI](#remove-the-key-and-the-managed-cli). |
 
-In OpenClaw 2026.10.3 the Control UI dialog ends with `<method> did not return a credential profile.` after both methods, because neither saves an OpenClaw auth profile (the report or the saved key is shown just before; the CLI path ends cleanly). That message is OpenClaw's, and nothing is wrong: for the key method the config is already written (OpenClaw hot-reloads plugin config; if usage still shows 0 after a turn, restart the Gateway).
+In OpenClaw 2026.10.3 the Control UI dialog ends with `<method> did not return a credential profile.` after every method, because neither saves an OpenClaw auth profile (the report or the saved key is shown just before; the CLI path ends cleanly). That message is OpenClaw's, and nothing is wrong: for the key method the config is already written (OpenClaw hot-reloads plugin config; if usage still shows 0 after a turn, restart the Gateway).
 
 **The provider card says "Not configured".** With only the `cursor-agent` login, the Control UI card for the provider (Models, provider cards) reads **Credentials: Not configured** and offers **Connect**, although every model answers. This is OpenClaw 2026.10.3, and the plugin cannot change it honestly: the card is built from saved auth profiles, a key in config, or a key in the environment, and from nothing else. A login kept by the CLI is none of those, and OpenClaw reads a plugin's `syntheticAuthRefs` and `nonSecretAuthMarkers` only for its own bundled plugins (reported upstream as [openclaw/openclaw#184700](https://github.com/openclaw/openclaw/issues/184700)). The only ways to turn the card green would be a placeholder key in config or a fake auth profile, and this plugin does neither; a broken login must keep failing as unauthorized. To check the login, use `cursor-agent status`, **Use the cursor-agent login** above, or `openclaw models list --provider cursor-cli`. The card does not change with a key either: on OpenClaw 2026.10.10 it still reads "Not configured" with a `CURSOR_API_KEY` in the environment of the Gateway and with a key saved with the second method (which reaches only the Cursor process). It also stays the same when the credential is lost, so judge the login by the model list and a turn, not by the card; measurements in [Cursor provider card on OpenClaw latest](providers/cursor-card-latest.md). Details: [Cursor provider](providers/cursor.md#provider-list-and-sign-in-methods).
+
+### Remove the key and the managed CLI
+
+Run the remove method: Control UI, Models, **Connect provider**, **Remove the saved key or the installed Cursor CLI**, or
+
+```sh
+openclaw models auth login --provider cursor-cli --method remove
+```
+
+It asks once for each thing it finds, and with neither it says there is nothing to remove:
+
+- **The saved key:** a yes removes `CURSOR_API_KEY` from `plugins.entries.openclaw-all-cli.config.cursor-cli.env` and keeps every other setting. Copies remain: Cursor's own in `~/.config/cursor/auth.json` (the Keychain on macOS), written whenever `cursor-agent` ran with the key, and OpenClaw's rotated config copies next to `openclaw.json` (`openclaw.json.bak`, `openclaw.json.bak.1` to `.bak.4`, `openclaw.json.last-good`). To remove those too: delete the rotated copies, then run `cursor-agent logout` (it also removes a browser login). Rotating the key at Cursor is the real remedy, since a copy may already have been read.
+- **The managed CLI:** a yes closes the plugin's idle `cursor-agent` processes, deletes `<state dir>/tools/cursor-agent/`, and unsets `cursor-cli.command` when it points there (the plugin then looks for `cursor-agent` on the Gateway's `PATH` again). While a `cursor-cli` turn runs or waits it refuses: run it again when the turn has ended. That check works only when the method runs inside the Gateway (the Control UI); run from a terminal (`openclaw models auth login ... --method remove`) it runs in its own process and cannot see the Gateway's turns, so it says so in the question, and a turn still using that `cursor-agent` may fail. A `cursor-agent` you installed yourself is never removed.
+
+By hand: `openclaw config unset plugins.entries.openclaw-all-cli.config.cursor-cli.env.CURSOR_API_KEY`, `openclaw config unset plugins.entries.openclaw-all-cli.config.cursor-cli.command` (only if it points into the state folder), stop the Gateway, and delete `~/.openclaw/tools/cursor-agent` (or `$OPENCLAW_STATE_DIR/tools/cursor-agent`).
+
+OpenClaw's own **Remove key** button on the provider card does not remove this key: it deletes only OpenClaw auth profiles and `models.providers.cursor-cli.apiKey`, and this plugin keeps the key in neither.
 
 ## 2. Install the plugin
 

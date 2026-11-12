@@ -23,6 +23,7 @@ The same contract then carries over to other CLIs, Antigravity next. A new provi
 - OpenClaw 2026.10.3 or later.
 - Node.js 24.16 up to 25, or 26.1 and later.
 - Cursor CLI (`cursor-agent`) 2026.07.06 or later, signed in with `cursor-agent login`. An API key works too; give it to the plugin config (`cursor-cli.env`), not to the Gateway's environment, as [The API key](https://github.com/xtimor/openclaw-all-cli/blob/main/docs/setup.md#the-api-key) explains. The Control UI's **Connect provider** list offers both ([Sign in from the Control UI or the CLI](https://github.com/xtimor/openclaw-all-cli/blob/main/docs/setup.md#sign-in-from-the-control-ui-or-the-cli)); with an explicit `agents.defaults.modelPolicy.allow`, add `cursor-cli/*` to it ([Configure](https://github.com/xtimor/openclaw-all-cli/blob/main/docs/setup.md#3-configure)).
+- No `cursor-agent` yet? On Linux (glibc) and macOS the Connect provider methods offer to install the `cursor-agent` version pinned in the plugin, sha256-checked, from `downloads.cursor.com` into OpenClaw's state folder, only after you say yes ([Let the plugin install cursor-agent](https://github.com/xtimor/openclaw-all-cli/blob/main/docs/setup.md#let-the-plugin-install-cursor-agent)).
 
 ## Install
 
