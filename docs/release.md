@@ -8,9 +8,9 @@ A release is a version tag. `.github/workflows/release.yml` runs `scripts/releas
 4. Runs the same checks as CI (`scripts/ci-check.sh`).
 5. Packs once, prints the sha256 of the `.tgz`, and writes it to the job summary and the release notes.
 6. Takes the release notes from [`CHANGELOG.md`](../CHANGELOG.md) (see [Changelog](#changelog)): the version's section, else `Unreleased`, else GitHub's generated notes.
-7. Publishes that tarball to npmjs.com with provenance (see below), then creates a GitHub release with the same `.tgz` and those notes.
+7. Publishes that tarball to npmjs.com with provenance (see below), then creates a GitHub release with the same `.tgz` and those notes, then publishes the same `.tgz` to ClawHub and waits until ClawHub's checks publish it (see [ClawHub](#clawhub)).
 
-A prerelease (`v1.2.3-rc.1`) publishes under the npm tag `next` and is marked as a prerelease on GitHub; `latest` moves only with a stable version. Nothing publishes on a pull request or a branch push. CI never pushes commits or moves tags; a dispatched release creates its new tag through the GitHub release.
+A prerelease (`v1.2.3-rc.1`) publishes under the npm and ClawHub tag `next` and is marked as a prerelease on GitHub; `latest` moves only with a stable version. Nothing publishes on a pull request or a branch push. CI never pushes commits or moves tags; a dispatched release creates its new tag through the GitHub release.
 
 ## Cut a release
 
@@ -32,10 +32,10 @@ git push origin vX.Y.Z
 
 Then:
 
-1. Watch the `Release` run in GitHub Actions. The summary shows the version (the computed tag when `tag` was empty), the npm tag, and the sha256.
+1. Watch the `Release` run in GitHub Actions. The summary shows the version (the computed tag when `tag` was empty), the npm tag, the npm and ClawHub results, and the one sha256 that npm, the GitHub release, and ClawHub got.
 2. Check: `npm view openclaw-all-cli@X.Y.Z dist.shasum` matches the `.tgz` attached to the GitHub release (`sha1sum` of the file), and the package page shows the provenance badge.
 
-A failed run before the publish step is safe to repeat. One case is not: if the publish worked but the GitHub release failed, no tag exists, so every later run with an empty `tag` computes the same version and stops with "already on npm". Finish that release by hand as described below (its `--target` creates the tag); the next empty-tag run then moves on. A dispatched run: fix the cause, then dispatch a new run on `main` (a re-run keeps its old commit, so it is refused once `main` moved). A tag-push run: the tag stays on origin, so delete it (`git push origin :refs/tags/vX.Y.Z`), fix, and push the tag again, or dispatch the same version on `main` after deleting it. If the publish succeeded and only the GitHub release failed, do not publish again: the log line `release commit: <sha>, tarball sha256: <sha256>` before the failure gives both values; take the tarball from npm (`npm pack openclaw-all-cli@X.Y.Z`, after approval on a first release), check its sha256, then `gh release create vX.Y.Z openclaw-all-cli-X.Y.Z.tgz --target <sha> --generate-notes --notes "sha256: <sha256>"` (add `--prerelease` for a prerelease; `--target` also creates the tag; for the changelog notes, run `node scripts/changelog.mjs section X.Y.Z > notes.md`, append the `sha256:` line, and pass `--notes-file notes.md` instead of `--generate-notes --notes ...`).
+A failed run before the publish step is safe to repeat. One case is not: if the publish worked but the GitHub release failed, no tag exists, so every later run with an empty `tag` computes the same version and stops with "already on npm". Finish that release by hand as described below (its `--target` creates the tag); the next empty-tag run then moves on. A dispatched run: fix the cause, then dispatch a new run on `main` (a re-run keeps its old commit, so it is refused once `main` moved). A tag-push run: the tag stays on origin, so delete it (`git push origin :refs/tags/vX.Y.Z`), fix, and push the tag again, or dispatch the same version on `main` after deleting it. If the publish succeeded and only the GitHub release failed, do not publish again: the log line `release commit: <sha>, tarball sha256: <sha256>` before the failure gives both values; take the tarball from npm (`npm pack openclaw-all-cli@X.Y.Z`, after approval on a first release), check its sha256, then `gh release create vX.Y.Z openclaw-all-cli-X.Y.Z.tgz --target <sha> --generate-notes --notes "sha256: <sha256>"` (add `--prerelease` for a prerelease; `--target` also creates the tag; for the changelog notes, run `node scripts/changelog.mjs section X.Y.Z > notes.md`, append the `sha256:` line, and pass `--notes-file notes.md` instead of `--generate-notes --notes ...`). A run that fails at the ClawHub step has already published to npm and created the GitHub release and tag: do not run it again; finish ClawHub as in [ClawHub](#clawhub).
 
 ## Changelog
 
@@ -55,13 +55,48 @@ The changelog never fails a release: an owner dispatch from the Actions UI works
 
 ## Dry run
 
-Run the workflow by hand: Actions, `Release`, `Run workflow`, a tag name such as `v0.0.1` (or empty, to see the computed next version), `dry_run` on (the default). It runs every step, including `npm publish --dry-run`, and stops before publishing; no GitHub release is created, and it needs no tag. A pushed tag that matches `v*-dryrun.*` (for example `v0.0.1-dryrun.1`) is always a dry run too. Delete such a tag afterwards (`git push origin :refs/tags/v0.0.1-dryrun.1`).
+Run the workflow by hand: Actions, `Release`, `Run workflow`, a tag name such as `v0.0.1` (or empty, to see the computed next version), `dry_run` on (the default). It runs every step, including `npm publish --dry-run` and `clawhub package publish --dry-run` (ClawHub's package checks, run locally with no token and no registry call; the log and summary also print the real ClawHub command), and stops before publishing; no GitHub release is created, and it needs no tag. A ClawHub dry run that fails fails the run. A pushed tag that matches `v*-dryrun.*` (for example `v0.0.1-dryrun.1`) is always a dry run too. Delete such a tag afterwards (`git push origin :refs/tags/v0.0.1-dryrun.1`).
 
 A dry run still fails on a bad tag name and on a version that is already on npm. A tag push needs its tag; only a dispatch may leave it empty.
 
 `Run workflow` with `dry_run` off is a real release (see Cut a release): run it on `main` with `tag` empty (next version) or a new tag.
 
 `Run workflow` appears only once `release.yml` is on `main`; before that, use a `v*-dryrun.*` tag.
+
+## ClawHub
+
+Every real release also publishes to [ClawHub](https://clawhub.ai), the OpenClaw plugin registry, as `openclaw-all-cli` (family `code-plugin`). `scripts/release.sh` does it with the `clawhub` CLI pinned to an exact version (`CLAWHUB_VERSION`, the same in `ci.yml`, `release.yml`, and the script; a test keeps them equal), installed into the run's work dir without install scripts or credentials:
+
+- It runs only after the npm publish and the GitHub release succeeded, so a ClawHub problem never leaves npm and the tag out of step. It publishes the same `.tgz` (`clawhub package publish <tgz> --family code-plugin --wait --json --tags latest|next --source-repo/--source-commit/--source-ref`), waits for ClawHub's security checks (the CLI's default deadline, 30 minutes), and checks that ClawHub's `artifactSha256` is the tarball's sha256. ClawHub may leave that field out: the run then passes, and the summary says ClawHub reported no sha256 and gives the check, `clawhub package verify openclaw-all-cli-X.Y.Z.tgz --package openclaw-all-cli --version X.Y.Z` (run it on the GitHub release's tarball, see below).
+- A ClawHub failure (refused, blocked, timed out, a reported sha256 that differs) fails the run after writing the summary: npm and the GitHub release are done, ClawHub failed, with the CLI's last error. Nothing is undone.
+- The first npm release (staged, not published) skips ClawHub; the summary says so. A dry run publishes nothing (see [Dry run](#dry-run)); pull requests only run the CI dry run.
+
+**Credentials.** The repository secret `CLAWHUB_TOKEN` (a ClawHub API token: sign in at clawhub.ai with GitHub and create one) is used for the first publish. The script writes it into a mode-600 config file in its work dir that only the `clawhub` commands read; the checks, the changelog step, and the CLI's install never see it, and it is never printed. With the token set it publishes as a manual publish (`--manual-override-reason`, which ClawHub requires for a token publish once a trusted publisher exists), then sets the trusted publisher:
+
+```sh
+clawhub package trusted-publisher set openclaw-all-cli --repository xtimor/openclaw-all-cli --workflow-filename release.yml
+```
+
+After that run, delete the `CLAWHUB_TOKEN` secret and revoke the token on clawhub.ai. Later releases publish through GitHub Actions OIDC with no token (`id-token: write` is already set). If setting the trusted publisher fails, the run stays green and its summary shows a warning with that command: run it yourself after `clawhub login`, then delete the secret. Without the secret and without a trusted publisher, ClawHub refuses the publish (`Not logged in`); add the secret again for one release.
+
+**When the ClawHub step fails.** npm and the GitHub release are done, so do not dispatch the version again (it stops with "already on npm"). Fix the cause, then publish the release's own tarball by hand, signed in with `clawhub login`:
+
+```sh
+gh release download vX.Y.Z -p '*.tgz'           # the tarball npm and the GitHub release got
+sha256sum openclaw-all-cli-X.Y.Z.tgz             # must match the run's summary
+clawhub package publish "$PWD/openclaw-all-cli-X.Y.Z.tgz" --family code-plugin --wait --tags latest \
+  --source-repo xtimor/openclaw-all-cli --source-commit <sha> --source-ref refs/tags/vX.Y.Z \
+  --manual-override-reason "Finish release vX.Y.Z after a failed ClawHub step"
+```
+
+Use an absolute path (the CLI reads a relative `dir/file.tgz` as a GitHub repository), `--tags next` for a prerelease, and the release commit (`release commit: <sha>` in the log) for `<sha>`. Drop `--manual-override-reason` only when no trusted publisher exists yet.
+
+- **Blocked**: ClawHub's security review did not accept the version (`ClawHub publication blocked ...`). `clawhub package moderation-status openclaw-all-cli` shows its moderation state. If the finding is a false positive, `clawhub package recover <attempt-id> --manual-override-reason "<why>" --wait` runs fresh checks on that attempt; otherwise fix the code and release a new patch version.
+- **Timed out**: the error names the attempt (`Attempt <id> is still pending`). ClawHub may still publish it; check `clawhub package inspect openclaw-all-cli` before publishing again.
+- **Refused login** (`Unauthorized`, `Not logged in`, a trusted publisher mismatch): check the secret, or `clawhub package trusted-publisher get openclaw-all-cli` against `xtimor/openclaw-all-cli` and `release.yml`.
+- **Different sha256** (ClawHub reported a sha256 that is not the tarball's): ClawHub stored other bytes than the release's tarball. Do not leave it as is: download the release's tarball (above) and run `clawhub package verify openclaw-all-cli-X.Y.Z.tgz --package openclaw-all-cli --version X.Y.Z`; if it fails, report it to ClawHub and release a new patch version. A summary that says ClawHub reported no sha256 is not a failure; run the same check once.
+
+**Rollback.** Never delete a ClawHub package or version (`clawhub package delete` is not part of a release, and deleting `latest` breaks installs). Release a fixed patch version instead, as for npm.
 
 ## First release
 
@@ -104,11 +139,12 @@ Never run `npm unpublish`: it breaks everyone who depends on the version and the
 npm deprecate openclaw-all-cli@X.Y.Z "<reason; use X.Y.(Z+1)>"
 ```
 
-then release a fixed patch version from a new tag. Move the `latest` tag only by releasing (`npm dist-tag add openclaw-all-cli@X.Y.Z latest` is a manual repair with 2FA). Edit the GitHub release notes to point at the fix.
+then release a fixed patch version from a new tag; the same release moves ClawHub's `latest` (see [ClawHub](#clawhub), Rollback). Move the `latest` tag only by releasing (`npm dist-tag add openclaw-all-cli@X.Y.Z latest` is a manual repair with 2FA). Edit the GitHub release notes to point at the fix.
 
 ## Rotate the credential
 
 - Trust (normal state): `npm trust list openclaw-all-cli` shows it; `npm trust revoke --id <id> openclaw-all-cli` removes it, and `npm trust github ...` from the first release sets a new one. The registry holds one trust per package.
 - Token (only before the first release is approved): create a new stage-only token, replace the `NPM_TOKEN` secret, revoke the old token on npmjs.com. After the trust is set there is no token to rotate.
+- ClawHub: `clawhub package trusted-publisher get openclaw-all-cli` shows the trusted publisher, `... delete` removes it, `... set` (see [ClawHub](#clawhub)) sets a new one. The `CLAWHUB_TOKEN` secret exists only until the first ClawHub publish set the trusted publisher; if it leaked, revoke it on clawhub.ai.
 
 If a token may have leaked, revoke it first, then check `npm stage list openclaw-all-cli` for versions you did not stage and reject them.

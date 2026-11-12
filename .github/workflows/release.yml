@@ -1,7 +1,7 @@
 name: Release
 
 # Release vX.Y.Z: dispatch on main with dry_run off (creates the tag; an empty tag computes the next version from bump), or push the tag. All logic is in scripts/release.sh; see docs/release.md.
-# workflow_dispatch with dry_run (default) runs every step except publish and the GitHub release.
+# workflow_dispatch with dry_run (default) runs every step except publish (npm and ClawHub) and the GitHub release.
 on:
   push:
     tags: ['v*']
@@ -35,14 +35,18 @@ env:
   # Same defaults as scripts/dev-openclaw.sh and ci.yml.
   NODE_VERSION: 24.22.0
   OPENCLAW_VERSION: 2026.10.3
+  # The ClawHub CLI the release publishes with; same exact version as ci.yml and the default in scripts/release.sh.
+  CLAWHUB_VERSION: 0.25.1
 
 jobs:
   release:
     runs-on: ubuntu-latest
-    timeout-minutes: 45
+    # The checks, then `clawhub package publish`: its upload can retry for about 30 minutes (5 requests of up to
+    # 5 minutes each) before up to 30 minutes of `--wait` (the CLI's default deadline). The summary must still be written.
+    timeout-minutes: 120
     permissions:
       contents: write # create the GitHub release
-      id-token: write # npm trusted publishing (OIDC) and provenance
+      id-token: write # npm and ClawHub trusted publishing (OIDC), npm provenance
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -68,4 +72,7 @@ jobs:
           DRY_RUN: ${{ github.event_name == 'workflow_dispatch' && inputs.dry_run || 'false' }}
           # Stage-only npm token for the first release; delete it after the trust is set (docs/release.md).
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+          # ClawHub API token for the first ClawHub publish; the script then sets the trusted publisher. Delete the
+          # secret afterwards: later runs publish through OIDC (docs/release.md, "ClawHub").
+          CLAWHUB_TOKEN: ${{ secrets.CLAWHUB_TOKEN }}
           GH_TOKEN: ${{ github.token }}

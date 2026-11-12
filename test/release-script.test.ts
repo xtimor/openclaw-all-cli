@@ -6,13 +6,14 @@ import { fileURLToPath } from "node:url";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 
 /**
- * scripts/release.sh against stub `npm`, `gh`, and `git` and a stub check script, in a throwaway
- * copy of the project layout. Covers every row of the release matrix (ticket 3.4). Nothing here
- * touches the network, the real npm registry, or the real repository.
+ * scripts/release.sh against stub `npm`, `gh`, `git`, and `clawhub` and a stub check script, in a throwaway
+ * copy of the project layout. Covers every row of the release matrix (ticket 3.4) and of the ClawHub matrix
+ * (ticket 3.31). Nothing here touches the network, the real npm registry, ClawHub, or the real repository.
  */
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const SECRET = "npm_STAGE_SECRET_0123456789";
+const CLAWHUB_SECRET = "clh_CLAWHUB_SECRET_9876543210";
 const ORIGINAL_PACKAGE_JSON = '{"name":"openclaw-all-cli","version":"0.0.0"}\n';
 
 const STUBS: Record<string, string> = {
@@ -42,10 +43,58 @@ case "$1" in
     printf 'tarball of %s' "$(cat package.json)" >"$dest/openclaw-all-cli-stub.tgz" ;;
   publish) [ "\${STUB_PUBLISH_FAIL:-0}" = 1 ] && { echo "npm error 404 OIDC token exchange failed" >&2; exit 1; }; exit 0 ;;
   stage) exit 0 ;;
+  install)
+    # The pinned clawhub CLI: a bin that runs the clawhub stub under node, as the real one runs under node.
+    echo "npm-install-env | gh=\${GH_TOKEN:-} oidc=\${ACTIONS_ID_TOKEN_REQUEST_TOKEN:-} clawhub=\${CLAWHUB_TOKEN:-} config=\${CLAWHUB_CONFIG_PATH:-}" >>"$STUB_LOG"
+    [ "\${STUB_CLAWHUB_INSTALL_FAIL:-0}" = 1 ] && { echo "npm error code ETARGET" >&2; exit 1; }
+    prefix=""; prev=""
+    for a in "$@"; do [ "$prev" = --prefix ] && prefix="$a"; prev="$a"; done
+    mkdir -p "$prefix/node_modules/clawhub/bin"
+    echo '{"type":"commonjs"}' >"$prefix/node_modules/clawhub/package.json"
+    cat >"$prefix/node_modules/clawhub/bin/clawdhub.js" <<'JS'
+require("node:fs").appendFileSync(process.env.STUB_LOG, "clawdhub.js under node\\n");
+const run = require("node:child_process").spawnSync(process.env.STUB_CLAWHUB_BIN, process.argv.slice(2), { stdio: "inherit" });
+process.exit(run.status ?? 1);
+JS
+    ;;
+esac
+`,
+  // Logs every call with the config file it reads (content and mode) and the credentials in its env.
+  clawhub: `#!/usr/bin/env bash
+cfg="\${CLAWHUB_CONFIG_PATH:-}"
+conf=none
+if [ -n "$cfg" ] && [ -f "$cfg" ]; then conf="$(cat "$cfg") mode=$(stat -c %a "$cfg" 2>/dev/null || stat -f %Lp "$cfg")"; fi
+echo "clawhub $* | config=$conf gh=\${GH_TOKEN:-} oidc=\${ACTIONS_ID_TOKEN_REQUEST_TOKEN:-} env=\${CLAWHUB_TOKEN:-}" >>"$STUB_LOG"
+case "$1 $2" in
+  "package publish")
+    version="$(sed -n 's/.*"version":"\\([^"]*\\)".*/\\1/p' "$3")"
+    sha="$(sha256sum "$3" | cut -d' ' -f1)"
+    if [[ " $* " == *" --dry-run "* ]]; then
+      [ "\${STUB_CLAWHUB_DRY_FAIL:-0}" = 1 ] && { echo "Error: openclaw.build.openclawVersion is required" >&2; exit 1; }
+      printf '{\n  "source": "%s",\n  "name": "openclaw-all-cli",\n  "family": "code-plugin",\n  "version": "%s"\n}\n' "$3" "$version"
+      exit 0
+    fi
+    echo "Waiting for security checks on openclaw-all-cli@$version" >&2
+    publication=published
+    case "\${STUB_CLAWHUB_PUBLISH:-ok}" in
+      fail) echo "Error: Unauthorized (401): invalid or expired token" >&2; exit 1 ;;
+      blocked) echo "Error: ClawHub publication blocked for openclaw-all-cli@$version: static scan flagged dist/plugin.js" >&2; exit 1 ;;
+      timeout) echo "Error: Timed out after 1800s waiting for ClawHub to publish openclaw-all-cli@$version. Attempt att_1 is still pending." >&2; exit 1 ;;
+      sha) sha=0000000000000000000000000000000000000000000000000000000000000000 ;;
+      nosha) sha="" ;;
+      pending) publication=pending ;;
+    esac
+    printf '{\n  "name": "openclaw-all-cli",\n  "version": "%s",\n  "status": "%s",\n  "releaseId": "rel_1",\n  "artifactSha256": "%s",\n  "publicationStatus": "%s",\n  "attemptId": "att_1"\n}\n' "$version" "$publication" "$sha" "$publication"
+    ;;
+  "package trusted-publisher")
+    [ "\${STUB_CLAWHUB_TP_FAIL:-0}" = 1 ] && { echo "Error: Forbidden (403): not a package owner" >&2; exit 1; }
+    echo '{"trustedPublisher":{"repository":"xtimor/openclaw-all-cli","workflowFilename":"release.yml"}}'
+    ;;
 esac
 `,
   gh: `#!/usr/bin/env bash
 echo "gh $* | token=\${NODE_AUTH_TOKEN:-}" >>"$STUB_LOG"
+[ "\${STUB_GH_FAIL:-0}" = 1 ] && [ "$1 $2" = "release create" ] && { echo "HTTP 422: Validation Failed" >&2; exit 1; }
 # Keep the notes file's content: the script removes its work directory on exit.
 while [ $# -gt 0 ]; do
   if [ "$1" = "--notes-file" ]; then cat "$2" >"$STUB_LOG.notes"; fi
@@ -87,7 +136,7 @@ beforeAll(() => {
   work = mkdtempSync(join(tmpdir(), "release-script-"));
   stubBin = join(work, "stub-bin");
   mkdirSync(stubBin);
-  for (const name of ["npm", "gh", "git"]) {
+  for (const name of ["npm", "gh", "git", "clawhub"]) {
     writeFileSync(join(stubBin, name), STUBS[name]!);
     chmodSync(join(stubBin, name), 0o755);
   }
@@ -97,6 +146,8 @@ beforeAll(() => {
   writeFileSync(
     join(failingNode, "node"),
     `#!/usr/bin/env bash
+# Only the changelog step gets the failing node; anything else (the ClawHub result parse) runs the real one.
+[ "$(basename "$1")" = changelog.mjs ] || exec ${JSON.stringify(process.execPath)} "$@"
 echo "node $(basename "$1") $2" >>"$STUB_LOG"
 echo "node-env | gh=\${GH_TOKEN:-} oidc=\${ACTIONS_ID_TOKEN_REQUEST_TOKEN:-} token=\${NODE_AUTH_TOKEN:-}" >>"$STUB_LOG"
 echo "node: simulated failure" >&2
@@ -147,6 +198,11 @@ function release(env: Record<string, string>, changelog?: string): Outcome {
       RELEASE_CI_CHECK: join(work, "ci-check.sh"),
       RELEASE_NODE_BIN: "",
       RELEASE_STAGE_NPM: "npm",
+      RELEASE_CLAWHUB: join(stubBin, "clawhub"),
+      STUB_CLAWHUB_BIN: join(stubBin, "clawhub"),
+      // What a runner sets; the dry run takes ClawHub's --source-commit from GITHUB_SHA.
+      GITHUB_REPOSITORY: "xtimor/openclaw-all-cli",
+      GITHUB_SHA: "aaa",
       GH_TOKEN: "gh_JOB_TOKEN",
       ACTIONS_ID_TOKEN_REQUEST_TOKEN: "oidc_REQUEST_TOKEN",
       ...env,
@@ -578,6 +634,202 @@ describe("release.sh", () => {
     });
   });
 
+  describe("CLAWHUB (each release also publishes to ClawHub, ticket 3.31)", () => {
+    const real = { RELEASE_TAG: "v1.0.1", DRY_RUN: "false", RELEASE_EVENT: "workflow_dispatch", STUB_PACKAGE: "exists", STUB_TAG_MISSING: "1", STUB_HEAD: "ccc" };
+    const clawhubCalls = (o: Outcome, sub: string) => called(o, `clawhub package ${sub}`);
+    const indexOf = (o: Outcome, prefix: string) => o.calls.findIndex((c) => c.startsWith(prefix));
+    const shaCount = (text: string) => (text.match(/[0-9a-f]{64}/g) ?? []).length;
+    /** How often the tarball's own sha256 (the summary's `sha256:` line) appears in the summary. */
+    const tarballShaCount = (summary: string) => {
+      const sha = summary.match(/- sha256: `([0-9a-f]{64})`/)?.[1];
+      return sha ? summary.split(sha).length - 1 : 0;
+    };
+
+    it("dry run: checks the tarball with clawhub --dry-run locally, prints the real command, publishes nothing", () => {
+      const o = release({ RELEASE_TAG: "v1.2.3", DRY_RUN: "true", CLAWHUB_TOKEN: CLAWHUB_SECRET });
+      expect(o.status, o.stderr).toBe(0);
+      const publishes = clawhubCalls(o, "publish");
+      expect(publishes).toHaveLength(1);
+      expect(publishes[0]).toMatch(/^clawhub package publish \/\S+\/out\/openclaw-all-cli-stub\.tgz --family code-plugin --dry-run --json --tags latest --source-repo xtimor\/openclaw-all-cli --source-commit aaa \|/);
+      expect(publishes[0]).not.toContain("--wait");
+      // No token, no config, no OIDC: nothing reaches a registry.
+      expect(publishes[0]).toMatch(/\| config=none gh= oidc= env=$/);
+      expect(clawhubCalls(o, "trusted-publisher")).toEqual([]);
+      expect(called(o, "gh ")).toEqual([]);
+      expect(o.stdout).toMatch(/clawhub package publish \/\S+\.tgz --family code-plugin --wait --json --tags latest --source-repo xtimor\/openclaw-all-cli --source-commit aaa --source-ref refs\/tags\/v1\.2\.3 --manual-override-reason /);
+      expect(o.summary).toContain("- ClawHub: dry run passed (no registry call); a real run publishes with the CLAWHUB_TOKEN secret");
+      expect(o.summary).toContain("ClawHub: dry run only, nothing was published.");
+      expect(o.stdout + o.stderr + o.summary).not.toContain(CLAWHUB_SECRET);
+    });
+
+    it("dry run without a token: the real command uses OIDC and gives no override reason; GITHUB_REF is the source ref", () => {
+      const o = release({ RELEASE_TAG: "v1.2.3", DRY_RUN: "true", GITHUB_REF: "refs/heads/main" });
+      expect(o.status, o.stderr).toBe(0);
+      expect(clawhubCalls(o, "publish")[0]).toContain("--source-commit aaa --source-ref refs/heads/main |");
+      expect(o.summary).toContain("a real run publishes through trusted publishing (OIDC, no token)");
+      expect(o.summary).not.toContain("--manual-override-reason");
+    });
+
+    it("a dry run that ClawHub refuses fails the run, after the summary", () => {
+      const o = release({ RELEASE_TAG: "v1.2.3", DRY_RUN: "true", STUB_CLAWHUB_DRY_FAIL: "1" });
+      expect(o.status).toBe(1);
+      expect(o.summary).toContain("- ClawHub: failed (see below)");
+      expect(o.summary).toContain("ClawHub dry run failed: Error: openclaw.build.openclawVersion is required");
+      expect(o.summary.split("openclaw.build.openclawVersion is required")).toHaveLength(2);
+      expect(o.stderr).toContain("ClawHub dry run failed");
+    });
+
+    it("real, token set: publishes after npm and the GitHub release, then sets the trusted publisher", () => {
+      const o = release({ ...real, CLAWHUB_TOKEN: CLAWHUB_SECRET });
+      expect(o.status, o.stderr).toBe(0);
+      const [publish] = clawhubCalls(o, "publish");
+      expect(publish).toMatch(/^clawhub package publish \/\S+\/out\/openclaw-all-cli-stub\.tgz --family code-plugin --wait --json --tags latest --source-repo xtimor\/openclaw-all-cli --source-commit ccc --source-ref refs\/tags\/v1\.0\.1 --manual-override-reason Release v1\.0\.1 from xtimor\/openclaw-all-cli release\.yml with the CLAWHUB_TOKEN secret/);
+      // A token publish never uses OIDC, so the CLI gets no OIDC request variables.
+      expect(publish).toContain(`| config={"registry":"https://clawhub.ai","token":"${CLAWHUB_SECRET}"} mode=600 gh= oidc= env=`);
+      const [trusted] = clawhubCalls(o, "trusted-publisher");
+      expect(trusted).toMatch(/^clawhub package trusted-publisher set openclaw-all-cli --repository xtimor\/openclaw-all-cli --workflow-filename release\.yml \| config=\{.*\} mode=600 gh= oidc= env=$/);
+      // Order: npm, then the GitHub release, then ClawHub, then the trusted publisher.
+      const order = ["npm publish ", "gh release create", "clawhub package publish", "clawhub package trusted-publisher"].map((p) => indexOf(o, p));
+      expect(order.every((i) => i >= 0)).toBe(true);
+      expect([...order].sort((a, b) => a - b)).toEqual(order);
+      expect(o.summary).toContain("- npm: `openclaw-all-cli@1.0.1` published (tag `latest`)");
+      expect(o.summary).toContain("- ClawHub: `openclaw-all-cli@1.0.1` published (status `published`, tag `latest`, via the CLAWHUB_TOKEN secret), same sha256");
+      expect(o.summary).toContain("Delete the CLAWHUB_TOKEN secret");
+      expect(shaCount(o.summary)).toBe(1);
+    });
+
+    it("the ClawHub token reaches only the clawhub commands, never the checks, notes, install, npm, gh, or the output", () => {
+      const o = release({ ...real, RELEASE_TAG: "v1.0.2", CLAWHUB_TOKEN: CLAWHUB_SECRET, RELEASE_CLAWHUB: "", PATH: `${failingNode}:${stubBin}:${process.env.PATH ?? ""}` }, "# Changelog\n\n## Unreleased\n\n- Line.\n");
+      expect(o.status, o.stderr).toBe(0);
+      const withSecret = o.calls.filter((c) => c.includes(CLAWHUB_SECRET));
+      expect(withSecret.length).toBe(2);
+      for (const c of withSecret) expect(c).toMatch(/^clawhub package (publish|trusted-publisher) /);
+      for (const c of called(o, "clawhub ")) expect(c).toMatch(/ env=$/);
+      expect(called(o, "npm-install-env")).toEqual(["npm-install-env | gh= oidc= clawhub= config="]);
+      expect(called(o, "ci-check")).toEqual(["ci-check | token=XXXXX-XXXXX-XXXXX-XXXXX gh= oidc="]);
+      expect(called(o, "node-env")).toEqual(["node-env | gh= oidc= token=XXXXX-XXXXX-XXXXX-XXXXX"]);
+      expect(o.stdout + o.stderr + o.summary + o.notes).not.toContain(CLAWHUB_SECRET);
+    });
+
+    it("real, no token: the same publish without config or override reason (OIDC), no trusted publisher call", () => {
+      const o = release(real);
+      expect(o.status, o.stderr).toBe(0);
+      const [publish] = clawhubCalls(o, "publish");
+      expect(publish).toMatch(/--source-ref refs\/tags\/v1\.0\.1 \| config=none gh= oidc=oidc_REQUEST_TOKEN env=$/);
+      expect(publish).not.toContain("--manual-override-reason");
+      expect(clawhubCalls(o, "trusted-publisher")).toEqual([]);
+      expect(o.summary).toContain("via trusted publishing (OIDC)), same sha256");
+      expect(shaCount(o.summary)).toBe(1);
+    });
+
+    it("the default CLI is clawhub@CLAWHUB_VERSION installed without scripts or credentials, run under node", () => {
+      const o = release({ ...real, RELEASE_CLAWHUB: "" });
+      expect(o.status, o.stderr).toBe(0);
+      const [install] = called(o, "npm install ");
+      expect(install).toMatch(/^npm install clawhub@0\.25\.1 --ignore-scripts --no-audit --no-fund --prefix \/\S+\/clawhub \|/);
+      expect(called(o, "npm-install-env")).toEqual(["npm-install-env | gh= oidc= clawhub= config="]);
+      expect(called(o, "clawdhub.js under node")).toHaveLength(1);
+      expect(clawhubCalls(o, "publish")).toHaveLength(1);
+      expect(indexOf(o, "gh release create")).toBeLessThan(indexOf(o, "npm install "));
+      const pinned = release({ ...real, RELEASE_CLAWHUB: "", CLAWHUB_VERSION: "9.9.9" });
+      expect(called(pinned, "npm install ")[0]).toMatch(/^npm install clawhub@9\.9\.9 /);
+    });
+
+    it("an install failure is a ClawHub failure: summary first, exit 1", () => {
+      const o = release({ ...real, RELEASE_CLAWHUB: "", STUB_CLAWHUB_INSTALL_FAIL: "1" });
+      expect(o.status).toBe(1);
+      expect(called(o, "gh release create")).toHaveLength(1);
+      expect(o.summary).toContain("ClawHub failed: could not install clawhub@0.25.1");
+    });
+
+    for (const [mode, error] of [
+      ["fail", "Unauthorized (401)"],
+      ["blocked", "ClawHub publication blocked for openclaw-all-cli@1.0.1"],
+      ["timeout", "Timed out after 1800s"],
+    ] as const) {
+      it(`ClawHub ${mode}: npm and the GitHub release stay, the summary names the error and the recovery, exit 1`, () => {
+        const o = release({ ...real, CLAWHUB_TOKEN: CLAWHUB_SECRET, STUB_CLAWHUB_PUBLISH: mode });
+        expect(o.status).toBe(1);
+        expect(published(o)).toHaveLength(1);
+        expect(called(o, "gh release create")).toHaveLength(1);
+        expect(clawhubCalls(o, "trusted-publisher")).toEqual([]);
+        expect(o.calls.some((c) => /unpublish|delete/.test(c.split(" | ")[0]!))).toBe(false);
+        expect(o.summary).toContain("- npm: `openclaw-all-cli@1.0.1` published");
+        expect(o.summary).toContain("- ClawHub: failed (see below)");
+        expect(o.summary).toContain(`npm and the GitHub release are done; ClawHub failed: Error: ${error}`);
+        expect(o.summary.split(error)).toHaveLength(2);
+        expect(o.stdout).not.toContain("ClawHub failed");
+        expect(o.summary).toContain('Recovery: docs/release.md, "ClawHub"');
+        expect(o.stderr).toContain("ClawHub failed");
+        expect(shaCount(o.summary)).toBe(1);
+        expect(o.stdout + o.stderr + o.summary).not.toContain(CLAWHUB_SECRET);
+      });
+    }
+
+    it("a ClawHub sha256 that differs from the tarball fails the run like a refused publish", () => {
+      const o = release({ ...real, STUB_CLAWHUB_PUBLISH: "sha" });
+      expect(o.status).toBe(1);
+      expect(o.summary).toContain("ClawHub reports sha256 0000000000000000000000000000000000000000000000000000000000000000");
+      expect(o.summary).toContain("npm and the GitHub release are done; ClawHub failed:");
+      expect(tarballShaCount(o.summary)).toBe(1);
+    });
+
+    it("a published package whose sha256 ClawHub does not report passes, with the command to check it", () => {
+      const o = release({ ...real, STUB_CLAWHUB_PUBLISH: "nosha" });
+      expect(o.status, o.stderr).toBe(0);
+      expect(o.summary).toContain("ClawHub reported no sha256: check it with `clawhub package verify openclaw-all-cli-stub.tgz --package openclaw-all-cli --version 1.0.1`");
+      expect(shaCount(o.summary)).toBe(1);
+    });
+
+    it("a pasted token with surrounding whitespace or a trailing CR/LF is trimmed, so the config stays valid JSON", () => {
+      const o = release({ ...real, CLAWHUB_TOKEN: ` ${CLAWHUB_SECRET}\r\n` });
+      expect(o.status, o.stderr).toBe(0);
+      expect(clawhubCalls(o, "publish")[0]).toContain(`| config={"registry":"https://clawhub.ai","token":"${CLAWHUB_SECRET}"} mode=600 `);
+    });
+
+    it("a publish that ends without publicationStatus published fails the run", () => {
+      const o = release({ ...real, STUB_CLAWHUB_PUBLISH: "pending" });
+      expect(o.status).toBe(1);
+      expect(o.summary).toContain('is "pending" on ClawHub, not published');
+    });
+
+    it("a trusted publisher failure is a warning with the manual command; the run stays green", () => {
+      const o = release({ ...real, CLAWHUB_TOKEN: CLAWHUB_SECRET, STUB_CLAWHUB_TP_FAIL: "1" });
+      expect(o.status, o.stderr).toBe(0);
+      expect(o.stdout).toContain("::warning title=ClawHub trusted publisher::");
+      expect(o.summary).toContain("Warning: the ClawHub trusted publisher was not set (Error: Forbidden (403): not a package owner)");
+      expect(o.summary).toContain("`clawhub package trusted-publisher set openclaw-all-cli --repository xtimor/openclaw-all-cli --workflow-filename release.yml`");
+      expect(o.summary).toContain("- ClawHub: `openclaw-all-cli@1.0.1` published");
+    });
+
+    it("a prerelease publishes under the ClawHub tag next", () => {
+      const o = release({ ...real, RELEASE_TAG: "v1.1.0-rc.1" });
+      expect(o.status, o.stderr).toBe(0);
+      expect(clawhubCalls(o, "publish")[0]).toContain("--tags next ");
+      const dry = release({ RELEASE_TAG: "v1.1.0-rc.1", DRY_RUN: "true" });
+      expect(clawhubCalls(dry, "publish")[0]).toContain("--tags next ");
+    });
+
+    it("the first (staged) npm release skips ClawHub, and the summary says so", () => {
+      const o = release({ ...real, STUB_PACKAGE: "missing", NODE_AUTH_TOKEN: SECRET, CLAWHUB_TOKEN: CLAWHUB_SECRET });
+      expect(o.status, o.stderr).toBe(0);
+      expect(called(o, "clawhub ")).toEqual([]);
+      expect(called(o, "npm install ")).toEqual([]);
+      expect(o.summary).toContain("- ClawHub: skipped: the first npm release is only staged");
+      expect(shaCount(o.summary)).toBe(1);
+    });
+
+    it("an npm or GitHub release failure stops before ClawHub", () => {
+      const npm = release({ ...real, STUB_PUBLISH_FAIL: "1", CLAWHUB_TOKEN: CLAWHUB_SECRET });
+      expect(npm.status).not.toBe(0);
+      expect(called(npm, "clawhub ")).toEqual([]);
+      const gh = release({ ...real, STUB_GH_FAIL: "1", CLAWHUB_TOKEN: CLAWHUB_SECRET });
+      expect(gh.status).not.toBe(0);
+      expect(called(gh, "gh release create")).toHaveLength(1);
+      expect(called(gh, "clawhub ")).toEqual([]);
+    });
+  });
+
   describe("BAD_TAG", () => {
     for (const tag of ["v1.2", "1.2.3", "v1.2.3.4", "v01.2.3", "v1.2.3-", "vX.Y.Z", "v1.2.3+build"]) {
       it(`rejects "${tag}" before any check`, () => {
@@ -655,6 +907,7 @@ describe("release.sh", () => {
       for (const o of runs) {
         expect(o.status, o.stderr).toBe(0);
         expect(o.calls.some((c) => c.includes("unpublish"))).toBe(false);
+        expect(o.calls.some((c) => /^clawhub .*\b(delete|unpublish)\b/.test(c.split(" | ")[0]!))).toBe(false);
         const real = published(o).filter((c) => !c.includes("--dry-run"));
         expect(real).toHaveLength(1);
         expect(real[0]).toContain("--provenance");
