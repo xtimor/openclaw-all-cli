@@ -1,3 +1,4 @@
+import { defaultProfileIdFor, readStoredKey, type ReadStoredKey } from "./auth-store.ts";
 import { backendIdFor } from "./backend.ts";
 import { readBackendConfig } from "./config.ts";
 import type { CliAdapter, QuotaSnapshot } from "./ports.ts";
@@ -16,6 +17,11 @@ type UsageSnapshot = {
 type UsageAuthContext = {
   config?: { plugins?: { entries?: Record<string, { config?: Record<string, unknown> } | undefined> } };
   env?: Record<string, string | undefined>;
+  agentDir?: string;
+  signal?: AbortSignal;
+  /** OpenClaw 2026.10.3 and 2026.11.x: the provider's keys from its config and auth store, best first. */
+  resolveApiKeyCandidatesFromConfigAndStore?: (params?: { providerIds?: string[] }) => Promise<string[]> | string[];
+  /** The same, first key only (deprecated in 2026.11.x). */
   resolveApiKeyFromConfigAndStore?: (params?: { providerIds?: string[] }) => string | undefined;
 };
 type UsageFetchContext = { token: string; signal?: AbortSignal };
@@ -41,30 +47,79 @@ export function toUsageSnapshot(adapter: CliAdapter, snapshot: QuotaSnapshot): U
   };
 }
 
+/** A key the quota reader can use: not empty, and not a marker such as the native-login one (`openclaw:...`). */
+const usableKey = (value: unknown): string | undefined => {
+  const key = typeof value === "string" ? value.trim() : "";
+  return key && !key.startsWith("openclaw:") ? key : undefined;
+};
+
+/** OpenClaw's own answer for the provider's key; `asked` is false when the host offers no helper or it failed. */
+async function hostKey(context: UsageAuthContext, backendId: string): Promise<{ key?: string; asked: boolean }> {
+  const params = { providerIds: [backendId] };
+  try {
+    if (typeof context.resolveApiKeyCandidatesFromConfigAndStore === "function") {
+      const candidates = await context.resolveApiKeyCandidatesFromConfigAndStore(params);
+      const key = (Array.isArray(candidates) ? candidates : []).map(usableKey).find(Boolean);
+      return { ...(key ? { key } : {}), asked: true };
+    }
+    if (typeof context.resolveApiKeyFromConfigAndStore === "function") {
+      const key = usableKey(context.resolveApiKeyFromConfigAndStore(params));
+      return { ...(key ? { key } : {}), asked: true };
+    }
+  } catch {
+    // The host could not read its store: the plugin reads it below.
+  }
+  return { asked: false };
+}
+
+/** `work`, or the signal's reason when it aborts first. */
+function raceSignal<T>(work: Promise<T>, signal: AbortSignal | undefined): Promise<T> {
+  if (!signal) return work;
+  signal.throwIfAborted();
+  return new Promise<T>((resolve, reject) => {
+    const onAbort = () => reject(signal.reason);
+    signal.addEventListener("abort", onAbort, { once: true });
+    work.then(resolve, reject).finally(() => signal.removeEventListener("abort", onAbort));
+  });
+}
+
 /**
  * OpenClaw's provider usage hooks for an adapter that can read its plan quota (`readQuota`), or
  * `undefined` for one that cannot: such a provider offers no snapshot. The hooks run only when a
  * usage surface asks, never from a turn.
  *
- * - `resolveUsageAuth` picks the API key the way the CLI process gets it: the backend's plugin
- *   config `env`, then the host environment, then a key OpenClaw holds for the provider. With none
- *   (a login only) it answers `handled`, so no generic fallback runs and the provider has no row.
+ * - `resolveUsageAuth` picks the API key the way the CLI process gets it. It asks OpenClaw first
+ *   (`resolveApiKeyCandidatesFromConfigAndStore`, else `resolveApiKeyFromConfigAndStore`): that
+ *   reads the auth store, where the API key method's profile lives, without the plugin importing
+ *   OpenClaw's agent runtime, whose first import takes 4-10 s against the host's 5 s budget. Then
+ *   the backend's plugin config `env`, then the host environment. Only a host without those helpers
+ *   makes the plugin read the store itself (`<backendId>:default`), raced against `signal`. With no
+ *   key (a login only) it answers `handled`, so no generic fallback runs and the provider has no row.
  * - `fetchUsageSnapshot` asks the adapter. A failure or an empty answer is a row with a short
  *   error text, never a throw.
  */
-export function createUsageHooks(adapter: CliAdapter, pluginId: string, warn: (message: string) => void) {
+export function createUsageHooks(adapter: CliAdapter, pluginId: string, warn: (message: string) => void, options: { readKey?: ReadStoredKey } = {}) {
   const readQuota = adapter.readQuota?.bind(adapter);
   const keyVar = adapter.apiKeyEnvVar;
   if (!readQuota || !keyVar) return undefined;
   const backendId = backendIdFor(adapter);
   return {
-    resolveUsageAuth(context: UsageAuthContext): { token: string } | { handled: true } {
+    async resolveUsageAuth(context: UsageAuthContext): Promise<{ token: string } | { handled: true }> {
+      context.signal?.throwIfAborted();
+      const fromHost = await hostKey(context, backendId);
+      context.signal?.throwIfAborted();
+      if (fromHost.key) return { token: fromHost.key };
       const settings = readBackendConfig(context.config?.plugins?.entries?.[pluginId]?.config, backendId, () => {});
-      const key =
-        settings.env?.[keyVar]?.trim() ||
-        context.env?.[keyVar]?.trim() ||
-        context.resolveApiKeyFromConfigAndStore?.({ providerIds: [backendId] })?.trim();
-      return key ? { token: key } : { handled: true };
+      const key = settings.env?.[keyVar]?.trim() || context.env?.[keyVar]?.trim();
+      if (key) return { token: key };
+      if (!fromHost.asked) {
+        const stored = await raceSignal(
+          (options.readKey ?? readStoredKey)({ agentDir: context.agentDir, profileId: defaultProfileIdFor(backendId), provider: backendId }),
+          context.signal,
+        );
+        if (stored.kind === "key") return { token: stored.key };
+      }
+      return { handled: true };
     },
     async fetchUsageSnapshot(context: UsageFetchContext): Promise<UsageSnapshot> {
       try {

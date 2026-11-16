@@ -9,7 +9,7 @@ What the Control UI Model Providers card shows for `cursor-cli`, measured on a c
 
 ## What the host had
 
-This host has no `cursor-agent` browser login: `cursor-agent status` prints `Not logged in`, and the only credential is an API key. So the requested state (a), "valid login", was **not run**. The key was measured in its place, through the plugin config (`cursor-cli.env`, the documented way) and through the Gateway environment. The state "login lost" was measured two ways: `~/.cursor/cli-config.json` moved aside, and the key removed. Moving `cli-config.json` aside takes away no credential (it holds settings, not tokens), so the first changed nothing; the second is the closest this host can come to a lost credential.
+This host has no `cursor-agent` browser login: `cursor-agent status` prints `Not logged in`, and the only credential is an API key. So the requested state (a), "valid login", was **not run**. The key was measured in its place, through the plugin config (`cursor-cli.env`, the documented way at the time; the API key method now saves an auth profile, which the card lists, and the plugin config is a manual fallback) and through the Gateway environment. The state "login lost" was measured two ways: `~/.cursor/cli-config.json` moved aside, and the key removed. Moving `cli-config.json` aside takes away no credential (it holds settings, not tokens), so the first changed nothing; the second is the closest this host can come to a lost credential.
 
 ## Results
 

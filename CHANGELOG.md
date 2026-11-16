@@ -4,9 +4,16 @@ What changed for people who use the plugin, newest first. Format: [Keep a Change
 
 ## Unreleased
 
+## 0.1.9 - 2026-11-16
+
+### Added
+
+- Connecting the `cursor-cli` provider on a Linux (glibc) or macOS host without `cursor-agent` now offers to install the version pinned in the plugin (sha256-checked, from `downloads.cursor.com`, into `<state dir>/tools/cursor-agent/`) after you say yes; the API key method checks the key with `cursor-agent about` before saving it, and a new remove method offers to remove the saved key and the installed CLI.
+
 ### Changed
 
 - The plugin is now on ClawHub, the OpenClaw plugin catalog: install it with `openclaw plugins install clawhub:openclaw-all-cli --accept-capabilities` (no `--force` needed); npm stays available. The README and setup guide lead with ClawHub and explain the security audit OpenClaw shows before the install and how to move an npm install over.
+- The Cursor CLI API key method now saves the key in OpenClaw's auth store as the profile `cursor-cli:default` instead of the plugin config, so the Control UI dialog ends without `did not return a credential profile` and the provider card lists the key. The plugin hands the profile's key to the `cursor-agent` process only (not to `exec`), and to the model list and the usage and quota reads; it wins over a key in the plugin config, which the method removes when it saves the main agent's profile (for another agent the config key stays for the others); the method's note names `cursor-agent logout` for a copy an older version left in `~/.config/cursor/auth.json`. The Control UI lists only this method; `login` and `remove` stay terminal methods (`openclaw models auth login --provider cursor-cli --method login|remove`). OpenClaw's **Remove key** now removes the key, and when the plugin installed `cursor-agent` for it, the plugin removes that install at the next Gateway start that loads it (after Remove key OpenClaw refuses the Gateway's next `cursor-cli` chat turn itself) or a keyless turn that reaches it, unless a key is left for any agent, a turn started meanwhile, the auth store cannot be read, or `cursor-agent` has its own login; a turn never waits for that removal. `cursor-agent` runs that get a key from the plugin now cache it in the agent's Cursor home (`key-cache/`), not in `~/.config/cursor/auth.json`, and the plugin deletes that cache once the key is gone, so a removed key stops working. The quota reads the key through OpenClaw first, within its 5 s budget. A login alone still shows "Not configured" on the card (openclaw/openclaw#184700).
 
 ## 0.1.7 - 2026-11-10
 

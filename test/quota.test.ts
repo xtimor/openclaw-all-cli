@@ -355,22 +355,25 @@ describe("usage hooks", () => {
     expect(registered[1]).toMatchObject({ id: "cursor-cli", resolveUsageAuth: expect.any(Function), fetchUsageSnapshot: expect.any(Function) });
   });
 
-  it("resolveUsageAuth takes the key from the plugin config, then the host env, then OpenClaw's store", () => {
-    const hooks = createUsageHooks(adapterWith(async () => report), PLUGIN_ID, warn)!;
+  // Plan 27: the auth profile comes first; test/profile-key.test.ts covers it. No stored key here.
+  const noStore = { readKey: async () => ({ kind: "absent" as const }) };
+
+  it("resolveUsageAuth asks OpenClaw's config and store first, then takes the plugin config's key, then the host env's", async () => {
+    const hooks = createUsageHooks(adapterWith(async () => report), PLUGIN_ID, warn, noStore)!;
     const store = vi.fn(() => " store-key ");
-    expect(hooks.resolveUsageAuth({ config: config({ CURSOR_API_KEY: " cfg-key " }), env: { CURSOR_API_KEY: "env-key" }, resolveApiKeyFromConfigAndStore: store })).toEqual({ token: "cfg-key" });
-    expect(hooks.resolveUsageAuth({ config: config({}), env: { CURSOR_API_KEY: "env-key" }, resolveApiKeyFromConfigAndStore: store })).toEqual({ token: "env-key" });
-    expect(store).not.toHaveBeenCalled();
-    expect(hooks.resolveUsageAuth({ resolveApiKeyFromConfigAndStore: store })).toEqual({ token: "store-key" });
+    expect(await hooks.resolveUsageAuth({ config: config({ CURSOR_API_KEY: " cfg-key " }), env: { CURSOR_API_KEY: "env-key" }, resolveApiKeyFromConfigAndStore: store })).toEqual({ token: "store-key" });
     expect(store).toHaveBeenCalledWith({ providerIds: ["cursor-cli"] });
+    const none = vi.fn(() => undefined);
+    expect(await hooks.resolveUsageAuth({ config: config({ CURSOR_API_KEY: " cfg-key " }), env: { CURSOR_API_KEY: "env-key" }, resolveApiKeyFromConfigAndStore: none })).toEqual({ token: "cfg-key" });
+    expect(await hooks.resolveUsageAuth({ config: config({}), env: { CURSOR_API_KEY: "env-key" }, resolveApiKeyFromConfigAndStore: none })).toEqual({ token: "env-key" });
   });
 
-  it("resolveUsageAuth answers handled, with no token, for a login only", () => {
-    const hooks = createUsageHooks(adapterWith(async () => report), PLUGIN_ID, warn)!;
-    expect(hooks.resolveUsageAuth({})).toEqual({ handled: true });
-    expect(hooks.resolveUsageAuth({ config: config({ CURSOR_API_KEY: "  " }), env: { CURSOR_API_KEY: "" }, resolveApiKeyFromConfigAndStore: () => undefined })).toEqual({ handled: true });
+  it("resolveUsageAuth answers handled, with no token, for a login only", async () => {
+    const hooks = createUsageHooks(adapterWith(async () => report), PLUGIN_ID, warn, noStore)!;
+    expect(await hooks.resolveUsageAuth({})).toEqual({ handled: true });
+    expect(await hooks.resolveUsageAuth({ config: config({ CURSOR_API_KEY: "  " }), env: { CURSOR_API_KEY: "" }, resolveApiKeyFromConfigAndStore: () => undefined })).toEqual({ handled: true });
     // A malformed plugin config is not a reason to throw.
-    expect(hooks.resolveUsageAuth({ config: { plugins: { entries: { [PLUGIN_ID]: { config: { "cursor-cli": 5 } } } } } })).toEqual({ handled: true });
+    expect(await hooks.resolveUsageAuth({ config: { plugins: { entries: { [PLUGIN_ID]: { config: { "cursor-cli": 5 } } } } } })).toEqual({ handled: true });
   });
 
   it("fetchUsageSnapshot hands the key and signal to the port and answers OpenClaw's shape", async () => {

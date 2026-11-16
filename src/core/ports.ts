@@ -410,6 +410,47 @@ export type QuotaQuery = {
 /** `snapshot` is absent when the adapter has nothing to show; `warning` is a short log line (no secrets, no response bodies). */
 export type QuotaReport = { snapshot?: QuotaSnapshot; warning?: string };
 
+/** A host the core can install a managed CLI on: `<os>-<arch>`, Linux with glibc only. */
+export type ManagedPlatform = "linux-x64" | "linux-arm64" | "darwin-x64" | "darwin-arm64";
+
+/** One pinned package of a managed install. */
+export type ManagedPackage = {
+  /** HTTPS URL under the spec's `origin`. */
+  url: string;
+  /** Lowercase hex sha256 of the package file. */
+  sha256: string;
+  /** The package file's size. */
+  bytes: number;
+  /** The total size of the files it unpacks to (the unpack limit and the disk need). */
+  unpackedBytes: number;
+};
+
+/**
+ * Adapter data for a CLI the plugin may install itself into its own folder (AD-17). The core
+ * downloads, checks, and unpacks; it never runs an install script or a shell.
+ */
+export type ManagedInstallSpec = {
+  /** The pinned version; the launcher's `--version` must print it. */
+  version: string;
+  /** The only origin downloads come from, for example `https://downloads.example.com`. */
+  origin: string;
+  /** The packages per supported host. A host missing here gets the manual path. */
+  platforms: Partial<Record<ManagedPlatform, ManagedPackage>>;
+  /** Leading path parts to drop when unpacking, like `tar --strip-components`. */
+  stripComponents: number;
+  /** The launcher's path inside the unpacked folder. */
+  launcher: string;
+  /** The manual install instructions, linked whenever the plugin does not install. */
+  docsUrl: string;
+};
+
+export type CheckKeyParams = {
+  command: string;
+  /** The env for the check; the key is in it under `apiKeyEnvVar`, never in an argument. */
+  env: Record<string, string | undefined>;
+  signal?: AbortSignal;
+};
+
 /** What one CLI provider supplies to the core. Adapters import only this module and transports. */
 export interface CliAdapter {
   /** Short CLI name, for example `acme`. The backend ID is `<id>-cli`. */
@@ -452,11 +493,38 @@ export interface CliAdapter {
   readonly clearEnv: readonly string[];
   /**
    * Optional. Name of the env var that carries the CLI's API key, for example `ACME_API_KEY`.
-   * When set, the provider offers a method that saves a key into the plugin config `env`.
+   * When set, the provider offers a method that saves a key as an OpenClaw auth profile, and the
+   * core hands that key to the CLI process under this name.
    */
   readonly apiKeyEnvVar?: string;
   /** Optional. The command line that logs the CLI in, shown when the login is missing. Default `<command> login`. */
   readonly loginCommand?: string;
+  /**
+   * Optional. Where the CLI itself keeps a copy of a key it ran with, for the remove method's note,
+   * for example `~/.config/acme/auth.json`.
+   */
+  readonly keyCopyPath?: string;
+  /** Optional. The command line that removes the CLI's own copy in `keyCopyPath` (it logs the CLI out). */
+  readonly logoutCommand?: string;
+  /**
+   * Optional. Env that makes the CLI keep what it caches about a key it was given (a copy of the
+   * key, tokens) under `dir` instead of the user's own config. The core sets it for every run that
+   * gets a key from the plugin (an auth profile or the plugin config), in a folder it owns and
+   * deletes when that key is gone, so a removed key stops working and never reads as the CLI's own
+   * login. Absent: the CLI caches wherever it does.
+   */
+  keyCacheEnv?(dir: string): HomeEnv;
+  /**
+   * Optional. The pinned package the provider's Connect methods may install when the CLI is
+   * missing or too old (AD-17). Absent: they only point at the manual install.
+   */
+  readonly managedInstall?: ManagedInstallSpec;
+  /**
+   * Optional. Asks the CLI whether the key in `params.env` works, before the API key method saves
+   * it: `valid`, `invalid` (the CLI refused it), or `unknown` (no clear answer). It never logs or
+   * echoes the key. By contract it does not throw; the core treats a throw as `unknown`.
+   */
+  checkKey?(params: CheckKeyParams): Promise<"valid" | "invalid" | "unknown">;
   /**
    * Checks the installed CLI against `manifest.minVersion` (AD-14). Resolves `"ok"`, or a
    * warning when the version cannot be read (the turn still runs). Throws `CliError`:

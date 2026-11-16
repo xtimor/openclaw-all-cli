@@ -1,10 +1,13 @@
+import { isPluginSupplied, readStoredKey, resolveCliKey, type ReadStoredKey } from "./auth-store.ts";
 import { capsOf, type BackendConfig } from "./config.ts";
 import { parseJsonlEvent } from "./events.ts";
 import { HOST_SHELL_ARG, createExecute, errorRecord, type ExecuteOptions } from "./execute.ts";
 import { prepareAgentHome } from "./home.ts";
+import { dropKeyCache, keyCacheEnvFor } from "./key-cache.ts";
 import { deriveFlags } from "./manifest.ts";
 import { selectNativeProfile } from "./permissions.ts";
 import type { CliAdapter } from "./ports.ts";
+import type { SweepOutcome, SweepTrigger } from "./managed-install.ts";
 import { ProcessPool } from "./pool.ts";
 import { SYSTEM_PROMPT_TRANSPORT_MARKER } from "./system-prompt.ts";
 import type { CliBackendPlugin, PrepareExecutionContext } from "./sdk-types.ts";
@@ -28,6 +31,15 @@ export type BuildBackendOptions = {
   debug?: (message: string) => void;
   /** The backend's limits (AD-14). Absent: a pool sized from `settings`. The registrar passes its own to close it on unload. */
   pool?: ProcessPool;
+  /** Reads a key from OpenClaw's auth store (tests). Default: `readStoredKey`. */
+  readKey?: ReadStoredKey;
+  /** The Gateway's environment, for a key exported there (tests). Default: `process.env`. */
+  gatewayEnv?: Readonly<Record<string, string | undefined>>;
+  /**
+   * Started, never awaited, by a turn that has no key anywhere: removes a managed CLI the plugin
+   * installed for a key that is gone (plan 27). Absent: nothing is swept.
+   */
+  sweep?: (trigger?: SweepTrigger) => Promise<SweepOutcome>;
 };
 
 /**
@@ -134,8 +146,49 @@ function resolveExecutionArgsFor(adapter: CliAdapter): NonNullable<CliBackendPlu
 }
 
 /**
+ * The home with the run's API key from OpenClaw's auth store (plan 27): the profile the host picked
+ * (`ctx.authProfileId`), else `<backendId>:default`. The key goes into the home's env, which only the
+ * CLI process, its version check, and the usage reader get; never the Gateway's env or `exec`. A
+ * profile wins over a key in the plugin config or the Gateway's env; with none of them the CLI's own
+ * login runs the turn (a store that cannot be read counts as none).
+ *
+ * A run with a key from the plugin (the profile or the plugin config) caches it in the home's key
+ * cache, never in the user's own CLI config. When the plugin has no key for the run (and the store
+ * said so), that cache is deleted, so a removed key does not keep working through a cached copy.
+ * A turn with no key anywhere starts the sweep of a managed CLI whose key is gone, without waiting.
+ */
+async function withProfileKey(
+  adapter: CliAdapter,
+  home: Awaited<ReturnType<typeof prepareAgentHome>>,
+  ctx: PrepareExecutionContext,
+  options: BuildBackendOptions,
+): Promise<Awaited<ReturnType<typeof prepareAgentHome>>> {
+  const keyVar = adapter.apiKeyEnvVar;
+  if (!keyVar) return home;
+  const resolved = await resolveCliKey({
+    readKey: options.readKey ?? readStoredKey,
+    keyVar,
+    provider: backendIdFor(adapter),
+    agentDir: ctx.agentDir,
+    profileId: ctx.authProfileId,
+    pluginEnv: options.settings.env,
+    env: options.gatewayEnv ?? process.env,
+  });
+  if (resolved.key && isPluginSupplied(resolved)) {
+    const cache = await keyCacheEnvFor(adapter, home.dir);
+    return { ...home, env: { ...home.env, ...cache, ...(resolved.source === "store" ? { [keyVar]: resolved.key } : {}) } };
+  }
+  if (!resolved.storeUnreadable) await dropKeyCache(home.dir);
+  if (!resolved.key && options.sweep) {
+    // Never blocks the turn: a removal shows on the next one (its command is gone or unset).
+    void options.sweep({ fromTurn: true }).catch(() => {});
+  }
+  return home;
+}
+
+/**
  * `prepareExecution` for one backend: refuses a tool selection the adapter cannot enforce, prepares
- * the agent's home, and returns the run's `execute`.
+ * the agent's home with the run's key, and returns the run's `execute`.
  */
 function prepareExecutionFor(
   adapter: CliAdapter,
@@ -158,7 +211,8 @@ function prepareExecutionFor(
       );
     }
     try {
-      const home = await prepareAgentHome(adapter, backendIdFor(adapter), ctx.agentDir, options.warn, profile);
+      const prepared = await prepareAgentHome(adapter, backendIdFor(adapter), ctx.agentDir, options.warn, profile);
+      const home = await withProfileKey(adapter, prepared, ctx, options);
       return {
         execute: createExecute(adapter, {
           ...options.execute,

@@ -186,6 +186,28 @@ export class ProcessPool {
   }
 
   /**
+   * Starts closing every idle process and returns how many, like `releaseConversation` for all
+   * conversations. A process in a turn stays. Used before a managed CLI folder is removed.
+   */
+  closeIdle(): number {
+    if (this.closing) return 0;
+    let closed = 0;
+    for (const member of [...this.members]) {
+      if (!member.isIdle()) continue;
+      this.members.delete(member);
+      closed += 1;
+      try {
+        member.close();
+      } catch {
+        // The process is already off the pool; the idle close and the unload still find its handle.
+      }
+    }
+    // A command checked before may be gone after the removal: check it again next time.
+    this.checked.clear();
+    return closed;
+  }
+
+  /**
    * Runs the version check once per key: concurrent callers share one run, and only a pass is
    * remembered (a warning or a failure is tried again by the next process).
    */

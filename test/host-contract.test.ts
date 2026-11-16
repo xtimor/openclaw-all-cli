@@ -1,5 +1,5 @@
 import { randomBytes, randomUUID } from "node:crypto";
-import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { mkdtempSync, readdirSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
@@ -13,7 +13,7 @@ import { readTurnTarget, splitMcpArgs } from "../src/core/mcp-target.ts";
 import { ProcessPool } from "../src/core/pool.ts";
 import type { LiveSessionCapability } from "../src/core/sdk-types.ts";
 import { FAKE_CURSOR_AGENT, fakeEnv } from "./fixtures/paths.ts";
-import { hostAvailable, hostExport, hostFunction } from "./fixtures/host-code.ts";
+import { HOST_DIST, hostAvailable, hostExport, hostFunction } from "./fixtures/host-code.ts";
 import { startStubMcpHost } from "./fixtures/stub-mcp-host.ts";
 
 /**
@@ -480,5 +480,80 @@ describe.skipIf(!hostAvailable)("OpenClaw host contracts the backend relies on",
       const { capability: later } = await capabilityFor(key, runC, { model: "another-model" });
       expect(later.current()).toBeUndefined();
     }, 60_000);
+  });
+});
+
+/**
+ * The remove method (story 27) deletes `CURSOR_API_KEY` and `command` by returning them as
+ * `undefined` in its config patch. OpenClaw applies a method's patch with `applyProviderAuthConfigPatch`
+ * (the CLI path) and turns the result into a merge patch with `createProviderAuthConfigPatch` before
+ * writing it (`writeProviderAuthConfig`, the Gateway's `models.authLogin` path); both must drop the keys.
+ */
+describe.skipIf(!hostAvailable)("OpenClaw applies a provider auth config patch that deletes keys", () => {
+  const base = {
+    plugins: {
+      entries: {
+        "openclaw-all-cli": {
+          enabled: true,
+          config: { "cursor-cli": { command: "/state/tools/cursor-agent/1/cursor-agent", maxProcesses: 2, env: { CURSOR_API_KEY: "k", OTHER: "1" } } },
+        },
+      },
+    },
+  };
+  const patch = {
+    plugins: {
+      entries: {
+        "openclaw-all-cli": {
+          enabled: true,
+          config: { "cursor-cli": { command: undefined, maxProcesses: 2, env: { CURSOR_API_KEY: undefined, OTHER: "1" } } },
+        },
+      },
+    },
+  };
+  const expected = { enabled: true, config: { "cursor-cli": { maxProcesses: 2, env: { OTHER: "1" } } } };
+
+  it("drops a key whose patch value is undefined and keeps the rest", async () => {
+    const apply = await hostExport<(cfg: Json, patch: Json) => Json>("applyProviderAuthConfigPatch");
+    const next = apply(base, patch);
+    expect(next.plugins.entries["openclaw-all-cli"]).toStrictEqual(expected);
+  });
+
+  it("carries the deletion through the merge patch the Gateway writes", async () => {
+    const apply = await hostExport<(cfg: Json, patch: Json) => Json>("applyProviderAuthConfigPatch");
+    const diff = await hostExport<(base: Json, next: Json) => Json>("createProviderAuthConfigPatch");
+    const applyMerge = await hostExport<(base: Json, patch: Json, options?: Json) => Json>("applyMergePatch");
+    const written = applyMerge(base, diff(base, apply(base, patch)), { mergeObjectArraysById: true });
+    expect(written.plugins.entries["openclaw-all-cli"]).toStrictEqual(expected);
+  });
+});
+
+/**
+ * Plan 27: why the API key method returns an auth profile, and how the key comes back at turn time.
+ * Read from the host's own code (the Gateway's login flow and the CLI run preparation).
+ */
+describe.skipIf(!hostAvailable)("OpenClaw's provider login and auth profile selection (plan 27)", () => {
+  const chunk = (prefix: string, contains: string) => {
+    const sources = readdirSync(HOST_DIST)
+      .filter((name) => name.startsWith(prefix) && name.endsWith(".mjs"))
+      .map((name) => readFileSync(join(HOST_DIST, name), "utf8"))
+      .filter((source) => source.includes(contains));
+    expect(sources, `${prefix} holding ${contains}`).toHaveLength(1);
+    return sources[0]!;
+  };
+
+  it("fails the Control UI's Connect dialog for a method that returns no profile", () => {
+    const source = chunk("models-auth-login-", "did not return a credential profile");
+    expect(source).toMatch(/if \(result\.profiles\.length === 0\) throw new Error\(`\$\{choice\.choiceLabel\} did not return a credential profile\.`\)/);
+  });
+
+  it("picks the first auth profile of the provider for a backend with prepareExecution, and hands it and the agent dir to it", () => {
+    const source = chunk("prepare.runtime-", "prepareExecutionContext");
+    expect(source).toMatch(/backendResolved\.autoSelectAuthProfile !== false && \(backendResolved\.authEpochMode === "profile-only" \|\| backendResolved\.prepareExecution\)/);
+    expect(source).toMatch(/effectiveAuthProfileId = resolveAuthProfileOrder\(\{/);
+    const start = source.indexOf("const prepareExecutionContext = {");
+    expect(start).toBeGreaterThan(0);
+    const context = source.slice(start, start + 600);
+    expect(context).toMatch(/\n\s*agentDir,\n/);
+    expect(context).toMatch(/\n\s*authProfileId: effectiveAuthProfileId,\n/);
   });
 });

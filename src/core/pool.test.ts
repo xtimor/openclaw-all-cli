@@ -271,3 +271,31 @@ describe("ProcessPool.releaseConversation", () => {
     expect(m.state.closed).toBe(1);
   });
 });
+
+describe("ProcessPool.closeIdle", () => {
+  it("closes every idle member, keeps the busy ones, and checks the version again next time", async () => {
+    const pool = new ProcessPool({ maxTurns: 4, maxProcesses: 4 });
+    const a = member({ conversation: "k1" });
+    const b = member();
+    const busy = member({ conversation: "k2", idle: false });
+    for (const x of [a, b, busy]) await pool.add(x.m);
+    let runs = 0;
+    const check = async () => (runs += 1, "ok" as const);
+    await pool.checkVersionOnce("cmd", check);
+    await pool.checkVersionOnce("cmd", check);
+    expect(runs).toBe(1);
+    expect(pool.closeIdle()).toBe(2);
+    expect([a.state.closed, b.state.closed, busy.state.closed]).toEqual([1, 1, 0]);
+    expect(pool.processes).toBe(1);
+    await pool.checkVersionOnce("cmd", check);
+    expect(runs).toBe(2);
+  });
+
+  it("does nothing once the pool is closing", async () => {
+    const pool = new ProcessPool({ maxTurns: 4, maxProcesses: 4 });
+    const m = member();
+    await pool.add(m.m);
+    await pool.closeAll();
+    expect(pool.closeIdle()).toBe(0);
+  });
+});
