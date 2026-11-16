@@ -4,6 +4,10 @@ What changed for people who use the plugin, newest first. Format: [Keep a Change
 
 ## Unreleased
 
+### Fixed
+
+- OpenClaw 2026.11 no longer warns "Uses OpenClaw APIs that retire on Oct 1, 2026" for this plugin: it reads the saved Cursor key through OpenClaw's current SDK module, so the key keeps working once OpenClaw removes the old one.
+
 ## 0.1.9 - 2026-11-16
 
 ### Added

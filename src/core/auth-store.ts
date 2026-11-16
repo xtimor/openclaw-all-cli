@@ -3,24 +3,28 @@
  * holds. The API key method returns that profile (`<backendId>:default`, type `api_key`); OpenClaw
  * stores it, and turns, probes, quota reads, and the managed-CLI sweep find the key here.
  *
- * The reader loads `openclaw/plugin-sdk/agent-runtime` on first use (OpenClaw 2026.10.3 exports
- * `findPersistedAuthProfileCredential`; 2026.11.x also `findPersistedAuthProfileCredentialAsync`,
- * and warns about the sync one). It never throws. Its answer has three states: a key, no key
- * (`absent`), or `unreadable` (the module or the store failed). A turn treats `unreadable` like
- * `absent` and falls back to the plugin config and the environment; the sweep keeps the managed CLI.
+ * The reader loads `openclaw/plugin-sdk/provider-auth` on first use, a focused SDK subpath (the broad
+ * `agent-runtime` barrel is retiring). It reads the agent's store read-only, without a keychain
+ * prompt, and without other CLIs' credentials (`externalCli: { mode: "none" }`): `ensureAuthProfileStoreAsync` on 2026.11.x, `ensureAuthProfileStore` on 2026.10.3 (deprecated
+ * in 2026.11.x). That store includes the main agent's profiles, and an agent's own profile wins. The
+ * reader never throws. Its answer has three states: a key, no key (`absent`), or `unreadable` (the
+ * module or the store failed). A turn treats `unreadable` like `absent` and falls back to the plugin
+ * config and the environment; the sweep keeps the managed CLI.
  */
 
-/** OpenClaw's auth store as `loadAuthProfileStoreWithoutExternalProfiles[Async]` returns it. */
+/** OpenClaw's auth store as `ensureAuthProfileStore[Async]` returns it. */
 type AuthProfileStore = { profiles?: Record<string, unknown> };
 
-/** What the reader uses of OpenClaw's agent runtime. */
+/** How the reader reads the store: never written, never a keychain prompt, no other CLI's credentials overlaid. */
+type StoreReadOptions = { readOnly: true; allowKeychainPrompt: false; externalCli: { mode: "none" } };
+export const STORE_READ_OPTIONS: StoreReadOptions = { readOnly: true, allowKeychainPrompt: false, externalCli: { mode: "none" } };
+
+/** What the reader uses of `openclaw/plugin-sdk/provider-auth`. */
 export type AuthStoreRuntime = {
-  findPersistedAuthProfileCredentialAsync?: (params: { agentDir?: string; profileId: string }) => Promise<unknown>;
-  findPersistedAuthProfileCredential?: (params: { agentDir?: string; profileId: string }) => unknown;
-  /** 2026.11.x. The agent's store with the main store's profiles merged in. */
-  loadAuthProfileStoreWithoutExternalProfilesAsync?: (agentDir?: string) => Promise<AuthProfileStore>;
+  /** 2026.11.x. */
+  ensureAuthProfileStoreAsync?: (agentDir?: string, options?: StoreReadOptions) => Promise<AuthProfileStore>;
   /** 2026.10.3 (deprecated in 2026.11.x). */
-  loadAuthProfileStoreWithoutExternalProfiles?: (agentDir?: string) => AuthProfileStore;
+  ensureAuthProfileStore?: (agentDir?: string, options?: StoreReadOptions) => AuthProfileStore;
   listProfilesForProvider?: (store: AuthProfileStore, provider: string) => string[];
 };
 
@@ -72,10 +76,10 @@ const asStored = (key: string | undefined): StoredKey => (key ? { kind: "key", k
 
 export type AuthStore = { readKey: ReadStoredKey; findAnyKey: FindAnyStoredKey };
 
-/** The auth store over `load` (tests inject one; the default imports OpenClaw's agent runtime once). */
+/** The auth store over `load` (tests inject one; the default imports OpenClaw's provider-auth subpath once). */
 export function createAuthStore(
   load: () => Promise<AuthStoreRuntime> = async () =>
-    (await import("openclaw/plugin-sdk/agent-runtime")) as unknown as AuthStoreRuntime,
+    (await import("openclaw/plugin-sdk/provider-auth")) as unknown as AuthStoreRuntime,
 ): AuthStore {
   let runtime: Promise<AuthStoreRuntime> | undefined;
   const loadOnce = () => {
@@ -86,47 +90,34 @@ export function createAuthStore(
     });
     return runtime;
   };
+  /** The agent's store (main's profiles included), or undefined when the host has no reader. Throws when the read fails. */
+  const readStore = async (host: AuthStoreRuntime, agentDir: string | undefined): Promise<AuthProfileStore | undefined> => {
+    const dir = agentDir?.trim() ? agentDir : undefined;
+    if (typeof host.ensureAuthProfileStoreAsync === "function") return host.ensureAuthProfileStoreAsync(dir, STORE_READ_OPTIONS);
+    if (typeof host.ensureAuthProfileStore === "function") return host.ensureAuthProfileStore(dir, STORE_READ_OPTIONS);
+    return undefined;
+  };
   const readKey: ReadStoredKey = async (query) => {
     try {
-      const host = await loadOnce();
-      const params = { ...(query.agentDir?.trim() ? { agentDir: query.agentDir } : {}), profileId: query.profileId };
-      let credential: unknown;
-      if (typeof host.findPersistedAuthProfileCredentialAsync === "function") {
-        credential = await host.findPersistedAuthProfileCredentialAsync(params);
-      } else if (typeof host.findPersistedAuthProfileCredential === "function") {
-        credential = host.findPersistedAuthProfileCredential(params);
-      } else {
-        // A host without the lookup cannot say whether a key is there.
-        return UNREADABLE;
-      }
-      return asStored(keyOfCredential(credential, query.provider));
+      const store = await readStore(await loadOnce(), query.agentDir);
+      // A host without a reader cannot say whether a key is there.
+      if (!store) return UNREADABLE;
+      return asStored(keyOfCredential(store.profiles?.[query.profileId], query.provider));
     } catch {
       return UNREADABLE;
     }
   };
   const findAnyKey: FindAnyStoredKey = async (query) => {
-    let host: AuthStoreRuntime;
     try {
-      host = await loadOnce();
-    } catch {
-      return UNREADABLE;
-    }
-    const loadAsync = host.loadAuthProfileStoreWithoutExternalProfilesAsync;
-    const loadSync = host.loadAuthProfileStoreWithoutExternalProfiles;
-    const loadStore =
-      typeof loadAsync === "function"
-        ? (dir: string | undefined) => loadAsync.call(host, dir)
-        : typeof loadSync === "function"
-          ? async (dir: string | undefined) => loadSync.call(host, dir)
-          : undefined;
-    if (!loadStore || typeof host.listProfilesForProvider !== "function") {
-      return readKey({ agentDir: query.agentDir, profileId: defaultProfileIdFor(query.provider), provider: query.provider });
-    }
-    try {
-      const agentDir = query.agentDir?.trim() ? query.agentDir : undefined;
-      const store = await loadStore(agentDir);
-      for (const profileId of host.listProfilesForProvider(store, query.provider)) {
-        const key = keyOfCredential(store?.profiles?.[profileId], query.provider);
+      const host = await loadOnce();
+      const store = await readStore(host, query.agentDir);
+      if (!store) return UNREADABLE;
+      const profileIds =
+        typeof host.listProfilesForProvider === "function"
+          ? host.listProfilesForProvider(store, query.provider)
+          : [defaultProfileIdFor(query.provider)];
+      for (const profileId of profileIds) {
+        const key = keyOfCredential(store.profiles?.[profileId], query.provider);
         if (key) return { kind: "key", key };
       }
       return ABSENT;

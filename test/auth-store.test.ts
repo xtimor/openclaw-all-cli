@@ -10,6 +10,7 @@ import {
   isPluginSupplied,
   keyOfCredential,
   resolveCliKey,
+  STORE_READ_OPTIONS,
   type AuthStoreRuntime,
   type StoredKey,
 } from "../src/core/auth-store.ts";
@@ -48,38 +49,46 @@ describe("the key of a stored credential (plan 27)", () => {
 });
 
 describe("the auth store reader", () => {
-  it("prefers OpenClaw's async lookup, passes the agent and the profile, and checks the provider", async () => {
+  const store = (profiles: Record<string, unknown>) => ({ profiles });
+
+  it("prefers OpenClaw's async store read, read-only and without a keychain prompt, passes the agent, and checks the provider", async () => {
     const asked: unknown[] = [];
     const read = createStoredKeyReader(async () => ({
-      findPersistedAuthProfileCredentialAsync: async (params) => (asked.push(params), apiKey(KEY)),
-      findPersistedAuthProfileCredential: () => {
-        throw new Error("the deprecated sync lookup must not run");
+      ensureAuthProfileStoreAsync: async (agentDir, options) => (asked.push([agentDir, options]), store({ [PROFILE]: apiKey(KEY) })),
+      ensureAuthProfileStore: () => {
+        throw new Error("the deprecated sync read must not run");
       },
     }));
     expect(await read({ agentDir: "/agents/a", profileId: PROFILE, provider: "cursor-cli" })).toEqual(found(KEY));
-    expect(await read({ profileId: PROFILE, provider: "other-cli" })).toEqual(ABSENT);
-    expect(asked).toEqual([{ agentDir: "/agents/a", profileId: PROFILE }, { profileId: PROFILE }]);
+    expect(await read({ agentDir: " ", profileId: PROFILE, provider: "other-cli" })).toEqual(ABSENT);
+    expect(await read({ profileId: "cursor-cli:none", provider: "cursor-cli" })).toEqual(ABSENT);
+    expect(asked).toEqual([
+      ["/agents/a", STORE_READ_OPTIONS],
+      [undefined, STORE_READ_OPTIONS],
+      [undefined, STORE_READ_OPTIONS],
+    ]);
+    expect(STORE_READ_OPTIONS).toEqual({ readOnly: true, allowKeychainPrompt: false, externalCli: { mode: "none" } });
   });
 
-  it("uses the sync lookup of OpenClaw 2026.10.3 when the async one is missing", async () => {
-    const read = createStoredKeyReader(async () => ({ findPersistedAuthProfileCredential: () => apiKey(KEY) }));
+  it("uses the sync read of OpenClaw 2026.10.3 when the async one is missing", async () => {
+    const read = createStoredKeyReader(async () => ({ ensureAuthProfileStore: () => store({ [PROFILE]: apiKey(KEY) }) }));
     expect(await read({ profileId: PROFILE, provider: "cursor-cli" })).toEqual(found(KEY));
-    expect(await createStoredKeyReader(async () => ({ findPersistedAuthProfileCredential: () => undefined }))({ profileId: PROFILE, provider: "cursor-cli" })).toEqual(ABSENT);
+    expect(await createStoredKeyReader(async () => ({ ensureAuthProfileStore: () => store({}) }))({ profileId: PROFILE, provider: "cursor-cli" })).toEqual(ABSENT);
   });
 
-  it("never throws: a failing load, a failing lookup, or no lookup at all reads as unreadable, not as no key; a failed load is tried again", async () => {
+  it("never throws: a failing load, a failing read, or no reader at all reads as unreadable, not as no key; a failed load is tried again", async () => {
     let loads = 0;
     const flaky = createStoredKeyReader(async () => {
       loads += 1;
       if (loads === 1) throw new Error("no host");
-      return { findPersistedAuthProfileCredential: () => apiKey(KEY) };
+      return { ensureAuthProfileStore: () => store({ [PROFILE]: apiKey(KEY) }) };
     });
     expect(await flaky({ profileId: PROFILE, provider: "cursor-cli" })).toEqual(UNREADABLE);
     expect(await flaky({ profileId: PROFILE, provider: "cursor-cli" })).toEqual(found(KEY));
     expect(await flaky({ profileId: PROFILE, provider: "cursor-cli" })).toEqual(found(KEY));
     expect(loads).toBe(2);
     const failing = createStoredKeyReader(async () => ({
-      findPersistedAuthProfileCredentialAsync: async () => {
+      ensureAuthProfileStoreAsync: async () => {
         throw new Error(`store locked ${KEY}`);
       },
     }));
@@ -95,12 +104,12 @@ describe("any key of the provider in an agent's store (the sweep's lookup)", () 
       .filter(([, credential]) => (credential as { provider?: string }).provider === provider)
       .map(([id]) => id);
 
-  it("finds a key in any api_key profile of the provider, not only the default one, with the async loader first", async () => {
+  it("finds a key in any api_key profile of the provider, not only the default one, with the async read first", async () => {
     const loaded: unknown[] = [];
     const { findAnyKey } = createAuthStore(async () => ({
-      loadAuthProfileStoreWithoutExternalProfilesAsync: async (agentDir) => (loaded.push(agentDir), store({ "cursor-cli:manual": apiKey(KEY), "openai:default": apiKey("o", "openai") })),
-      loadAuthProfileStoreWithoutExternalProfiles: () => {
-        throw new Error("the deprecated sync loader must not run");
+      ensureAuthProfileStoreAsync: async (agentDir) => (loaded.push(agentDir), store({ "cursor-cli:manual": apiKey(KEY), "openai:default": apiKey("o", "openai") })),
+      ensureAuthProfileStore: () => {
+        throw new Error("the deprecated sync read must not run");
       },
       listProfilesForProvider: list,
     }));
@@ -109,28 +118,29 @@ describe("any key of the provider in an agent's store (the sweep's lookup)", () 
     expect(loaded).toEqual(["/agents/w", undefined]);
   });
 
-  it("is absent when the provider's profiles hold no usable key, and uses the sync loader of OpenClaw 2026.10.3", async () => {
+  it("is absent when the provider's profiles hold no usable key, and uses the sync read of OpenClaw 2026.10.3", async () => {
     const { findAnyKey } = createAuthStore(async () => ({
-      loadAuthProfileStoreWithoutExternalProfiles: () =>
+      ensureAuthProfileStore: () =>
         store({ "cursor-cli:ref": { type: "api_key", provider: "cursor-cli", keyRef: { id: "X" } }, "openai:default": apiKey(KEY, "openai") }),
       listProfilesForProvider: list,
     }));
     expect(await findAnyKey({ provider: "cursor-cli" })).toEqual(ABSENT);
   });
 
-  it("is unreadable when the module or the store fails, and reads the default profile when the host lists no profiles", async () => {
+  it("is unreadable when the module, the reader, or the store fails, and reads the default profile when the host lists no profiles", async () => {
     expect(await createAuthStore(async () => Promise.reject(new Error("no host"))).findAnyKey({ provider: "cursor-cli" })).toEqual(UNREADABLE);
+    expect(await createAuthStore(async () => ({ listProfilesForProvider: list })).findAnyKey({ provider: "cursor-cli" })).toEqual(UNREADABLE);
     const broken = createAuthStore(async () => ({
-      loadAuthProfileStoreWithoutExternalProfilesAsync: async () => {
+      ensureAuthProfileStoreAsync: async () => {
         throw new Error("store locked");
       },
       listProfilesForProvider: list,
     }));
     expect(await broken.findAnyKey({ provider: "cursor-cli" })).toEqual(UNREADABLE);
-    const asked: string[] = [];
-    const unlisted = createAuthStore(async () => ({ findPersistedAuthProfileCredential: ({ profileId }) => (asked.push(profileId), apiKey(KEY)) }));
+    const unlisted = createAuthStore(async () => ({ ensureAuthProfileStore: () => store({ [PROFILE]: apiKey(KEY), "cursor-cli:manual": apiKey("other_key_0123") }) }));
     expect(await unlisted.findAnyKey({ agentDir: "/a", provider: "cursor-cli" })).toEqual(found(KEY));
-    expect(asked).toEqual([PROFILE]);
+    const unlistedManual = createAuthStore(async () => ({ ensureAuthProfileStore: () => store({ "cursor-cli:manual": apiKey(KEY) }) }));
+    expect(await unlistedManual.findAnyKey({ provider: "cursor-cli" })).toEqual(ABSENT);
   });
 });
 
@@ -192,7 +202,7 @@ describe.skipIf(!hostAvailable)("OpenClaw's auth store (host contract)", () => {
     };
     const agentDir = join(state, "agents", "main", "agent");
     await auth.upsertAuthProfileWithLock({ profileId: PROFILE, credential: apiKey(KEY), agentDir });
-    const { readKey: read, findAnyKey } = createAuthStore(async () => (await sdk("agent-runtime")) as AuthStoreRuntime);
+    const { readKey: read, findAnyKey } = createAuthStore(async () => (await sdk("provider-auth")) as AuthStoreRuntime);
     expect(await read({ agentDir, profileId: PROFILE, provider: "cursor-cli" })).toEqual(found(KEY));
     expect(await read({ profileId: PROFILE, provider: "cursor-cli" })).toEqual(found(KEY));
     expect(await read({ agentDir, profileId: "cursor-cli:none", provider: "cursor-cli" })).toEqual(ABSENT);
@@ -200,8 +210,17 @@ describe.skipIf(!hostAvailable)("OpenClaw's auth store (host contract)", () => {
     const other = join(state, "agents", "w", "agent");
     await auth.upsertAuthProfileWithLock({ profileId: "cursor-cli:manual", credential: apiKey("key_other_agent_0123"), agentDir: other });
     expect(await findAnyKey({ agentDir: other, provider: "cursor-cli" })).toMatchObject({ kind: "key" });
-    expect(await findAnyKey({ agentDir: join(state, "agents", "empty", "agent"), provider: "cursor-cli" })).toEqual(found(KEY));
+    // An agent without its own profile reads main's, and neither read creates that agent's store.
+    const empty = join(state, "agents", "empty", "agent");
+    expect(await findAnyKey({ agentDir: empty, provider: "cursor-cli" })).toEqual(found(KEY));
+    expect(existsSync(empty)).toBe(false);
+    expect(await read({ agentDir: empty, profileId: PROFILE, provider: "cursor-cli" })).toEqual(found(KEY));
+    expect(existsSync(empty)).toBe(false);
     expect(await findAnyKey({ agentDir, provider: "openai" })).toEqual(ABSENT);
+    // An agent's own profile wins over main's.
+    await auth.upsertAuthProfileWithLock({ profileId: PROFILE, credential: apiKey("key_own_agent_0123"), agentDir: other });
+    expect(await read({ agentDir: other, profileId: PROFILE, provider: "cursor-cli" })).toEqual(found("key_own_agent_0123"));
     expect(existsSync(state)).toBe(true);
   }, 60_000);
 });
+

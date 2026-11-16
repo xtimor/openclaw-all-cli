@@ -231,7 +231,7 @@ describe("API key method (criterion 2, plan 27)", () => {
     const done = await run(KEY).result;
     const { profileId, credential } = done.profiles[0]!;
     const store = new Map([[profileId, credential]]);
-    const readKey = createStoredKeyReader(async () => ({ findPersistedAuthProfileCredential: ({ profileId: id }) => store.get(id) }));
+    const readKey = createStoredKeyReader(async () => ({ ensureAuthProfileStore: () => ({ profiles: Object.fromEntries(store) }) }));
     expect(await readKey({ profileId: "cursor-cli:default", provider: "cursor-cli" })).toEqual({ kind: "key", key: KEY });
     // The usage reader reads the key from the turn's env, where the backend puts the profile's key.
     const clock = createVirtualClock();

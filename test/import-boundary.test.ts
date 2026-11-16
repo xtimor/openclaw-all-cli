@@ -135,3 +135,19 @@ describe("import boundaries (AD-2)", () => {
     expect(offenders).toEqual([]);
   });
 });
+
+describe("OpenClaw's broad runtime barrels", () => {
+  // OpenClaw retires these (deprecation `plugin-sdk-broad-runtime-barrels`) and flags a plugin that loads one.
+  const BARRELS = ["agent-runtime", "cli-runtime", "conversation-runtime", "hook-runtime", "media-runtime", "plugin-runtime", "security-runtime"];
+
+  it("are imported nowhere in the plugin; it uses focused SDK subpaths", () => {
+    const hits = files
+      .filter((file) => !isTest(file))
+      .flatMap((file) =>
+        importsOf(file)
+          .filter((specifier) => BARRELS.some((barrel) => specifier.replace(/\.js$/, "") === `openclaw/plugin-sdk/${barrel}`))
+          .map((specifier) => `${rel(file)}: ${specifier}`),
+      );
+    expect(hits).toEqual([]);
+  });
+});
