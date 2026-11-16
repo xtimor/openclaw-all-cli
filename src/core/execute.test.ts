@@ -296,6 +296,28 @@ describe("createExecute", () => {
     expect(opens).toHaveLength(2);
   });
 
+  it("opens a new process when the API key changes (plan 27), reuses it for the same key, and keys no process by the key itself", async () => {
+    const made = makeAdapter();
+    const adapter: CliAdapter = { ...made.adapter, apiKeyEnvVar: "ACME_API_KEY" };
+    const { live } = makeLive();
+    const keyed = (key: string) => ({ ...HOME, env: { ...HOME.env, ACME_API_KEY: key } });
+    const turn = (home: typeof HOME, sessionId: string, env: Record<string, string> = usableEnv) =>
+      run(createExecute(adapter, { home }), makeCtx({ liveSession: live, env, useResume: true, sessionId }));
+    await run(createExecute(adapter, { home: keyed("key-one") }), makeCtx({ liveSession: live, env: usableEnv }));
+    await turn(keyed("key-one"), "native-1");
+    expect(made.opens).toHaveLength(1);
+    expect(made.opens[0]?.env.ACME_API_KEY).toBe("key-one");
+    await turn(keyed("key-two"), "native-1");
+    expect(made.opens).toHaveLength(2);
+    expect(made.opens[1]?.env.ACME_API_KEY).toBe("key-two");
+    // A key in the turn's env (the plugin config's) counts the same way; the home's wins over it.
+    await turn(HOME, "native-2", { ...usableEnv, ACME_API_KEY: "key-two" });
+    expect(made.opens).toHaveLength(2);
+    await turn(HOME, "native-3", { ...usableEnv, ACME_API_KEY: "key-three" });
+    expect(made.opens).toHaveLength(3);
+    for (const entry of made.sessions) expect(JSON.stringify(entry)).not.toContain("key-");
+  });
+
   it("adds the home's env to the process env, over the host's", async () => {
     const { adapter, opens } = makeAdapter();
     await run(createExecute(adapter, { home: HOME }), makeCtx({ env: { PATH: "/bin", ACME_HOME: "/host" } }));

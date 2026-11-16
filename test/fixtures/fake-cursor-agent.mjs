@@ -4,10 +4,13 @@
 // without a Cursor login. Behavior is steered by env vars and by the prompt text.
 //
 //   FAKE_CURSOR_LOGGED_IN=0     `status` reports "Not logged in"
+//   FAKE_CURSOR_KEY_CACHE=1     like cursor-agent 2026.11.11: any run with CURSOR_API_KEY writes `cursor/auth.json` (a hash of the key, never
+//                               the key) under XDG_CONFIG_HOME (default `$HOME/.config`); `status` then answers from that file (logged in
+//                               when it holds a key) instead of FAKE_CURSOR_LOGGED_IN; `initialize` logs its `cachedKeyHash`
 //   FAKE_CURSOR_NO_ASK_MODE=1   the agent lists no "ask" mode
 //   FAKE_CURSOR_START_MODE=<id> the mode a session starts in (default "agent"); prompt "[[mode]]" replies "mode:<current mode>"
 //   FAKE_CURSOR_LOG=<file>      append one JSON line per request the agent receives (with `t`, the epoch ms); the `initialize` line also carries
-//                               the process `argv` and CURSOR_CONFIG_DIR/CURSOR_DATA_DIR
+//                               the process `argv`, CURSOR_CONFIG_DIR/CURSOR_DATA_DIR/XDG_CONFIG_HOME, `keyed`, and `keyHash` (8 hex of the key's sha256)
 //   FAKE_CURSOR_LOG_END=1       also log a `prompt/end` line when a prompt ends
 //   FAKE_CURSOR_USAGE=1|<json> session/prompt answers with a small ACP usage, or with this JSON as its usage
 //   FAKE_CURSOR_VERSION=<text>  what `--version` prints (default "2026.10.14-fake")
@@ -72,12 +75,27 @@ const log = (entry) => {
   if (process.env.FAKE_CURSOR_LOG) appendFileSync(process.env.FAKE_CURSOR_LOG, `${JSON.stringify({ ...entry, t: Date.now() })}\n`);
 };
 
+/** Cursor's own key cache (`$XDG_CONFIG_HOME/cursor/auth.json`), imitated with FAKE_CURSOR_KEY_CACHE=1. */
+const keyCacheFile = join(process.env.XDG_CONFIG_HOME || join(process.env.HOME || "/nonexistent", ".config"), "cursor", "auth.json");
+const hashOf = (key) => createHash("sha256").update(key).digest("hex").slice(0, 8);
+const cachedKeyHash = () => {
+  try {
+    return JSON.parse(readFileSync(keyCacheFile, "utf8")).keyHash;
+  } catch {
+    return undefined;
+  }
+};
+if (process.env.FAKE_CURSOR_KEY_CACHE === "1" && process.env.CURSOR_API_KEY?.trim() && args[0] !== "status") {
+  mkdirSync(join(keyCacheFile, ".."), { recursive: true });
+  writeFileSync(keyCacheFile, JSON.stringify({ keyHash: hashOf(process.env.CURSOR_API_KEY.trim()) }), { mode: 0o600 });
+}
+
 if (args[0] === "--version") {
   console.log(process.env.FAKE_CURSOR_VERSION ?? "2026.10.14-fake");
   process.exit(Number(process.env.FAKE_CURSOR_VERSION_EXIT ?? 0));
 }
 if (args[0] === "status") {
-  if (process.env.FAKE_CURSOR_LOGGED_IN === "0") {
+  if (process.env.FAKE_CURSOR_KEY_CACHE === "1" ? !cachedKeyHash() : process.env.FAKE_CURSOR_LOGGED_IN === "0") {
     console.log("Not logged in");
     process.exit(1);
   }
@@ -382,7 +400,15 @@ rl.on("line", (line) => {
     method: message.method,
     params: message.method === "session/prompt" ? summarizePrompt(message.params) : message.params,
     ...(message.method === "initialize"
-      ? { pid: process.pid, argv: args, env: { CURSOR_CONFIG_DIR: process.env.CURSOR_CONFIG_DIR, CURSOR_DATA_DIR: process.env.CURSOR_DATA_DIR } }
+      ? {
+          pid: process.pid,
+          argv: args,
+          env: { CURSOR_CONFIG_DIR: process.env.CURSOR_CONFIG_DIR, CURSOR_DATA_DIR: process.env.CURSOR_DATA_DIR, XDG_CONFIG_HOME: process.env.XDG_CONFIG_HOME },
+          // Whether an API key reached the process, and a short hash to tell keys apart; never the key.
+          keyed: Boolean(process.env.CURSOR_API_KEY?.trim()),
+          ...(process.env.CURSOR_API_KEY?.trim() ? { keyHash: hashOf(process.env.CURSOR_API_KEY.trim()) } : {}),
+          ...(process.env.FAKE_CURSOR_KEY_CACHE === "1" ? { cachedKeyHash: cachedKeyHash() ?? null } : {}),
+        }
       : {}),
   });
   const { id, method, params } = message;

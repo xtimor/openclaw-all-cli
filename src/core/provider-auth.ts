@@ -1,4 +1,6 @@
-import { join } from "node:path";
+import { join, resolve } from "node:path";
+import { API_KEY_METHOD_ID, LOGIN_METHOD_ID, REMOVE_METHOD_ID } from "./auth-ids.ts";
+import { defaultProfileIdFor, readStoredKey, resolveCliKey, type KeySource, type ReadStoredKey } from "./auth-store.ts";
 import { backendIdFor } from "./backend.ts";
 import { readBackendConfig, type BackendConfig } from "./config.ts";
 import { withoutKeys } from "./env.ts";
@@ -12,22 +14,22 @@ import {
   ManagedInstallError,
   managedRoot,
   readManaged,
+  removeKeySavedMarker,
   removeManaged,
+  writeKeySavedMarker,
   type HostFacts,
   type InstallProgress,
 } from "./managed-install.ts";
 import { CliError, type CliAdapter } from "./ports.ts";
 
-/** The ID of the method that reuses the CLI's own login. */
-export const LOGIN_METHOD_ID = "login";
-/**
- * The ID of the method that keeps an API key in the plugin config. Not `api-key`: OpenClaw gives
- * that ID a quick-entry path that stores the key in its auth store instead (checked against
- * OpenClaw 2026.10.3, `models.authSetApiKey`), and this method must not.
- */
-export const API_KEY_METHOD_ID = "api-key-env";
-/** The ID of the method that removes the saved key and the managed CLI, each after a yes. */
-export const REMOVE_METHOD_ID = "remove";
+export { API_KEY_METHOD_ID, LOGIN_METHOD_ID, REMOVE_METHOD_ID };
+
+/** Where a key the turns use lives, for a note. */
+const KEY_SOURCE_TEXT: Record<KeySource, (backendId: string) => string> = {
+  store: (backendId) => `in OpenClaw's auth store, profile ${defaultProfileIdFor(backendId)}`,
+  config: (backendId) => `in the plugin config, ${backendId}.env`,
+  env: () => "in the Gateway's environment",
+};
 
 /** The plugin's setup guide: the manual install, and the full key removal steps. */
 const SETUP_DOCS = "https://github.com/xtimor/openclaw-all-cli/blob/main/docs/setup.md";
@@ -41,6 +43,8 @@ type PluginConfig = Record<string, unknown> | undefined;
 type AuthContext = {
   config?: { plugins?: { entries?: Record<string, { config?: Record<string, unknown> } | undefined> } };
   env?: Env;
+  /** The agent whose auth store the host writes the returned profile to. */
+  agentDir?: string;
   signal?: AbortSignal;
   /** Rechecks the caller's authority; called right before a download or a removal. */
   assertCurrent?: () => void;
@@ -57,8 +61,11 @@ type AuthContext = {
   };
 };
 
+/** An auth profile a method returns; OpenClaw stores it in its auth store. */
+type AuthProfile = { profileId: string; credential: { type: "api_key"; provider: string; key: string } };
+
 /** The shape of OpenClaw's auth result that these methods use. */
-type AuthResult = { profiles: never[]; notes: string[]; configPatch?: Record<string, unknown> };
+type AuthResult = { profiles: AuthProfile[]; notes: string[]; configPatch?: Record<string, unknown> };
 
 type AuthMethod = {
   id: string;
@@ -83,6 +90,13 @@ export type AuthDeps = {
   host?: (env: Env) => HostFacts;
   /** Free disk bytes for a folder (tests). */
   freeBytes?: (dir: string) => Promise<number>;
+  /** Reads a key from OpenClaw's auth store (tests). Default: `readStoredKey`. */
+  readKey?: ReadStoredKey;
+  /**
+   * The main agent's directory, whose auth profiles every agent falls back to. Absent: only a run
+   * without an `agentDir` counts as the main agent's.
+   */
+  mainAgentDir?: () => string | undefined;
 };
 
 const isRecord = (value: unknown): value is Record<string, unknown> =>
@@ -104,22 +118,35 @@ type CliState =
   | { kind: "absent"; command: string; detail: string };
 
 /**
- * The auth methods of one CLI provider, for OpenClaw's provider list and `models auth login`.
- * None stores anything in OpenClaw's auth store, so the native login path (`prepareSyntheticAuth`)
- * stays as it is:
+ * The auth methods of one CLI provider, for OpenClaw's provider list and `models auth login`:
  *
- * - `login` has no fields. It runs the adapter's login probe and reports whether the CLI is
- *   logged in; it throws when it is not, so the caller shows the fix.
  * - `api-key-env` (only for a CLI that has an API key variable) asks for the key, checks it with
- *   the CLI when the adapter can, and writes it to the plugin config `env` of the backend, where
- *   the CLI process, the probes, and the usage reader already look for it. The key goes nowhere
- *   else and is never logged or echoed.
- * - `remove` asks, separately, whether to remove the saved key and the CLI the plugin installed.
+ *   the CLI when the adapter can, and returns it as the `api_key` auth profile `<backendId>:default`.
+ *   OpenClaw stores it in its auth store, so the Control UI's Connect dialog ends cleanly and the
+ *   provider card shows the account. At turn time the backend reads it from the profile the host
+ *   picked and gives it to the CLI process only. A key an older version kept in the plugin config
+ *   is removed there. The key is never logged or echoed. The only method in the Control UI list.
+ * - `login` (terminal only) has no fields. It runs the adapter's login probe and reports whether the
+ *   CLI is logged in; it throws when it is not, so the caller shows the fix. It stores nothing: a
+ *   login is no credential profile, and a placeholder one is refused (bug 14).
+ * - `remove` (terminal only) asks, separately, whether to remove a key left in the plugin config
+ *   and the CLI the plugin installed. OpenClaw's own Remove key removes the profile.
  *
  * When the CLI is missing or too old, `login` and `api-key-env` offer the adapter's pinned
  * managed install (AD-17), and only install after a yes.
  */
 export function createAuthMethods(adapter: CliAdapter, pluginId: string, deps: AuthDeps = {}): AuthMethod[] {
+  /** Whether a profile saved for `agentDir` is the main agent's, which every agent falls back to. */
+  const isMainAgent = (agentDir: string | undefined): boolean => {
+    if (agentDir === undefined) return true;
+    let main: string | undefined;
+    try {
+      main = deps.mainAgentDir?.();
+    } catch {
+      main = undefined;
+    }
+    return main !== undefined && resolve(main) === resolve(agentDir);
+  };
   const backendId = backendIdFor(adapter);
   const keyVar = adapter.apiKeyEnvVar;
   const spec = adapter.managedInstall;
@@ -275,7 +302,6 @@ export function createAuthMethods(adapter: CliAdapter, pluginId: string, deps: A
         }
         // The probe counts an API key as a login; this method reports the CLI's own login, so the key is left out.
         const probeEnv = probeEnvOf(context, settings);
-        const keyed = keyVar !== undefined && Boolean(probeEnv[keyVar]?.trim());
         const env = withoutKeys(probeEnv, keyVar ? [keyVar] : []);
         const status = await adapter.probeAuth({ command, env, ...(context.signal ? { signal: context.signal } : {}) });
         context.signal?.throwIfAborted();
@@ -298,7 +324,19 @@ export function createAuthMethods(adapter: CliAdapter, pluginId: string, deps: A
           throw new Error(problem);
         }
         const notes = [...installNotes, `${adapter.displayName} is logged in. OpenClaw uses that login; nothing is stored.`];
-        if (keyed) notes.push(`A ${adapter.apiKeyEnvVar} is set too and takes precedence over the login.`);
+        // A key the turns would use instead: the auth profile's, the plugin config's, or the Gateway env's (the turn's order).
+        if (keyVar) {
+          const resolved = await resolveCliKey({
+            readKey: deps.readKey ?? readStoredKey,
+            keyVar,
+            provider: backendId,
+            agentDir: context.agentDir,
+            pluginEnv: settings.env,
+            env: withoutKeys(context.env ?? process.env, adapter.clearEnv),
+          });
+          context.signal?.throwIfAborted();
+          if (resolved.source) notes.push(`A ${keyVar} is saved too (${KEY_SOURCE_TEXT[resolved.source](backendId)}) and takes precedence over the login.`);
+        }
         return { profiles: [], notes, ...(configPatch ? { configPatch } : {}) };
       },
     },
@@ -307,7 +345,7 @@ export function createAuthMethods(adapter: CliAdapter, pluginId: string, deps: A
     methods.push({
       id: API_KEY_METHOD_ID,
       label: `${adapter.displayName} API key (${keyVar})`,
-      hint: `Keep an API key in the plugin config; only the ${adapter.displayName} process sees it`,
+      hint: `Saves the key in OpenClaw's auth store; only the ${adapter.displayName} process sees it`,
       kind: "custom",
       async run(context) {
         context.signal?.throwIfAborted();
@@ -339,6 +377,7 @@ export function createAuthMethods(adapter: CliAdapter, pluginId: string, deps: A
         const key = entered.trim();
         const withCommand = (backend: Record<string, unknown>) => (installed ? { ...backend, command } : backend);
         const notes = [...installNotes];
+        const profileId = defaultProfileIdFor(backendId);
         if (ready && adapter.checkKey) {
           // The key reaches the CLI through its env only, never an argument.
           const env = { ...probeEnvOf(context, settings), [keyVar]: key };
@@ -371,13 +410,45 @@ export function createAuthMethods(adapter: CliAdapter, pluginId: string, deps: A
         } else if (!ready) {
           notes.push(`No working ${adapter.displayName} was found, so the key was saved without a check.`);
         }
-        notes.push(
-          `The key is saved in the plugin config (plugins.entries.${pluginId}.config.${backendId}.env.${keyVar}) and given to the ${adapter.displayName} process only.`,
-        );
+        notes.push(`The key is saved in OpenClaw's auth store as the profile ${profileId} and given to the ${adapter.displayName} process only.`);
+        // Migration: a key an earlier version kept in the plugin config would hide behind the profile, so
+        // it goes, but only for the main agent's profile: other agents fall back to main's profiles, never
+        // to another agent's, so a profile of one agent leaves the config key to the others.
+        const configKey = settings.env?.[keyVar] !== undefined;
+        const legacy = configKey && isMainAgent(context.agentDir);
+        const where = `plugins.entries.${pluginId}.config.${backendId}.env`;
+        if (legacy) {
+          notes.push(`The ${keyVar} kept in the plugin config (${where}) is removed there; the auth profile replaces it.`);
+          if (adapter.keyCopyPath) {
+            const logout = adapter.logoutCommand ? `run \`${adapter.logoutCommand}\`` : `log ${adapter.displayName} out`;
+            notes.push(
+              `If an older plugin version ran ${adapter.displayName} with that key, ${adapter.displayName} may keep a copy in ${adapter.keyCopyPath}: it then keeps working after the key is removed, and the plugin reads it as ${adapter.displayName}'s own login and keeps the ${adapter.displayName} it installed. The plugin never touches that file; to remove it, ${logout} (that also ends a login of your own there). See ${REMOVAL_DOCS}`,
+            );
+          }
+        } else if (configKey) {
+          notes.push(
+            `This agent's auth profile ${profileId} takes precedence for this agent. The ${keyVar} in the plugin config (${where}) stays: the other agents still use it, since they do not see this agent's profile.`,
+          );
+        }
+        // A key saved for the CLI the plugin installed: when the key is gone, the plugin removes that CLI too.
+        const root = rootOf();
+        if (root && isInside(root, command)) {
+          try {
+            await writeKeySavedMarker(root);
+          } catch {
+            // Without the marker the install only stays when the key is removed; nothing else changes.
+          }
+        }
+        const configPatch =
+          installed || legacy
+            ? backendPatch(context, (backend) =>
+                withCommand(legacy ? { ...backend, env: { ...envOfBackend(backend), [keyVar]: undefined } } : backend),
+              )
+            : undefined;
         return {
-          profiles: [],
+          profiles: [{ profileId, credential: { type: "api_key", provider: backendId, key } }],
           notes,
-          configPatch: backendPatch(context, (backend) => withCommand({ ...backend, env: { ...envOfBackend(backend), [keyVar]: key } })),
+          ...(configPatch ? { configPatch } : {}),
         };
       },
     });
@@ -386,7 +457,7 @@ export function createAuthMethods(adapter: CliAdapter, pluginId: string, deps: A
     methods.push({
       id: REMOVE_METHOD_ID,
       label: `Remove the saved key or the installed ${adapter.displayName}`,
-      hint: `Asks before it removes the key in the plugin config and the ${adapter.displayName} the plugin installed`,
+      hint: `Asks before it removes a key in the plugin config and the ${adapter.displayName} the plugin installed`,
       kind: "custom",
       async run(context) {
         context.signal?.throwIfAborted();
@@ -394,9 +465,20 @@ export function createAuthMethods(adapter: CliAdapter, pluginId: string, deps: A
         const hasKey = keyVar !== undefined && settings.env?.[keyVar] !== undefined;
         const root = spec ? rootOf() : undefined;
         const managed = root ? await readManaged(root) : undefined;
+        // The auth profile is OpenClaw's to remove: this method only says where it is.
+        const profileId = defaultProfileIdFor(backendId);
+        const stored = keyVar
+          ? await (deps.readKey ?? readStoredKey)({ agentDir: context.agentDir, profileId, provider: backendId })
+          : undefined;
+        const storedNote =
+          stored?.kind === "key"
+            ? `The key in OpenClaw's auth store (profile ${profileId}) stays: remove it with Remove key on the provider card, or run \`openclaw models auth logout ${profileId}\`.`
+            : undefined;
         if (!hasKey && !managed?.present) {
           const what = keyVar ? `no ${keyVar} is saved in the plugin config` : "no key is saved";
-          return { profiles: [], notes: [`Nothing to remove: ${what}, and the plugin has not installed ${adapter.displayName}.`] };
+          const notes = [`Nothing to remove: ${what}, and the plugin has not installed ${adapter.displayName}.`];
+          if (storedNote) notes.push(storedNote);
+          return { profiles: [], notes };
         }
         const confirm = context.prompter.confirm;
         if (typeof confirm !== "function") {
@@ -420,10 +502,12 @@ export function createAuthMethods(adapter: CliAdapter, pluginId: string, deps: A
           removeKey = await ask(`Remove the saved ${keyVar} from the plugin config (plugins.entries.${pluginId}.config.${backendId}.env)?`);
           if (removeKey) {
             const copies = [
-              ...(adapter.keyCopyPath ? [`${adapter.displayName}'s own copy in ${adapter.keyCopyPath}`] : []),
               "OpenClaw's rotated config copies next to openclaw.json",
-            ].join(" and ");
-            notes.push(`${keyVar} is removed from the plugin config; the other ${backendId} settings stay. ${copies} remain: see ${REMOVAL_DOCS}`);
+              ...(adapter.keyCopyPath ? [`${adapter.displayName}'s own copy in ${adapter.keyCopyPath}, if an older plugin version ran it with the key`] : []),
+            ].join(", and ");
+            notes.push(
+              `${keyVar} is removed from the plugin config; the other ${backendId} settings stay. The plugin deletes its own cached copy at the next Gateway start that loads it, or a ${backendId} turn without a key. Other copies may remain: ${copies}. See ${REMOVAL_DOCS}`,
+            );
           } else {
             notes.push(`The saved ${keyVar} stays.`);
           }
@@ -435,7 +519,9 @@ export function createAuthMethods(adapter: CliAdapter, pluginId: string, deps: A
             : ` This process cannot see turns running in the Gateway; a turn still using it may fail.`;
           const removeCli = await ask(`Also remove the ${adapter.displayName} the plugin installed? Folder: ${root} (${formatBytes(managed.bytes)}).${blind}`);
           if (!removeCli) {
-            notes.push(`The ${adapter.displayName} in ${root} stays.`);
+            // A no is the user's choice: the plugin no longer removes this CLI by itself when the key goes.
+            await removeKeySavedMarker(root).catch(() => {});
+            notes.push(`The ${adapter.displayName} in ${root} stays; the plugin will not remove it by itself.`);
           } else {
             if (pool && (pool.turns > 0 || pool.queued > 0)) {
               notes.push(`A ${backendId} turn is running or waiting, so ${root} was not removed. Run this method again when it has ended.`);
@@ -460,6 +546,7 @@ export function createAuthMethods(adapter: CliAdapter, pluginId: string, deps: A
             }
           }
         }
+        if (storedNote) notes.push(storedNote);
         if (!removeKey && !unsetCommand) return { profiles: [], notes };
         return {
           profiles: [],

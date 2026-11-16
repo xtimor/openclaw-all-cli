@@ -27,6 +27,13 @@ describe.skipIf(!hostAvailable)("what the provider card reads (OpenClaw host)", 
     expect(source).not.toMatch(/syntheticAuth/);
   });
 
+  it("lists a saved api_key profile from the auth store, with a logout (Remove key), as plan 27's method saves", () => {
+    const source = hostFile("models-auth-status-", "function resolveProviderApiKeys(");
+    expect(source).toMatch(/for \(const profile of Object\.values\(store\.profiles\)\) \{\s*const provider = normalizeProviderId\(profile\.provider\);\s*if \(provider\) statusProviderIds\.add\(provider\);/);
+    expect(source).toMatch(/\(profile\.type !== "api_key" \|\| !profile\.keyRef\)/);
+    expect(source).toContain("logoutSupported: true");
+  });
+
   it("draws 'Not configured' when there is no profile, config key, or env key", () => {
     expect(hostFile("en-settings-", "Not configured", join(HOST_DIST, "control-ui", "assets"))).toContain("none:`Not configured`");
   });

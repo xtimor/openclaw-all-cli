@@ -493,7 +493,8 @@ export interface CliAdapter {
   readonly clearEnv: readonly string[];
   /**
    * Optional. Name of the env var that carries the CLI's API key, for example `ACME_API_KEY`.
-   * When set, the provider offers a method that saves a key into the plugin config `env`.
+   * When set, the provider offers a method that saves a key as an OpenClaw auth profile, and the
+   * core hands that key to the CLI process under this name.
    */
   readonly apiKeyEnvVar?: string;
   /** Optional. The command line that logs the CLI in, shown when the login is missing. Default `<command> login`. */
@@ -503,6 +504,16 @@ export interface CliAdapter {
    * for example `~/.config/acme/auth.json`.
    */
   readonly keyCopyPath?: string;
+  /** Optional. The command line that removes the CLI's own copy in `keyCopyPath` (it logs the CLI out). */
+  readonly logoutCommand?: string;
+  /**
+   * Optional. Env that makes the CLI keep what it caches about a key it was given (a copy of the
+   * key, tokens) under `dir` instead of the user's own config. The core sets it for every run that
+   * gets a key from the plugin (an auth profile or the plugin config), in a folder it owns and
+   * deletes when that key is gone, so a removed key stops working and never reads as the CLI's own
+   * login. Absent: the CLI caches wherever it does.
+   */
+  keyCacheEnv?(dir: string): HomeEnv;
   /**
    * Optional. The pinned package the provider's Connect methods may install when the CLI is
    * missing or too old (AD-17). Absent: they only point at the manual install.

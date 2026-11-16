@@ -436,6 +436,11 @@ export const cursorAdapter: CliAdapter = {
   apiKeyEnvVar: "CURSOR_API_KEY",
   loginCommand: "cursor-agent login",
   keyCopyPath: "~/.config/cursor/auth.json",
+  logoutCommand: "cursor-agent logout",
+  // A run with `CURSOR_API_KEY` writes the key and its tokens to `$XDG_CONFIG_HOME/cursor/auth.json`,
+  // and later keyless runs then count as logged in. `CURSOR_CONFIG_DIR` does not move that file;
+  // `XDG_CONFIG_HOME` does, and `cli-config.json` stays in `CURSOR_CONFIG_DIR` (live, cursor-agent 2026.11.11).
+  keyCacheEnv: (dir) => ({ XDG_CONFIG_HOME: dir }),
   managedInstall: CURSOR_MANAGED_INSTALL,
   checkKey,
   checkVersion,

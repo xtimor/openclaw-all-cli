@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto";
 import { backendIdFor } from "./backend.ts";
+import { withThrowawayKeyCache } from "./key-cache.ts";
 import { closeListings as closeAllListings, trackListing, type Listing } from "./listings.ts";
 import { recordProcess, type ProcessLock } from "./pid-locks.ts";
 import type { CliAdapter, CliModel } from "./ports.ts";
@@ -16,6 +17,12 @@ export type CatalogParams = {
    * from its spawn to its exit (AD-14). Absent: the listing runs unrecorded, and the catalog warns once.
    */
   lockDir?: string;
+  /**
+   * The env holds a key from the plugin (an auth profile or the plugin config): the listing's CLI
+   * caches it in a throwaway folder (under `lockDir`'s key cache when given), never in the user's
+   * own config (plan 27). Not part of the cache key.
+   */
+  isolateKey?: boolean;
 };
 
 /** `closeListings` waits this long for the aborted listings' processes to exit: the transport's kill grace plus a margin. */
@@ -119,19 +126,21 @@ export function createModelCatalog(adapter: CliAdapter, options: ModelCatalogOpt
       }
       const env = Object.fromEntries(Object.entries(params.env).filter((entry): entry is [string, string] => entry[1] !== undefined));
       const lockDir = params.lockDir;
-      const models = await adapter.listModels({
-        command: params.command,
-        args: adapter.launchArgs,
-        env,
-        signal: controller.signal,
-        ...(lockDir
-          ? {
-              onProcessStart: (pid: number, info?: { processGroup: boolean }) => {
-                lock = recordProcess(lockDir, pid, warn, { group: info?.processGroup === true });
-              },
-            }
-          : {}),
-      });
+      const list = (cacheEnv: Readonly<Record<string, string>>) =>
+        adapter.listModels({
+          command: params.command,
+          args: adapter.launchArgs,
+          env: { ...env, ...cacheEnv },
+          signal: controller.signal,
+          ...(lockDir
+            ? {
+                onProcessStart: (pid: number, info?: { processGroup: boolean }) => {
+                  lock = recordProcess(lockDir, pid, warn, { group: info?.processGroup === true });
+                },
+              }
+            : {}),
+        });
+      const models = params.isolateKey ? await withThrowawayKeyCache(adapter, lockDir, list) : await list({});
       const rows = models.map(toRow);
       // A CLI that answers with nothing leaves the account with the default model, as a failure does.
       if (rows.length === 0) throw new Error("the CLI listed no models");

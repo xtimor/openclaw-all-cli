@@ -1000,7 +1000,8 @@ describe("synthetic auth provider entry", () => {
       config: { plugins: { entries: { "openclaw-all-cli": { config: { "cursor-cli": { command: FAKE_CURSOR_AGENT, env: { CURSOR_API_KEY: "from-config" } } } } } } },
       env: { PATH: "/bin" },
     });
-    expect(seen).toEqual([{ PATH: "/bin", CURSOR_API_KEY: "from-config" }]);
+    // A key from the plugin: any CLI process the probe starts caches it in a throwaway folder (plan 27).
+    expect(seen).toEqual([{ PATH: "/bin", CURSOR_API_KEY: "from-config", XDG_CONFIG_HOME: expect.stringMatching(/oac-key-cache-/) }]);
   });
 
   it("returns nothing when the login is missing, the provider differs, or there is no config", async () => {

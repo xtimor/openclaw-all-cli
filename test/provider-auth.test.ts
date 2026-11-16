@@ -4,6 +4,7 @@ import { join } from "node:path";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import { cursorAdapter } from "../src/adapters/cursor/index.ts";
 import { createCursorUsageReader, USAGE_URL_ENV } from "../src/adapters/cursor/usage.ts";
+import { createStoredKeyReader } from "../src/core/auth-store.ts";
 import { buildCliBackend } from "../src/core/backend.ts";
 import { readBackendConfig } from "../src/core/config.ts";
 import type { CliAdapter } from "../src/core/ports.ts";
@@ -41,11 +42,13 @@ function prompter(answer = KEY) {
   };
 }
 
-const methodOf = (adapter: CliAdapter, id: string) => createAuthMethods(adapter, PLUGIN_ID).find((method) => method.id === id)!;
+/** OpenClaw's auth store for these tests: none of its profiles holds a key unless a test says so. */
+const noProfile: AuthDeps = { readKey: async () => ({ kind: "absent" }) };
+const methodOf = (adapter: CliAdapter, id: string, deps: AuthDeps = noProfile) => createAuthMethods(adapter, PLUGIN_ID, deps).find((method) => method.id === id)!;
 
 describe("auth methods of the cursor-cli provider", () => {
   it("lists a login method with no fields, an API key method, and a remove method", () => {
-    const methods = createAuthMethods(cursorAdapter, PLUGIN_ID);
+    const methods = createAuthMethods(cursorAdapter, PLUGIN_ID, noProfile);
     expect(methods.map((method) => method.id)).toEqual([LOGIN_METHOD_ID, API_KEY_METHOD_ID, REMOVE_METHOD_ID]);
     expect(methods[0]).toMatchObject({ label: "Use the cursor-agent login", kind: "custom" });
     expect(methods.every((method) => method.hint.length > 0)).toBe(true);
@@ -118,8 +121,26 @@ describe("login method (criterion 1)", () => {
       env: fakeEnv(),
       prompter: prompter().api,
     });
-    expect(result.notes.join(" ")).toMatch(/CURSOR_API_KEY is set too/);
+    expect(result.notes.join(" ")).toMatch(/CURSOR_API_KEY is saved too \(in the plugin config, cursor-cli\.env\) and takes precedence over the login/);
     expect(JSON.stringify(result)).not.toContain(KEY);
+  });
+
+  it("names a key in the auth profile, which turns use first, and one in the Gateway's env", async () => {
+    const reads: unknown[] = [];
+    const profile: AuthDeps = { readKey: async (query) => (reads.push(query), { kind: "key", key: KEY }) };
+    const stored = await methodOf(cursorAdapter, LOGIN_METHOD_ID, profile).run({
+      config: configWith({ command: FAKE_CURSOR_AGENT, env: { CURSOR_API_KEY: "other" } }),
+      env: fakeEnv(),
+      agentDir: "/agents/w",
+      prompter: prompter().api,
+    });
+    expect(stored.notes.join(" ")).toMatch(/CURSOR_API_KEY is saved too \(in OpenClaw's auth store, profile cursor-cli:default\) and takes precedence over the login/);
+    expect(reads).toEqual([{ agentDir: "/agents/w", profileId: "cursor-cli:default", provider: "cursor-cli" }]);
+    expect(JSON.stringify(stored)).not.toContain(KEY);
+    const gateway = await methodOf(cursorAdapter, LOGIN_METHOD_ID).run({ config: configWith({ command: FAKE_CURSOR_AGENT }), env: fakeEnv({ CURSOR_API_KEY: KEY }), prompter: prompter().api });
+    expect(gateway.notes.join(" ")).toMatch(/saved too \(in the Gateway's environment\)/);
+    const none = await methodOf(cursorAdapter, LOGIN_METHOD_ID).run({ config: configWith({ command: FAKE_CURSOR_AGENT }), env: fakeEnv(), prompter: prompter().api });
+    expect(none.notes.join(" ")).not.toMatch(/takes precedence/);
   });
 
   it("probes without the adapter's cleared env keys, like every other probe", async () => {
@@ -142,29 +163,31 @@ describe("login method (criterion 1)", () => {
   });
 });
 
-describe("API key method (criterion 2)", () => {
+describe("API key method (criterion 2, plan 27)", () => {
   const run = (answer: string, config: Config = configWith({ command: FAKE_CURSOR_AGENT })) => {
     const asker = prompter(answer);
     return { asker, result: methodOf(cursorAdapter, API_KEY_METHOD_ID).run({ config, env: fakeEnv(), prompter: asker.api }) };
   };
 
-  it("asks for the key as a secret and writes it to the plugin config env of cursor-cli, in OpenClaw's profile-less result", async () => {
+  it("asks for the key as a secret and returns it as the api_key profile cursor-cli:default, with no config change", async () => {
     const { asker, result } = run(`  ${KEY}\n`);
     const done = await result;
     expect(asker.asked).toHaveLength(1);
     expect(asker.asked[0]).toMatchObject({ sensitive: true });
-    expect(done.profiles).toEqual([]);
-    expect(done.configPatch).toEqual({
-      plugins: { entries: { [PLUGIN_ID]: { config: { "cursor-cli": { command: FAKE_CURSOR_AGENT, env: { CURSOR_API_KEY: KEY } } } } } },
-    });
-    expect(done.notes.join(" ")).toMatch(/Cursor CLI accepted the key/);
+    // OpenClaw's Control UI ends the dialog with an error unless a method returns at least one profile.
+    expect(done.profiles).toEqual([{ profileId: "cursor-cli:default", credential: { type: "api_key", provider: "cursor-cli", key: KEY } }]);
+    expect(done).not.toHaveProperty("configPatch");
+    const notes = done.notes.join(" ");
+    expect(notes).toMatch(/Cursor CLI accepted the key/);
+    expect(notes).toMatch(/auth store as the profile cursor-cli:default/);
   });
 
-  it("keeps what the config already holds: the command, the caps, other env values, and the entry's other fields", async () => {
+  it("removes a key an earlier version kept in the plugin config, keeping the command, the caps, other env values, and the entry's other fields", async () => {
     const existing = { command: FAKE_CURSOR_AGENT, maxConcurrentTurns: 2, env: { OTHER: "1", CURSOR_API_KEY: "old" } };
     const config = configWith(existing, { enabled: true });
     (config as any).plugins.entries[PLUGIN_ID].config.extra = "kept";
     const done = await run(KEY, config).result;
+    expect(done.profiles[0]!.credential.key).toBe(KEY);
     expect(done.configPatch).toEqual({
       plugins: {
         entries: {
@@ -172,24 +195,45 @@ describe("API key method (criterion 2)", () => {
             enabled: true,
             config: {
               extra: "kept",
-              "cursor-cli": { command: FAKE_CURSOR_AGENT, maxConcurrentTurns: 2, env: { OTHER: "1", CURSOR_API_KEY: KEY } },
+              "cursor-cli": { command: FAKE_CURSOR_AGENT, maxConcurrentTurns: 2, env: { OTHER: "1", CURSOR_API_KEY: undefined } },
             },
           },
         },
       },
     });
+    expect(done.notes.join(" ")).toMatch(/kept in the plugin config .* is removed there; the auth profile replaces it/);
+    // Cursor's own copy from an older plugin version is the user's to remove: the note says how.
+    expect(done.notes.join(" ")).toMatch(
+      /older plugin version ran Cursor CLI with that key, Cursor CLI may keep a copy in ~\/\.config\/cursor\/auth\.json: it then keeps working after the key is removed.*never touches that file; to remove it, run `cursor-agent logout`/,
+    );
   });
 
-  it("writes a config the plugin reads back: the settings, the backend's env, and the usage reader's query", async () => {
+  it("removes the plugin-config key only for the main agent's profile, which every agent falls back to", async () => {
+    const legacyConfig = () => configWith({ command: FAKE_CURSOR_AGENT, env: { CURSOR_API_KEY: "old" } });
+    const runFor = (agentDir: string, deps: AuthDeps) =>
+      methodOf(cursorAdapter, API_KEY_METHOD_ID, deps).run({ config: legacyConfig(), env: fakeEnv(), agentDir, prompter: prompter().api });
+    const withMain: AuthDeps = { ...noProfile, mainAgentDir: () => "/state/agents/main/agent" };
+    // The main agent (the path spelled differently is the same folder): the key goes from the config.
+    const main = await runFor("/state/agents/main/agent/", withMain);
+    expect(main.configPatch).toMatchObject({ plugins: { entries: { [PLUGIN_ID]: { config: { "cursor-cli": { env: { CURSOR_API_KEY: undefined } } } } } } });
+    // Another agent: its profile is saved, the config key stays for the others, and the note says so.
+    for (const deps of [withMain, noProfile, { ...noProfile, mainAgentDir: () => { throw new Error("no config"); } }]) {
+      const other = await runFor("/state/agents/w/agent", deps);
+      expect(other.profiles[0]!.credential.key).toBe(KEY);
+      expect(other).not.toHaveProperty("configPatch");
+      const notes = other.notes.join(" ");
+      expect(notes).toMatch(/auth profile cursor-cli:default takes precedence for this agent\. The CURSOR_API_KEY in the plugin config .* stays: the other agents still use it/);
+      expect(notes).not.toMatch(/is removed there|cursor-agent logout/);
+    }
+  });
+
+  it("returns a profile the backend, the probes, and the usage reader read back from the auth store", async () => {
     const done = await run(KEY).result;
-    const pluginConfig = (done.configPatch as any).plugins.entries[PLUGIN_ID].config;
-    const settings = readBackendConfig(pluginConfig, "cursor-cli", (message) => {
-      throw new Error(message);
-    });
-    expect(settings).toEqual({ command: FAKE_CURSOR_AGENT, env: { CURSOR_API_KEY: KEY } });
-    // The host gives the backend's `config.env` to the CLI process, and the usage code reads it from the turn's env.
-    const backend = buildCliBackend(cursorAdapter, { settings });
-    expect(backend.config.env).toEqual({ CURSOR_API_KEY: KEY });
+    const { profileId, credential } = done.profiles[0]!;
+    const store = new Map([[profileId, credential]]);
+    const readKey = createStoredKeyReader(async () => ({ findPersistedAuthProfileCredential: ({ profileId: id }) => store.get(id) }));
+    expect(await readKey({ profileId: "cursor-cli:default", provider: "cursor-cli" })).toEqual({ kind: "key", key: KEY });
+    // The usage reader reads the key from the turn's env, where the backend puts the profile's key.
     const clock = createVirtualClock();
     const ledger = createLedgerFake(clock);
     const reader = createCursorUsageReader({ clock, fetch: ledger.fetch, firstPollMs: 5, pollIntervalMs: 10, deadlineMs: 50, requestTimeoutMs: 50 });
@@ -198,7 +242,7 @@ describe("API key method (criterion 2)", () => {
         sessionId: "s",
         startedAt: clock.now(),
         endedAt: clock.now(),
-        env: { ...backend.config.env, [USAGE_URL_ENV]: ledger.url },
+        env: { CURSOR_API_KEY: KEY, [USAGE_URL_ENV]: ledger.url },
       }),
     );
     expect(ledger.requests[0]).toMatchObject({ authorization: `Bearer ${KEY}` });
@@ -210,7 +254,7 @@ describe("API key method (criterion 2)", () => {
       const done = await run(KEY).result;
       const visible = JSON.stringify({ notes: done.notes });
       expect(visible).not.toContain(KEY);
-      expect(visible).toContain("CURSOR_API_KEY");
+      expect(visible).toContain("cursor-cli:default");
       // A refused key is not echoed either (the check sees spaces; the message must not repeat them).
       const bad = `${KEY} ${KEY}`;
       const refused = run(bad).result;
@@ -233,7 +277,7 @@ describe("API key method (criterion 2)", () => {
     expect(validate(KEY)).toBeUndefined();
   });
 
-  it("uses an ID other than api-key, which OpenClaw would store in its own auth store instead", () => {
+  it("uses an ID other than api-key, which OpenClaw would store through its quick entry without running the method", () => {
     expect(API_KEY_METHOD_ID).not.toBe("api-key");
   });
 });
@@ -241,11 +285,13 @@ describe("API key method (criterion 2)", () => {
 describe("manifest providerAuthChoices", () => {
   const choices: Array<Record<string, unknown>> = manifest.providerAuthChoices;
 
-  it("names one choice per auth method of every adapter, under the backend's provider", () => {
+  it("lists only the API key method in the Control UI: login and remove stay terminal methods (plan 27)", () => {
     for (const adapter of ADAPTERS) {
       const provider = createAuthProvider(adapter, PLUGIN_ID);
       const named = choices.filter((choice) => choice.provider === provider.id).map((choice) => choice.method);
-      expect(named.toSorted()).toEqual(provider.auth.map((method) => method.id).toSorted());
+      expect(named).toEqual([API_KEY_METHOD_ID]);
+      // Every listed choice is a method the provider registers; the terminal ones are registered too.
+      expect(provider.auth.map((method) => method.id)).toEqual(expect.arrayContaining([...named, LOGIN_METHOD_ID, REMOVE_METHOD_ID]));
     }
     expect(choices.every((choice) => manifest.providers.includes(choice.provider))).toBe(true);
   });
@@ -271,7 +317,7 @@ describe("manifest providerAuthChoices", () => {
   it("shows the provider as OAC / Cursor-CLI in the group label and the settings hint, with the provider ID unchanged", () => {
     const label = createAuthProvider(cursorAdapter, PLUGIN_ID).label;
     expect(label).toBe("OAC / Cursor-CLI");
-    expect(choices.map((choice) => choice.groupLabel)).toEqual([label, label, label]);
+    expect(choices.map((choice) => choice.groupLabel)).toEqual([label]);
     expect(manifest.uiHints["cursor-cli"].label).toBe(label);
     expect(manifest.providers).toEqual(["cursor-cli"]);
     expect(choices.every((choice) => choice.provider === "cursor-cli" && choice.groupId === "cursor-cli")).toBe(true);
@@ -282,14 +328,11 @@ describe("manifest providerAuthChoices", () => {
     expect(createAuthProvider(without, PLUGIN_ID).label).toBe("Cursor CLI");
   });
 
-  it("gives the login the adapter's label", () => {
-    const login = choices.find((choice) => choice.method === LOGIN_METHOD_ID);
-    expect(login?.choiceLabel).toBe(methodOf(cursorAdapter, LOGIN_METHOD_ID).label);
-  });
-
-  it("gives the API key choice the method's label", () => {
+  it("gives the API key choice the method's label and a hint that names the auth store, not the plugin config", () => {
     const key = choices.find((choice) => choice.method === API_KEY_METHOD_ID);
     expect(key?.choiceLabel).toBe(methodOf(cursorAdapter, API_KEY_METHOD_ID).label);
+    expect(key?.choiceHint).toMatch(/auth store/);
+    expect(key?.choiceHint).not.toMatch(/plugin config/);
   });
 
   it("keeps the API key choice off the id that OpenClaw gives a quick key entry", () => {
@@ -343,7 +386,17 @@ function wizard(options: { answer?: string; confirms?: Array<boolean | Error>; n
   return { asked, confirmed, progress, api: api as any };
 }
 
-type Setup = { state: string; root: string; adapter: CliAdapter; deps: AuthDeps; closed: number[]; turns: { value: number }; queued: { value: number } };
+type Setup = {
+  state: string;
+  root: string;
+  adapter: CliAdapter;
+  deps: AuthDeps;
+  closed: number[];
+  turns: { value: number };
+  queued: { value: number };
+  /** The auth store the methods read: profile ID to key. */
+  stored: Map<string, string>;
+};
 
 function setup(options: { host?: HostFacts; spec?: ReturnType<typeof testSpec>; free?: number } = {}): Setup {
   const state = newDir("oac-state-");
@@ -351,7 +404,12 @@ function setup(options: { host?: HostFacts; spec?: ReturnType<typeof testSpec>; 
   const closed: number[] = [];
   const turns = { value: 0 };
   const queued = { value: 0 };
+  const stored = new Map<string, string>();
   const deps: AuthDeps = {
+    readKey: async ({ profileId }) => {
+      const key = stored.get(profileId);
+      return key ? { kind: "key", key } : { kind: "absent" };
+    },
     stateDir: () => state,
     fetch: stub.fetch,
     host: () => options.host ?? GLIBC_X64,
@@ -369,7 +427,7 @@ function setup(options: { host?: HostFacts; spec?: ReturnType<typeof testSpec>; 
           }
         : undefined,
   };
-  return { state, root: join(state, "tools", "cursor-agent"), adapter, deps, closed, turns, queued };
+  return { state, root: join(state, "tools", "cursor-agent"), adapter, deps, closed, turns, queued, stored };
 }
 
 const runMethod = (s: Setup, id: string, prompter: ReturnType<typeof wizard>, cursor: Record<string, unknown>, env = fakeEnv()) =>
@@ -378,6 +436,10 @@ const runMethod = (s: Setup, id: string, prompter: ReturnType<typeof wizard>, cu
     .run({ config: configWith(cursor), env, prompter: prompter.api });
 
 const patchedBackend = (result: { configPatch?: Record<string, unknown> }) => (result.configPatch as any)?.plugins.entries[PLUGIN_ID].config["cursor-cli"];
+/** The key the method returned as the cursor-cli:default profile. */
+const savedKey = (result: { profiles: Array<{ profileId: string; credential: { key: string } }> }) =>
+  result.profiles.find((profile) => profile.profileId === "cursor-cli:default")?.credential.key;
+const MARKER = ".key-saved";
 
 describe("install offer (criteria 1, 2, and 7)", () => {
   it("offers nothing when the configured CLI runs a supported version: the methods behave as before", async () => {
@@ -385,7 +447,10 @@ describe("install offer (criteria 1, 2, and 7)", () => {
     const asker = wizard({ confirms: [true] });
     const done = await runMethod(s, API_KEY_METHOD_ID, asker, { command: FAKE_CURSOR_AGENT });
     expect(asker.confirmed).toEqual([]);
-    expect(patchedBackend(done)).toEqual({ command: FAKE_CURSOR_AGENT, env: { CURSOR_API_KEY: KEY } });
+    expect(done).not.toHaveProperty("configPatch");
+    expect(savedKey(done)).toBe(KEY);
+    // A CLI the plugin did not install gets no marker: it is never removed with the key.
+    expect(existsSync(join(s.root, MARKER))).toBe(false);
     const login = await runMethod(s, LOGIN_METHOD_ID, asker, { command: FAKE_CURSOR_AGENT });
     expect(login).not.toHaveProperty("configPatch");
     expect(asker.confirmed).toEqual([]);
@@ -423,7 +488,8 @@ describe("install offer (criteria 1, 2, and 7)", () => {
     const done = await runMethod(s, API_KEY_METHOD_ID, asker, { command: "/no/such/cursor-agent" });
     expect(stub.requests).toEqual([]);
     expect(existsSync(s.root)).toBe(false);
-    expect(patchedBackend(done)).toEqual({ command: "/no/such/cursor-agent", env: { CURSOR_API_KEY: KEY } });
+    expect(done).not.toHaveProperty("configPatch");
+    expect(savedKey(done)).toBe(KEY);
     const notes = done.notes.join(" ");
     expect(notes).toMatch(/saved without a check/);
     expect(notes).toContain("https://docs.test/setup.md#install-the-requirements");
@@ -450,7 +516,7 @@ describe("install offer (criteria 1, 2, and 7)", () => {
     expect(asker.confirmed).toEqual([]);
     expect(done.notes.join(" ")).toMatch(why);
     expect(done.notes.join(" ")).toContain("https://docs.test/setup.md#install-the-requirements");
-    expect(patchedBackend(done).env).toEqual({ CURSOR_API_KEY: KEY });
+    expect(savedKey(done)).toBe(KEY);
     await expect(runMethod(s, LOGIN_METHOD_ID, asker, { command: "/no/such/cursor-agent" })).rejects.toThrow(why);
     expect(stub.requests).toEqual([]);
   });
@@ -473,8 +539,10 @@ describe("install after a yes (criteria 3, 5, and 6)", () => {
     const asker = wizard({ confirms: [true] });
     const done = await runMethod(s, API_KEY_METHOD_ID, asker, { command: "/no/such/cursor-agent", maxProcesses: 3, env: { OTHER: "1" } }, fakeEnv({ TEST_ABOUT: "ok" }));
     const launcher = join(s.root, TEST_VERSION, "tool");
-    expect(patchedBackend(done)).toEqual({ command: launcher, maxProcesses: 3, env: { OTHER: "1", CURSOR_API_KEY: KEY } });
-    expect(readdirSync(s.root)).toEqual([TEST_VERSION]);
+    expect(patchedBackend(done)).toEqual({ command: launcher, maxProcesses: 3, env: { OTHER: "1" } });
+    expect(savedKey(done)).toBe(KEY);
+    // The key was saved for the CLI the plugin installed: the marker lets the plugin remove it with the key.
+    expect(readdirSync(s.root).toSorted()).toEqual([MARKER, TEST_VERSION]);
     const notes = done.notes.join(" ");
     expect(notes).toContain(`now points at ${launcher}`);
     expect(notes).toMatch(/Removed the older installs of the plugin: 0\.9\.0/);
@@ -493,6 +561,8 @@ describe("install after a yes (criteria 3, 5, and 6)", () => {
     stub.answer({ kind: "body", body: PKG });
     const done = await runMethod(s, API_KEY_METHOD_ID, wizard({ confirms: [true] }), { command: "/no/such/cursor-agent" }, fakeEnv({ TEST_ABOUT: "invalid" }));
     expect(patchedBackend(done)).toEqual({ command: join(s.root, TEST_VERSION, "tool") });
+    expect(done.profiles).toEqual([]);
+    expect(existsSync(join(s.root, MARKER))).toBe(false);
     expect(done.notes.join(" ")).toMatch(/says the key is invalid\. It was not saved/);
   });
 
@@ -511,6 +581,20 @@ describe("install after a yes (criteria 3, 5, and 6)", () => {
     const done = await runMethod(s, LOGIN_METHOD_ID, wizard({ confirms: [true] }), {}, fakeEnv({ TEST_LOGGED_IN: "1", PATH: "/nonexistent" }));
     expect(done.notes.join(" ")).toMatch(/is logged in/);
     expect(patchedBackend(done).command).toBe(join(s.root, TEST_VERSION, "tool"));
+  });
+
+  it("marks a key saved for a managed CLI the command already points at, and saves the key as the profile", async () => {
+    const s = setup();
+    stub.answer({ kind: "body", body: PKG });
+    const installed = await runMethod(s, LOGIN_METHOD_ID, wizard({ confirms: [true] }), {}, fakeEnv({ PATH: "/nonexistent" }));
+    const launcher = patchedBackend(installed).command;
+    expect(existsSync(join(s.root, MARKER))).toBe(false);
+    // The test launcher's version is not a Cursor one: the check only warns and the key is saved unchecked.
+    const done = await runMethod(s, API_KEY_METHOD_ID, wizard(), { command: launcher });
+    expect(savedKey(done)).toBe(KEY);
+    expect(done).not.toHaveProperty("configPatch");
+    expect(existsSync(join(s.root, MARKER))).toBe(true);
+    expect(readFileSync(join(s.root, MARKER), "utf8")).not.toContain(KEY);
   });
 
   it("names the absolute launcher in the fix when the command already points at the managed folder", async () => {
@@ -578,7 +662,7 @@ describe("key check (criterion 6)", () => {
   it("saves the key when the second try answers", async () => {
     const counter = join(newDir("oac-about-"), "count");
     const done = await runKey({ FAKE_CURSOR_ABOUT: "unknown", FAKE_CURSOR_ABOUT_THEN: "ok", FAKE_CURSOR_ABOUT_COUNT: counter });
-    expect(patchedBackend(done).env).toEqual({ CURSOR_API_KEY: KEY });
+    expect(savedKey(done)).toBe(KEY);
     expect(readFileSync(counter, "utf8")).toBe("2");
   });
 
@@ -596,7 +680,7 @@ describe("key check (criterion 6)", () => {
     const file = log();
     const s = setup();
     const done = await runMethod(s, API_KEY_METHOD_ID, wizard(), { command: FAKE_CURSOR_AGENT }, fakeEnv({ FAKE_CURSOR_LOG: file, FAKE_CURSOR_VERSION: "garbled" }));
-    expect(patchedBackend(done).env).toEqual({ CURSOR_API_KEY: KEY });
+    expect(savedKey(done)).toBe(KEY);
     expect(done.notes.join(" ")).toMatch(/Could not read the version.*The key was saved without a check/);
     expect(existsSync(file) ? aboutLines(file) : []).toEqual([]);
   });
@@ -606,7 +690,7 @@ describe("key check (criterion 6)", () => {
     const { checkKey: _none, ...without } = s.adapter;
     s.adapter = without;
     const done = await runMethod(s, API_KEY_METHOD_ID, wizard(), { command: FAKE_CURSOR_AGENT });
-    expect(patchedBackend(done).env).toEqual({ CURSOR_API_KEY: KEY });
+    expect(savedKey(done)).toBe(KEY);
   });
 });
 
@@ -640,7 +724,8 @@ describe("remove method (criterion 8)", () => {
     expect(Object.hasOwn(backend.env, "CURSOR_API_KEY")).toBe(true);
     expect(backend.env.CURSOR_API_KEY).toBeUndefined();
     const notes = done.notes.join(" ");
-    expect(notes).toContain("~/.config/cursor/auth.json");
+    expect(notes).toMatch(/The plugin deletes its own cached copy at the next Gateway start that loads it, or a cursor-cli turn without a key/);
+    expect(notes).toMatch(/~\/\.config\/cursor\/auth\.json, if an older plugin version ran it with the key/);
     expect(notes).toMatch(/rotated config copies/);
     expect(notes).toContain("docs/setup.md#remove-the-key-and-the-managed-cli");
     expect(JSON.stringify(done)).not.toContain(KEY);
@@ -725,6 +810,35 @@ describe("remove method (criterion 8)", () => {
     expect(backend.command).toBe(launcher);
     expect(Object.hasOwn(backend.env, "CURSOR_API_KEY") && backend.env.CURSOR_API_KEY === undefined).toBe(true);
     expect(done.notes.join(" ")).toMatch(/Could not remove .*command is unchanged.*#remove-the-key-and-the-managed-cli/);
+  });
+
+  it("says where a key in OpenClaw's auth store is and how to remove it, and leaves it to OpenClaw", async () => {
+    const s = setup();
+    s.stored.set("cursor-cli:default", KEY);
+    const done = await runMethod(s, REMOVE_METHOD_ID, wizard({ confirms: [true] }), { command: FAKE_CURSOR_AGENT });
+    const notes = done.notes.join(" ");
+    expect(notes).toMatch(/Nothing to remove/);
+    expect(notes).toMatch(/profile cursor-cli:default\) stays: remove it with Remove key on the provider card, or run `openclaw models auth logout cursor-cli:default`/);
+    expect(done.profiles).toEqual([]);
+    expect(JSON.stringify(done)).not.toContain(KEY);
+  });
+
+  it("drops the marker when the user keeps the managed CLI, so the plugin never removes it by itself", async () => {
+    const s = setup();
+    const launcher = installFake(s);
+    writeFileSync(join(s.root, MARKER), "");
+    const done = await runMethod(s, REMOVE_METHOD_ID, wizard({ confirms: [false] }), { command: launcher });
+    expect(existsSync(launcher)).toBe(true);
+    expect(existsSync(join(s.root, MARKER))).toBe(false);
+    expect(done.notes.join(" ")).toMatch(/stays; the plugin will not remove it by itself/);
+  });
+
+  it("removes the marker with the managed CLI", async () => {
+    const s = setup();
+    installFake(s);
+    writeFileSync(join(s.root, MARKER), "");
+    await runMethod(s, REMOVE_METHOD_ID, wizard({ confirms: [true] }), {});
+    expect(existsSync(s.root)).toBe(false);
   });
 
   it("removes nothing when the run cannot ask", async () => {

@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { attachSession, type AttachDeps } from "./attach-session.ts";
 import type { AgentHome } from "./home.ts";
 import { toRecord, type CoreRecord, type TurnSummary } from "./events.ts";
@@ -85,9 +86,19 @@ export type ExecuteOptions = {
   imageRoots?: readonly string[];
 };
 
-/** AD-13: model, mode, working directory, home, permission profile, auth profile, and thinking level. The native session ID is checked on the session. */
-function reuseKey(ctx: ExecuteContext, home: AgentHome, authProfileId: string | undefined, hostShell: boolean, thinkingLevel: string | undefined): string {
-  return JSON.stringify([ctx.modelId, modeOf(ctx), hostShell, ctx.cwd, home.dir, home.profile ?? null, authProfileId ?? null, thinkingLevel ?? null]);
+/**
+ * A short hash of the API key the CLI process gets (the turn's env, then the home's, which carries a
+ * key from OpenClaw's auth store), so a changed key starts a new process. Never the key itself.
+ */
+function keyFingerprint(adapter: CliAdapter, ctx: ExecuteContext, home: AgentHome): string | null {
+  const keyVar = adapter.apiKeyEnvVar;
+  const key = keyVar ? (home.env[keyVar] ?? ctx.env?.[keyVar])?.trim() : undefined;
+  return key ? createHash("sha256").update(key).digest("hex").slice(0, 16) : null;
+}
+
+/** AD-13: model, mode, working directory, home, permission profile, auth profile, API key, and thinking level. The native session ID is checked on the session. */
+function reuseKey(ctx: ExecuteContext, home: AgentHome, authProfileId: string | undefined, hostShell: boolean, thinkingLevel: string | undefined, key: string | null): string {
+  return JSON.stringify([ctx.modelId, modeOf(ctx), hostShell, ctx.cwd, home.dir, home.profile ?? null, authProfileId ?? null, key, thinkingLevel ?? null]);
 }
 
 /** The error's core code, for the timing line. */
@@ -141,7 +152,7 @@ export function createExecute(adapter: CliAdapter, options: ExecuteOptions): Cli
     const entry = liveEntries.get(current);
     if (!entry?.session || entry.busy || entry.degraded || !entry.session.alive) return undefined;
     if (!ctx.useResume || ctx.sessionId !== entry.session.sessionId) return undefined;
-    return entry.key === reuseKey(ctx, home, authProfileId, hostShell, thinkingLevel) ? (entry as OpenEntry) : undefined;
+    return entry.key === reuseKey(ctx, home, authProfileId, hostShell, thinkingLevel, keyFingerprint(adapter, ctx, home)) ? (entry as OpenEntry) : undefined;
   }
 
   /**
@@ -211,7 +222,7 @@ export function createExecute(adapter: CliAdapter, options: ExecuteOptions): Cli
     let fresh: LiveEntry;
     try {
       await ensureVersion(ctx);
-      fresh = await createLiveEntry(liveEntryDeps, reuseKey(ctx, home, authProfileId, shell.hostShell, thinkingLevel), ctx, live, withMcp);
+      fresh = await createLiveEntry(liveEntryDeps, reuseKey(ctx, home, authProfileId, shell.hostShell, thinkingLevel, keyFingerprint(adapter, ctx, home)), ctx, live, withMcp);
     } catch (error) {
       if (ctx.abortSignal?.aborted) throw error;
       // A superseded run must throw, not turn into an error record.

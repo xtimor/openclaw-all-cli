@@ -1,10 +1,16 @@
+import { lstat } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join, resolve } from "node:path";
+import { API_KEY_METHOD_ID } from "./auth-ids.ts";
+import { findAnyStoredKey, type FindAnyStoredKey } from "./auth-store.ts";
 import { backendIdFor, buildCliBackend } from "./backend.ts";
 import { closeListings } from "./catalog.ts";
 import { RELEASING_REASONS } from "./conversation.ts";
-import { buildConfigSchema, capsOf, readBackendConfig } from "./config.ts";
+import { buildConfigSchema, capsOf, readBackendConfig, type BackendConfig } from "./config.ts";
+import { withoutKeys } from "./env.ts";
 import { homeDirFor } from "./home.ts";
+import { dropKeyCache, keyCacheDirFor } from "./key-cache.ts";
+import { isInside, managedRoot, sweepManagedInstall, type KeyPresence, type SweepOutcome, type SweepTrigger } from "./managed-install.ts";
 import { reapOnce } from "./pid-locks.ts";
 import { ProcessPool } from "./pool.ts";
 import { createUsageHooks } from "./quota.ts";
@@ -33,6 +39,165 @@ export function resolvePluginStateDir(api: Pick<OpenClawPluginApi, "runtime">, e
   return join(homedir(), ".openclaw");
 }
 
+/** What the sweep needs besides the adapter. */
+export type SweepDeps = {
+  stateDir: () => string;
+  settings: BackendConfig;
+  pool?: PoolControl | undefined;
+  /**
+   * The directories of every agent whose auth store may hold a key (the configured agents, `main`
+   * included). A throw counts as a store that cannot be read. Absent: the main store only.
+   */
+  agentDirs?: () => readonly string[];
+  /** Looks for any key of the provider in an agent's auth store (tests). Default: `findAnyStoredKey`. */
+  findAnyKey?: FindAnyStoredKey;
+  /** The Gateway's environment (tests). Default: `process.env`. */
+  env?: Readonly<Record<string, string | undefined>>;
+  /** Unsets `command` in OpenClaw's config when it points into `root` (tests). Default: OpenClaw's config mutation. */
+  unsetCommand?: (backendId: string, root: string) => Promise<boolean>;
+};
+
+/**
+ * Whether the plugin has a key for the backend anywhere: the plugin config, the Gateway's env, or any
+ * `api_key` profile of the provider in any of the agents' auth stores. `unreadable` when no key was
+ * found but a store (or the agent list) could not be read.
+ */
+export async function keyPresence(
+  adapter: CliAdapter,
+  deps: Pick<SweepDeps, "settings" | "agentDirs" | "findAnyKey" | "env">,
+): Promise<KeyPresence> {
+  const keyVar = adapter.apiKeyEnvVar;
+  if (!keyVar) return "none";
+  if (deps.settings.env?.[keyVar]?.trim() || (deps.env ?? process.env)[keyVar]?.trim()) return "key";
+  let dirs: ReadonlyArray<string | undefined>;
+  try {
+    dirs = deps.agentDirs ? deps.agentDirs() : [undefined];
+  } catch {
+    return "unreadable";
+  }
+  const find = deps.findAnyKey ?? findAnyStoredKey;
+  let unreadable = false;
+  for (const agentDir of dirs.length > 0 ? dirs : [undefined]) {
+    const found = await find({ agentDir, provider: backendIdFor(adapter) });
+    if (found.kind === "key") return "key";
+    if (found.kind === "unreadable") unreadable = true;
+  }
+  return unreadable ? "unreadable" : "none";
+}
+
+/** What the unset uses of OpenClaw's config mutation (`openclaw/plugin-sdk/config-mutation`, 2026.10.3 and 2026.11.x). */
+type ConfigMutation = {
+  mutateConfigFile: (params: { mutate: (draft: Record<string, unknown>) => boolean }) => Promise<{ result?: unknown }>;
+};
+
+/**
+ * Unsets `plugins.entries.<plugin>.config.<backendId>.command` in OpenClaw's config file, only while
+ * it points into `root`. `load` is the host module (tests pass the isolated OpenClaw's).
+ */
+export async function unsetManagedCommand(
+  backendId: string,
+  root: string,
+  load: () => Promise<ConfigMutation> = async () => (await import("openclaw/plugin-sdk/config-mutation")) as unknown as ConfigMutation,
+): Promise<boolean> {
+  const { mutateConfigFile } = await load();
+  const done = await mutateConfigFile({
+    mutate: (draft) => {
+      const entries = (draft as { plugins?: { entries?: Record<string, { config?: Record<string, unknown> } | undefined> } }).plugins?.entries;
+      const backend = entries?.[PLUGIN_ID]?.config?.[backendId] as Record<string, unknown> | undefined;
+      const command = backend?.command;
+      if (typeof command !== "string" || !isInside(root, command)) return false;
+      delete backend!.command;
+      return true;
+    },
+  });
+  return done.result === true;
+}
+
+/**
+ * The sweep of one backend's managed CLI (plan 27): a CLI the plugin installed and saved a key for
+ * goes when the key is gone everywhere (every `api_key` profile of the provider in every agent's
+ * auth store, the plugin config, the Gateway's env) and the CLI has no login of its own. A store
+ * that cannot be read keeps it. Calls that overlap share one run.
+ */
+export function createManagedSweep(adapter: CliAdapter, deps: SweepDeps): (trigger?: SweepTrigger) => Promise<SweepOutcome> {
+  const keyVar = adapter.apiKeyEnvVar;
+  const backendId = backendIdFor(adapter);
+  let running: Promise<SweepOutcome> | undefined;
+  const sweepOnce = async (ownTurns: number): Promise<SweepOutcome> => {
+    if (!keyVar || !adapter.managedInstall) return { kind: "none" };
+    const stateDir = deps.stateDir();
+    const env = deps.env ?? process.env;
+    const settings = deps.settings;
+    return sweepManagedInstall({
+      stateDir,
+      root: managedRoot(stateDir, adapter.command),
+      hasKey: () => keyPresence(adapter, deps),
+      // The CLI's own login, in the user's own config: no key in the probe's env, or the probe would
+      // say "available" for it. Keyed runs cache their key elsewhere, so a removed key is not a login.
+      login: () =>
+        adapter.probeAuth({
+          command: settings.command ?? adapter.command,
+          env: withoutKeys({ ...withoutKeys(env, adapter.clearEnv), ...settings.env }, [keyVar]),
+        }),
+      pool: deps.pool,
+      unsetCommand: (root) => (deps.unsetCommand ?? unsetManagedCommand)(backendId, root),
+      ownTurns,
+    });
+  };
+  // A run already going is shared, with the trigger it started with.
+  return (trigger) => {
+    running ??= (async () => {
+      try {
+        return await sweepOnce(trigger?.fromTurn ? 1 : 0);
+      } catch (error) {
+        return { kind: "failed" as const, reason: error instanceof Error ? error.message : String(error) };
+      }
+    })().finally(() => {
+      running = undefined;
+    });
+    return running;
+  };
+}
+
+/**
+ * Deletes the key cache of every listed agent home for which the plugin has no key any more: no key
+ * in the plugin config and none in that agent's auth store (an unreadable store keeps it). Homes
+ * without a cache are skipped before the store is read. Never throws.
+ */
+export async function dropStaleKeyCaches(
+  adapter: CliAdapter,
+  deps: { settings: BackendConfig; homes: ReadonlyArray<{ agentDir: string; home: string }>; findAnyKey?: FindAnyStoredKey },
+): Promise<string[]> {
+  const keyVar = adapter.apiKeyEnvVar;
+  const dropped: string[] = [];
+  if (!keyVar || !adapter.keyCacheEnv || deps.settings.env?.[keyVar]?.trim()) return dropped;
+  const find = deps.findAnyKey ?? findAnyStoredKey;
+  for (const { agentDir, home } of deps.homes) {
+    try {
+      if (!(await lstat(keyCacheDirFor(home)).catch(() => undefined))) continue;
+      if ((await find({ agentDir, provider: backendIdFor(adapter) })).kind !== "absent") continue;
+      await dropKeyCache(home);
+      dropped.push(home);
+    } catch {
+      // Best effort: the next keyless turn of that agent drops it.
+    }
+  }
+  return dropped;
+}
+
+/** One log line for a sweep that did something; nothing for one that kept the CLI. */
+export function reportSweep(adapter: CliAdapter, outcome: SweepOutcome, log: { info: (message: string) => void; warn: (message: string) => void }): void {
+  if (outcome.kind === "removed") {
+    log.info(
+      `Removed ${outcome.root}: the plugin had installed ${adapter.displayName} there for an API key, and that key is gone.` +
+        (outcome.commandUnset ? ` ${backendIdFor(adapter)}.command pointed there and is unset.` : "") +
+        ` To use ${adapter.displayName} again, connect it in Settings > Models > Connect provider, or run \`openclaw models auth login --provider ${backendIdFor(adapter)} --method ${API_KEY_METHOD_ID}\` on the Gateway host.`,
+    );
+  } else if (outcome.kind === "failed") {
+    log.warn(`Could not remove the ${adapter.displayName} the plugin installed for a removed API key: ${outcome.reason}`);
+  }
+}
+
 /** Ids of the agents the config names, plus the default `main`. */
 function configuredAgentIds(config: unknown): string[] {
   const agents = (config as { agents?: { entries?: Record<string, unknown>; list?: Array<{ id?: unknown }> } } | undefined)
@@ -58,7 +223,21 @@ export function registerAdapters(api: OpenClawPluginApi, adapters: readonly CliA
     const settings = readBackendConfig(api.pluginConfig, backendId, warn);
     const pool = new ProcessPool(capsOf(settings));
     pools.push(pool);
-    api.registerCliBackend(buildCliBackend(adapter, { settings, warn, debug, pool }));
+    const log = { info: (message: string) => (api.logger.info ? api.logger.info(message) : warn(message)), warn };
+    // Every configured agent's store may hold a key (the host saves a Control UI profile under the
+    // agent the dialog names, and falls back from an agent to main, never the other way).
+    const agentDirs = () => configuredAgentIds(api.config).map((agentId) => api.runtime.agent.resolveAgentDir(api.config, agentId));
+    // Only a full load serves turns and may remove a managed CLI; a setup-mode load leaves it alone.
+    const sweep =
+      api.registrationMode === "full" ? createManagedSweep(adapter, { stateDir: () => resolvePluginStateDir(api), settings, pool, agentDirs }) : undefined;
+    const sweepAndReport = sweep
+      ? async (trigger?: SweepTrigger) => {
+          const outcome = await sweep(trigger);
+          reportSweep(adapter, outcome, log);
+          return outcome;
+        }
+      : undefined;
+    api.registerCliBackend(buildCliBackend(adapter, { settings, warn, debug, pool, ...(sweepAndReport ? { sweep: sweepAndReport } : {}) }));
     // The Control UI's provider list and `models auth login` read the provider's auth methods.
     // An adapter with a quota reader also offers OpenClaw's usage surfaces a plan-quota snapshot.
     // Only a full load serves turns; a setup-mode load must not replace the live pool.
@@ -68,16 +247,26 @@ export function registerAdapters(api: OpenClawPluginApi, adapters: readonly CliA
       // Looked up per call, so a fetch the host sets up later (a proxy dispatcher) is the one used.
       fetch: ((...args: Parameters<typeof fetch>) => globalThis.fetch(...args)) as typeof fetch,
       pools: (id: string) => livePools.get(id),
+      // OpenClaw's fallback store for every agent: `OPENCLAW_AGENT_DIR`, else main's directory.
+      mainAgentDir: () => process.env.OPENCLAW_AGENT_DIR?.trim() || api.runtime.agent.resolveAgentDir(api.config, "main"),
     };
     api.registerProvider({ ...createAuthProvider(adapter, PLUGIN_ID, authDeps), ...createUsageHooks(adapter, PLUGIN_ID, warn) });
     if (api.registrationMode === "full") {
+      // At Gateway start: a managed CLI whose key was removed (OpenClaw's Remove key) goes now.
+      void sweepAndReport?.();
+      const homes: Array<{ agentDir: string; home: string }> = [];
       for (const agentId of configuredAgentIds(api.config)) {
         try {
-          void reapOnce(homeDirFor(api.runtime.agent.resolveAgentDir(api.config, agentId), backendId), warn);
+          const agentDir = api.runtime.agent.resolveAgentDir(api.config, agentId);
+          const home = homeDirFor(agentDir, backendId);
+          homes.push({ agentDir, home });
+          void reapOnce(home, warn);
         } catch (error) {
           warn(`Could not look for leftover ${adapter.displayName} processes of agent "${agentId}": ${String(error)}`);
         }
       }
+      // A cached copy of a removed key goes with the key.
+      void dropStaleKeyCaches(adapter, { settings, homes });
     }
   }
   const closeAll = async () => {

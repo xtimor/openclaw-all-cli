@@ -1,7 +1,7 @@
 import { execFile } from "node:child_process";
 import { createHash } from "node:crypto";
 import { createReadStream, createWriteStream } from "node:fs";
-import { lstat, mkdir, mkdtemp, readdir, rename, rm, statfs } from "node:fs/promises";
+import { lstat, mkdir, mkdtemp, readdir, rename, rm, statfs, writeFile } from "node:fs/promises";
 import { dirname, join, resolve, sep } from "node:path";
 import { Readable } from "node:stream";
 import { pipeline } from "node:stream/promises";
@@ -64,6 +64,13 @@ export function hostSupport(spec: ManagedInstallSpec, facts: HostFacts): HostSup
 
 const SAFE_NAME = /^[A-Za-z0-9][A-Za-z0-9._-]*$/;
 
+/**
+ * `<managed root>/.key-saved`: the API key method saved a key for the CLI the plugin installed. When
+ * that key is gone everywhere and the CLI has no login of its own, the plugin removes the install
+ * (`sweepManagedInstall`). An install is never pruned or counted because of it.
+ */
+export const KEY_SAVED_MARKER = ".key-saved";
+
 /** `<stateDir>/tools/<command>`: the only folder managed installs live in. */
 export function managedRoot(stateDir: string, command: string): string {
   if (!SAFE_NAME.test(command)) throw new Error(`Cannot keep a managed install for the command "${command}".`);
@@ -115,7 +122,23 @@ export async function readManaged(root: string): Promise<ManagedState> {
     if (name.startsWith(".")) continue;
     if ((await lstat(join(root, name)).catch(() => undefined))?.isDirectory()) versions.push(name);
   }
-  return { versions: versions.toSorted(), bytes: await sizeOf(root), present: names.length > 0 };
+  return { versions: versions.toSorted(), bytes: await sizeOf(root), present: names.some((name) => name !== KEY_SAVED_MARKER) };
+}
+
+/** Records that a key was saved for the CLI in `root` (the folder is created if needed). */
+export async function writeKeySavedMarker(root: string): Promise<void> {
+  await mkdir(root, { recursive: true, mode: 0o755 });
+  await writeFile(join(root, KEY_SAVED_MARKER), "The API key method saved a key for this install.\n", { mode: 0o600 });
+}
+
+/** True when `root` holds the marker. */
+export async function hasKeySavedMarker(root: string): Promise<boolean> {
+  return (await lstat(join(root, KEY_SAVED_MARKER)).catch(() => undefined))?.isFile() === true;
+}
+
+/** Removes the marker; a missing one is fine. */
+export async function removeKeySavedMarker(root: string): Promise<void> {
+  await rm(join(root, KEY_SAVED_MARKER), { force: true });
 }
 
 /** Removes the managed root and everything in it. Refuses any folder that is not `<stateDir>/tools/<name>`. */
@@ -384,7 +407,7 @@ export async function installManaged(options: InstallOptions): Promise<InstallRe
     const removed: string[] = [];
     for (const name of await readdir(root)) {
       const path = join(root, name);
-      if (path === temp || name === spec.version) continue;
+      if (path === temp || name === spec.version || name === KEY_SAVED_MARKER) continue;
       if (name.startsWith(".")) {
         const stale = await lstat(path).then((entry) => Date.now() - entry.mtimeMs > STALE_TEMP_MS, () => false);
         if (!stale) continue;
@@ -396,5 +419,82 @@ export async function installManaged(options: InstallOptions): Promise<InstallRe
     return { launcher: join(dir, ...launcherParts), dir, removed };
   } finally {
     await rm(temp, { recursive: true, force: true }).catch(() => {});
+  }
+}
+
+/** Who starts a sweep: a keyless turn (`fromTurn`), or the Gateway start (none). */
+export type SweepTrigger = { fromTurn?: boolean };
+
+export type SweepOutcome =
+  /** No marker: the plugin did not save a key for this install, or there is no install. */
+  | { kind: "none" }
+  /**
+   * Kept: a key still exists, the auth store could not be read (`unreadable`), a turn runs or waits,
+   * the CLI has its own login, or its login status is unclear.
+   */
+  | { kind: "kept"; reason: "key" | "unreadable" | "busy" | "login" | "unclear" }
+  | { kind: "removed"; root: string; commandUnset: boolean }
+  | { kind: "failed"; reason: string };
+
+/** Whether a key exists anywhere: `unreadable` when a store could not be read and no key was found elsewhere. */
+export type KeyPresence = "key" | "none" | "unreadable";
+
+export type SweepParams = {
+  stateDir: string;
+  /** `managedRoot(...)`. */
+  root: string;
+  /** Whether a key exists anywhere: every agent's auth store, the plugin config, the environment. */
+  hasKey: () => Promise<KeyPresence>;
+  /** The CLI's own login, probed without any key. */
+  login: () => Promise<"available" | "missing" | "unreadable">;
+  /** The backend's live pool in this module instance, if any. */
+  pool?: { readonly turns: number; readonly queued: number; closeIdle(): number } | undefined;
+  /** Unsets the backend's `command` in OpenClaw's current config when it points into `root`; true when it did. */
+  unsetCommand: (root: string) => Promise<boolean>;
+  /**
+   * Turns the caller itself may hold by the time of the removal: 1 when a keyless turn started the
+   * sweep (it takes its slot right after). Default 0.
+   */
+  ownTurns?: number;
+};
+
+/**
+ * Removes a managed install whose key is gone (plan 27): only when the marker says the plugin saved
+ * a key for it, no key exists anywhere (an unreadable store keeps it), no turn runs or waits, and the
+ * CLI is not logged in by itself. A CLI with its own login is kept and the marker dropped (it is the
+ * user's CLI now); an unclear login keeps both, so a later sweep looks again. Then idle processes
+ * close, the folder goes, and a `command` that points into it is unset. Never throws.
+ *
+ * The pool is read first, before anything is awaited: a keyless turn starts the sweep before it
+ * takes its own turn slot, so only other turns count as busy. It is read again right before the
+ * removal, where the caller's own turn (`ownTurns`) does not count.
+ */
+export async function sweepManagedInstall(params: SweepParams): Promise<SweepOutcome> {
+  const load = () => (params.pool ? params.pool.turns + params.pool.queued : 0);
+  const busy = load() > 0;
+  try {
+    if (!(await hasKeySavedMarker(params.root))) return { kind: "none" };
+    const presence = await params.hasKey();
+    if (presence === "key") return { kind: "kept", reason: "key" };
+    if (presence !== "none") return { kind: "kept", reason: "unreadable" };
+    if (busy) return { kind: "kept", reason: "busy" };
+    const login = await params.login();
+    if (login === "available") {
+      await removeKeySavedMarker(params.root);
+      return { kind: "kept", reason: "login" };
+    }
+    if (login !== "missing") return { kind: "kept", reason: "unclear" };
+    // Looked at again: a key method may have run while the probe did.
+    if (!(await hasKeySavedMarker(params.root))) return { kind: "none" };
+    const again = await params.hasKey();
+    if (again === "key") return { kind: "kept", reason: "key" };
+    if (again !== "none") return { kind: "kept", reason: "unreadable" };
+    // A turn may have started while the store and the login were read (the caller's own does not count).
+    if (load() > (params.ownTurns ?? 0)) return { kind: "kept", reason: "busy" };
+    params.pool?.closeIdle();
+    await removeManaged(params.stateDir, params.root);
+    return { kind: "removed", root: params.root, commandUnset: await params.unsetCommand(params.root) };
+  } catch (error) {
+    return { kind: "failed", reason: error instanceof Error ? error.message : String(error) };
   }
 }

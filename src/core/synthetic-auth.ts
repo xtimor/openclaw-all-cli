@@ -1,8 +1,10 @@
+import { isPluginSupplied, readStoredKey, resolveCliKey, type ReadStoredKey } from "./auth-store.ts";
 import { nativeAuthMarkerFor, backendIdFor } from "./backend.ts";
 import { defaultCatalogRow, type CatalogRow, type ModelCatalog } from "./catalog.ts";
 import { readBackendConfig } from "./config.ts";
 import { withoutKeys } from "./env.ts";
 import { homeDirFor } from "./home.ts";
+import { withThrowawayKeyCache } from "./key-cache.ts";
 import { deriveFlags } from "./manifest.ts";
 import type { CliAdapter } from "./ports.ts";
 
@@ -54,15 +56,32 @@ type DiscoveryContext = {
  * the plugin runtime, asks `prepareSyntheticAuth` whether the login works, and shows the models
  * as available when it returns a marker.
  */
-export function createSyntheticAuthProvider(adapter: CliAdapter, catalog?: ModelCatalog) {
+export function createSyntheticAuthProvider(adapter: CliAdapter, catalog?: ModelCatalog, options: { readKey?: ReadStoredKey } = {}) {
   const backendId = backendIdFor(adapter);
   const flags = deriveFlags(adapter.manifest);
-  // The probes and the listing run with the same clean env as a turn.
-  const probeEnv = (env: Record<string, string | undefined> | undefined, extra?: Record<string, string>) => ({
-    ...withoutKeys(env ?? process.env, adapter.clearEnv),
-    // The plugin config's `env` reaches the CLI process, so it reaches the probes too.
-    ...extra,
-  });
+  const readKey = options.readKey ?? readStoredKey;
+  /**
+   * The probes and the listing run with the same clean env as a turn: the Gateway's without the
+   * cleared keys, the plugin config's `env`, and a key from OpenClaw's auth store, which wins as it
+   * does in a turn (the profile the API key method saves; the main agent's store without an agent).
+   * `isolate` says the key came from the plugin, so a CLI run with it caches the key in a throwaway
+   * folder, never in the user's own config.
+   */
+  const probeEnv = async (env: Record<string, string | undefined> | undefined, extra: Record<string, string> | undefined, agentDir?: string) => {
+    const keyVar = adapter.apiKeyEnvVar;
+    const base = { ...withoutKeys(env ?? process.env, adapter.clearEnv), ...extra };
+    if (!keyVar) return { env: base, isolate: false };
+    const resolved = await resolveCliKey({ readKey, keyVar, provider: backendId, agentDir, pluginEnv: extra, env: base });
+    return {
+      env: { ...base, ...(resolved.source === "store" ? { [keyVar]: resolved.key } : {}) },
+      isolate: Boolean(resolved.key) && isPluginSupplied(resolved),
+    };
+  };
+  /** The login probe; with a key from the plugin, any CLI process it starts caches the key in a throwaway folder. */
+  const probe = (command: string, env: Record<string, string | undefined>, isolate: boolean, home: string | undefined, signal: AbortSignal | undefined) => {
+    const run = (cacheEnv: Readonly<Record<string, string>>) => adapter.probeAuth({ command, env: { ...env, ...cacheEnv }, ...(signal ? { signal } : {}) });
+    return isolate ? withThrowawayKeyCache(adapter, home, run) : run({});
+  };
   return {
     id: backendId,
     label: adapter.providerLabel ?? adapter.displayName,
@@ -83,12 +102,11 @@ export function createSyntheticAuthProvider(adapter: CliAdapter, catalog?: Model
               const settings = readBackendConfig(pluginConfig, backendId, () => {});
               const command = settings.command ?? adapter.command;
               // The listing and the probe run with the same clean env as a turn.
-              const env = probeEnv(context.env, settings.env);
-              const status = await adapter.probeAuth({
-                command,
-                env,
-                ...(context.signal ? { signal: context.signal } : {}),
-              });
+              const agentDir = context.agentDir?.trim() || undefined;
+              const { env, isolate } = await probeEnv(context.env, settings.env, agentDir);
+              context.signal?.throwIfAborted();
+              const home = agentDir ? homeDirFor(agentDir, backendId) : undefined;
+              const status = await probe(command, env, isolate, home, context.signal);
               context.signal?.throwIfAborted();
               // Images are offered only when the manifest decided the adapter handles them (P13).
               const input: Array<"text" | "image"> = flags.images ? ["text", "image"] : ["text"];
@@ -98,7 +116,8 @@ export function createSyntheticAuthProvider(adapter: CliAdapter, catalog?: Model
                       command,
                       env,
                       ...(context.signal ? { signal: context.signal } : {}),
-                      ...(context.agentDir?.trim() ? { lockDir: homeDirFor(context.agentDir, backendId) } : {}),
+                      ...(home ? { lockDir: home } : {}),
+                      ...(isolate ? { isolateKey: true } : {}),
                     })
                   : [defaultCatalogRow(adapter)];
               return {
@@ -115,11 +134,9 @@ export function createSyntheticAuthProvider(adapter: CliAdapter, catalog?: Model
       if (!context.config || context.provider?.toLowerCase() !== backendId) return undefined;
       const pluginConfig = context.config.plugins?.entries?.[PLUGIN_ID]?.config;
       const settings = readBackendConfig(pluginConfig, backendId, () => {});
-      const status = await adapter.probeAuth({
-        command: settings.command ?? adapter.command,
-        env: probeEnv(context.env, settings.env),
-        ...(context.signal ? { signal: context.signal } : {}),
-      });
+      const { env, isolate } = await probeEnv(context.env, settings.env);
+      context.signal?.throwIfAborted();
+      const status = await probe(settings.command ?? adapter.command, env, isolate, undefined, context.signal);
       context.signal?.throwIfAborted();
       if (status !== "available") return undefined;
       return {
