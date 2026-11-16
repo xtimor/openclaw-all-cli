@@ -656,7 +656,8 @@ describe("cursor adapter", () => {
         .split("\n")
         .map((line) => JSON.parse(line))
         .find((entry) => entry.method === "initialize");
-      expect(initialize.env).toEqual({ CURSOR_CONFIG_DIR: home, CURSOR_DATA_DIR: join(home, "data") });
+      // XDG_CONFIG_HOME is not the home's: it is only what the parent env already had (CI runners set one).
+      expect(initialize.env).toEqual({ CURSOR_CONFIG_DIR: home, CURSOR_DATA_DIR: join(home, "data"), XDG_CONFIG_HOME: process.env.XDG_CONFIG_HOME });
       expect(readdirSync(cwd)).toEqual([]);
     });
   });

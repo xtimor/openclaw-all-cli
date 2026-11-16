@@ -177,7 +177,8 @@ describe("a key the plugin hands over is cached in the agent's home, never in th
     // Remove key: the profile is gone. The next turn runs on the CLI's own config, without the key, and the cache is gone.
     const keyless = await turn({ agentDir, env, readKey: store().readKey });
     expect(init(keyless.lines)).toMatchObject({ keyed: false, cachedKeyHash: null });
-    expect(init(keyless.lines).env.XDG_CONFIG_HOME).toBeUndefined();
+    // The plugin sets no XDG_CONFIG_HOME: the run keeps whatever the Gateway's own env has (CI runners set one).
+    expect(init(keyless.lines).env.XDG_CONFIG_HOME).toBe(process.env.XDG_CONFIG_HOME);
     expect(methods(keyless.lines)).toContain("authenticate");
     expect(existsSync(cacheOf(agentDir))).toBe(false);
     expect(existsSync(userCache)).toBe(false);
@@ -190,7 +191,7 @@ describe("a key the plugin hands over is cached in the agent's home, never in th
     expect(init(config.lines)).toMatchObject({ keyHash: hash(CONFIG_KEY), env: { XDG_CONFIG_HOME: cacheOf(agentDir) } });
     const gateway = await turn({ agentDir, env: { HOME: home, CURSOR_API_KEY: CONFIG_KEY }, readKey: store().readKey, gatewayEnv: { CURSOR_API_KEY: CONFIG_KEY } });
     expect(init(gateway.lines)).toMatchObject({ keyHash: hash(CONFIG_KEY) });
-    expect(init(gateway.lines).env.XDG_CONFIG_HOME).toBeUndefined();
+    expect(init(gateway.lines).env.XDG_CONFIG_HOME).toBe(process.env.XDG_CONFIG_HOME);
     // No key from the plugin any more: its cache went with it.
     expect(existsSync(cacheOf(agentDir))).toBe(false);
   });
