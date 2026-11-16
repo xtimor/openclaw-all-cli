@@ -4,6 +4,8 @@ What changed for people who use the plugin, newest first. Format: [Keep a Change
 
 ## Unreleased
 
+## 0.1.9 - 2026-11-16
+
 ### Added
 
 - Connecting the `cursor-cli` provider on a Linux (glibc) or macOS host without `cursor-agent` now offers to install the version pinned in the plugin (sha256-checked, from `downloads.cursor.com`, into `<state dir>/tools/cursor-agent/`) after you say yes; the API key method checks the key with `cursor-agent about` before saving it, and a new remove method offers to remove the saved key and the installed CLI.
