@@ -6,6 +6,7 @@ What changed for people who use the plugin, newest first. Format: [Keep a Change
 
 ### Fixed
 
+- The `cursor-cli` provider no longer shows the Cursor plan quota when `cursor-agent` is not on the Gateway's host, even if a Cursor key is still saved somewhere (for example after removing `cursor-agent` and reinstalling the plugin).
 - OpenClaw 2026.11 no longer warns "Uses OpenClaw APIs that retire on Oct 1, 2026" for this plugin: it reads the saved Cursor key through OpenClaw's current SDK module, so the key keeps working once OpenClaw removes the old one.
 
 ## 0.1.9 - 2026-11-16

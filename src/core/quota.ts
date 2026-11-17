@@ -1,3 +1,5 @@
+import { accessSync, constants, statSync } from "node:fs";
+import { delimiter, isAbsolute, join, resolve } from "node:path";
 import { defaultProfileIdFor, readStoredKey, type ReadStoredKey } from "./auth-store.ts";
 import { backendIdFor } from "./backend.ts";
 import { readBackendConfig } from "./config.ts";
@@ -72,6 +74,33 @@ async function hostKey(context: UsageAuthContext, backendId: string): Promise<{ 
   return { asked: false };
 }
 
+/** Whether `path` is a file this process may run. */
+const isRunnable = (path: string): boolean => {
+  try {
+    if (!statSync(path).isFile()) return false;
+    accessSync(path, process.platform === "win32" ? constants.F_OK : constants.X_OK);
+    return true;
+  } catch {
+    return false;
+  }
+};
+
+/**
+ * Whether the CLI `command` is on this host, without running it: a path (absolute, or relative to
+ * the Gateway's working directory) must be a runnable file; a bare name must be one in a `PATH`
+ * folder (on Windows also with a `PATHEXT` extension).
+ */
+export function cliOnHost(command: string, env: Readonly<Record<string, string | undefined>> = process.env): boolean {
+  const name = command.trim();
+  if (!name) return false;
+  if (isAbsolute(name) || name.includes("/") || name.includes("\\")) return isRunnable(resolve(name));
+  const extensions = process.platform === "win32" ? ["", ...(env.PATHEXT ?? ".EXE;.CMD;.BAT").split(";").filter(Boolean)] : [""];
+  return (env.PATH ?? "")
+    .split(delimiter)
+    .filter(Boolean)
+    .some((dir) => extensions.some((ext) => isRunnable(join(dir, name + ext))));
+}
+
 /** `work`, or the signal's reason when it aborts first. */
 function raceSignal<T>(work: Promise<T>, signal: AbortSignal | undefined): Promise<T> {
   if (!signal) return work;
@@ -88,7 +117,9 @@ function raceSignal<T>(work: Promise<T>, signal: AbortSignal | undefined): Promi
  * `undefined` for one that cannot: such a provider offers no snapshot. The hooks run only when a
  * usage surface asks, never from a turn.
  *
- * - `resolveUsageAuth` picks the API key the way the CLI process gets it. It asks OpenClaw first
+ * - `resolveUsageAuth` first checks that the CLI is on the host (`command`, or the adapter's
+ *   default, as a path or on the CLI's `PATH`, not run): without it the answer is `handled`, so no quota
+ *   shows, whatever key is left. Then it picks the API key the way the CLI process gets it. It asks OpenClaw first
  *   (`resolveApiKeyCandidatesFromConfigAndStore`, else `resolveApiKeyFromConfigAndStore`): that
  *   reads the auth store, where the API key method's profile lives, without the plugin importing
  *   OpenClaw's agent runtime, whose first import takes 4-10 s against the host's 5 s budget. Then
@@ -98,7 +129,12 @@ function raceSignal<T>(work: Promise<T>, signal: AbortSignal | undefined): Promi
  * - `fetchUsageSnapshot` asks the adapter. A failure or an empty answer is a row with a short
  *   error text, never a throw.
  */
-export function createUsageHooks(adapter: CliAdapter, pluginId: string, warn: (message: string) => void, options: { readKey?: ReadStoredKey } = {}) {
+export function createUsageHooks(
+  adapter: CliAdapter,
+  pluginId: string,
+  warn: (message: string) => void,
+  options: { readKey?: ReadStoredKey; cliPresent?: (command: string, env: Readonly<Record<string, string | undefined>>) => boolean } = {},
+) {
   const readQuota = adapter.readQuota?.bind(adapter);
   const keyVar = adapter.apiKeyEnvVar;
   if (!readQuota || !keyVar) return undefined;
@@ -106,10 +142,14 @@ export function createUsageHooks(adapter: CliAdapter, pluginId: string, warn: (m
   return {
     async resolveUsageAuth(context: UsageAuthContext): Promise<{ token: string } | { handled: true }> {
       context.signal?.throwIfAborted();
+      const settings = readBackendConfig(context.config?.plugins?.entries?.[pluginId]?.config, backendId, () => {});
+      // No CLI on the host, no quota: a key left in a profile, the config, or the env shows nothing.
+      // Looked up with the `PATH` the CLI runs with: the host's env, then the backend's `env`.
+      const cliEnv = { ...(context.env ?? process.env), ...settings.env };
+      if (!(options.cliPresent ?? cliOnHost)(settings.command ?? adapter.command, cliEnv)) return { handled: true };
       const fromHost = await hostKey(context, backendId);
       context.signal?.throwIfAborted();
       if (fromHost.key) return { token: fromHost.key };
-      const settings = readBackendConfig(context.config?.plugins?.entries?.[pluginId]?.config, backendId, () => {});
       const key = settings.env?.[keyVar]?.trim() || context.env?.[keyVar]?.trim();
       if (key) return { token: key };
       if (!fromHost.asked) {

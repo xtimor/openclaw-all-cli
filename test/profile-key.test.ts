@@ -254,6 +254,7 @@ describe("probes and quota read the profile's key (plan 27)", () => {
     const hooks = (keys: Record<string, string>, reads?: string[]) =>
       createUsageHooks(cursorAdapter, PLUGIN_ID, () => {}, {
         readKey: async (query) => (reads?.push(query.profileId), keys[query.profileId] ? { kind: "key", key: keys[query.profileId]! } : { kind: "absent" }),
+        cliPresent: () => true,
       })!;
     const config = { plugins: { entries: { [PLUGIN_ID]: { config: { "cursor-cli": { env: { CURSOR_API_KEY: CONFIG_KEY } } } } } } };
     const reads: string[] = [];
@@ -289,7 +290,7 @@ describe("probes and quota read the profile's key (plan 27)", () => {
 
   it("honors the host's signal: an aborted request, and a slow store read cut short", async () => {
     const aborted = AbortSignal.abort(new Error("usage budget"));
-    const hooks = createUsageHooks(cursorAdapter, PLUGIN_ID, () => {}, { readKey: () => new Promise<never>(() => {}) })!;
+    const hooks = createUsageHooks(cursorAdapter, PLUGIN_ID, () => {}, { readKey: () => new Promise<never>(() => {}), cliPresent: () => true })!;
     await expect(hooks.resolveUsageAuth({ env: {}, signal: aborted })).rejects.toThrow("usage budget");
     const controller = new AbortController();
     const pending = hooks.resolveUsageAuth({ env: {}, signal: controller.signal });
