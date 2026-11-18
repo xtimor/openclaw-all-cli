@@ -1,9 +1,11 @@
-import { readFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { delimiter, join } from "node:path";
 import { describe, expect, it, vi } from "vitest";
 import { createCursorQuotaReader, toSnapshot, type CursorQuotaOptions } from "../src/adapters/cursor/quota.ts";
 import { cursorAdapter } from "../src/adapters/cursor/index.ts";
 import type { CliAdapter, QuotaReport } from "../src/core/ports.ts";
-import { createUsageHooks, toUsageSnapshot } from "../src/core/quota.ts";
+import { cliOnHost, createUsageHooks, toUsageSnapshot } from "../src/core/quota.ts";
 import { registerAdapters } from "../src/core/register.ts";
 import { PLUGIN_ID } from "../src/core/synthetic-auth.ts";
 import { fakeJwt } from "./fixtures/ledger-stub.ts";
@@ -356,7 +358,7 @@ describe("usage hooks", () => {
   });
 
   // Plan 27: the auth profile comes first; test/profile-key.test.ts covers it. No stored key here.
-  const noStore = { readKey: async () => ({ kind: "absent" as const }) };
+  const noStore = { readKey: async () => ({ kind: "absent" as const }), cliPresent: () => true };
 
   it("resolveUsageAuth asks OpenClaw's config and store first, then takes the plugin config's key, then the host env's", async () => {
     const hooks = createUsageHooks(adapterWith(async () => report), PLUGIN_ID, warn, noStore)!;
@@ -366,6 +368,55 @@ describe("usage hooks", () => {
     const none = vi.fn(() => undefined);
     expect(await hooks.resolveUsageAuth({ config: config({ CURSOR_API_KEY: " cfg-key " }), env: { CURSOR_API_KEY: "env-key" }, resolveApiKeyFromConfigAndStore: none })).toEqual({ token: "cfg-key" });
     expect(await hooks.resolveUsageAuth({ config: config({}), env: { CURSOR_API_KEY: "env-key" }, resolveApiKeyFromConfigAndStore: none })).toEqual({ token: "env-key" });
+  });
+
+  it("resolveUsageAuth answers handled, with no token, when the CLI is not on the host, whatever key is left", async () => {
+    const asked: string[] = [];
+    const store = vi.fn(() => "store-key");
+    const hooks = createUsageHooks(adapterWith(async () => report), PLUGIN_ID, warn, { ...noStore, cliPresent: (command) => (asked.push(command), false) })!;
+    expect(await hooks.resolveUsageAuth({ config: config({ CURSOR_API_KEY: "cfg-key" }), env: { CURSOR_API_KEY: "env-key" }, resolveApiKeyFromConfigAndStore: store })).toEqual({ handled: true });
+    expect(store).not.toHaveBeenCalled();
+    // The configured command is the one looked for; without one, the adapter's default.
+    const withCommand = { plugins: { entries: { [PLUGIN_ID]: { config: { "cursor-cli": { command: "/opt/cursor/agent" } } } } } };
+    await hooks.resolveUsageAuth({ config: withCommand });
+    expect(asked).toEqual([cursorAdapter.command, "/opt/cursor/agent"]);
+  });
+
+  it("resolveUsageAuth, as registered, keeps the quota when the CLI is on the PATH it runs with, and hides it otherwise", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "oac-cli-path-"));
+    try {
+      writeFileSync(join(dir, "cursor-agent"), "#!/bin/sh\nexit 0\n", { mode: 0o755 });
+      const hooks = createUsageHooks(adapterWith(async () => report), PLUGIN_ID, warn, { readKey: noStore.readKey })!;
+      const key = () => "store-key";
+      expect(await hooks.resolveUsageAuth({ env: { PATH: dir }, resolveApiKeyFromConfigAndStore: key })).toEqual({ token: "store-key" });
+      expect(await hooks.resolveUsageAuth({ env: { PATH: "/nonexistent" }, resolveApiKeyFromConfigAndStore: key })).toEqual({ handled: true });
+      // A PATH in the backend's env is the one the CLI runs with, so it counts too.
+      const backendPath = { plugins: { entries: { [PLUGIN_ID]: { config: { "cursor-cli": { env: { PATH: dir } } } } } } };
+      expect(await hooks.resolveUsageAuth({ config: backendPath, env: { PATH: "/nonexistent" }, resolveApiKeyFromConfigAndStore: key })).toEqual({ token: "store-key" });
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("finds the CLI by path or on PATH without running it", () => {
+    const dir = mkdtempSync(join(tmpdir(), "oac-cli-on-host-"));
+    try {
+      const bin = join(dir, "cursor-agent");
+      writeFileSync(bin, "#!/bin/sh\nexit 0\n", { mode: 0o755 });
+      const plain = join(dir, "not-runnable");
+      writeFileSync(plain, "", { mode: 0o644 });
+      mkdirSync(join(dir, "folder"));
+      expect(cliOnHost(bin, {})).toBe(true);
+      expect(cliOnHost("cursor-agent", { PATH: `/nonexistent${delimiter}${dir}` })).toBe(true);
+      expect(cliOnHost("cursor-agent", { PATH: "/nonexistent" })).toBe(false);
+      expect(cliOnHost("cursor-agent", {})).toBe(false);
+      expect(cliOnHost(join(dir, "missing"), {})).toBe(false);
+      expect(cliOnHost("folder", { PATH: dir })).toBe(false);
+      expect(cliOnHost(" ", { PATH: dir })).toBe(false);
+      if (process.platform !== "win32") expect(cliOnHost(plain, {})).toBe(false);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 
   it("resolveUsageAuth answers handled, with no token, for a login only", async () => {
