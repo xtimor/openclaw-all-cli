@@ -4,6 +4,8 @@ What changed for people who use the plugin, newest first. Format: [Keep a Change
 
 ## Unreleased
 
+## 0.1.10 - 2026-11-18
+
 ### Fixed
 
 - The `cursor-cli` provider no longer shows the Cursor plan quota when `cursor-agent` is not on the Gateway's host, even if a Cursor key is still saved somewhere (for example after removing `cursor-agent` and reinstalling the plugin).
