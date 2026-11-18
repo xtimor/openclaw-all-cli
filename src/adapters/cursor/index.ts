@@ -12,12 +12,15 @@ import {
   type CheckKeyParams,
   type CheckVersionParams,
   type CliAdapter,
+  type CliErrorInfo,
   type CliModel,
   type CliSession,
+  type CompleteParams,
   type ExecutionMode,
   type HomeEnv,
   type ListModelsParams,
   type McpServerSpec,
+  type NormalizedEvent,
   type OpenParams,
 } from "../../core/ports.ts";
 import { CURSOR_MANAGED_INSTALL } from "./install.ts";
@@ -131,13 +134,7 @@ export function parseAboutOutput(output: string): "valid" | "invalid" | "unknown
 async function checkKey(params: CheckKeyParams): Promise<"valid" | "invalid" | "unknown"> {
   const home = await mkdtemp(join(tmpdir(), "oac-key-check-"));
   try {
-    const env = {
-      ...params.env,
-      HOME: home,
-      XDG_CONFIG_HOME: join(home, ".config"),
-      CURSOR_CONFIG_DIR: join(home, ".cursor"),
-      CURSOR_DATA_DIR: join(home, ".cursor-data"),
-    };
+    const env = { ...params.env, ...throwawayHomeEnv(home) };
     let verdict: "valid" | "invalid" | "unknown" = "unknown";
     for (let run = 0; run < 2 && verdict === "unknown"; run += 1) {
       const result = await runCommand(params.command, ["about"], {
@@ -152,6 +149,20 @@ async function checkKey(params: CheckKeyParams): Promise<"valid" | "invalid" | "
   } finally {
     await rm(home, { recursive: true, force: true }).catch(() => {});
   }
+}
+
+/**
+ * Env that points every place Cursor keeps state into `home`: `HOME`, `XDG_CONFIG_HOME`, its config,
+ * chat store, and data, so neither a login nor a key in the user's `~/.config/cursor/auth.json` is
+ * read or written.
+ */
+function throwawayHomeEnv(home: string): HomeEnv {
+  return {
+    HOME: home,
+    XDG_CONFIG_HOME: join(home, ".config"),
+    CURSOR_CONFIG_DIR: join(home, ".cursor"),
+    CURSOR_DATA_DIR: join(home, ".cursor-data"),
+  };
 }
 
 /** `YYYY.MM.DD` from `cursor-agent --version` (`2026.10.16-e3cb207`), as numbers. */
@@ -413,6 +424,68 @@ async function removeListingSession(env: Record<string, string | undefined>, ses
   await rm(join(configDir, "acp-sessions", sessionId), { recursive: true, force: true }).catch(() => {});
 }
 
+/** ACP's `auth_required` JSON-RPC error code. */
+const ACP_AUTH_REQUIRED = -32000;
+/** Cursor's words for a refused or missing login at session start. */
+const AUTH_REFUSAL = /\b(api key is invalid|invalid api key|authentication required|unauthori[sz]ed|unauthenticated|not logged in)\b/i;
+
+/** A failure of a one-shot turn as an event; a refused login at session start is `auth`, not a server error. */
+function completeError(error: unknown): CliErrorInfo {
+  const info: CliErrorInfo =
+    error instanceof CliError ? error.toInfo() : { code: "unknown", retryable: false, message: error instanceof Error ? error.message : String(error) };
+  const cause = error instanceof Error ? (error.cause as { code?: unknown } | undefined) : undefined;
+  if (info.code === "server_error" && (cause?.code === ACP_AUTH_REQUIRED || AUTH_REFUSAL.test(info.message))) {
+    return { code: "auth", retryable: false, message: `Cursor authentication failed (unauthorized): ${info.message}` };
+  }
+  return info;
+}
+
+/**
+ * One text-only turn for a host request outside a chat (a connection check): `open` as a side
+ * question (`ask` mode, no MCP server, no resume), every permission request rejected, in a temp
+ * `cwd` and a throwaway home (see `throwawayHomeEnv`) that also gets the restricted static
+ * permissions. The key reaches the process through the env only. Abort stops the process. The home,
+ * with the ACP session, is removed afterwards.
+ */
+async function* complete(params: CompleteParams): AsyncGenerator<NormalizedEvent> {
+  const home = await mkdtemp(join(tmpdir(), "oac-complete-"));
+  const env = { ...params.env, ...throwawayHomeEnv(home) };
+  let session: CliSession | undefined;
+  // `open` stops the process on abort itself; after it, a running turn is stopped here.
+  const stop = () => void session?.close();
+  params.signal?.addEventListener("abort", stop, { once: true });
+  try {
+    const cwd = join(home, "work");
+    await mkdir(cwd, { recursive: true, mode: 0o700 });
+    await writePermissions(env.CURSOR_CONFIG_DIR!, CURSOR_RESTRICTED_PERMISSIONS);
+    try {
+      session = await open({
+        command: params.command,
+        args: params.args,
+        cwd,
+        env,
+        modelId: params.modelId,
+        executionMode: "side-question",
+        onPermissionRequest: async () => "cancelled",
+        ...(params.signal ? { signal: params.signal } : {}),
+      });
+    } catch (error) {
+      yield { kind: "error", error: completeError(error) };
+      return;
+    }
+    if (params.signal?.aborted) {
+      yield { kind: "error", error: { code: "unknown", retryable: false, message: "The request was aborted." } };
+      return;
+    }
+    for await (const event of session.prompt(params.prompt)) yield event;
+  } finally {
+    params.signal?.removeEventListener("abort", stop);
+    await session?.close();
+    if (session) await removeListingSession(env, session.sessionId);
+    await rm(home, { recursive: true, force: true }).catch(() => {});
+  }
+}
+
 /** One reader per plugin: its token cache and cooldowns outlive a turn. */
 const usageReader = createCursorUsageReader();
 /** One quota reader per plugin: its cache, token, and back-off outlive a request. */
@@ -448,6 +521,7 @@ export const cursorAdapter: CliAdapter = {
   prepareHome,
   open,
   listModels,
+  complete,
   discardSession: ({ env, sessionId }) => removeListingSession(env, sessionId),
   readUsage: usageReader.read,
   readQuota: quotaReader.read,

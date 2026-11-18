@@ -38,7 +38,7 @@ const utcStamp = (ms: number) => {
 /** An adapter snapshot in OpenClaw's shape; a stale one says so in every label and in the summary. */
 export function toUsageSnapshot(adapter: CliAdapter, snapshot: QuotaSnapshot): UsageSnapshot {
   const stale = snapshot.staleSince;
-  const note = stale === undefined ? undefined : `Stale: ${adapter.displayName} did not answer, showing the reading of ${utcStamp(stale)}`;
+  const note = stale === undefined ? undefined : `Stale: the plan quota API did not answer, showing the reading of ${utcStamp(stale)}`;
   const summary = [note, snapshot.summary].filter(Boolean).join(". ");
   return {
     provider: backendIdFor(adapter),

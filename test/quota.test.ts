@@ -449,7 +449,7 @@ describe("usage hooks", () => {
     const withWarn = createUsageHooks(adapterWith(async () => ({ snapshot: { ...report.snapshot!, staleSince: stale }, warning: "Cursor quota: request failed" })), PLUGIN_ID, warned)!;
     const snapshot = await hooks.fetchUsageSnapshot({ token: KEY });
     expect(snapshot.windows).toEqual([{ label: "Total (stale)", usedPercent: 10, resetAt: 5 }]);
-    expect(snapshot.summary).toBe(`Stale: ${cursorAdapter.displayName} did not answer, showing the reading of 2026-11-10 14:03 UTC. Spend this cycle: $1.00`);
+    expect(snapshot.summary).toBe(`Stale: the plan quota API did not answer, showing the reading of 2026-11-10 14:03 UTC. Spend this cycle: $1.00`);
     await withWarn.fetchUsageSnapshot({ token: KEY });
     expect(warned).toHaveBeenCalledWith("Cursor quota: request failed");
     expect(toUsageSnapshot(cursorAdapter, { windows: [], staleSince: stale }).summary).toMatch(/^Stale: /);

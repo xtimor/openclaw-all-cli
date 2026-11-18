@@ -451,6 +451,28 @@ export type CheckKeyParams = {
   signal?: AbortSignal;
 };
 
+/**
+ * A one-shot text turn the host asks for outside a chat (a connection check, a skill review): one
+ * prompt in, the reply's text out, no tools, no images, no session to resume.
+ */
+export type CompleteParams = {
+  /** The CLI binary, absolute or on PATH. */
+  command: string;
+  /** The adapter's `launchArgs`. */
+  args: readonly string[];
+  /**
+   * The env for the process: the Gateway's without `clearEnv`, the plugin config's `env`, and the
+   * key under `apiKeyEnvVar` when there is one. Never logged.
+   */
+  env: Record<string, string>;
+  /** The model the host asked for, as the plugin names it. */
+  modelId: string;
+  /** The whole request as one text. */
+  prompt: string;
+  /** Aborts the turn: the process is stopped. */
+  signal?: AbortSignal;
+};
+
 /** What one CLI provider supplies to the core. Adapters import only this module and transports. */
 export interface CliAdapter {
   /** Short CLI name, for example `acme`. The backend ID is `<id>-cli`. */
@@ -548,6 +570,14 @@ export interface CliAdapter {
    * then), also when `signal` aborts.
    */
   listModels(params: ListModelsParams): Promise<readonly CliModel[]>;
+  /**
+   * Optional. Runs one text-only turn in a throwaway process and home: read-only mode, no MCP
+   * server, every permission request rejected, nothing kept afterwards. Yields the turn's events;
+   * the last one is `result` or `error` (failures, a missing CLI included, arrive as `error`). It
+   * settles only after the process has exited, also when `signal` aborts. Absent: the host's own
+   * requests for this provider (a connection check) cannot run.
+   */
+  complete?(params: CompleteParams): AsyncIterable<NormalizedEvent>;
   /**
    * Optional. Looks up the turn's token usage for a CLI that does not report it in-session. The
    * core calls it once per turn that ended with `result` and has no `usage` event, after the

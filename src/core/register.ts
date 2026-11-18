@@ -15,6 +15,7 @@ import { reapOnce } from "./pid-locks.ts";
 import { ProcessPool } from "./pool.ts";
 import { createUsageHooks } from "./quota.ts";
 import { createAuthProvider, type PoolControl } from "./provider-auth.ts";
+import { createStreamHook } from "./stream.ts";
 import type { CliAdapter } from "./ports.ts";
 import type { OpenClawPluginApi } from "./sdk-types.ts";
 import { PLUGIN_ID } from "./synthetic-auth.ts";
@@ -250,7 +251,12 @@ export function registerAdapters(api: OpenClawPluginApi, adapters: readonly CliA
       // OpenClaw's fallback store for every agent: `OPENCLAW_AGENT_DIR`, else main's directory.
       mainAgentDir: () => process.env.OPENCLAW_AGENT_DIR?.trim() || api.runtime.agent.resolveAgentDir(api.config, "main"),
     };
-    api.registerProvider({ ...createAuthProvider(adapter, PLUGIN_ID, authDeps), ...createUsageHooks(adapter, PLUGIN_ID, warn) });
+    // OpenClaw's own runtime (Test connection, skill review, companion "ask") reaches the CLI through the stream hook.
+    api.registerProvider({
+      ...createAuthProvider(adapter, PLUGIN_ID, authDeps),
+      ...createUsageHooks(adapter, PLUGIN_ID, warn),
+      ...createStreamHook(adapter, PLUGIN_ID),
+    });
     if (api.registrationMode === "full") {
       // At Gateway start: a managed CLI whose key was removed (OpenClaw's Remove key) goes now.
       void sweepAndReport?.();

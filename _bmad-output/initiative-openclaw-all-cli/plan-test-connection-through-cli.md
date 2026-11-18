@@ -3,14 +3,14 @@ title: 'Make the Control UI Test connection reach Cursor through cursor-agent'
 type: 'bugfix'
 ticket: ''
 created: '2026-11-18'
-status: 'draft'
+status: 'built'
 baseline_revision: '72ceba6f737166bf6600fbd181a7cc57495e5db8'
 route: 'full'
 route_source: 'auto'
 risk: 'medium'
-review: ''
-review_source: ''
-lenses_ran: []
+review: 'quick'
+review_source: 'pinned'
+lenses_ran: ['quick']
 review_loop_iteration: 0
 context: []
 ---
@@ -66,13 +66,13 @@ context: []
 ## Tasks & Acceptance
 
 **Execution:**
-- [ ] `src/core/ports.ts` -- add `CompleteParams` (`command`, `args`, `env`, `modelId`, `prompt`, `signal?`) and optional `CliAdapter.complete(params): AsyncIterable<NormalizedEvent>` -- a one-shot text turn behind the adapter.
-- [ ] `src/adapters/cursor/index.ts` -- implement `complete`: throwaway home env (as `checkKey`), `AcpSession.open` in `ask` mode with `selectModel`, no MCP, permissions `cancelled`, then `prompt`, yield the events, and finally close and clean up -- reuse, don't duplicate.
-- [ ] `src/core/stream.ts` (new) -- `createStreamHook(adapter, pluginId)` returning `{ createStreamFn }`. It flattens `Context` (system prompt, then user and assistant messages with role labels, text parts only) into one prompt, runs `adapter.complete`, and maps the events to `AssistantMessageEvent`s with a final `done` or `error`. A `CliError` code becomes the message's failover reason (`classifyFailoverReason` if needed).
-- [ ] `src/core/register.ts` -- spread `createStreamHook(...)` into `registerProvider`.
-- [ ] `src/core/quota.ts` -- the stale note says the plan quota API did not answer, not the CLI.
-- [ ] `test/stream.test.ts` (new) -- the I/O matrix with the fake agent: ok text, rejected key, no key, missing CLI, unknown model, abort (no leftover temp dir), and context flattening.
-- [ ] `docs/providers/cursor.md`, `CHANGELOG.md` (Fixed) -- Test connection now runs a short Cursor request; the quota note wording.
+- [x] `src/core/ports.ts` -- add `CompleteParams` (`command`, `args`, `env`, `modelId`, `prompt`, `signal?`) and optional `CliAdapter.complete(params): AsyncIterable<NormalizedEvent>` -- a one-shot text turn behind the adapter.
+- [x] `src/adapters/cursor/index.ts` -- implement `complete`: throwaway home env (as `checkKey`), `AcpSession.open` in `ask` mode with `selectModel`, no MCP, permissions `cancelled`, then `prompt`, yield the events, and finally close and clean up -- reuse, don't duplicate.
+- [x] `src/core/stream.ts` (new) -- `createStreamHook(adapter, pluginId)` returning `{ createStreamFn }`. It flattens `Context` (system prompt, then user and assistant messages with role labels, text parts only) into one prompt, runs `adapter.complete`, and maps the events to `AssistantMessageEvent`s with a final `done` or `error`. A `CliError` code becomes the message's failover reason (`classifyFailoverReason` if needed).
+- [x] `src/core/register.ts` -- spread `createStreamHook(...)` into `registerProvider`.
+- [x] `src/core/quota.ts` -- the stale note says the plan quota API did not answer, not the CLI.
+- [x] `test/stream.test.ts` (new) -- the I/O matrix with the fake agent: ok text, rejected key, no key, missing CLI, unknown model, abort (no leftover temp dir), and context flattening.
+- [x] `docs/providers/cursor.md`, `CHANGELOG.md` (Fixed) -- Test connection now runs a short Cursor request; the quota note wording.
 
 **Acceptance Criteria:**
 - Given an isolated OpenClaw 2026.11.3 Gateway with the plugin, the fake agent as `command`, and a saved key, when `gateway call models.probe {"provider":"cursor-cli","profileId":"cursor-cli:default"}` runs, then the status is `ok`.
@@ -89,3 +89,20 @@ The probe only needs non-empty text ("Reply with OK. Do not use tools."). A real
 - `npm run typecheck` -- expected: passes.
 - `npm test` -- expected: passes, including `test/stream.test.ts`.
 - The isolated-Gateway probe from the Acceptance Criteria, with the fake agent (`scratchpad/gw.sh`), on 2026.11.3 -- expected: `ok`, then not `timeout` for the failure cases.
+
+## Review Triage Log
+
+Quick lens, pass 1: 1 medium-high, 5 medium/low, 3 rejected.
+
+| Verdict | Route | Finding | Evidence and action |
+| --- | --- | --- | --- |
+| low | patch | The stale quota note still names the CLI ("the Cursor CLI plan quota API") | Real: `displayName` is "Cursor CLI". The note now names no CLI. |
+| medium | patch | A keyless run keeps the user's `HOME` and can read or refresh `~/.config/cursor/auth.json` | Real, and the plan forbids touching that file. The keyless path is dropped: with no key the request fails as auth before any process starts, and the run always uses the full throwaway home. |
+| medium | patch | `complete` is not aborted on plugin unload and has no time limit of its own | Real: unlike `listModels`, it was not under `trackListing`. The run is now tracked (aborted by `closeListings`) and capped by an internal timeout. Crash reaping (pid lock) is not added: the throwaway home is no agent home that `reapOnce` scans, and the ACP process loses its stdio when the Gateway dies. |
+| low | patch | `end()` without a result before the closing event leaves `result()` unresolved | Real in the stream's own code, and the fix is direct: a later done or error still settles the result. |
+| low | rejected | The iterator has one waiter slot | Real only with two concurrent iterations of one stream; OpenClaw's consumers iterate once. The fix adds complexity. |
+| low | rejected | A `CURSOR_AUTH_TOKEN`-only env is refused as "no API key" | Real but rare: the plugin's setup saves an API key profile. Supporting it needs adapter-specific knowledge in the core. |
+| false | rejected | The plan has no ticket (`AGENTS.md`) | The fix would edit this build's plan. The two plans before it (quota, provider-auth) ran the same way with nick's go-ahead. |
+| low | patch | Docs and changelog claim skill review, companion "ask" and unknown-model results that were not checked live | Real. The wording now says these use the same path but were not checked live. |
+
+After the patches: typecheck, `npm test` (2032 passed, 70 skipped) and the build pass. The isolated 2026.11.3 Gateway probe with the patched build: `ok` (valid key), `auth` (key refused at session start), `unknown` for a missing CLI (not `timeout`); no `oac-complete-*` temp home is left.
