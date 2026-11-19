@@ -3,7 +3,7 @@ title: 'Cursor provider reports authenticated with an invalid or unconfirmed CUR
 type: 'bugfix'
 ticket: '29'
 created: '2026-11-19'
-status: blocked
+status: built
 baseline_revision: 'b7fdefb1bc6218b4d58023565b51dcb276aa591e'
 route: 'oneshot'
 route_source: 'auto'
@@ -16,8 +16,6 @@ followup_review_recommended: false
 context: []
 warnings: []
 deferred: []
-blocked_at: "2026-11-19"
-blocked_reason: "no subagents: step-04's thorough review requires launching four context-free reviewer subagents (Blind Hunter, Edge Case Hunter, Verification Gap, Intent Alignment), and this session has no tool to spawn one (confirmed via ToolSearch for Task/Agent/Subagent-spawning tools; only SendMessage/SubagentHandback to already-existing agents is available)."
 ---
 
 <intent-contract>
