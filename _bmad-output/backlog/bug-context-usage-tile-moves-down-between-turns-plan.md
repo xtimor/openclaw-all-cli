@@ -169,6 +169,7 @@ suite is outside this ticket's scope).
 design rather than new defects). No other residual risk known from implementation, the review pass,
 or the checks above.
 
+## Review Triage Log
 
 ### 2026-11-19 — Follow-up review pass (halted)
 
