@@ -120,4 +120,49 @@ describe("boundTurnUsage (issue #40)", () => {
     const odd = { input: Number.NaN, output: -5, cacheRead: 100, total: 100 } as const;
     expect(boundTurnUsage(odd, 1_000)).toBe(odd);
   });
+
+  it("keeps a plausible total unaffected without a previous-high argument", () => {
+    // The 2-argument call is exactly today's contract: nothing changes for a caller that does not
+    // pass `previousTotal`.
+    const usage = { input: 5_074, output: 31, cacheRead: 10_240, cacheWrite: 0, total: 15_345 };
+    expect(boundTurnUsage(usage, GROK)).toEqual(usage);
+  });
+
+  it("keeps a plausible total that is at or above the previous high", () => {
+    const usage = { input: 5_074, output: 31, cacheRead: 10_240, cacheWrite: 0, total: 15_345 };
+    expect(boundTurnUsage(usage, GROK, 15_345)).toEqual(usage);
+    expect(boundTurnUsage(usage, GROK, 10_000)).toEqual(usage);
+  });
+
+  it("withholds a plausible total that reads lower than the previous high, keeping every count (issue #97)", () => {
+    const usage = { input: 2_200, output: 300, cacheRead: 71_000, cacheWrite: 500, total: 73_700 };
+    expect(boundTurnUsage(usage, GROK, 101_000)).toEqual({ input: 2_200, output: 300, cacheRead: 71_000, cacheWrite: 500, contextUnknown: true });
+  });
+});
+
+describe("triage #97: a turn's per-request usage sum is not a monotonic context reading", () => {
+  const CEILING = 256_000;
+
+  it("boundTurnUsage lets the reported total fall between turns within the ceiling, with nothing marking it as a per-turn sum", () => {
+    const toolHeavyTurn = { input: 2_000, output: 1_500, cacheRead: 98_000, cacheWrite: 1_000, total: 101_000 };
+    const plainFollowUpTurn = { input: 2_200, output: 300, cacheRead: 71_000, cacheWrite: 500, total: 73_700 };
+
+    // Without the fix, both calls below reproduce the triage failure: both are returned unchanged
+    // (`boundedTurn1.total` 101_000, `boundedTurn2.total` 73_700), so a consumer reading `total` as
+    // context size sees it fall even though the conversation only grew.
+    const boundedTurn1 = boundTurnUsage(toolHeavyTurn, CEILING);
+    // Fixed: the session's own highest accepted reading travels into the next call, so a turn that
+    // reads lower is withheld instead of reported as a drop.
+    const boundedTurn2 = boundTurnUsage(plainFollowUpTurn, CEILING, boundedTurn1.total);
+
+    expect(boundedTurn1.contextUnknown).toBeUndefined();
+    expect(boundedTurn1.total).toBe(101_000);
+    expect(boundedTurn2.contextUnknown).toBe(true);
+    expect(boundedTurn2.total).toBeUndefined();
+    expect(boundedTurn2).toMatchObject({ input: 2_200, output: 300, cacheRead: 71_000, cacheWrite: 500 });
+
+    // The value a consumer reads as context size (`total`, or nothing when withheld) never falls:
+    // turn 1's reading stands, turn 2's is withheld rather than shown lower.
+    expect(boundedTurn2.total ?? boundedTurn1.total).toBeGreaterThanOrEqual(boundedTurn1.total ?? 0);
+  });
 });

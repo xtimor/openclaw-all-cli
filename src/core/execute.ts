@@ -465,8 +465,13 @@ export function createExecute(adapter: CliAdapter, options: ExecuteOptions): Cli
           warn,
         );
       }
-      // Either source sums the turn's requests; a sum no request could hold is not a context size (issue #40).
-      if (event.kind === "result" && summary.usage) summary.usage = boundTurnUsage(summary.usage, active.session.contextCeiling);
+      // Either source sums the turn's requests; a sum no request could hold is not a context size
+      // (issue #40), and neither is a sum lower than one already shown for this process (issue #97).
+      if (event.kind === "result" && summary.usage) {
+        const bounded = boundTurnUsage(summary.usage, active.session.contextCeiling, active.highestAcceptedContextTotal);
+        if (!bounded.contextUnknown && typeof bounded.total === "number") active.highestAcceptedContextTotal = bounded.total;
+        summary.usage = bounded;
+      }
       yield toRecord(event satisfies NormalizedEvent, summary);
     }
     ctx.abortSignal?.throwIfAborted();

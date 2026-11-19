@@ -2691,6 +2691,28 @@ describe("createExecute usage port", () => {
       ledger.adapter.readUsage = async () => ({ usage: SUMMED });
       expect((resultOf(await run(createExecute(ledger.adapter, { home: HOME }), makeCtx())) as { usage: object }).usage).toEqual(SUMMED);
     });
+
+    it("keeps a plain follow-up turn's lower total from reading as a drop after a tool-heavy turn, on the same warm process (issue #97)", async () => {
+      const toolHeavyTurn = { input: 2_000, output: 1_500, cacheRead: 98_000, cacheWrite: 1_000, total: 101_000 };
+      const plainFollowUpTurn = { input: 2_200, output: 300, cacheRead: 71_000, cacheWrite: 500, total: 73_700 };
+      let turnCount = 0;
+      const toolHeavyThenPlain: Script = async function* (prompt) {
+        turnCount += 1;
+        yield { kind: "usage", usage: turnCount === 1 ? toolHeavyTurn : plainFollowUpTurn };
+        yield { kind: "result", text: `echo:${prompt}`, stopReason: "end_turn" };
+      };
+      const { live } = makeLive();
+      const { adapter } = withCeiling(toolHeavyThenPlain, 256_000);
+      const execute = createExecute(adapter, { home: HOME });
+
+      const first = await run(execute, makeCtx({ liveSession: live, env: usableEnv }));
+      expect(resultOf(first)).toMatchObject({ usage: toolHeavyTurn });
+
+      const second = await run(execute, makeCtx({ liveSession: live, env: usableEnv, useResume: true, sessionId: "native-1" }));
+      expect(resultOf(second)).toMatchObject({
+        usage: { input: 2_200, output: 300, cacheRead: 71_000, cacheWrite: 500, contextUsage: { state: "unavailable" } },
+      });
+    });
   });
 
   it("ends the wait at once when the turn is aborted", async () => {
