@@ -8,7 +8,7 @@ import { createLiveEntry, liveEntries, type LiveEntry, type LiveEntryDeps, type 
 import { listToolNames, type McpProxy } from "./mcp-proxy.ts";
 import { readTurnTarget, type TurnTarget } from "./mcp-target.ts";
 import { requiredCapabilities } from "./manifest.ts";
-import { boundTurnUsage, readTurnUsage } from "./usage.ts";
+import { boundTurnUsage, contextReading, readTurnUsage } from "./usage.ts";
 import { DeliveredPrompts, deliveredFileFor, planDelivery } from "./system-prompt.ts";
 import { ProcessPool, type TurnSlot } from "./pool.ts";
 import { CONTINUITY_NOTE, HOST_PROCESS_TOOL, HOST_SHELL_TOOL, HOST_STRUCTURED_TOOL, composePrompt, modeOf, shellNote, splitHostShell, structuredOutputNote } from "./turn-prompt.ts";
@@ -468,8 +468,8 @@ export function createExecute(adapter: CliAdapter, options: ExecuteOptions): Cli
       // Either source sums the turn's requests; a sum no request could hold is not a context size
       // (issue #40), and neither is a sum lower than one already shown for this process (issue #97).
       if (event.kind === "result" && summary.usage) {
-        const bounded = boundTurnUsage(summary.usage, active.session.contextCeiling, active.highestAcceptedContextTotal);
-        if (!bounded.contextUnknown && typeof bounded.total === "number") active.highestAcceptedContextTotal = bounded.total;
+        const bounded = boundTurnUsage(summary.usage, active.session.contextCeiling, active.highestAcceptedContextReading);
+        if (!bounded.contextUnknown) active.highestAcceptedContextReading = contextReading(bounded);
         summary.usage = bounded;
       }
       yield toRecord(event satisfies NormalizedEvent, summary);

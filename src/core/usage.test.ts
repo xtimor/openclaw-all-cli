@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { idle } from "../../test/fixtures/virtual-clock.ts";
 import { createManifest, type CliAdapter, type UsageQuery, type UsageReport } from "./ports.ts";
-import { boundTurnUsage, readTurnUsage } from "./usage.ts";
+import { boundTurnUsage, contextReading, readTurnUsage } from "./usage.ts";
 
 const query = (signal?: AbortSignal): UsageQuery => ({
   sessionId: "s1",
@@ -123,46 +123,77 @@ describe("boundTurnUsage (issue #40)", () => {
 
   it("keeps a plausible total unaffected without a previous-high argument", () => {
     // The 2-argument call is exactly today's contract: nothing changes for a caller that does not
-    // pass `previousTotal`.
+    // pass `previousReading`.
     const usage = { input: 5_074, output: 31, cacheRead: 10_240, cacheWrite: 0, total: 15_345 };
     expect(boundTurnUsage(usage, GROK)).toEqual(usage);
   });
 
-  it("keeps a plausible total that is at or above the previous high", () => {
+  it("keeps a plausible total whose own contextReading is at or above the previous high", () => {
+    // contextReading = input + cacheRead + cacheWrite = 5_074 + 10_240 + 0 = 15_314 (not `total`,
+    // which also carries `output` and is not what OpenClaw reads as the context size).
     const usage = { input: 5_074, output: 31, cacheRead: 10_240, cacheWrite: 0, total: 15_345 };
-    expect(boundTurnUsage(usage, GROK, 15_345)).toEqual(usage);
+    expect(boundTurnUsage(usage, GROK, 15_314)).toEqual(usage);
     expect(boundTurnUsage(usage, GROK, 10_000)).toEqual(usage);
   });
 
-  it("withholds a plausible total that reads lower than the previous high, keeping every count (issue #97)", () => {
+  it("withholds a plausible total whose own contextReading is lower than the previous high, keeping every count (issue #97)", () => {
+    // contextReading = 2_200 + 71_000 + 500 = 73_700.
     const usage = { input: 2_200, output: 300, cacheRead: 71_000, cacheWrite: 500, total: 73_700 };
     expect(boundTurnUsage(usage, GROK, 101_000)).toEqual({ input: 2_200, output: 300, cacheRead: 71_000, cacheWrite: 500, contextUnknown: true });
+  });
+
+  it("compares contextReading, not raw total, so a turn whose output changed is judged correctly (review finding on ticket 28)", () => {
+    // A naive fix that compared raw `total` against the previous `total` would get this wrong:
+    // turn 1's total (91_500) is lower than turn 2's (92_000), so a `total`-based comparison would
+    // accept turn 2 and update the high to 92_000 -- but turn 2's actual contextReading (the number
+    // OpenClaw's tile shows, `input + cacheRead + cacheWrite`) is 86_000, LOWER than turn 1's 91_000.
+    // Comparing `contextReading` catches this; comparing `total` would not.
+    const turn1 = { input: 1_000, output: 500, cacheRead: 90_000, cacheWrite: 0, total: 91_500 };
+    const boundedTurn1 = boundTurnUsage(turn1, GROK);
+    expect(boundedTurn1.contextUnknown).toBeUndefined();
+    expect(contextReading(boundedTurn1)).toBe(91_000);
+
+    const turn2 = { input: 1_000, output: 6_000, cacheRead: 85_000, cacheWrite: 0, total: 92_000 };
+    const boundedTurn2 = boundTurnUsage(turn2, GROK, contextReading(boundedTurn1));
+    expect(boundedTurn2.contextUnknown).toBe(true);
+    expect(boundedTurn2.total).toBeUndefined();
+  });
+});
+
+describe("contextReading", () => {
+  it("sums input, cacheRead, and cacheWrite, and excludes output", () => {
+    expect(contextReading({ input: 1_000, output: 500, cacheRead: 2_000, cacheWrite: 300 })).toBe(3_300);
+  });
+
+  it("ignores counts that are not positive numbers", () => {
+    expect(contextReading({ input: Number.NaN, cacheRead: -5, cacheWrite: 0, total: 100 } as never)).toBe(0);
   });
 });
 
 describe("triage #97: a turn's per-request usage sum is not a monotonic context reading", () => {
   const CEILING = 256_000;
 
-  it("boundTurnUsage lets the reported total fall between turns within the ceiling, with nothing marking it as a per-turn sum", () => {
+  it("boundTurnUsage lets the reported contextReading fall between turns within the ceiling, with nothing marking it as a per-turn sum", () => {
     const toolHeavyTurn = { input: 2_000, output: 1_500, cacheRead: 98_000, cacheWrite: 1_000, total: 101_000 };
     const plainFollowUpTurn = { input: 2_200, output: 300, cacheRead: 71_000, cacheWrite: 500, total: 73_700 };
 
     // Without the fix, both calls below reproduce the triage failure: both are returned unchanged
-    // (`boundedTurn1.total` 101_000, `boundedTurn2.total` 73_700), so a consumer reading `total` as
-    // context size sees it fall even though the conversation only grew.
+    // (contextReading 101_000, then 73_700), so a consumer reading contextReading as context size
+    // sees it fall even though the conversation only grew.
     const boundedTurn1 = boundTurnUsage(toolHeavyTurn, CEILING);
-    // Fixed: the session's own highest accepted reading travels into the next call, so a turn that
-    // reads lower is withheld instead of reported as a drop.
-    const boundedTurn2 = boundTurnUsage(plainFollowUpTurn, CEILING, boundedTurn1.total);
+    // Fixed: the session's own highest accepted reading (contextReading, not raw total) travels
+    // into the next call, so a turn that reads lower is withheld instead of reported as a drop.
+    const boundedTurn2 = boundTurnUsage(plainFollowUpTurn, CEILING, contextReading(boundedTurn1));
 
     expect(boundedTurn1.contextUnknown).toBeUndefined();
-    expect(boundedTurn1.total).toBe(101_000);
+    expect(contextReading(boundedTurn1)).toBe(101_000);
     expect(boundedTurn2.contextUnknown).toBe(true);
     expect(boundedTurn2.total).toBeUndefined();
     expect(boundedTurn2).toMatchObject({ input: 2_200, output: 300, cacheRead: 71_000, cacheWrite: 500 });
 
-    // The value a consumer reads as context size (`total`, or nothing when withheld) never falls:
-    // turn 1's reading stands, turn 2's is withheld rather than shown lower.
-    expect(boundedTurn2.total ?? boundedTurn1.total).toBeGreaterThanOrEqual(boundedTurn1.total ?? 0);
+    // The value a consumer reads as context size (contextReading, or nothing when withheld) never
+    // falls: turn 1's reading stands, turn 2's is withheld rather than shown lower.
+    const turn2Reading = boundedTurn2.contextUnknown ? undefined : contextReading(boundedTurn2);
+    expect(turn2Reading ?? contextReading(boundedTurn1)).toBeGreaterThanOrEqual(contextReading(boundedTurn1));
   });
 });

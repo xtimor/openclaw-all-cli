@@ -54,11 +54,12 @@ export type LiveEntry = {
   /** A prompt of this process carried the `structured_output` sentence: it is not sent again. */
   structuredSent?: boolean;
   /**
-   * The highest turn `total` this process has reported as a context size, not withheld (issue
-   * #97). A later turn whose own total reads lower is not a context reading either: `boundTurnUsage`
-   * withholds it instead of letting the tile fall. Starts unset; a process that restarts starts over.
+   * The highest `contextReading` (`input + cacheRead + cacheWrite`, not raw `total`) this process
+   * has reported as a context size, not withheld (issue #97). A later turn whose own reading is
+   * lower is not a context reading either: `boundTurnUsage` withholds it instead of letting the
+   * tile fall. Starts unset; a process that restarts starts over.
    */
-  highestAcceptedContextTotal?: number;
+  highestAcceptedContextReading?: number;
   busy: boolean;
   idleTimer?: NodeJS.Timeout;
 };
