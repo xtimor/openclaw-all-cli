@@ -3,7 +3,7 @@ title: 'A transient Cursor throttle is reported as a spent plan quota'
 type: 'bugfix'
 ticket: 30
 created: '2026-11-19'
-status: built
+status: done
 baseline_revision: '4746a143dee0b027b4e603e4f476ffc683b1685b'
 route: 'oneshot'
 route_source: 'auto'
