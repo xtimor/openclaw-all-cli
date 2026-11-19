@@ -17,14 +17,20 @@ import { cursorKeyCheckCache } from "./auth-probe-cache.ts";
 type Failure = { code: CliErrorCode; label: string };
 
 const AUTH: Failure = { code: "auth", label: "authentication failed (unauthorized)" };
+/** Genuine plan exhaustion (`ActionRequiredError`, "upgrade your plan to continue"): the account's own usage limit. */
 const RATE_LIMIT: Failure = { code: "rate_limit", label: "rate limit reached (usage limit)" };
+/** Transient backend throttle (`RetriableError`, Connect code `resource_exhausted`): unrelated to the account's plan. */
+const RATE_LIMIT_THROTTLE: Failure = {
+  code: "rate_limit",
+  label: "hit a temporary rate limit, try again shortly",
+};
 const SERVER_ERROR: Failure = { code: "server_error", label: "internal server error" };
 
 /** Connect error codes (https://connectrpc.com/docs/protocol#error-codes) that Cursor passes through. */
 const CONNECT_CODES: Readonly<Record<string, Failure>> = {
   unauthenticated: AUTH,
   permission_denied: AUTH,
-  resource_exhausted: RATE_LIMIT,
+  resource_exhausted: RATE_LIMIT_THROTTLE,
   unavailable: { code: "overloaded", label: "is overloaded (service unavailable)" },
   deadline_exceeded: { code: "timeout", label: "timed out (deadline exceeded)" },
   invalid_argument: { code: "format", label: "rejected the request (invalid request format)" },

@@ -10,6 +10,7 @@ What changed for people who use the plugin, newest first. Format: [Keep a Change
 - A stale Cursor plan quota now says that the plan quota API did not answer, instead of naming the Cursor CLI.
 - The Control UI's context-usage tile no longer moves down after a turn that made fewer model requests than the one before it: the plugin now withholds a turn's reading when it is lower than the highest one already shown for the warm process, instead of only when a turn's own reading is implausibly large ([#97](https://github.com/xtimor/openclaw-all-cli/issues/97)). The remembered high resets on a process restart, so the guarantee holds per warm process, not for the whole chat.
 - The `cursor-cli` provider no longer shows as authenticated for a wrong, expired, or revoked `CURSOR_API_KEY`, or for a degraded `cursor-agent status` line that admits it could not confirm the login ([#98](https://github.com/xtimor/openclaw-all-cli/issues/98)): a present key is now checked with `cursor-agent about`, with the result cached briefly and re-checked after a turn finds the server rejects it.
+- A transient Cursor backend throttle no longer reads as a spent plan quota: it now says "hit a temporary rate limit, try again shortly" instead of "rate limit reached (usage limit)". A genuine plan exhaustion ("upgrade your plan to continue") still reads as a usage limit, unchanged ([#99](https://github.com/xtimor/openclaw-all-cli/issues/99)).
 
 ## 0.1.10 - 2026-11-18
 

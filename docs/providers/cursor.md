@@ -216,7 +216,8 @@ A chunk counts only when it is the last thing in the turn. If any text, thinking
 | Cursor says | OpenClaw error class |
 | --- | --- |
 | `Error: [unauthenticated]` or `[permission_denied]`, `Please sign in to continue` | `auth` |
-| `Error: [resource_exhausted]`, `Upgrade your plan to continue` | `rate_limit` |
+| `Error: [resource_exhausted]` (a transient backend throttle, retryable) | `rate_limit` |
+| `Upgrade your plan to continue` (the account's own usage limit, not retryable) | `rate_limit` |
 | `Add a payment method to continue` | `billing` |
 | `Check your settings to continue` | `auth_permanent` |
 | `Error: [unavailable]` | `overloaded` |
@@ -224,7 +225,7 @@ A chunk counts only when it is the last thing in the turn. If any text, thinking
 | `Error: [invalid_argument]` | `format` |
 | `Error: <Name>: [internal]`, `[unknown]`, any other code (`[failed_precondition]` too), or a name without a code | `server_error` |
 
-The error is retryable only when Cursor names it `RetriableError` and no tool call started in the turn. The plugin does not retry by itself. The host picks its own failover reason from the message text, so each message names the failure in words the host reads (for example "rate limit reached (usage limit)", "payment required") before Cursor's text. A Cursor server error carries "internal server error", which the host files as `timeout` (its class for transient server errors), so it gets its retry and cooldown handling. A session that fails to start gets Cursor's reason too (`Failed to initialize session services`).
+The error is retryable only when Cursor names it `RetriableError` and no tool call started in the turn. The plugin does not retry by itself. The host picks its own failover reason from the message text, so each message names the failure in words the host reads (for example "rate limit reached (usage limit)", "payment required") before Cursor's text. Both `resource_exhausted` and "upgrade your plan to continue" carry `code: "rate_limit"` and keep the words "rate limit" for that keyword match, but only the genuine plan-exhaustion message ("upgrade your plan to continue") says "usage limit"; a transient `resource_exhausted` throttle says "hit a temporary rate limit, try again shortly" instead, so it is not misreported as a spent subscription ([#99](https://github.com/xtimor/openclaw-all-cli/issues/99)). A Cursor server error carries "internal server error", which the host files as `timeout` (its class for transient server errors), so it gets its retry and cooldown handling. A session that fails to start gets Cursor's reason too (`Failed to initialize session services`).
 
 ## Permissions and tool availability
 

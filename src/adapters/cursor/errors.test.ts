@@ -82,6 +82,29 @@ describe("classifyCursorReplyError", () => {
   });
 });
 
+describe("triage scratch #99: resource_exhausted throttle vs. genuine plan exhaustion", () => {
+  it("does not tell the caller a transient resource_exhausted throttle is a spent usage limit", () => {
+    const throttle = classifyCursorReplyError(
+      "\n\nError: RetriableError: [resource_exhausted] backend is busy, try again shortly",
+    );
+    expect(throttle?.code).toBe("rate_limit");
+    expect(throttle?.message).not.toMatch(/usage limit/i);
+  });
+
+  it("still reports a genuine plan-exhaustion action phrase as a usage limit (unchanged)", () => {
+    const planSpent = classifyCursorReplyError("Upgrade your plan to continue");
+    expect(planSpent?.code).toBe("rate_limit");
+    expect(planSpent?.message).toMatch(/usage limit/i);
+  });
+
+  it("marks the throttle as retryable before any tool call ran (this part is correct already)", () => {
+    const throttle = classifyCursorReplyError(
+      "\n\nError: RetriableError: [resource_exhausted] backend is busy, try again shortly",
+    );
+    expect(throttle?.retryable).toBe(true);
+  });
+});
+
 describe("Cursor adapter turns with the fake agent", () => {
   const open: CliSession[] = [];
   afterEach(async () => {
