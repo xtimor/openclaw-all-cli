@@ -3,40 +3,56 @@ import { createHash } from "node:crypto";
 export type KeyCheckVerdict = "valid" | "invalid" | "unknown";
 
 export type CursorKeyCheckCacheOptions = {
-  /** How long a validated key's verdict is served without re-checking `checkKey`. */
+  /** How long a `valid` or `invalid` verdict is served without re-checking `checkKey`. */
   ttlMs?: number;
+  /**
+   * How long an `unknown` verdict is served. Short on purpose: cursor-agent 2026.11.11 answers
+   * `unknown` for a refused key (not `invalid`, see `parseAboutOutput`), so without this every
+   * single probe of that key would re-pay `checkKey`'s full cost (two `about` runs, up to
+   * `KEY_CHECK_TIMEOUT_MS` each) instead of "rarely", defeating AC3 for that CLI version. Shorter
+   * than `ttlMs` so a transient failure (a spawn error, a slow first run in a fresh home) is not
+   * stuck for as long as a settled verdict.
+   */
+  unknownTtlMs?: number;
   now?: () => number;
 };
 
 const DEFAULT_TTL_MS = 5 * 60_000;
+const DEFAULT_UNKNOWN_TTL_MS = 30_000;
 
-type Entry = { signature: string; verdict: KeyCheckVerdict; expiresAt: number };
+type Entry = { verdict: KeyCheckVerdict; expiresAt: number };
 
 /**
- * Caches one validated `CURSOR_API_KEY`'s verdict so the ongoing auth probe (issue #98) does not
- * pay `checkKey`'s cost (a `cursor-agent about` round trip, up to two runs, each up to
- * `KEY_CHECK_TIMEOUT_MS`) on every probe. One slot is enough: a probe checks one key at a time per
- * backend, keyed by the exact command and key, so a changed key is always a fresh signature and
- * never reads another key's cached verdict. An `unknown` verdict is never cached, so the next probe
- * tries again instead of being stuck on an unclear answer. `invalidate` drops the slot when a live
- * turn finds the server has rejected the credential the cache called valid (AC4).
+ * Caches a validated `CURSOR_API_KEY`'s verdict per command+key signature, so the ongoing auth
+ * probe (issue #98) does not pay `checkKey`'s cost on every probe. Keyed by signature (not one
+ * shared slot): different agents can resolve different keys for the same command, and a single
+ * slot would have each one evict the other's verdict on every probe. `invalidate` clears every
+ * signature: a live turn only knows the credential was rejected, not which cached signature it
+ * came from (AC4).
  */
 export function createCursorKeyCheckCache(options: CursorKeyCheckCacheOptions = {}) {
   const ttlMs = options.ttlMs ?? DEFAULT_TTL_MS;
+  const unknownTtlMs = options.unknownTtlMs ?? DEFAULT_UNKNOWN_TTL_MS;
   const now = options.now ?? Date.now;
-  let entry: Entry | undefined;
+  const entries = new Map<string, Entry>();
   const signatureOf = (command: string, key: string) => `${command}\u0000${createHash("sha256").update(key).digest("hex")}`;
   return {
     get(command: string, key: string): KeyCheckVerdict | undefined {
-      if (!entry || entry.signature !== signatureOf(command, key) || entry.expiresAt <= now()) return undefined;
+      const signature = signatureOf(command, key);
+      const entry = entries.get(signature);
+      if (!entry) return undefined;
+      if (entry.expiresAt <= now()) {
+        entries.delete(signature);
+        return undefined;
+      }
       return entry.verdict;
     },
     set(command: string, key: string, verdict: KeyCheckVerdict): void {
-      if (verdict === "unknown") return;
-      entry = { signature: signatureOf(command, key), verdict, expiresAt: now() + ttlMs };
+      const signature = signatureOf(command, key);
+      entries.set(signature, { verdict, expiresAt: now() + (verdict === "unknown" ? unknownTtlMs : ttlMs) });
     },
     invalidate(): void {
-      entry = undefined;
+      entries.clear();
     },
   };
 }

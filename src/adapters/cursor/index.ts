@@ -388,6 +388,11 @@ function open(params: OpenParams): Promise<CliSession> {
         },
       ),
     ...(params.signal ? { signal: params.signal } : {}),
+  }).catch((error: unknown) => {
+    // A refused key fails here as a plain `server_error` (issue #98 AC4; see
+    // `invalidateKeyCacheIfAuthRefusal`), not only from the one-shot `complete()` path.
+    invalidateKeyCacheIfAuthRefusal(error);
+    throw error;
   });
 }
 
@@ -451,10 +456,27 @@ const ACP_AUTH_REQUIRED = -32000;
 const AUTH_REFUSAL = /\b(api key is invalid|invalid api key|authentication required|unauthori[sz]ed|unauthenticated|not logged in)\b/i;
 
 /**
+ * A credential the server itself refused invalidates the cached `checkKey` verdict (issue #98
+ * AC4), on any path, so the next probe re-validates instead of serving a stale `available`.
+ * Catches both an already-reclassified `auth`/`auth_permanent` error and a refused login at
+ * session start on an ongoing chat turn, which `handshake.ts` throws as a plain `server_error`
+ * (the transport stays CLI-agnostic, so it does not reclassify it; this adapter-layer check does).
+ */
+function invalidateKeyCacheIfAuthRefusal(error: unknown): void {
+  const info: CliErrorInfo =
+    error instanceof CliError ? error.toInfo() : { code: "unknown", retryable: false, message: error instanceof Error ? error.message : String(error) };
+  if (info.code === "auth" || info.code === "auth_permanent") {
+    cursorKeyCheckCache.invalidate();
+    return;
+  }
+  if (info.code !== "server_error") return;
+  const cause = error instanceof Error ? (error.cause as { code?: unknown } | undefined) : undefined;
+  if (cause?.code === ACP_AUTH_REQUIRED || AUTH_REFUSAL.test(info.message)) cursorKeyCheckCache.invalidate();
+}
+
+/**
  * A failure of a one-shot turn as an event; a refused login at session start is `auth`, not a
- * server error. Either way, a credential the server itself rejects invalidates the cached
- * `checkKey` verdict (issue #98 AC4): the next probe re-validates instead of serving a stale
- * `available`.
+ * server error.
  */
 function completeError(error: unknown): CliErrorInfo {
   const info: CliErrorInfo =
@@ -464,7 +486,7 @@ function completeError(error: unknown): CliErrorInfo {
     info.code === "server_error" && (cause?.code === ACP_AUTH_REQUIRED || AUTH_REFUSAL.test(info.message))
       ? { code: "auth", retryable: false, message: `Cursor authentication failed (unauthorized): ${info.message}` }
       : info;
-  if (result.code === "auth" || result.code === "auth_permanent") cursorKeyCheckCache.invalidate();
+  invalidateKeyCacheIfAuthRefusal(error);
   return result;
 }
 

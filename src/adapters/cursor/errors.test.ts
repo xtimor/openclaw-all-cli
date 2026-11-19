@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it } from "vitest";
 import { FAKE_CURSOR_AGENT, fakeEnv } from "../../../test/fixtures/paths.ts";
 import type { CliSession, NormalizedEvent } from "../../core/ports.ts";
+import { cursorKeyCheckCache } from "./auth-probe-cache.ts";
 import { classifyCursorReplyError } from "./errors.ts";
 import { cursorAdapter } from "./index.ts";
 
@@ -55,6 +56,16 @@ describe("classifyCursorReplyError", () => {
       expect(result?.message).toMatch(keyword);
       expect(result?.message).toContain(phrase);
     }
+  });
+
+  it.each([
+    ["Please sign in to continue", "agent-98-sign-in"],
+    ["Check your settings to continue", "agent-98-settings"],
+  ])("drops the cached auth-probe verdict for the action phrase %j (issue #98 AC4)", (phrase, key) => {
+    cursorKeyCheckCache.set(FAKE_CURSOR_AGENT, key, "valid");
+    expect(cursorKeyCheckCache.get(FAKE_CURSOR_AGENT, key)).toBe("valid");
+    classifyCursorReplyError(phrase);
+    expect(cursorKeyCheckCache.get(FAKE_CURSOR_AGENT, key)).toBeUndefined();
   });
 
   it.each([

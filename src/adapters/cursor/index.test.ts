@@ -7,6 +7,7 @@ import { startLedgerStub } from "../../../test/fixtures/ledger-stub.ts";
 import { createExecute } from "../../core/execute.ts";
 import { parseJsonlEvent } from "../../core/events.ts";
 import { USAGE_URL_ENV } from "./usage.ts";
+import { cursorKeyCheckCache } from "./auth-probe-cache.ts";
 import { classifyCursorReplyError } from "./errors.ts";
 import { FAKE_CURSOR_AGENT, fakeEnv } from "../../../test/fixtures/paths.ts";
 import {
@@ -941,5 +942,28 @@ describe("issue #98: an unvalidated or degraded credential must not probe as aut
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
+  });
+
+  it("re-validates after a chat turn is refused at session start, not only after a reply chunk (issue #98 AC4)", async () => {
+    // A refused login at session start never reaches `classifyCursorReplyError` (that is for a
+    // reply chunk) or the one-shot `complete()` path's `completeError`: it surfaces from
+    // `AcpSession.open` itself as a plain `server_error` (`handshake.ts` stays CLI-agnostic and does
+    // not reclassify it). `open()`'s own catch must still drop the cache.
+    cursorKeyCheckCache.set(FAKE_CURSOR_AGENT, "session-start-98", "valid");
+    expect(cursorKeyCheckCache.get(FAKE_CURSOR_AGENT, "session-start-98")).toBe("valid");
+
+    const env = fakeEnv({ CURSOR_API_KEY: "session-start-98", FAKE_CURSOR_NEW_ERROR: JSON.stringify({ code: -32000, message: "Authentication required" }) });
+    await expect(
+      cursorAdapter.open({
+        command: FAKE_CURSOR_AGENT,
+        args: cursorAdapter.launchArgs,
+        cwd: process.cwd(),
+        env,
+        modelId: "auto",
+        onPermissionRequest: async () => "reject_once",
+      }),
+    ).rejects.toMatchObject({ code: "server_error" });
+
+    expect(cursorKeyCheckCache.get(FAKE_CURSOR_AGENT, "session-start-98")).toBeUndefined();
   });
 });
