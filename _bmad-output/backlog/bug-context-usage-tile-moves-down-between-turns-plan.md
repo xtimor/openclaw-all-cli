@@ -3,7 +3,7 @@ title: 'Context usage tile moves down between turns'
 type: 'bugfix'
 ticket: '28'
 created: '2026-11-19'
-status: built
+status: blocked
 baseline_revision: '4a9fed1fd1cd8e85f3ce663bc9a7584f8e129a45'
 route: 'oneshot'
 route_source: 'auto'
@@ -16,6 +16,8 @@ followup_review_recommended: false
 context: []
 warnings: []
 deferred: []
+blocked_at: "2026-11-19"
+blocked_reason: "no subagents: step-04's Quick review lens must run as a context-free reviewer subagent, and this follow-up review session again has no tool that can spawn one (ToolSearch finds only SendMessage/TaskStop, no Agent/Task tool); review not run, no findings, no patches"
 ---
 
 <intent-contract>
@@ -125,3 +127,18 @@ restart) and threads it into the call.
 
 **Residual risks:** None known from implementation or the checks above. The code change itself has not had an independent review pass (Quick lens), so a second set of eyes before merge is advisable once a subagent-capable session is available.
 
+
+### 2026-11-19 — Follow-up review pass (halted)
+
+Status: blocked
+Blocking condition: no subagents
+
+The orchestrator dispatched a follow-up review on the `built` plan (`ticket 28`, quick). Step-01
+routed the `built` plan to step-04 as a follow-up pass (`review_loop_iteration` 0). Step-04 calls
+for the Quick lens to run as a context-free reviewer subagent. Again, this session has no tool
+that can spawn one: `ToolSearch` finds only `SendMessage` and `TaskStop`, and no Agent or Task
+tool. As `workflow.md` → Subagents requires, the run halted before it staged the diff or launched
+any lens. `lenses_ran` stays empty. There are no findings, no patches, and no deferred items, and
+no code changed. `followup_review_recommended` is unchanged (`false`, not computed). The
+implementation commit is still `0fac6c5f97057a343e1e8e678070ff2468f11f30`, and it has still not
+had an independent review lens pass.
