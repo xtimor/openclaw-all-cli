@@ -3,7 +3,7 @@ title: 'A transient Cursor throttle is reported as a spent plan quota'
 type: 'bugfix'
 ticket: 30
 created: '2026-11-19'
-status: 'in-review'
+status: blocked
 baseline_revision: '4746a143dee0b027b4e603e4f476ffc683b1685b'
 route: 'oneshot'
 route_source: 'auto'
@@ -16,6 +16,8 @@ followup_review_recommended: false
 context: []
 warnings: []
 deferred: []
+blocked_at: "2026-11-19"
+blocked_reason: "no subagents"
 ---
 
 <intent-contract>
@@ -90,3 +92,41 @@ subagent needed.
 - `npm test` -- expected: full suite passes, including the unchanged `"upgrade your plan to continue"` and `resource_exhausted` rows in the existing `it.each` tables.
 - `npm run typecheck` -- expected: no type errors.
 - `npm run ci` -- expected: passes (no live Cursor login needed for this change).
+
+## Auto Run Result
+
+**Summary:** Implemented and verified the AC1-4 fix: a transient Cursor `resource_exhausted`
+throttle no longer reads as "usage limit" while `code: "rate_limit"` and the "rate limit" keyword
+stay unchanged for the host's failover; the genuine "upgrade your plan to continue" message is
+unchanged. The ticket's reproduction tests were merged into `errors.test.ts` verbatim. Committed as
+`fc5b063`.
+
+**Files changed:**
+- `src/adapters/cursor/errors.ts` -- added `RATE_LIMIT_THROTTLE` for `CONNECT_CODES.resource_exhausted`; `RATE_LIMIT` now serves only the plan-exhaustion action phrase.
+- `src/adapters/cursor/errors.test.ts` -- merged the ticket's three Notes regression tests verbatim.
+- `docs/providers/cursor.md` -- split the errors table's one `rate_limit` row into two, and extended the retryable-message paragraph to explain the wording split.
+- `CHANGELOG.md` -- one `## Unreleased` / `### Fixed` line linking issue #99.
+- `_bmad-output/backlog/bug-transient-cursor-throttle-reported-as-spent-plan-quota-plan.md` -- this plan (new).
+
+**Review findings breakdown:** No review lenses ran this pass. This session has no tool to spawn a
+context-free reviewer subagent (checked via `ToolSearch`: only `SendMessage` to already-named
+agents/teammates is available, nothing that launches a new context-free subagent) -- confirmed on
+tickets 28 and 29 as an environment limitation, not specific to this ticket. 0 patches applied, 0
+items deferred, 0 findings rejected (none were produced).
+
+**Follow-up review recommendation:** Not computed -- no review pass ran. The orchestrator runs the
+actual review itself per the dispatch instructions.
+
+**Verification performed:**
+- `npx vitest run src/adapters/cursor/errors.test.ts -t "does not tell the caller a transient resource_exhausted throttle is a spent usage limit"` -- 1 passed.
+- `npx vitest run src/adapters/cursor/errors.test.ts` -- 33 passed (all existing + 3 merged regression tests).
+- `npm run typecheck` -- clean.
+- `npm test` -- 2057 passed, 70 skipped (pre-existing, unrelated), 0 failed.
+- `npm run ci` -- full suite (isolated Node 24 + OpenClaw setup, `npm ci`, plan gate, typecheck, unit tests, build, package allowlist test, `npm pack --dry-run`, install smoke check) -- "All checks passed."
+- Live check not run: there is no live-`cursor-agent` test for this classifier (pure text
+  classification, fully covered by `errors.test.ts`); nothing in `test/live/` exercises this path, so
+  there was no live check to skip over.
+
+**Residual risks:** None identified in the implementation itself. The only open item is that no
+automated review lens has run on this diff yet (blocked reason above) -- the orchestrator's own
+review step covers that.
