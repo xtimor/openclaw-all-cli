@@ -3,7 +3,7 @@ title: 'Context usage tile moves down between turns'
 type: 'bugfix'
 ticket: '28'
 created: '2026-11-19'
-status: built
+status: done
 baseline_revision: '4a9fed1fd1cd8e85f3ce663bc9a7584f8e129a45'
 route: 'oneshot'
 route_source: 'auto'
