@@ -22,7 +22,7 @@ const RATE_LIMIT: Failure = { code: "rate_limit", label: "rate limit reached (us
 /** Transient backend throttle (`RetriableError`, Connect code `resource_exhausted`): unrelated to the account's plan. */
 const RATE_LIMIT_THROTTLE: Failure = {
   code: "rate_limit",
-  label: "hit a temporary rate limit, try again shortly",
+  label: "hit a temporary rate limit (resource exhausted)",
 };
 const SERVER_ERROR: Failure = { code: "server_error", label: "internal server error" };
 

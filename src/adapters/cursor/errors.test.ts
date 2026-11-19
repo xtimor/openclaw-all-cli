@@ -82,7 +82,7 @@ describe("classifyCursorReplyError", () => {
   });
 });
 
-describe("triage scratch #99: resource_exhausted throttle vs. genuine plan exhaustion", () => {
+describe("classifyCursorReplyError: resource_exhausted throttle vs. genuine plan exhaustion (issue #99)", () => {
   it("does not tell the caller a transient resource_exhausted throttle is a spent usage limit", () => {
     const throttle = classifyCursorReplyError(
       "\n\nError: RetriableError: [resource_exhausted] backend is busy, try again shortly",
@@ -97,7 +97,7 @@ describe("triage scratch #99: resource_exhausted throttle vs. genuine plan exhau
     expect(planSpent?.message).toMatch(/usage limit/i);
   });
 
-  it("marks the throttle as retryable before any tool call ran (this part is correct already)", () => {
+  it("marks the throttle as retryable before any tool call ran", () => {
     const throttle = classifyCursorReplyError(
       "\n\nError: RetriableError: [resource_exhausted] backend is busy, try again shortly",
     );

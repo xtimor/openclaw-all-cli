@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 import { cursorAdapter } from "../src/adapters/cursor/index.ts";
+import { classifyCursorReplyError } from "../src/adapters/cursor/errors.ts";
 import { buildCliBackend } from "../src/core/backend.ts";
 import { parseJsonlEvent, toRecord } from "../src/core/events.ts";
 import { liveEntries } from "../src/core/live-entry.ts";
@@ -555,5 +556,28 @@ describe.skipIf(!hostAvailable)("OpenClaw's provider login and auth profile sele
     const context = source.slice(start, start + 600);
     expect(context).toMatch(/\n\s*agentDir,\n/);
     expect(context).toMatch(/\n\s*authProfileId: effectiveAuthProfileId,\n/);
+  });
+});
+
+/**
+ * Issue #99 / ticket 30: splitting the throttle message from the plan-exhaustion message keeps
+ * `code: "rate_limit"` the same for both (the host's keyword-based failover `code` path is
+ * unaffected, as the ticket's Boundaries require), but the host has a second, independent,
+ * message-text classifier for how long a rate limit should be treated as lasting. That classifier
+ * is not named in the ticket and was not previously pinned: this test records what it actually
+ * does with each of the plugin's two messages, so a later change to either text is judged against
+ * the real host behavior instead of an assumption.
+ */
+describe.skipIf(!hostAvailable)("OpenClaw's rate-limit window classification (issue #99)", () => {
+  it("still reads the genuine plan-exhaustion message as a long (not-worth-retrying-soon) window", async () => {
+    const hasLongWindowRateLimitEvidence = await hostExport<(message: string) => boolean>("hasLongWindowRateLimitEvidence");
+    const planExhausted = classifyCursorReplyError("Upgrade your plan to continue");
+    expect(hasLongWindowRateLimitEvidence(planExhausted!.message)).toBe(true);
+  });
+
+  it("no longer reads the transient throttle message as a long window, now that it drops 'usage limit' (desired: issue #99 asks for the throttle to be retried, not treated like an exhausted plan)", async () => {
+    const hasLongWindowRateLimitEvidence = await hostExport<(message: string) => boolean>("hasLongWindowRateLimitEvidence");
+    const throttle = classifyCursorReplyError("\n\nError: RetriableError: [resource_exhausted] backend is busy, try again shortly");
+    expect(hasLongWindowRateLimitEvidence(throttle!.message)).toBe(false);
   });
 });
