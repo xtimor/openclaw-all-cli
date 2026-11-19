@@ -3,7 +3,7 @@ title: 'Cursor provider reports authenticated with an invalid or unconfirmed CUR
 type: 'bugfix'
 ticket: '29'
 created: '2026-11-19'
-status: built
+status: in-review
 baseline_revision: 'b7fdefb1bc6218b4d58023565b51dcb276aa591e'
 route: 'oneshot'
 route_source: 'auto'
