@@ -3,7 +3,7 @@ title: 'Context usage tile moves down between turns'
 type: 'bugfix'
 ticket: '28'
 created: '2026-11-19'
-status: blocked
+status: built
 baseline_revision: '4a9fed1fd1cd8e85f3ce663bc9a7584f8e129a45'
 route: 'oneshot'
 route_source: 'auto'
@@ -16,8 +16,6 @@ followup_review_recommended: false
 context: []
 warnings: []
 deferred: []
-blocked_at: "2026-11-19"
-blocked_reason: "no subagents: step-04's Quick review lens requires launching a context-free reviewer subagent, and this session has no tool to spawn one (only messaging of already-existing agents is available; confirmed via ToolSearch for Task/Agent/Subagent-spawning tools)."
 ---
 
 <intent-contract>
