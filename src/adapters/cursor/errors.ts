@@ -1,4 +1,5 @@
 import type { CliErrorCode, CliErrorInfo } from "../../core/ports.ts";
+import { cursorKeyCheckCache } from "./auth-probe-cache.ts";
 
 /**
  * Cursor reports a failed turn (network, auth, rate limit, plan) as one final reply chunk, then
@@ -51,15 +52,24 @@ function message(failure: Failure, original: string): string {
   return `Cursor ${failure.label}: ${original}`;
 }
 
+/** The server rejected the credential itself, not just this one request (issue #98 AC4). */
+function isCredentialRejection(failure: Failure): boolean {
+  return failure.code === "auth" || failure.code === "auth_permanent";
+}
+
 /**
  * Recognises a reply chunk that is really a Cursor failure. Returns the error to raise, or
  * `undefined` for ordinary text. `RetriableError` makes it retryable; the transport clears that
- * once a tool call started.
+ * once a tool call started. A credential the server rejects here also drops the probe's cached
+ * `checkKey` verdict, so the next auth probe re-validates instead of reporting a stale `available`.
  */
 export function classifyCursorReplyError(text: string): CliErrorInfo | undefined {
   const original = text.trim();
   const action = ACTION_PHRASES[original.toLowerCase()];
-  if (action) return { code: action.code, retryable: false, message: message(action, original) };
+  if (action) {
+    if (isCredentialRejection(action)) cursorKeyCheckCache.invalidate();
+    return { code: action.code, retryable: false, message: message(action, original) };
+  }
 
   const head = ERROR_HEAD.exec(text);
   if (!head) return undefined;
@@ -70,5 +80,6 @@ export function classifyCursorReplyError(text: string): CliErrorInfo | undefined
   // A bare `Error: something` is not enough: Cursor always names the error or its code.
   if (!name && !coded) return undefined;
   const failure = (coded && CONNECT_CODES[coded[1]!]) || SERVER_ERROR;
+  if (isCredentialRejection(failure)) cursorKeyCheckCache.invalidate();
   return { code: failure.code, retryable: name?.[1] === "RetriableError", message: message(failure, original) };
 }
