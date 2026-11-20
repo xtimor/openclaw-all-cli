@@ -4,6 +4,8 @@ What changed for people who use the plugin, newest first. Format: [Keep a Change
 
 ## Unreleased
 
+## 0.1.11 - 2026-11-20
+
 ### Fixed
 
 - **Test connection** on the `cursor-cli` card in the Control UI (and `openclaw models status --probe`) now runs one short, text-only Cursor request through `cursor-agent acp` instead of failing as "Timed out": it shows `ok`, or names the real cause, such as a refused or missing API key or a missing `cursor-agent`. It needs an API key (the CLI's own login is not used) and costs one small Cursor request per click. OpenClaw's skill review and the session companion's "ask" use the same path (not checked live). The request runs in read-only mode without tools, in a throwaway Cursor home that is removed afterwards, never reads or writes `~/.config/cursor/auth.json`, and stops after 120 s or when the plugin unloads.
