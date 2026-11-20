@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it } from "vitest";
 import { FAKE_CURSOR_AGENT, fakeEnv } from "../../../test/fixtures/paths.ts";
 import type { CliSession, NormalizedEvent } from "../../core/ports.ts";
+import { cursorKeyCheckCache } from "./auth-probe-cache.ts";
 import { classifyCursorReplyError } from "./errors.ts";
 import { cursorAdapter } from "./index.ts";
 
@@ -58,6 +59,16 @@ describe("classifyCursorReplyError", () => {
   });
 
   it.each([
+    ["Please sign in to continue", "agent-98-sign-in"],
+    ["Check your settings to continue", "agent-98-settings"],
+  ])("drops the cached auth-probe verdict for the action phrase %j (issue #98 AC4)", (phrase, key) => {
+    cursorKeyCheckCache.set(FAKE_CURSOR_AGENT, key, "valid");
+    expect(cursorKeyCheckCache.get(FAKE_CURSOR_AGENT, key)).toBe("valid");
+    classifyCursorReplyError(phrase);
+    expect(cursorKeyCheckCache.get(FAKE_CURSOR_AGENT, key)).toBeUndefined();
+  });
+
+  it.each([
     ["ordinary text", "Hello there, how are you"],
     ["an empty chunk", ""],
     ["a bare error line", "\n\nError: something went wrong"],
@@ -68,6 +79,29 @@ describe("classifyCursorReplyError", () => {
     ["a lower-case code", "\n\nError: [Internal] x"],
   ])("leaves %s alone", (_name, text) => {
     expect(classifyCursorReplyError(text)).toBeUndefined();
+  });
+});
+
+describe("classifyCursorReplyError: resource_exhausted throttle vs. genuine plan exhaustion (issue #99)", () => {
+  it("does not tell the caller a transient resource_exhausted throttle is a spent usage limit", () => {
+    const throttle = classifyCursorReplyError(
+      "\n\nError: RetriableError: [resource_exhausted] backend is busy, try again shortly",
+    );
+    expect(throttle?.code).toBe("rate_limit");
+    expect(throttle?.message).not.toMatch(/usage limit/i);
+  });
+
+  it("still reports a genuine plan-exhaustion action phrase as a usage limit (unchanged)", () => {
+    const planSpent = classifyCursorReplyError("Upgrade your plan to continue");
+    expect(planSpent?.code).toBe("rate_limit");
+    expect(planSpent?.message).toMatch(/usage limit/i);
+  });
+
+  it("marks the throttle as retryable before any tool call ran", () => {
+    const throttle = classifyCursorReplyError(
+      "\n\nError: RetriableError: [resource_exhausted] backend is busy, try again shortly",
+    );
+    expect(throttle?.retryable).toBe(true);
   });
 });
 

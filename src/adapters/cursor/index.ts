@@ -31,6 +31,7 @@ import { classifyCursorReplyError } from "./errors.ts";
 import { describeCursorToolCall } from "./tool-display.ts";
 import { createCursorQuotaReader } from "./quota.ts";
 import { createCursorUsageReader, USAGE_URL_ENV } from "./usage.ts";
+import { cursorKeyCheckCache } from "./auth-probe-cache.ts";
 
 const PROBE_TIMEOUT_MS = 5_000;
 
@@ -86,17 +87,37 @@ export const CURSOR_CLEAR_ENV: readonly string[] = [
   "OTEL_TRACES_EXPORTER",
 ];
 
-/** Reads `cursor-agent status` output: negations ("not ...", "logged out") first, then "logged in", "signed in", or "authenticated". */
+/**
+ * Reads `cursor-agent status` output: negations ("not ...", "logged out") first, then a degraded
+ * line that claims a login but admits it could not confirm who it is (cursor-agent 2026.11.11:
+ * "Logged in (unable to fetch user details)") -- not proof the credential works, so `unreadable`,
+ * not `available` (issue #98) -- then a plain "logged in", "signed in", or "authenticated".
+ */
 export function parseStatusOutput(output: string): AuthStatus {
-  // Negations first: "not logged in", "not currently logged in", "logged out", "not authenticated".
   if (/\bnot\b[^.\n]*\b(logged\s+in|authenticated|signed\s+in)\b/i.test(output)) return "missing";
   if (/\b(logged|signed)\s+out\b/i.test(output)) return "missing";
+  if (/\b(logged\s+in|authenticated|signed\s+in)\b[^\n]*\((?:unable|cannot|could\s+not|failed)\b[^)]*\)/i.test(output)) return "unreadable";
   if (/\b(logged\s+in|authenticated|signed\s+in)\b/i.test(output)) return "available";
   return "unreadable";
 }
 
+/**
+ * A present `CURSOR_API_KEY` is not a login by itself (issue #98): it is validated with `checkKey`
+ * (a real `cursor-agent about`), cached briefly (`auth-probe-cache.ts`) so the ongoing auth probe
+ * does not pay that cost on every call. A key the CLI confirms refuses is `missing` (not a working
+ * credential); one it cannot confirm either way is `unreadable`, same as an unclear `status`.
+ */
 async function probeAuth(params: AuthProbeParams): Promise<AuthStatus> {
-  if (params.env.CURSOR_API_KEY?.trim()) return "available";
+  const key = params.env.CURSOR_API_KEY?.trim();
+  if (key) {
+    let verdict = cursorKeyCheckCache.get(params.command, key);
+    if (verdict === undefined) {
+      verdict = await checkKey({ command: params.command, env: params.env, ...(params.signal ? { signal: params.signal } : {}) });
+      cursorKeyCheckCache.set(params.command, key, verdict);
+    }
+    if (verdict === "valid") return "available";
+    return verdict === "invalid" ? "missing" : "unreadable";
+  }
   const result = await runCommand(params.command, ["status"], {
     env: params.env,
     timeoutMs: PROBE_TIMEOUT_MS,
@@ -367,6 +388,11 @@ function open(params: OpenParams): Promise<CliSession> {
         },
       ),
     ...(params.signal ? { signal: params.signal } : {}),
+  }).catch((error: unknown) => {
+    // A refused key fails here as a plain `server_error` (issue #98 AC4; see
+    // `invalidateKeyCacheIfAuthRefusal`), not only from the one-shot `complete()` path.
+    invalidateKeyCacheIfAuthRefusal(error);
+    throw error;
   });
 }
 
@@ -429,15 +455,39 @@ const ACP_AUTH_REQUIRED = -32000;
 /** Cursor's words for a refused or missing login at session start. */
 const AUTH_REFUSAL = /\b(api key is invalid|invalid api key|authentication required|unauthori[sz]ed|unauthenticated|not logged in)\b/i;
 
-/** A failure of a one-shot turn as an event; a refused login at session start is `auth`, not a server error. */
+/**
+ * A credential the server itself refused invalidates the cached `checkKey` verdict (issue #98
+ * AC4), on any path, so the next probe re-validates instead of serving a stale `available`.
+ * Catches both an already-reclassified `auth`/`auth_permanent` error and a refused login at
+ * session start on an ongoing chat turn, which `handshake.ts` throws as a plain `server_error`
+ * (the transport stays CLI-agnostic, so it does not reclassify it; this adapter-layer check does).
+ */
+function invalidateKeyCacheIfAuthRefusal(error: unknown): void {
+  const info: CliErrorInfo =
+    error instanceof CliError ? error.toInfo() : { code: "unknown", retryable: false, message: error instanceof Error ? error.message : String(error) };
+  if (info.code === "auth" || info.code === "auth_permanent") {
+    cursorKeyCheckCache.invalidate();
+    return;
+  }
+  if (info.code !== "server_error") return;
+  const cause = error instanceof Error ? (error.cause as { code?: unknown } | undefined) : undefined;
+  if (cause?.code === ACP_AUTH_REQUIRED || AUTH_REFUSAL.test(info.message)) cursorKeyCheckCache.invalidate();
+}
+
+/**
+ * A failure of a one-shot turn as an event; a refused login at session start is `auth`, not a
+ * server error.
+ */
 function completeError(error: unknown): CliErrorInfo {
   const info: CliErrorInfo =
     error instanceof CliError ? error.toInfo() : { code: "unknown", retryable: false, message: error instanceof Error ? error.message : String(error) };
   const cause = error instanceof Error ? (error.cause as { code?: unknown } | undefined) : undefined;
-  if (info.code === "server_error" && (cause?.code === ACP_AUTH_REQUIRED || AUTH_REFUSAL.test(info.message))) {
-    return { code: "auth", retryable: false, message: `Cursor authentication failed (unauthorized): ${info.message}` };
-  }
-  return info;
+  const result: CliErrorInfo =
+    info.code === "server_error" && (cause?.code === ACP_AUTH_REQUIRED || AUTH_REFUSAL.test(info.message))
+      ? { code: "auth", retryable: false, message: `Cursor authentication failed (unauthorized): ${info.message}` }
+      : info;
+  invalidateKeyCacheIfAuthRefusal(error);
+  return result;
 }
 
 /**

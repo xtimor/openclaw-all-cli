@@ -7,6 +7,8 @@ import { startLedgerStub } from "../../../test/fixtures/ledger-stub.ts";
 import { createExecute } from "../../core/execute.ts";
 import { parseJsonlEvent } from "../../core/events.ts";
 import { USAGE_URL_ENV } from "./usage.ts";
+import { cursorKeyCheckCache } from "./auth-probe-cache.ts";
+import { classifyCursorReplyError } from "./errors.ts";
 import { FAKE_CURSOR_AGENT, fakeEnv } from "../../../test/fixtures/paths.ts";
 import {
   CliError,
@@ -28,7 +30,9 @@ afterEach(async () => {
 describe("cursor adapter", () => {
   it("reads cursor-agent status output", () => {
     expect(parseStatusOutput("Logged in as me@example.com")).toBe("available");
-    expect(parseStatusOutput("Logged in (unable to fetch user details)")).toBe("available");
+    // A degraded login (cursor-agent 2026.11.11) admits it could not confirm who is signed in:
+    // not proof the credential works (issue #98).
+    expect(parseStatusOutput("Logged in (unable to fetch user details)")).toBe("unreadable");
     expect(parseStatusOutput("Authenticated as me@example.com")).toBe("available");
     expect(parseStatusOutput("Signed in as me@example.com")).toBe("available");
     expect(parseStatusOutput("Not logged in")).toBe("missing");
@@ -49,10 +53,12 @@ describe("cursor adapter", () => {
     ).resolves.toBe("missing");
   });
 
-  it("accepts CURSOR_API_KEY as a login without running the CLI", async () => {
+  it("does not accept CURSOR_API_KEY as a login without confirming it works (issue #98)", async () => {
+    // A key is validated with `checkKey`, not trusted on presence alone; a CLI that cannot even
+    // run to check it is unreadable, not available.
     await expect(
       cursorAdapter.probeAuth({ command: "/nonexistent/cursor-agent", env: { CURSOR_API_KEY: "key" } }),
-    ).resolves.toBe("available");
+    ).resolves.toBe("unreadable");
   });
 
   it("opens a read-only ACP session and answers a turn", async () => {
@@ -877,5 +883,87 @@ describe("cursor managed install and key check (story 27)", () => {
 
   it("names where Cursor keeps its own copy of a key", () => {
     expect(cursorAdapter.keyCopyPath).toBe("~/.config/cursor/auth.json");
+  });
+});
+
+describe("issue #98: an unvalidated or degraded credential must not probe as authenticated", () => {
+  it("does not report a non-empty CURSOR_API_KEY as available once the CLI itself refuses it", async () => {
+    const env = fakeEnv({ CURSOR_API_KEY: "a-key-cursor-will-refuse", FAKE_CURSOR_ABOUT: "invalid" });
+    const status = await cursorAdapter.probeAuth({ command: FAKE_CURSOR_AGENT, env });
+    expect(status).not.toBe("available");
+  });
+
+  it("does not read the CLI's own degraded status line as a working login", () => {
+    const status = parseStatusOutput("Login successful!\nLogged in (unable to fetch user details)");
+    expect(status).not.toBe("available");
+  });
+
+  it("caches a validated key's verdict instead of running `about` on every probe", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "oac-auth-cache-"));
+    const log = join(dir, "log.jsonl");
+    try {
+      const env = fakeEnv({ CURSOR_API_KEY: "cache-me-98", FAKE_CURSOR_LOG: log });
+      const aboutCalls = () =>
+        readFileSync(log, "utf8")
+          .trim()
+          .split("\n")
+          .filter((line) => line && JSON.parse(line).method === "about");
+
+      await expect(cursorAdapter.probeAuth({ command: FAKE_CURSOR_AGENT, env })).resolves.toBe("available");
+      expect(aboutCalls()).toHaveLength(1);
+
+      // A second probe of the same key reads the cache: no extra `about` run.
+      await expect(cursorAdapter.probeAuth({ command: FAKE_CURSOR_AGENT, env })).resolves.toBe("available");
+      expect(aboutCalls()).toHaveLength(1);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("re-validates after a run finds the server rejects the credential the cache called valid", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "oac-auth-cache-"));
+    const log = join(dir, "log.jsonl");
+    try {
+      const env = fakeEnv({ CURSOR_API_KEY: "revoke-me-98", FAKE_CURSOR_LOG: log });
+      const aboutCalls = () =>
+        readFileSync(log, "utf8")
+          .trim()
+          .split("\n")
+          .filter((line) => line && JSON.parse(line).method === "about");
+
+      await expect(cursorAdapter.probeAuth({ command: FAKE_CURSOR_AGENT, env })).resolves.toBe("available");
+      expect(aboutCalls()).toHaveLength(1);
+
+      // A real turn's reply says the server rejected the credential: the cache must drop it.
+      classifyCursorReplyError("\n\nError: [unauthenticated] token revoked");
+
+      await expect(cursorAdapter.probeAuth({ command: FAKE_CURSOR_AGENT, env })).resolves.toBe("available");
+      expect(aboutCalls()).toHaveLength(2);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("re-validates after a chat turn is refused at session start, not only after a reply chunk (issue #98 AC4)", async () => {
+    // A refused login at session start never reaches `classifyCursorReplyError` (that is for a
+    // reply chunk) or the one-shot `complete()` path's `completeError`: it surfaces from
+    // `AcpSession.open` itself as a plain `server_error` (`handshake.ts` stays CLI-agnostic and does
+    // not reclassify it). `open()`'s own catch must still drop the cache.
+    cursorKeyCheckCache.set(FAKE_CURSOR_AGENT, "session-start-98", "valid");
+    expect(cursorKeyCheckCache.get(FAKE_CURSOR_AGENT, "session-start-98")).toBe("valid");
+
+    const env = fakeEnv({ CURSOR_API_KEY: "session-start-98", FAKE_CURSOR_NEW_ERROR: JSON.stringify({ code: -32000, message: "Authentication required" }) });
+    await expect(
+      cursorAdapter.open({
+        command: FAKE_CURSOR_AGENT,
+        args: cursorAdapter.launchArgs,
+        cwd: process.cwd(),
+        env,
+        modelId: "auto",
+        onPermissionRequest: async () => "reject_once",
+      }),
+    ).rejects.toMatchObject({ code: "server_error" });
+
+    expect(cursorKeyCheckCache.get(FAKE_CURSOR_AGENT, "session-start-98")).toBeUndefined();
   });
 });

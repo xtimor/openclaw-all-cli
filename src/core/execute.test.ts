@@ -2691,6 +2691,82 @@ describe("createExecute usage port", () => {
       ledger.adapter.readUsage = async () => ({ usage: SUMMED });
       expect((resultOf(await run(createExecute(ledger.adapter, { home: HOME }), makeCtx())) as { usage: object }).usage).toEqual(SUMMED);
     });
+
+    it("keeps a plain follow-up turn's lower total from reading as a drop after a tool-heavy turn, on the same warm process (issue #97)", async () => {
+      const toolHeavyTurn = { input: 2_000, output: 1_500, cacheRead: 98_000, cacheWrite: 1_000, total: 101_000 };
+      const plainFollowUpTurn = { input: 2_200, output: 300, cacheRead: 71_000, cacheWrite: 500, total: 73_700 };
+      let turnCount = 0;
+      const toolHeavyThenPlain: Script = async function* (prompt) {
+        turnCount += 1;
+        yield { kind: "usage", usage: turnCount === 1 ? toolHeavyTurn : plainFollowUpTurn };
+        yield { kind: "result", text: `echo:${prompt}`, stopReason: "end_turn" };
+      };
+      const { live } = makeLive();
+      const { adapter } = withCeiling(toolHeavyThenPlain, 256_000);
+      const execute = createExecute(adapter, { home: HOME });
+
+      const first = await run(execute, makeCtx({ liveSession: live, env: usableEnv }));
+      expect(resultOf(first)).toMatchObject({ usage: toolHeavyTurn });
+
+      const second = await run(execute, makeCtx({ liveSession: live, env: usableEnv, useResume: true, sessionId: "native-1" }));
+      expect(resultOf(second)).toMatchObject({
+        usage: { input: 2_200, output: 300, cacheRead: 71_000, cacheWrite: 500, contextUsage: { state: "unavailable" } },
+      });
+    });
+
+    it("does not carry a remembered high over to a fresh warm process (issue #97)", async () => {
+      // A second, independent process (its own `makeLive()`) must not see the first process's
+      // highest accepted reading: `LiveEntry.highestAcceptedContextReading` starts unset per process.
+      const toolHeavyTurn = { input: 2_000, output: 1_500, cacheRead: 98_000, cacheWrite: 1_000, total: 101_000 };
+      const plainFollowUpTurn = { input: 2_200, output: 300, cacheRead: 71_000, cacheWrite: 500, total: 73_700 };
+
+      const firstProcess = makeLive();
+      const firstScript: Script = async function* (prompt) {
+        yield { kind: "usage", usage: toolHeavyTurn };
+        yield { kind: "result", text: `echo:${prompt}`, stopReason: "end_turn" };
+      };
+      const first = await run(createExecute(withCeiling(firstScript, 256_000).adapter, { home: HOME }), makeCtx({ liveSession: firstProcess.live, env: usableEnv }));
+      expect(resultOf(first)).toMatchObject({ usage: toolHeavyTurn });
+
+      const freshProcess = makeLive();
+      const freshScript: Script = async function* (prompt) {
+        yield { kind: "usage", usage: plainFollowUpTurn };
+        yield { kind: "result", text: `echo:${prompt}`, stopReason: "end_turn" };
+      };
+      const second = await run(createExecute(withCeiling(freshScript, 256_000).adapter, { home: HOME }), makeCtx({ liveSession: freshProcess.live, env: usableEnv }));
+      // Not withheld: this is a fresh process's first turn, so there is no remembered high to fall below.
+      expect(resultOf(second)).toMatchObject({ usage: plainFollowUpTurn });
+    });
+
+    it("does not raise the remembered high from a withheld turn", async () => {
+      // Tool-heavy (reading 101_000), then a very low turn (withheld, reading 50_000 < 101_000),
+      // then a turn in between (reading 73_700). If the withheld turn had wrongly updated the high
+      // (to 50_000, or by being skipped incorrectly), the third turn would be accepted instead of
+      // withheld. It must still compare against the first turn's 101_000.
+      const toolHeavyTurn = { input: 2_000, output: 1_500, cacheRead: 98_000, cacheWrite: 1_000, total: 101_000 };
+      const veryLowTurn = { input: 1_000, output: 100, cacheRead: 49_000, cacheWrite: 0, total: 50_000 };
+      const midTurn = { input: 2_200, output: 300, cacheRead: 71_000, cacheWrite: 500, total: 73_700 };
+      let turnCount = 0;
+      const threeTurns: Script = async function* (prompt) {
+        turnCount += 1;
+        const usage = turnCount === 1 ? toolHeavyTurn : turnCount === 2 ? veryLowTurn : midTurn;
+        yield { kind: "usage", usage };
+        yield { kind: "result", text: `echo:${prompt}`, stopReason: "end_turn" };
+      };
+      const { live } = makeLive();
+      const { adapter } = withCeiling(threeTurns, 256_000);
+      const execute = createExecute(adapter, { home: HOME });
+
+      const first = await run(execute, makeCtx({ liveSession: live, env: usableEnv }));
+      expect(resultOf(first)).toMatchObject({ usage: toolHeavyTurn });
+
+      const second = await run(execute, makeCtx({ liveSession: live, env: usableEnv, useResume: true, sessionId: "native-1" }));
+      expect(resultOf(second)).toMatchObject({ usage: { contextUsage: { state: "unavailable" } } });
+
+      const third = await run(execute, makeCtx({ liveSession: live, env: usableEnv, useResume: true, sessionId: "native-1" }));
+      // Still withheld against the first turn's 101_000, not accepted against the withheld 50_000.
+      expect(resultOf(third)).toMatchObject({ usage: { contextUsage: { state: "unavailable" } } });
+    });
   });
 
   it("ends the wait at once when the turn is aborted", async () => {
