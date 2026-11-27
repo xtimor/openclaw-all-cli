@@ -300,9 +300,12 @@ OPENCLAW_GATEWAY_PORT=18911 npm run dev:openclaw -- agent --model cursor-cli/aut
 npm test               # unit tests, import-boundary test, parity-suite test, and (when .spike holds OpenClaw) the host-contract tests
 npm run typecheck
 npm run test:live      # real cursor-agent; needs a Cursor login and no sandbox
+npm run test:regression -- --openclaw latest   # Gateway regression tier; no Cursor login (default: --openclaw min)
 ```
 
 `npm test` needs no Cursor login. The host-contract tests (`test/host-contract.test.ts`) load OpenClaw's own code from `.spike/openclaw/node_modules/openclaw/dist` (or the directory in `OPENCLAW_ALL_CLI_HOST_DIST`) and run it against the plugin's real backend, so they pin what the backend relies on in OpenClaw 2026.10.3 (host-served `exec`/`process`, the MCP config file and its `--mcp-config` flag, the live-session fingerprint); they are skipped when that directory is missing. The parity-suite test (`test/parity-suite.test.ts`) fails when the manifest, the parity matrix, the provider page (`docs/providers/cursor.md`), and the live tests disagree. `npm run test:live` runs one live test per decided parity row plus the success-signal scenario (`test/live/success-signal.live.test.ts`); the success-signal scenario is skipped without `CURSOR_API_KEY` (its usage check needs the key).
+
+`npm run test:regression` (`scripts/regression.sh gateway [--openclaw <min|latest|extended-stable|beta|X.Y.Z>]`) is the Gateway regression tier: it installs Node and the chosen OpenClaw into `.regression/openclaw-<version>/` (`min` is `package.json` `openclaw.compat.minGatewayVersion`; a dist-tag resolves through npm), packs the plugin, installs the `.tgz` into a fresh state there, and runs `test/regression/gateway/` against a real Gateway with the fake `cursor-agent` as the CLI. It prints the resolved OpenClaw version and the tarball's sha256, needs no secret, and never touches `.spike/` or `~/.openclaw`. `npm test` skips those files (they run only with `OPENCLAW_ALL_CLI_REGRESSION=1`, which the script sets).
 
 ### Build from source
 

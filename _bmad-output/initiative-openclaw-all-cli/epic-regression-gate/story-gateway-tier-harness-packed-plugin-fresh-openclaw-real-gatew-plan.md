@@ -3,7 +3,7 @@ title: 'Gateway tier harness: packed plugin, fresh OpenClaw, real Gateway, scrip
 type: 'feature'
 ticket: '2'
 created: '2026-11-27'
-status: 'in-progress'
+status: 'in-review'
 baseline_revision: '131ad24b75301cfff044ea97acad1daa12c01241'
 route: 'full'
 route_source: 'auto'
@@ -59,13 +59,13 @@ deferred: []
 ## Tasks & Acceptance
 
 **Execution:**
-- [ ] `scripts/regression.sh` -- new: `regression.sh gateway [--openclaw <min|latest|extended-stable|beta|X.Y.Z>]` (default `min`); resolves the version, sets `SPIKE_DIR=$ROOT/.regression/openclaw-<version>`, runs `dev-openclaw.sh setup`, builds and packs once into `$ROOT/.regression/pack`, wipes `state/` and `openclaw.json`, re-runs `config set gateway.auth.mode none`, installs the `.tgz`, then `OPENCLAW_ALL_CLI_REGRESSION=1 npx vitest run test/regression/gateway`; prints the resolved version and the tgz sha256 -- one entry point for CI and release
-- [ ] `test/regression/harness.ts` -- new: `REGRESSION` flag, `describeRegression` (skip unless set), `fakeCommand(root, name, env)` writing an executable shim with `FAKE_CURSOR_LOG`, `readFakeLog(file)` returning parsed lines, `configure(entries)` via `openclaw config set` (JSON values with `--strict-json`), `startRegressionGateway(port)` = `startGateway` plus a wait until `models list --json` (or equivalent) shows a `cursor-cli/` model, `gatewayAgentTurn(port, sessionId, message)`, `chatSend(port, sessionKey, message)` over an operator ws client returning the run's frames -- shared by every later scenario
-- [ ] `test/regression/gateway/tracer.regression.test.ts` -- new: the two tracer rows of the matrix -- proves the chain
-- [ ] `vitest.config.ts` -- `fileParallelism` false also when `OPENCLAW_ALL_CLI_REGRESSION=1`
-- [ ] `package.json` -- script `test:regression` = `scripts/regression.sh gateway`
-- [ ] `.gitignore` -- `.regression/`
-- [ ] `MEMORY.md` -- one line under "Where things are": the Gateway regression tier and how to run it
+- [x] `scripts/regression.sh` -- new: `regression.sh gateway [--openclaw <min|latest|extended-stable|beta|X.Y.Z>]` (default `min`); resolves the version, sets `SPIKE_DIR=$ROOT/.regression/openclaw-<version>`, runs `dev-openclaw.sh setup`, builds and packs once into `$ROOT/.regression/pack`, wipes `state/` and `openclaw.json`, re-runs `config set gateway.auth.mode none`, installs the `.tgz`, then `OPENCLAW_ALL_CLI_REGRESSION=1 npx vitest run test/regression/gateway`; prints the resolved version and the tgz sha256 -- one entry point for CI and release
+- [x] `test/regression/harness.ts` -- new: `REGRESSION` flag, `describeRegression` (skip unless set), `fakeCommand(root, name, env)` writing an executable shim with `FAKE_CURSOR_LOG`, `readFakeLog(file)` returning parsed lines, `configure(entries)` via `openclaw config set` (JSON values with `--strict-json`), `startRegressionGateway(port)` = `startGateway` plus a wait until `models list --json` (or equivalent) shows a `cursor-cli/` model, `gatewayAgentTurn(port, sessionId, message)`, `chatSend(port, sessionKey, message)` over an operator ws client returning the run's frames -- shared by every later scenario
+- [x] `test/regression/gateway/tracer.regression.test.ts` -- new: the two tracer rows of the matrix -- proves the chain
+- [x] `vitest.config.ts` -- `fileParallelism` false also when `OPENCLAW_ALL_CLI_REGRESSION=1`
+- [x] `package.json` -- script `test:regression` = `scripts/regression.sh gateway`
+- [x] `.gitignore` -- `.regression/`
+- [x] `MEMORY.md` -- one line under "Where things are": the Gateway regression tier and how to run it
 
 **Acceptance Criteria:**
 - Given a clean checkout with no `.regression/`, when `scripts/regression.sh gateway` runs, then it installs OpenClaw 2026.10.3, runs the tracer green, and exits 0.
@@ -76,11 +76,34 @@ deferred: []
 
 ## Implementation Notes
 
+- The runner unsets `CURSOR_API_KEY`/`CURSOR_AUTH_TOKEN` and `startRegressionGateway` omits them from the Gateway env (no secret; the host had a key set and the plugin ran a key check with it before this).
+- `describeRegression` throws when enabled with a `SPIKE_DIR` outside `.regression/`, so a direct `OPENCLAW_ALL_CLI_REGRESSION=1 npx vitest run` cannot touch `.spike/`.
+- Cleanup: OpenClaw 2026.11.10 starts its workers in process groups of their own, and the plugin starts each CLI in its own group, so killing the Gateway's group alone may not reach them. `stop()` notes the Gateway's whole process tree first, SIGTERMs the group (the Gateway then stops its workers and CLIs itself, observed on both versions), then SIGKILLs whatever of the tree is left. Every shim records its pid; `afterAll` waits for them to exit and SIGKILLs leftovers with a warning.
+- `chatSend` keeps listening 2 s after the run's first `final`/`error`/`aborted` frame, so a second final would be counted.
+- The runner adds `--reporter=verbose` so a CI log names each scenario.
+- `docs/setup.md` (development section) names `npm run test:regression` (AGENTS.md rule: docs change with setup).
+
+## Plan Change Log
+
+- Prompt check: OpenClaw wraps the user's message (a timestamp before it on the `openclaw agent` path, its messaging hints after it on both paths), so "text ends with the message" is never true. The tracer instead requires exactly one prompt line that ends with the message.
+- Readiness wait: on OpenClaw 2026.11.10 (npm `latest` on 2026-11-27), offline, `models.list` is empty for every provider (`{}`, `view: all`, `provider: cursor-cli`, `refresh: true`; the log shows `remote model catalog refresh failed ... ENOTFOUND catalog.openclaw.ai`), so a cursor-cli row never shows up, while a turn works. The wait now ends with `catalog: "empty"` (and a warning) when no model at all is listed for 30 s; when other models are listed and cursor-cli never is, it still throws. On 2026.10.3 the cursor-cli rows show up as before.
+- Build without `.spike/`: `tsconfig.json` maps the SDK types to `.spike/openclaw`, so `npm run build` fails in a clean checkout without `.spike/`. The runner then builds with a generated `.regression/tsconfig.build.json` that points the same `paths` at `.regression/openclaw-<openclaw.build.openclawVersion>` (set up there when it is not the version under test). `.spike/` is never written.
+
 ## Plan Change Log
 
 ## Review Triage Log
 
 ## Verification
+
+Results (2026-11-27, sandbox, no Cursor login; `CURSOR_API_KEY` set in the host env and unset by the runner):
+- `scripts/regression.sh gateway`: OpenClaw 2026.10.3, tracer 2/2 green, exit 0 (final code run twice; ~90 s each with Node/OpenClaw cached).
+- `scripts/regression.sh gateway --openclaw latest`: resolved and printed 2026.11.10, tracer 2/2 green (readiness `empty`, see Plan Change Log), exit 0.
+- Mutation (scratch copy of the checkout without `.spike/`, `api.registerCliBackend(...)` disabled in `src/core/register.ts`): both tracer tests red with `Unknown CLI backend: cursor-cli`, runner exit 1, on 2026.10.3 and on 2026.11.10. The same run proves the clean-checkout build fallback.
+- `--openclaw nosuchtag` exit 2 ("Unknown OpenClaw dist-tag"); `--openclaw 'bad tag'` exit 2; an unknown flag or no tier prints usage, exit 2.
+- `npm test`: green, `tracer.regression.test.ts` reported skipped, no Gateway started. `npm run typecheck`: clean.
+- After every run: no `.regression` Gateway, worker, or fake-cursor-agent process left (`ps`).
+- `scripts/regression.sh gateway --openclaw extended-stable`: resolved 2026.10.34, tracer 2/2 green (catalog listed cursor-cli), exit 0.
+- Not run: `beta` end to end (2026.11.10 that day, same as `latest`); a run in GitHub Actions (ticket 4).
 
 **Commands:**
 - `scripts/regression.sh gateway` -- expected: tracer passes on 2026.10.3, exit 0

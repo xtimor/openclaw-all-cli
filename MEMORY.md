@@ -4,6 +4,7 @@
 
 - Plan of record: `_bmad-output/initiative-openclaw-all-cli/`: spec (`spec-cursor-cli-provider/`), architecture spine (`architecture-openclaw-all-cli/`, AD-1..AD-17), parity matrix (`spec-cursor-cli-provider/claude-cli-parity.md`), tickets (`tickets.toml`, `epic-cursor-cli/tickets.toml`).
 - Spike harness: `.spike/` (gitignored). OpenClaw 2026.10.3 in `.spike/openclaw`, Node 24 in `.spike/node` (system Node 25 is rejected by OpenClaw), test MCP server `.spike/mcp/server.mjs`, ACP probe `.spike/acp-probe.mjs`.
+- Gateway regression tier (epic-regression-gate ticket 2, 2026-11-27): `scripts/regression.sh gateway [--openclaw min|latest|extended-stable|beta|X.Y.Z]` (`npm run test:regression`) sets `SPIKE_DIR=.regression/openclaw-<version>` (gitignored), packs once into `.regression/pack`, installs the `.tgz` into a wiped state, and runs `test/regression/gateway/*.regression.test.ts` with `OPENCLAW_ALL_CLI_REGRESSION=1` (skipped in `npm test`; the harness refuses a `SPIKE_DIR` outside `.regression/`). Helpers in `test/regression/harness.ts` (`fakeCommand`, `configure`, `startRegressionGateway`, `gatewayAgentTurn`, `chatSend`). OpenClaw 2026.11.10 offline lists no model at all (`models.list` empty for every provider; its catalog comes from catalog.openclaw.ai), so the readiness wait falls back to the turns; OpenClaw wraps the user's message (timestamp before, messaging hints after) in the prompt the CLI gets.
 
 ## Decisions (user)
 
