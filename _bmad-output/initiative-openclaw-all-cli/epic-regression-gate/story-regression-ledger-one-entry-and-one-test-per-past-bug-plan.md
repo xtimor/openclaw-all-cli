@@ -3,7 +3,7 @@ title: 'Regression ledger: one entry and one test per past bug'
 type: 'feature'
 ticket: '1'
 created: '2026-11-27'
-status: 'built'
+status: done
 baseline_revision: '34940e6f6cdce5f45a77447a8b55d92087d0f88a'
 route: 'full'
 route_source: 'auto'
