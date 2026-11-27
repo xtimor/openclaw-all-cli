@@ -13,6 +13,7 @@
 //                               the process `argv`, CURSOR_CONFIG_DIR/CURSOR_DATA_DIR/XDG_CONFIG_HOME, `keyed`, and `keyHash` (8 hex of the key's sha256)
 //   FAKE_CURSOR_LOG_END=1       also log a `prompt/end` line when a prompt ends
 //   FAKE_CURSOR_USAGE=1|<json> session/prompt answers with a small ACP usage, or with this JSON as its usage
+//                               (a prompt's own "[[usage:<json>]]" wins for that turn)
 //   FAKE_CURSOR_VERSION=<text>  what `--version` prints (default "2026.10.14-fake")
 //   FAKE_CURSOR_VERSION_EXIT=<n> `--version` exits with this code after printing
 //   FAKE_CURSOR_ABOUT=ok|invalid|unknown  what `about` answers when CURSOR_API_KEY is set (default "ok": a `User Email` line;
@@ -25,6 +26,7 @@
 //                               configOptions select, like cursor-agent), "state" (only `models`, switched
 //                               with session/set_model), or "options" (only the configOptions select)
 //   FAKE_CURSOR_NO_MODELS=1     the agent reports no models at all
+//   FAKE_CURSOR_MODELS=<json>   replaces the model list: an array of {modelId, name}, like the default list below
 //   FAKE_CURSOR_IGNORE_CANCEL=1 session/cancel does nothing
 //   FAKE_CURSOR_IGNORE_TERM=1   SIGTERM does nothing (only SIGKILL stops the process)
 //   FAKE_CURSOR_IGNORE_STDIN_EOF=1  the process stays up when stdin closes
@@ -50,6 +52,9 @@
 // as a `tool_call` update, like Cursor does), "[[hang]]" never
 // finishes until cancelled, "[[refuse]]" ends with stopReason refusal, "[[crash]]" exits, "say:<text>" replies with <text>.
 // "[[error]]<text>" sends <text> as the one and only reply chunk (a failed Cursor turn: "\n\nError: ...") and ends with end_turn.
+// "[[error-json:<json string>]]" does the same with the decoded string, so the reply holds exactly that text (a host that
+// wraps the prompt in its own lines cannot add them to the error, and "\n\n" fits in a one-line message).
+// "[[usage:<json object>]]" makes this turn answer with that JSON as its ACP usage (per-turn FAKE_CURSOR_USAGE).
 // "[[sleep:<ms>]]" waits <ms> before the reply (a turn that takes a while), then answers like any other prompt. Every turn
 // sends one thought chunk first, so the wait comes between the first thought and the first text; "[[no-think]]" sends no thought.
 // "[[images]]" replies "images:<n>:<mime>/<bytes>,..." for the image blocks of the prompt. The log's `session/prompt` line shows each
@@ -200,13 +205,15 @@ const modes = () => ({
   ],
 });
 // Exact IDs carry brackets and commas, like Cursor's. Two share a base name to test unique naming.
-const MODELS = [
-  { modelId: "default[]", name: "Auto" },
-  { modelId: "fake-fast[speed=fast,fast=true]", name: "fake-fast" },
-  { modelId: "fake-slow[context=1m,effort=high]", name: "fake-slow" },
-  { modelId: "twin[effort=low]", name: "twin" },
-  { modelId: "twin[effort=high]", name: "twin" },
-];
+const MODELS = process.env.FAKE_CURSOR_MODELS
+  ? JSON.parse(process.env.FAKE_CURSOR_MODELS)
+  : [
+      { modelId: "default[]", name: "Auto" },
+      { modelId: "fake-fast[speed=fast,fast=true]", name: "fake-fast" },
+      { modelId: "fake-slow[context=1m,effort=high]", name: "fake-slow" },
+      { modelId: "twin[effort=low]", name: "twin" },
+      { modelId: "twin[effort=high]", name: "twin" },
+    ];
 const surface = process.env.FAKE_CURSOR_MODEL_SURFACE ?? "both";
 const noModels = process.env.FAKE_CURSOR_NO_MODELS === "1";
 const modelsState = (session) => ({ currentModelId: session.model, availableModels: MODELS });
@@ -248,6 +255,11 @@ async function runPrompt(id, params) {
   if (sleep) await new Promise((resolve) => setTimeout(resolve, Number(sleep[1])));
   if (text.includes("[[crash]]")) process.exit(3);
   if (text.includes("[[refuse]]")) return reply(id, { stopReason: "refusal" });
+  const errorJson = /\[\[error-json:("(?:[^"\\]|\\.)*")\]\]/.exec(text);
+  if (errorJson) {
+    update(params.sessionId, { sessionUpdate: "agent_message_chunk", content: { type: "text", text: JSON.parse(errorJson[1]) } });
+    return reply(id, { stopReason: "end_turn" });
+  }
   if (text.includes("[[error]]")) {
     // Like Cursor's failed turn: the error text is the one and only reply chunk, then a normal end.
     const failure = text.slice(text.indexOf("[[error]]") + "[[error]]".length);
@@ -376,11 +388,16 @@ async function runPrompt(id, params) {
   for (const piece of answer.match(/.{1,12}/g) ?? [answer]) {
     update(params.sessionId, { sessionUpdate: "agent_message_chunk", content: { type: "text", text: piece } });
   }
-  return reply(id, { stopReason: "end_turn", ...promptUsage() });
+  return reply(id, { stopReason: "end_turn", ...promptUsage(text) });
 }
 
-/** `FAKE_CURSOR_USAGE`: "1" reports a small ACP usage; a JSON object is reported as the usage itself. */
-function promptUsage() {
+/**
+ * `FAKE_CURSOR_USAGE`: "1" reports a small ACP usage; a JSON object is reported as the usage itself. A prompt's
+ * own `[[usage:<json>]]` wins for its turn.
+ */
+function promptUsage(text) {
+  const own = /\[\[usage:(\{.*?\})\]\]/.exec(text);
+  if (own) return { usage: JSON.parse(own[1]) };
   const value = process.env.FAKE_CURSOR_USAGE?.trim();
   if (value === "1") return { usage: { totalTokens: 7, inputTokens: 3, outputTokens: 4 } };
   return value?.startsWith("{") ? { usage: JSON.parse(value) } : {};

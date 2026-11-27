@@ -3,13 +3,13 @@ title: 'Gateway scenarios for past turn, process, and prompt bugs'
 type: 'feature'
 ticket: '3'
 created: '2026-11-27'
-status: 'in-progress'
+status: 'in-review'
 baseline_revision: '59645a0e921b9afea65c5d2739223ab4fa904f59'
 route: 'full'
 route_source: 'auto'
 risk: 'medium'
-review: ''
-review_source: ''
+review: 'quick'
+review_source: 'auto'
 lenses_ran: []
 review_loop_iteration: 0
 followup_review_recommended: false
@@ -60,11 +60,11 @@ deferred: []
 ## Tasks & Acceptance
 
 **Execution:**
-- [ ] `test/regression/gateway/*.regression.test.ts` -- new scenario files covering every matrix row (group by family where they share a Gateway setup)
-- [ ] `test/fixtures/fake-cursor-agent.mjs` -- only the knobs the rows need
-- [ ] `test/regression/harness.ts` -- only shared helpers the rows need
-- [ ] `test/regression/ledger.toml` -- the entries above
-- [ ] the plan's Implementation Notes -- per row: the mutation used and red/green on 2026.10.3, and green on 2026.11.10
+- [x] `test/regression/gateway/*.regression.test.ts` -- new scenario files covering every matrix row (group by family where they share a Gateway setup)
+- [x] `test/fixtures/fake-cursor-agent.mjs` -- only the knobs the rows need
+- [x] `test/regression/harness.ts` -- only shared helpers the rows need
+- [x] `test/regression/ledger.toml` -- the entries above
+- [x] the plan's Implementation Notes -- per row: the mutation used and red/green on 2026.10.3, and green on 2026.11.10
 
 **Acceptance Criteria:**
 - Given main, when `scripts/regression.sh gateway` and `scripts/regression.sh gateway --openclaw latest` run, then every scenario passes (or is skipped on a version with a stated reason) and the tier finishes in about 10 minutes or less per version.
@@ -73,6 +73,41 @@ deferred: []
 - Given a run ends, when it is over, then no Gateway or fake process from it is left.
 
 ## Implementation Notes
+
+**Files.** Four scenario files, one Gateway each: `test/regression/gateway/turn-process.regression.test.ts` (#11/#38, #74, #67), `reply-prompt.regression.test.ts` (#13, #76, #99), `context-usage.regression.test.ts` (#12/#46, #40/#97), `backend-registration.regression.test.ts` (#14). Fake knobs (header documented, unit tests green): `FAKE_CURSOR_MODELS=<json>` (replaces the model list), prompt `[[usage:<json>]]` (per-turn ACP usage), prompt `[[error-json:<json string>]]` (an exact error chunk; `[[error]]` takes the rest of the prompt, which OpenClaw extends with its own lines). Harness: `gatewayCall`, `gatewayLog` (+ `logFile` on `startRegressionGateway`, and on `startGateway` in `test/live/harness.ts`, which now can write the Gateway's console log to a file), `acpPids`, `fakeAlive`, `finishRegression`, `chatMessageText`. Ledger: one gateway test (`reproduces = true`) on each of #11, #12, #13, #14, #38, #40, #46, #67, #74, #76, #97, #99; `4.3` removed from `planned` (#38, #76 keep `4.5`; #40, #97 keep `4.6`).
+
+**How each row recreates its conditions** (all through a real Gateway with the packed plugin):
+- #11/#38: two `openclaw agent` turns of one session after the catalog loaded; one `initialize` (one acp pid), one `session/new`, no `session/load`, both prompts on one Cursor chat, one `cli live session start` in the Gateway log.
+- #12/#46: `FAKE_CURSOR_MODELS` with a Cursor-shaped listing (own `context=` values, a family row with none, unknown rows, Opus 5.5 only as its 300k row); `models.list` rows carry 256000/300000/300000/200000, unknown ones the host's 128000, and no row has a 1M window or a 1M name. Skipped on 2026.11.10 (stated in the test): offline it lists no model for any provider.
+- #13: `chat.send`; exactly one `final` frame with the reply once, and `chat.history` holds one assistant row with the reply once (and no other non-user row with it).
+- #14: Gateway console log has no `already registered`; `plugins inspect openclaw-all-cli --runtime --json` lists `cursor-cli` once as cli backend and has no error diagnostic.
+- #40, #97: `cursor-cli/grok-4.7` (256k window) and three turns each with its own `[[usage]]`: plain, then summed tool-heavy (5.6M, #40) or within-window tool-heavy (100k reading, #97), then plain. The session's `totalTokens` (`sessions.list`) must stay within 256000 and never fall. A withheld reading shows as no `totalTokens` (`totalTokensFresh: false`), which the test counts as no reading. A reading near the window makes 2026.10.3 run `cli_budget` compaction, which fails the turn without an API key, so #97's high is 100k, not 200k.
+- #67: an automation with a tool allow-list (`cron add --tools sessions_history`, `cron run --wait`) is a run with an empty native selection on both versions (`tools.fs.workspaceOnly` gives none on 2026.10.3); the run succeeds, its process opens with `CURSOR_CONFIG_DIR=<agent home>/profiles/restricted`, and that `cli-config.json` denies `Read(*)`.
+- #74: two chats; `sessions.reset` of one; its acp process exits within 20 s (the pool's own idle close is 15 min), the other chat's keeps running.
+- #76: sessions start in `ask` (`FAKE_CURSOR_START_MODE`); an `openclaw agent` turn's prompt contains `shellNote(true)` (imported from `src/core/turn-prompt.ts`) and the fake logs one `session/set_mode` `agent`.
+- #99: `chat.send` with Cursor's `RetriableError: [resource_exhausted]` text; one `error` frame with `errorKind: "rate_limit"` and an `errorMessage` that says "temporary rate limit" and not usage limit, quota, or plan.
+
+**Facts the build found.** Without `FAKE_CURSOR_STORE` every fake process names its first chat `fake-session-1`, and the plugin's chat registry closes the earlier process holding that ID (`rekeyChat`): every new file uses a store. The shim records the pid of every run, probes included, so a chat's process is taken from its `initialize` log line.
+
+**New bug, not fixed here (stop-and-report rule):** on OpenClaw 2026.10.3, when the config has a second agent in `agents.entries` (even `{}`), `sessions.reset` releases no process: the #74 scenario goes red on main (scratch copy, fresh state: green with only `main`, red after `config set agents.entries.second '{}'`; 2026.11.10 stays green with the second agent). A probe of the installed plugin showed the `session_end` hook running in another captured plugin build (`state/tmp/plugin-captures/.../openclaw-plugin-build-*`) whose pool was empty. The tier's default config has only `main`, so the scenario is green there; no scenario adds an agent (config outlives a file). Needs its own bug ticket.
+
+**Mutation proof** (scratch `git worktree` under the session scratchpad with this change applied, `scripts/regression.sh gateway` per mutation, fresh state each run; script `mutate.py` there):
+
+| Row | Mutation (smallest edit that brings the bug back) | 2026.10.3 | Others red in the same run |
+|-----|------|------|------|
+| #11/#38 | `backend.ts` `bundleMcpMode` back to `gemini-system-settings` | red | #97 (the high is per warm process and the process restarts each turn), #76 (no MCP config path in the args, so no tool list and no note) |
+| #12 | `catalog.ts` drops `contextWindow` from the row | red | none |
+| #46 | no code fix exists (Cursor refuses 1M over ACP); mutation: `buildCursorCatalog` adds a 1M sibling for each row with a `context=` value | red (`claude-opus-5-5-1m: 1000000` listed) | none |
+| #13 | no code fix exists (closed not_planned); mutation: `parseJsonlEvent` streams the result text again before the result (what the report blamed) | red (final frame holds the reply twice) | tracer `chat.send` (same symptom) |
+| #14 | `register.ts` registers the backend twice | red | none |
+| #40 | `usage.ts` drops the ceiling check | red | none |
+| #97 | `usage.ts` ignores the highest accepted reading | red | none |
+| #67 | `permissions.ts` drops the restricted-profile branch | red | none |
+| #74 | `register.ts` hook no longer calls `releaseConversation` | red (also red on 2026.11.10) | none |
+| #76 | `execute.ts` never sets `shellNote` | red | none |
+| #99 | `errors.ts` maps `resource_exhausted` to the plan-exhaustion failure | red | none |
+
+On main every scenario is green on 2026.10.3 and 2026.11.10 (#12/#46 skipped on 2026.11.10 with its reason); see Verification. #74 on 2026.10.3 on main with the default config: green (scratch run with no skip, 296 s tier).
 
 ## Plan Change Log
 
@@ -85,3 +120,10 @@ deferred: []
 - `scripts/regression.sh gateway --openclaw latest` -- expected: all pass (or stated skips) on 2026.11.10
 - `npm test` -- expected: green (ledger check included)
 - `npm run typecheck` -- expected: clean
+
+**Results (on main, fresh `.regression/` state each run):**
+- `scripts/regression.sh gateway` (2026.10.3): 12 passed, exit 0, 4m49s; no fake-cursor-agent or Gateway process left afterwards.
+- `scripts/regression.sh gateway --openclaw latest` (2026.11.10): 11 passed, 1 skipped (#12/#46: `models.list` is empty offline for every provider, reason stated in the test), exit 0, 6m14s; no process left afterwards.
+- `npm test`: 71 files passed (23 skipped, the gated tiers among them), 2090 tests passed; ledger check green.
+- `npm run typecheck`: clean.
+- Mutation proof: every row red on 2026.10.3 under its mutation (table above).

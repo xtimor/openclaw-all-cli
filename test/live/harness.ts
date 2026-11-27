@@ -1,5 +1,5 @@
 import { spawn, spawnSync } from "node:child_process";
-import { writeFileSync } from "node:fs";
+import { closeSync, openSync, writeFileSync } from "node:fs";
 import { createServer, type Server } from "node:http";
 import { connect, type Socket } from "node:net";
 import { join } from "node:path";
@@ -160,11 +160,12 @@ export type TestGateway = {
  * Runs an isolated Gateway and waits until it answers. Chat commands reach it through
  * `OPENCLAW_GATEWAY_PORT`; `models list` and `/model` read the catalog it prepares. The plugin
  * loads at startup only when the config names it, for example as the default model
- * (OpenClaw #148584), so set `agents.defaults.model.primary` first.
+ * (OpenClaw #148584), so set `agents.defaults.model.primary` first. With `logFile`, the Gateway's
+ * stdout and stderr (its console log) are appended to that file; otherwise they are dropped.
  */
 export async function startGateway(
   port: number,
-  options: { timeoutMs?: number; env?: Record<string, string>; omitEnv?: string[] } = {},
+  options: { timeoutMs?: number; env?: Record<string, string>; omitEnv?: string[]; logFile?: string } = {},
 ): Promise<TestGateway> {
   const env = {
     ...Object.fromEntries(
@@ -175,12 +176,15 @@ export async function startGateway(
     ),
     ...options.env,
   };
+  const log = options.logFile === undefined ? undefined : openSync(options.logFile, "a");
   const child = spawn(DEV_SCRIPT, ["run", "gateway", "run", "--allow-unconfigured", "--auth", "none", "--port", String(port)], {
     env,
-    stdio: "ignore",
+    stdio: log === undefined ? "ignore" : ["ignore", log, log],
     // Its own process group, so one signal reaches every process the Gateway started.
     detached: true,
   });
+  // The child holds its own copy of the descriptor.
+  if (log !== undefined) closeSync(log);
   const exited = new Promise<void>((resolve) => child.once("exit", () => resolve()));
   const stop = async () => {
     if (child.exitCode === null && child.pid) {

@@ -1,10 +1,10 @@
 import { spawnSync } from "node:child_process";
-import { chmodSync, existsSync, readFileSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { createServer } from "node:net";
 import { join, sep } from "node:path";
 import { describe } from "vitest";
 import { FAKE_CURSOR_AGENT } from "../fixtures/paths.ts";
-import { openclaw, openclawAsync, startGateway, type OpenClawResult, type TestGateway } from "../live/harness.ts";
+import { openclaw, openclawAsync, startGateway, waitFor, type OpenClawResult, type TestGateway } from "../live/harness.ts";
 
 /**
  * The Gateway regression tier (epic-regression-gate): the packed plugin in a fresh OpenClaw of a chosen
@@ -150,12 +150,38 @@ export function killFakes(fake: FakeCommand): void {
   for (const pid of liveFakes(fake)) killPid(pid);
 }
 
+/**
+ * The end of a scenario file (its `afterAll`): stops the Gateway, waits a moment for the plugin to stop the fake's
+ * processes, SIGKILLs any left (with a warning naming them), and removes the file's temp dir.
+ */
+export async function finishRegression(parts: { stop?: () => Promise<void>; fakes?: Array<FakeCommand | undefined>; root?: string }): Promise<void> {
+  await parts.stop?.();
+  for (const fake of parts.fakes ?? []) {
+    if (!fake) continue;
+    await waitFor(() => liveFakes(fake).length === 0, 10_000, 250);
+    const leftover = liveFakes(fake);
+    if (leftover.length > 0) console.warn(`fake cursor-agent processes left after the Gateway stopped: ${leftover.join(", ")}`);
+    killFakes(fake);
+  }
+  if (parts.root) rmSync(parts.root, { recursive: true, force: true });
+}
+
+/** The text of a chat message: a string, or the text parts of its `content` (string or parts), or its `text`. */
+export function chatMessageText(message: any): string {
+  if (typeof message === "string") return message;
+  if (typeof message?.content === "string") return message.content;
+  if (Array.isArray(message?.content)) return message.content.map((part: { text?: unknown }) => (typeof part?.text === "string" ? part.text : "")).join("");
+  return typeof message?.text === "string" ? message.text : "";
+}
+
 export type RegressionGateway = TestGateway & {
   /**
    * What the readiness wait saw: `cursor-cli` (the catalog listed a cursor-cli model) or `empty` (this
    * OpenClaw listed no model at all, so the catalog could not show readiness; see `startRegressionGateway`).
    */
   catalog: "cursor-cli" | "empty";
+  /** The file that holds the Gateway's console log (stdout and stderr), when one was asked for; see `gatewayLog`. */
+  log?: string;
   /** Stops the Gateway's process group, then SIGKILLs every process of its tree that is still there. */
   stop(): Promise<void>;
 };
@@ -206,11 +232,15 @@ function catalogRows(port: number): { cursor: number; all: number } | { error: s
  */
 export async function startRegressionGateway(
   port: number,
-  options: { timeoutMs?: number; emptyMs?: number; onStarted?: (stop: () => Promise<void>) => void } = {},
+  options: { timeoutMs?: number; emptyMs?: number; logFile?: string; onStarted?: (stop: () => Promise<void>) => void } = {},
 ): Promise<RegressionGateway> {
-  const { timeoutMs = 90_000, emptyMs = 30_000 } = options;
+  const { timeoutMs = 90_000, emptyMs = 30_000, logFile } = options;
   // No secret reaches the tier: the fake CLI needs no key, and a real one must not leak into a fresh state.
-  const gateway = await startGateway(port, { timeoutMs, omitEnv: ["CURSOR_API_KEY", "CURSOR_AUTH_TOKEN"] });
+  const gateway = await startGateway(port, {
+    timeoutMs,
+    omitEnv: ["CURSOR_API_KEY", "CURSOR_AUTH_TOKEN"],
+    ...(logFile === undefined ? {} : { logFile }),
+  });
   let stopped: Promise<void> | undefined;
   const stop = () =>
     (stopped ??= (async () => {
@@ -243,11 +273,45 @@ export async function startRegressionGateway(
       );
     }
     if (catalog === "empty") console.warn(`The Gateway on port ${port} lists no model at all; the turns alone show whether the plugin works.`);
-    return { ...gateway, catalog, stop };
+    return { ...gateway, catalog, stop, ...(logFile === undefined ? {} : { log: logFile }) };
   } catch (error) {
     await stop();
     throw error;
   }
+}
+
+/** The Gateway's console log so far (see `startRegressionGateway`'s `logFile`), without color codes; empty when there is none. */
+export function gatewayLog(gateway: RegressionGateway): string {
+  if (gateway.log === undefined || !existsSync(gateway.log)) return "";
+  // eslint-disable-next-line no-control-regex
+  return readFileSync(gateway.log, "utf8").replace(/\u001b\[[0-9;]*m/g, "");
+}
+
+/**
+ * One Gateway RPC with `openclaw gateway call <method> --json`: the parsed answer, or a thrown error that carries
+ * the CLI's output.
+ */
+export function gatewayCall(port: number, method: string, params: unknown = {}): any {
+  const called = openclaw(["gateway", "call", method, "--params", JSON.stringify(params), "--port", String(port), "--json", "--timeout", "15000"], {
+    timeoutMs: 30_000,
+  });
+  const output = `openclaw gateway call ${method} ${JSON.stringify(params)}: exit ${called.status}\n--- stdout\n${called.stdout}\n--- stderr\n${called.stderr}`;
+  if (called.status !== 0) throw new Error(output.slice(0, 4_000));
+  try {
+    return JSON.parse(called.stdout);
+  } catch {
+    throw new Error(`not JSON: ${output.slice(0, 4_000)}`);
+  }
+}
+
+/** The pids of the `acp` processes whose start is in these log lines (each logs its pid with `initialize`). */
+export function acpPids(lines: readonly FakeLogEntry[]): number[] {
+  return lines.filter((line) => line.method === "initialize" && typeof line.pid === "number").map((line) => line.pid as number);
+}
+
+/** Whether `pid` still runs fake-cursor-agent (a recycled pid that runs something else counts as gone). */
+export function fakeAlive(pid: number): boolean {
+  return processTable().get(pid)?.args.includes(FAKE_CURSOR_AGENT) === true;
 }
 
 /** One turn through the Gateway with `openclaw agent` (the CLI reaches it through `OPENCLAW_GATEWAY_PORT`). */
