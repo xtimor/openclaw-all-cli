@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 // The regression ledger's CI check (epic-regression-gate ticket 1): every closed `type:bug` issue of the repository has
-// a [[bug]] entry in test/regression/ledger.toml. The offline half (named tests exist, schema) is
+// a [[bug]] entry in test/regression/ledger.toml. Only issues closed as completed need one: a `not_planned` or
+// `duplicate` close (the issue flow's stale job, for one) needs none, and an entry for one is still allowed. The offline half (named tests exist, schema) is
 // test/regression/ledger.test.ts in `npm test`; this half needs the GitHub API, so it runs only in CI.
 // Dependency-free: the ledger parser is test/regression/ledger.ts, loaded through Node's type stripping (Node 24).
 //
@@ -34,7 +35,7 @@ function parseArgs(argv) {
   return { ledger };
 }
 
-/** Every closed issue with the type:bug label, pull requests left out. */
+/** Every issue with the type:bug label closed as completed, pull requests left out. */
 async function closedBugs(api, repo, token) {
   const numbers = [];
   for (let page = 1; page <= MAX_PAGES; page += 1) {
@@ -56,7 +57,7 @@ async function closedBugs(api, repo, token) {
     if (!response.ok) throw new CheckError(`GET ${path}: GitHub answered ${response.status}`);
     const rows = await response.json().catch(() => null);
     if (!Array.isArray(rows)) throw new CheckError(`GET ${path}: GitHub answered ${response.status} with no list`);
-    for (const row of rows) if (row && typeof row.number === "number" && !row.pull_request) numbers.push(row.number);
+    for (const row of rows) if (row && typeof row.number === "number" && !row.pull_request && row.state_reason === "completed") numbers.push(row.number);
     if (rows.length < PAGE_SIZE) return numbers.sort((a, b) => a - b);
   }
   throw new CheckError(`more than ${MAX_PAGES * PAGE_SIZE} closed ${LABEL} issues; raise MAX_PAGES`);
@@ -87,11 +88,11 @@ async function main(argv, env) {
   const bugs = await closedBugs(api, repo, token);
   const missing = bugs.filter((issue) => !listed.has(issue));
   if (missing.length > 0) {
-    console.error(`regression-ledger: ${missing.length} closed ${LABEL} issue(s) of ${repo} have no entry in the ledger: ${missing.map((n) => `#${n}`).join(", ")}`);
+    console.error(`regression-ledger: ${missing.length} ${LABEL} issue(s) of ${repo} closed as completed have no entry in the ledger: ${missing.map((n) => `#${n}`).join(", ")}`);
     console.error("Add a [[bug]] entry for each (docs/agents/implement.md, \"Regression ledger\").");
     return 1;
   }
-  console.log(`regression-ledger: ${bugs.length} closed ${LABEL} issues of ${repo}, every one in the ledger`);
+  console.log(`regression-ledger: ${bugs.length} ${LABEL} issues of ${repo} closed as completed, every one in the ledger`);
   return 0;
 }
 

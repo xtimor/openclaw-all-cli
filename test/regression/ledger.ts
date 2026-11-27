@@ -333,7 +333,7 @@ export function loadLedger(path: string = LEDGER_PATH): LedgerBug[] {
  */
 export function testTitles(source: string): string[] {
   const titles: string[] = [];
-  const call = /\b(?:describe|it|test|describeLive|describeRegression)(?:\.\w+(?:\([^()]*\))?)*\(\s*(["'`])/g;
+  const call = /(?<![.\w$])(?:describe|it|test|describeLive|describeRegression)(?:\.\w+(?:\([^()]*\))?)*\(\s*(["'`])/g;
   for (let match = call.exec(source); match; match = call.exec(source)) {
     const quote = match[1] as string;
     let index = call.lastIndex;

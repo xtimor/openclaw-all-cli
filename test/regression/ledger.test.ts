@@ -111,6 +111,8 @@ describe("test titles", () => {
       'it.each([1, 2])("each %s", () => {});',
       'test("plain test", () => {});',
       'split("not a title");',
+      'expect(/a/.test("not a title either")).toBe(true);',
+      'x.it("nor this");',
     ].join("\n");
     expect(testTitles(source)).toEqual([
       "skipped group",

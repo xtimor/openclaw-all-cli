@@ -68,13 +68,13 @@ tests = [
 ]
 planned = "4.3"
 
-# Fixed as a documented host limit: OpenClaw drew no plugin icon in the model list or plugin card; the package ships it.
+# Closed by documenting a host limit: OpenClaw drew no plugin icon in the model list or plugin card; the package ships it.
 [[bug]]
 issue = 35
 title = "The provider icon is shown nowhere"
 family = "provider-icon"
 tier = "ui"
-fixed = true
+fixed = false
 tests = [
   { file = "test/package-contents.test.ts", name = "ships a small square PNG icon", tier = "unit", reproduces = false },
 ]
@@ -105,13 +105,13 @@ tests = [
 ]
 planned = "4.3, 4.5"
 
-# Fixed as a documented host limit; plan 27 later made the API key a real auth profile the card reads.
+# Closed by documenting a host limit; plan 27 later made the API key a real auth profile the card reads.
 [[bug]]
 issue = 39
 title = "Provider card reads Not configured although the cursor-agent login works"
 family = "auth-status"
 tier = "ui"
-fixed = true
+fixed = false
 tests = [
   { file = "test/provider-card-limit.test.ts", name = "derives the credential summary from config keys, env keys, and profiles", tier = "unit", reproduces = false },
   { file = "test/provider-card-limit.test.ts", name = "is in docs/setup.md and CHANGELOG.md with the upstream issue", tier = "unit", reproduces = false },

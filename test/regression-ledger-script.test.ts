@@ -22,6 +22,7 @@ interface StubIssue {
   number: number;
   labels: string[];
   state: "open" | "closed";
+  state_reason?: "completed" | "not_planned" | "duplicate";
   pull_request?: object;
 }
 
@@ -46,7 +47,7 @@ beforeAll(async () => {
       const perPage = Number(url.searchParams.get("per_page") ?? "30");
       const page = Number(url.searchParams.get("page") ?? "1");
       const rows = issues.filter((issue) => issue.labels.includes(label) && issue.state === state);
-      return send(200, rows.slice((page - 1) * perPage, page * perPage).map(({ number, pull_request }) => ({ number, pull_request })));
+      return send(200, rows.slice((page - 1) * perPage, page * perPage).map(({ number, state_reason, pull_request }) => ({ number, state_reason: state_reason ?? null, pull_request })));
     }
     return send(404, { message: "Not Found" });
   });
@@ -93,14 +94,14 @@ function tempLedger(text: string): string {
 
 const ledgerOf = (numbers: number[]) =>
   numbers.map((n) => `[[bug]]\nissue = ${n}\ntitle = "bug ${n}"\nfamily = "f"\ntier = "unit"\nfixed = true\ntests = []\nplanned = "4.3"\n`).join("\n");
-const closedBug = (number: number): StubIssue => ({ number, labels: ["type:bug"], state: "closed" });
+const closedBug = (number: number): StubIssue => ({ number, labels: ["type:bug"], state: "closed", state_reason: "completed" });
 
 describe("check-issues", () => {
   it("passes on the committed ledger when the closed bugs are the ones it lists, and prints the count", async () => {
     issues = loadLedger().map((bug) => closedBug(bug.issue));
     const result = await run(["check-issues"]);
     expect(result.code, result.stderr).toBe(0);
-    expect(result.stdout).toContain(`regression-ledger: ${issues.length} closed type:bug issues of ${REPO}, every one in the ledger`);
+    expect(result.stdout).toContain(`regression-ledger: ${issues.length} type:bug issues of ${REPO} closed as completed, every one in the ledger`);
     expect(calls[0]).toEqual({ path: `/repos/${REPO}/issues?state=closed&labels=type%3Abug&per_page=100&page=1`, auth: `Bearer ${TOKEN}` });
   });
 
@@ -112,7 +113,7 @@ describe("check-issues", () => {
     const end = text.indexOf("[[bug]]", start + 1);
     const result = await run(["check-issues", "--ledger", tempLedger(text.slice(0, start) + text.slice(end))]);
     expect(result.code).toBe(1);
-    expect(result.stderr).toContain(`regression-ledger: 1 closed type:bug issue(s) of ${REPO} have no entry in the ledger: #14`);
+    expect(result.stderr).toContain(`regression-ledger: 1 type:bug issue(s) of ${REPO} closed as completed have no entry in the ledger: #14`);
   });
 
   it("lists every closed bug with no entry, across pages, and leaves out pull requests, open issues, and other labels", async () => {
@@ -136,8 +137,19 @@ describe("check-issues", () => {
     issues = listed.map(closedBug);
     const result = await run(["check-issues", "--ledger", tempLedger(ledgerOf([...listed, 102]))]);
     expect(result.code, result.stderr).toBe(0);
-    expect(result.stdout).toContain("100 closed type:bug issues");
+    expect(result.stdout).toContain("100 type:bug issues of owner/repo closed as completed");
     expect(calls).toHaveLength(2);
+  });
+
+  it("needs no entry for a bug closed as not planned or as a duplicate", async () => {
+    issues = [
+      closedBug(1),
+      { number: 2, labels: ["type:bug"], state: "closed", state_reason: "not_planned" },
+      { number: 3, labels: ["type:bug"], state: "closed", state_reason: "duplicate" },
+    ];
+    const result = await run(["check-issues", "--ledger", tempLedger(ledgerOf([1]))]);
+    expect(result.code, result.stderr).toBe(0);
+    expect(result.stdout).toContain("1 type:bug issues of owner/repo closed as completed, every one in the ledger");
   });
 
   it("skips with exit 0 and no request when GITHUB_TOKEN is unset or blank", async () => {

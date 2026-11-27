@@ -3,7 +3,7 @@ title: 'Regression ledger: one entry and one test per past bug'
 type: 'feature'
 ticket: '1'
 created: '2026-11-27'
-status: 'in-review'
+status: 'built'
 baseline_revision: '34940e6f6cdce5f45a77447a8b55d92087d0f88a'
 route: 'full'
 route_source: 'auto'
@@ -12,7 +12,7 @@ review: 'quick'
 review_source: 'pinned'
 lenses_ran: ['quick']
 review_loop_iteration: 0
-followup_review_recommended: false
+followup_review_recommended: true
 context: []
 warnings: []
 deferred: []
@@ -78,7 +78,8 @@ deferred: []
 - Parser: `test/regression/ledger.ts` (`parseTomlSubset`, `parseLedger`, `loadLedger`, `testTitles`, `missingTests`). `scripts/regression-ledger.mjs` imports it directly through Node's type stripping (works with no flag and no warning on Node 24.22; also on 22.23). No `.mjs` copy.
 - Title matching reads the string literal of each `describe`/`it`/`test` call (with `.skipIf(...)`/`.each(...)` modifiers and `describeLive`/`describeRegression`), so a name found only in a comment or an assertion does not count.
 - Schema checks beyond the matrix: a unit test cannot claim `reproduces = true` for a bug from a higher tier; a `live` test must be under `test/live/`, a `gateway` test under `test/regression/gateway/`; `planned` is `"4.3"` or `"4.3, 4.6"`; `family` is kebab-case. The committed-ledger test also requires `planned` or `no_test_reason` for every bug with no reproducing test at its own tier.
-- Backfill: 20 entries. No gateway or ui test exists yet, so every entry has unit proxies (`reproduces = false`) or live tests plus `planned`; #11 has one reproducing live test (`turn-latency.live`, warm process over four turns). #36 is planned for 4.6 (the provider card shows the name) though that ticket's text names only the icon. #13 `fixed = false`.
+- Backfill: 20 entries. No gateway or ui test exists yet, so every entry has unit proxies (`reproduces = false`) or live tests plus `planned`; #11 has one reproducing live test (`turn-latency.live`, warm process over four turns). #36 is planned for 4.6 (the provider card shows the name) though that ticket's text names only the icon. #13, #35, and #39 `fixed = false` (#13 closed not_planned; #35 and #39 closed by a docs change for a host limit).
+- `check-issues` requires an entry only for issues whose `state_reason` is `completed` (review): a `not_planned` or duplicate close, such as the issue flow's stale job, would otherwise turn every later PR red; entries for other closes stay allowed.
 - `check-issues` falls back to package.json `repository.url` when `GITHUB_REPOSITORY` is unset; `--ledger <path>` checks another file (tests, scratch mutation).
 - CI: job-level `permissions: contents: read, issues: read` on `check` only (the clawhub job keeps the workflow default).
 - `docs/agents/implement.md`: the rule says "a `type:bug` issue in state `closed`", because `test/agent-flow-docs.test.ts` refuses lines that talk about closing issues.
@@ -86,6 +87,25 @@ deferred: []
 ## Plan Change Log
 
 ## Review Triage Log
+
+### 2026-11-27 — Review pass
+- verdicts: 6 findings — high 1, medium 1, low 3, false 0, maybe-false 0, rejected 1
+- findings:
+  - `[high]` `[patch]` the CI check counted every closed `type:bug` issue, so a stale-job (`not_planned`) or duplicate close would turn `check` red on every later PR and stop batch-merge — fixed: only `state_reason: completed` needs an entry; rule text in implement.md and both build overrides says so; script test for a not_planned issue without an entry.
+  - `[medium]` `[patch]` #35 and #39 marked `fixed = true` though closed by docs only — fixed: `fixed = false`, comments reworded.
+  - `[low]` `[patch]` title regex matched `x.test("…")` after a dot — fixed: lookbehind `(?<![.\w$])` plus two unit cases.
+  - `[low]` `[reject]` modifiers with nested parentheses (`describe.skipIf(f())("…")`) are not seen — unlikely in this repo (none today); the fix adds parser complexity.
+  - `[low]` `[patch]` MEMORY.md named 4.5 as a gateway/ui ticket — fixed: 4.5 is live.
+  - `[low]` `[reject]` (implementer note) the live count is 19 completed, not the plan's 20 — consequence of the high patch; the ledger still holds all 20 entries.
+
+## Auto Run Result
+
+- **Summary:** `test/regression/ledger.toml` lists the 20 closed `type:bug` issues with family, tier, tests (unit proxies marked `reproduces = false`, live where they exist) and the epic ticket that will add the tier-level test; `ledger.ts` parses the TOML subset and checks names against real `describe`/`it` titles; `ledger.test.ts` (offline, in `npm test`); `scripts/regression-ledger.mjs check-issues` in CI with the workflow token requires an entry for every bug closed as completed; the agent rule in implement.md and both build overrides.
+- **Files:** `test/regression/ledger.toml`, `test/regression/ledger.ts`, `test/regression/ledger.test.ts`, `scripts/regression-ledger.mjs`, `test/regression-ledger-script.test.ts`, `.github/workflows/ci.yml` (step, `issues: read`), `docs/agents/implement.md`, `_bmad/custom/bmad-build.toml`, `_bmad/custom/bmad-build-auto.toml`, `MEMORY.md`.
+- **Review:** 4 patched (high 1, medium 1, low 2), 0 deferred, 2 rejected (nested-paren modifiers; the 19-vs-20 count note).
+- **Follow-up review recommended:** true by the rule (a high was patched); the risk: the state_reason filter is verified only against a stub and one live run, and the first CI run with it is on this PR.
+- **Verification:** `npm test` 71 files passed (2091 tests); `npm run typecheck` clean; live `check-issues` against the repo: 19 completed closes covered, exit 0 (implementer); CI on the previous head ran the new step green.
+- **Residual risks:** ledger titles must stay stable (renaming a test breaks `npm test` until its entry is updated, by design).
 
 ## Verification
 
