@@ -1,0 +1,262 @@
+# Regression ledger (epic-regression-gate ticket 1): one [[bug]] per closed `type:bug` issue, and the tests that guard it.
+#
+# Checked offline by test/regression/ledger.test.ts (every named file and test title exists, the schema below holds) and
+# in CI by `node scripts/regression-ledger.mjs check-issues` (every closed `type:bug` issue has an entry). Parsed by
+# test/regression/ledger.ts, which reads only this TOML subset: `#` comments, `[[bug]]`, `key = "string" | integer |
+# true | false | [ ... ]`, arrays of strings or one-line inline tables. Never delete an entry; a bug fix adds or
+# updates its own (docs/agents/implement.md, "Regression ledger").
+#
+# Keys of a [[bug]]:
+#   issue           integer, the GitHub issue number (one entry per issue)
+#   title           short description of the bug
+#   family          kebab-case family; a bug that came back shares its family with the first one
+#   tier            where the bug showed: unit (vitest, no host), gateway (a real Gateway with a scripted Cursor,
+#                   test/regression/gateway/), ui (the Control UI in a browser), live (real cursor-agent, test/live/)
+#   fixed           false when the issue was closed with no plugin change that fixes it
+#   tests           array of { file = "repo-relative path", name = "substring of a describe/it/test title",
+#                   tier = "unit|gateway|ui|live", reproduces = true|false }; may be empty.
+#                   reproduces = true only when the test recreates the bug's original conditions; a lower-tier
+#                   proxy (a unit test for a Gateway-visible bug) says false.
+#   planned         optional: the epic-regression-gate ticket(s) that will add the test at the bug's tier, "4.3" or "4.3, 4.6"
+#   no_test_reason  optional: why the bug has no test and none is planned
+# An entry needs at least one of tests, planned, no_test_reason.
+
+[[bug]]
+issue = 11
+title = "15-20 s to first token: cursor-agent restarted on every turn"
+family = "first-reply-latency"
+tier = "gateway"
+fixed = true
+tests = [
+  { file = "test/host-contract.test.ts", name = "reuses the process on a later turn (no initialize, no session/load)", tier = "unit", reproduces = false },
+  { file = "test/live/turn-latency.live.test.ts", name = "times four plain turns of one session on one warm process", tier = "live", reproduces = true },
+]
+planned = "4.3"
+
+[[bug]]
+issue = 12
+title = "All cursor-cli models report the same 128k context window"
+family = "context-usage"
+tier = "gateway"
+fixed = true
+tests = [
+  { file = "src/adapters/cursor/models.test.ts", name = "gives a row its own context window, else its family's, else none", tier = "unit", reproduces = false },
+  { file = "src/core/catalog.test.ts", name = "carries a model's context window into its row", tier = "unit", reproduces = false },
+]
+planned = "4.3"
+
+# Closed not_planned: OpenClaw itself sends the final assistant event; the plugin's result only sets the final text.
+[[bug]]
+issue = 13
+title = "WebChat shows the assistant reply twice"
+family = "webchat"
+tier = "gateway"
+fixed = false
+tests = [
+  { file = "src/transports/acp/session.test.ts", name = "the result text is their concatenation", tier = "unit", reproduces = false },
+]
+planned = "4.3"
+
+[[bug]]
+issue = 14
+title = "cli backend already registered for cursor-cli"
+family = "provider-name"
+tier = "gateway"
+fixed = true
+tests = [
+  { file = "test/backend.test.ts", name = "registers the cursor-cli backend exactly once", tier = "unit", reproduces = false },
+]
+planned = "4.3"
+
+# Fixed as a documented host limit: OpenClaw drew no plugin icon in the model list or plugin card; the package ships it.
+[[bug]]
+issue = 35
+title = "The provider icon is shown nowhere"
+family = "provider-icon"
+tier = "ui"
+fixed = true
+tests = [
+  { file = "test/package-contents.test.ts", name = "ships a small square PNG icon", tier = "unit", reproduces = false },
+]
+planned = "4.6"
+
+# The Control UI check of the provider card (4.6) reads the name it shows.
+[[bug]]
+issue = 36
+title = "Provider shows as Cursor-CLI, the same name as another plugin"
+family = "provider-name"
+tier = "ui"
+fixed = true
+tests = [
+  { file = "test/provider-auth.test.ts", name = "shows the provider as OAC / Cursor-CLI in the group label and the settings hint", tier = "unit", reproduces = false },
+  { file = "test/backend.test.ts", name = "labels the provider OAC / Cursor-CLI and keeps its ID", tier = "unit", reproduces = false },
+]
+planned = "4.6"
+
+# Investigation only (decision: no warm start per agent); the latency it measured belongs to the #11 and #44 checks.
+[[bug]]
+issue = 38
+title = "First replies still take 15-20 s; keep a warm cursor-agent per agent"
+family = "first-reply-latency"
+tier = "live"
+fixed = true
+tests = [
+  { file = "test/live/turn-latency.live.test.ts", name = "keeps one cursor-agent process for four turns, starting with the first", tier = "live", reproduces = false },
+]
+planned = "4.3, 4.5"
+
+# Fixed as a documented host limit; plan 27 later made the API key a real auth profile the card reads.
+[[bug]]
+issue = 39
+title = "Provider card reads Not configured although the cursor-agent login works"
+family = "auth-status"
+tier = "ui"
+fixed = true
+tests = [
+  { file = "test/provider-card-limit.test.ts", name = "derives the credential summary from config keys, env keys, and profiles", tier = "unit", reproduces = false },
+  { file = "test/provider-card-limit.test.ts", name = "is in docs/setup.md and CHANGELOG.md with the upstream issue", tier = "unit", reproduces = false },
+]
+planned = "4.6, 4.9"
+
+[[bug]]
+issue = 40
+title = "Context usage tile shows totalTokens far above the context window"
+family = "context-usage"
+tier = "ui"
+fixed = true
+tests = [
+  { file = "src/core/usage.test.ts", name = "boundTurnUsage (issue #40)", tier = "unit", reproduces = false },
+  { file = "src/core/execute.test.ts", name = "against the session's context ceiling (issue #40)", tier = "unit", reproduces = false },
+  { file = "test/host-contract.test.ts", name = "reads the prompt buckets as the context size, and none from usage marked unavailable", tier = "unit", reproduces = false },
+]
+planned = "4.3, 4.6"
+
+[[bug]]
+issue = 44
+title = "First replies still take 15-20 s on 0.1.4: study the thinking"
+family = "first-reply-latency"
+tier = "live"
+fixed = true
+tests = [
+  { file = "test/turn-timings.test.ts", name = "logs one line for a new chat with every phase that ran, thought before text", tier = "unit", reproduces = false },
+  { file = "src/transports/acp/session.test.ts", name = "AcpSession open phases (issue #44)", tier = "unit", reproduces = false },
+]
+planned = "4.5"
+
+[[bug]]
+issue = 45
+title = "Still no icon in the provider list or the chat model picker"
+family = "provider-icon"
+tier = "ui"
+fixed = true
+tests = [
+  { file = "test/provider-auth.test.ts", name = "sets the setup page icon: an HTTPS URL that ends in the path of the packaged assets/icon.png", tier = "unit", reproduces = false },
+]
+planned = "4.6"
+
+[[bug]]
+issue = 46
+title = "Opus 5.5 offered only as the 300k variant; 1M cannot be picked"
+family = "context-usage"
+tier = "gateway"
+fixed = true
+tests = [
+  { file = "src/adapters/cursor/models.test.ts", name = "1M variants (issue #46)", tier = "unit", reproduces = false },
+]
+planned = "4.3"
+
+[[bug]]
+issue = 67
+title = "cursor-cli refuses every run with an empty native selection"
+family = "native-selection"
+tier = "gateway"
+fixed = true
+tests = [
+  { file = "test/backend.test.ts", name = "serves a run whose native selection is empty instead of refusing it", tier = "unit", reproduces = false },
+  { file = "test/backend.test.ts", name = "picks the default profile for a full or absent selection and the restricted one for an empty selection", tier = "unit", reproduces = false },
+]
+planned = "4.3"
+
+[[bug]]
+issue = 74
+title = "The pool keeps a cursor-agent alive after its conversation ended"
+family = "process-lifecycle"
+tier = "gateway"
+fixed = true
+tests = [
+  { file = "test/session-end-release.test.ts", name = "a finished conversation releases its process (ticket 22)", tier = "unit", reproduces = false },
+  { file = "src/core/pool.test.ts", name = "ProcessPool.releaseConversation", tier = "unit", reproduces = false },
+]
+planned = "4.3"
+
+[[bug]]
+issue = 75
+title = "GPT models under cursor-cli never call structured_output"
+family = "structured-output"
+tier = "live"
+fixed = true
+tests = [
+  { file = "test/structured-output-hint.test.ts", name = "tells the model to answer through structured_output when the host serves that tool", tier = "unit", reproduces = false },
+]
+planned = "4.5"
+
+# Covered only Cursor's agent mode; the ask-mode half came back as #102 (open; its entry comes with its fix).
+[[bug]]
+issue = 76
+title = "A denied native shell call tells the model nothing about OpenClaw exec"
+family = "native-tools-note"
+tier = "live"
+fixed = true
+tests = [
+  { file = "test/shell-hint.test.ts", name = "tells the model the native shell is off and OpenClaw exec is the way, when the host serves exec", tier = "unit", reproduces = false },
+]
+planned = "4.3, 4.5"
+
+[[bug]]
+issue = 80
+title = "README update command is refused while the Gateway runs"
+family = "docs"
+tier = "gateway"
+fixed = true
+tests = [
+  { file = "test/docs-update-instructions.test.ts", name = "README Update section gives a path that works with the Gateway running or stopped", tier = "unit", reproduces = false },
+  { file = "test/docs-update-instructions.test.ts", name = "does not say a running Gateway is refreshed by plugins update", tier = "unit", reproduces = false },
+]
+planned = "4.9"
+
+[[bug]]
+issue = 97
+title = "Context usage tile moves down between turns (incomplete fix of #40)"
+family = "context-usage"
+tier = "ui"
+fixed = true
+tests = [
+  { file = "src/core/usage.test.ts", name = "withholds a plausible total whose own contextReading is lower than the previous high", tier = "unit", reproduces = false },
+  { file = "src/core/execute.test.ts", name = "keeps a plain follow-up turn's lower total from reading as a drop after a tool-heavy turn", tier = "unit", reproduces = false },
+]
+planned = "4.3, 4.6"
+
+[[bug]]
+issue = 98
+title = "Provider reports authenticated with an invalid CURSOR_API_KEY"
+family = "auth-status"
+tier = "ui"
+fixed = true
+tests = [
+  { file = "src/adapters/cursor/index.test.ts", name = "does not accept CURSOR_API_KEY as a login without confirming it works (issue #98)", tier = "unit", reproduces = false },
+  { file = "src/adapters/cursor/index.test.ts", name = "issue #98: an unvalidated or degraded credential must not probe as authenticated", tier = "unit", reproduces = false },
+  { file = "src/adapters/cursor/auth-probe-cache.test.ts", name = "createCursorKeyCheckCache (issue #98)", tier = "unit", reproduces = false },
+]
+planned = "4.6, 4.9"
+
+[[bug]]
+issue = 99
+title = "A transient Cursor throttle is reported as a spent plan quota"
+family = "quota"
+tier = "gateway"
+fixed = true
+tests = [
+  { file = "src/adapters/cursor/errors.test.ts", name = "resource_exhausted throttle vs. genuine plan exhaustion (issue #99)", tier = "unit", reproduces = false },
+  { file = "test/host-contract.test.ts", name = "no longer reads the transient throttle message as a long window", tier = "unit", reproduces = false },
+]
+planned = "4.3"

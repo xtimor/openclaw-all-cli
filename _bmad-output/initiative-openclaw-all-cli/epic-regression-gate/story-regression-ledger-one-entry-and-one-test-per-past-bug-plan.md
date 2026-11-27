@@ -3,14 +3,14 @@ title: 'Regression ledger: one entry and one test per past bug'
 type: 'feature'
 ticket: '1'
 created: '2026-11-27'
-status: 'in-progress'
+status: 'in-review'
 baseline_revision: '34940e6f6cdce5f45a77447a8b55d92087d0f88a'
 route: 'full'
 route_source: 'auto'
 risk: 'low'
-review: ''
-review_source: ''
-lenses_ran: []
+review: 'quick'
+review_source: 'pinned'
+lenses_ran: ['quick']
 review_loop_iteration: 0
 followup_review_recommended: false
 context: []
@@ -58,14 +58,14 @@ deferred: []
 ## Tasks & Acceptance
 
 **Execution:**
-- [ ] `test/regression/ledger.toml` -- new: header comment with the schema; one `[[bug]]` per closed `type:bug` issue: `issue` (int), `title` (short), `family`, `tier` (the tier where the bug showed), `fixed` (bool; false for #13), `tests` (array of inline tables `{ file, name, tier, reproduces }`, may be empty), `planned` (optional ticket ref like `"4.3"`), `no_test_reason` (optional string) -- the record
-- [ ] `test/regression/ledger.ts` -- new: a minimal parser for exactly this TOML subset (comments, `[[bug]]`, `key = "string" | int | bool | [ ... ]` with strings or inline tables of string/bool values, multi-line arrays) that throws with the line number on anything else, plus `loadLedger()` -- shared by the test and the script
-- [ ] `test/regression/ledger.test.ts` -- new: the Valid / Missing test / Bad entry rows, including mutation-style cases on in-memory ledgers (a missing file, a missing name, a duplicate issue, an entry with no test, plan, or reason)
-- [ ] `scripts/regression-ledger.mjs` -- new: `check-issues` reads the ledger (import the parser via a small `.mjs` copy or by running the TS through node's type stripping, whichever works on Node 24.22 without a build step) and the GitHub API (`/repos/{repo}/issues?state=closed&labels=type:bug&per_page=100`, paginated, pull requests excluded), then the Issue coverage rows -- the CI check
-- [ ] `test/regression-ledger-script.test.ts` -- new: drives `check-issues` against a local HTTP stub (`GITHUB_API_URL` override) for OK, missing, no-token, and API-error rows
-- [ ] `.github/workflows/ci.yml` -- the step and `issues: read`
-- [ ] `docs/agents/implement.md`, `_bmad/custom/bmad-build.toml`, `_bmad/custom/bmad-build-auto.toml` -- the rule: a bug fix adds or updates its ledger entry and a test at the tier where the bug showed (gateway or ui for a host-visible bug, live for model behavior), proved red before the fix; never delete an entry
-- [ ] `MEMORY.md` -- one line under "Where things are"
+- [x] `test/regression/ledger.toml` -- new: header comment with the schema; one `[[bug]]` per closed `type:bug` issue: `issue` (int), `title` (short), `family`, `tier` (the tier where the bug showed), `fixed` (bool; false for #13), `tests` (array of inline tables `{ file, name, tier, reproduces }`, may be empty), `planned` (optional ticket ref like `"4.3"`), `no_test_reason` (optional string) -- the record
+- [x] `test/regression/ledger.ts` -- new: a minimal parser for exactly this TOML subset (comments, `[[bug]]`, `key = "string" | int | bool | [ ... ]` with strings or inline tables of string/bool values, multi-line arrays) that throws with the line number on anything else, plus `loadLedger()` -- shared by the test and the script
+- [x] `test/regression/ledger.test.ts` -- new: the Valid / Missing test / Bad entry rows, including mutation-style cases on in-memory ledgers (a missing file, a missing name, a duplicate issue, an entry with no test, plan, or reason)
+- [x] `scripts/regression-ledger.mjs` -- new: `check-issues` reads the ledger (import the parser via a small `.mjs` copy or by running the TS through node's type stripping, whichever works on Node 24.22 without a build step) and the GitHub API (`/repos/{repo}/issues?state=closed&labels=type:bug&per_page=100`, paginated, pull requests excluded), then the Issue coverage rows -- the CI check
+- [x] `test/regression-ledger-script.test.ts` -- new: drives `check-issues` against a local HTTP stub (`GITHUB_API_URL` override) for OK, missing, no-token, and API-error rows
+- [x] `.github/workflows/ci.yml` -- the step and `issues: read`
+- [x] `docs/agents/implement.md`, `_bmad/custom/bmad-build.toml`, `_bmad/custom/bmad-build-auto.toml` -- the rule: a bug fix adds or updates its ledger entry and a test at the tier where the bug showed (gateway or ui for a host-visible bug, live for model behavior), proved red before the fix; never delete an entry
+- [x] `MEMORY.md` -- one line under "Where things are"
 
 **Acceptance Criteria:**
 - Given main with this change, when `npx vitest run test/regression/ledger.test.ts` runs, then it passes and the ledger has exactly one entry for each of the 20 closed bugs.
@@ -74,6 +74,14 @@ deferred: []
 - Given an agent fixing a bug, when it reads `docs/agents/implement.md`, then the rule to add a ledger entry and a tier-appropriate test is there.
 
 ## Implementation Notes
+
+- Parser: `test/regression/ledger.ts` (`parseTomlSubset`, `parseLedger`, `loadLedger`, `testTitles`, `missingTests`). `scripts/regression-ledger.mjs` imports it directly through Node's type stripping (works with no flag and no warning on Node 24.22; also on 22.23). No `.mjs` copy.
+- Title matching reads the string literal of each `describe`/`it`/`test` call (with `.skipIf(...)`/`.each(...)` modifiers and `describeLive`/`describeRegression`), so a name found only in a comment or an assertion does not count.
+- Schema checks beyond the matrix: a unit test cannot claim `reproduces = true` for a bug from a higher tier; a `live` test must be under `test/live/`, a `gateway` test under `test/regression/gateway/`; `planned` is `"4.3"` or `"4.3, 4.6"`; `family` is kebab-case. The committed-ledger test also requires `planned` or `no_test_reason` for every bug with no reproducing test at its own tier.
+- Backfill: 20 entries. No gateway or ui test exists yet, so every entry has unit proxies (`reproduces = false`) or live tests plus `planned`; #11 has one reproducing live test (`turn-latency.live`, warm process over four turns). #36 is planned for 4.6 (the provider card shows the name) though that ticket's text names only the icon. #13 `fixed = false`.
+- `check-issues` falls back to package.json `repository.url` when `GITHUB_REPOSITORY` is unset; `--ledger <path>` checks another file (tests, scratch mutation).
+- CI: job-level `permissions: contents: read, issues: read` on `check` only (the clawhub job keeps the workflow default).
+- `docs/agents/implement.md`: the rule says "a `type:bug` issue in state `closed`", because `test/agent-flow-docs.test.ts` refuses lines that talk about closing issues.
 
 ## Plan Change Log
 
@@ -86,3 +94,9 @@ deferred: []
 - `GITHUB_TOKEN=$(gh auth token) GITHUB_REPOSITORY=xtimor/openclaw-all-cli node scripts/regression-ledger.mjs check-issues` -- expected: exit 0, 20 issues covered (if `gh auth token` is unavailable, use the session's GitHub access through `gh api` to list the issues and compare by hand; record it)
 - `npm test` -- expected: green
 - `npm run typecheck` -- expected: clean
+
+**Results (2026-11-27):**
+- `npx vitest run test/regression/ledger.test.ts test/regression-ledger-script.test.ts`: 31 passed (Node 24.22 and 22.23).
+- `GITHUB_TOKEN=$(gh auth token) GITHUB_REPOSITORY=xtimor/openclaw-all-cli node scripts/regression-ledger.mjs check-issues`: exit 0, "20 closed type:bug issues of xtimor/openclaw-all-cli, every one in the ledger".
+- Mutation: a ledger name changed to text in no test fails `ledger.test.ts` naming the issue (in-memory test for #14, and by hand on the file for #35); an entry removed in a scratch copy fails `check-issues` with `#14` (script test against the stub).
+- `npm test`: green. `npm run typecheck`: clean.
