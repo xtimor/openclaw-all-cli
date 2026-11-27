@@ -21,7 +21,7 @@ The owner says "release", and what reaches npm and ClawHub has passed every ledg
 ## Done when
 
 1. `test/regression/ledger.toml` lists every closed `type:bug` issue with its family, tier, and test, and `npm test` fails when a closed bug has no entry or an entry names a missing test.
-2. A pull request runs the Gateway tier (packed `.tgz`, fresh OpenClaw, real Gateway, `fake-cursor-agent`) and the Control UI tier on OpenClaw min and latest, without any secret; each past bug a fake Cursor can show has a scenario there.
+2. A pull request runs the Gateway tier (packed `.tgz`, fresh OpenClaw, real Gateway, `fake-cursor-agent`) on OpenClaw min and latest and the Control UI tier on latest, without any secret; each past bug a fake Cursor can show has a scenario there.
 3. A release run executes the Gateway and Control UI tiers on min, extended-stable and latest, and the live tier with the real `cursor-agent` and `CURSOR_API_KEY`, before any publish; any red publishes nothing; the job summary shows results, timings, and Cursor tokens spent.
 4. On the owner's "release", red scenarios become `type:bug` issues, one BMAD batch fixes them with ledger entries, and the full regression runs again until green; after 3 red rounds the loop stops and reports to the owner.
 5. A weekly run on OpenClaw `beta` opens an issue when it is red.
@@ -47,4 +47,7 @@ The owner says "release", and what reaches npm and ClawHub has passed every ledg
 - Supersedes epic-distribution Done when 1 "the live suite stays out of CI": the live suite runs in the release (not on pull requests).
 - Live runs only inside a release, not nightly, to spare the owner's Cursor usage.
 - Estimates, not measurements: a full round about 1.5 hours and 2 to 5 million Cursor tokens; R5 measures both.
-- Ids: entry N is R<N> of the proposal.
+- Ids: entry N is R<N> of the proposal; 9 (split from R3) and 10 (refactor sweep) were added by the breakdown check.
+- Tracer bullet: entry 2 (one plain turn through a real Gateway with the fake Cursor). Order reasons: 3 and 9 need the harness (2) and the ledger (1); 6 needs the reusable workflow from 4; 5 needs the ledger and `regression.yml` (4) and the owner's key; 7 wires every tier; 10 sweeps before 8 adds the loop on top.
+- Decision (agent, 2026-11-27): no expected-red scenarios. The #102 scenario comes with the #102 fix (its own bug ticket); an open known bug therefore blocks the next release until fixed, as the owner asked ("no bugs in the release").
+- Decision (agent, 2026-11-27): the ledger is a committed file; `npm test` checks it offline, and a CI step with `GITHUB_TOKEN` compares it with the closed `type:bug` issues.

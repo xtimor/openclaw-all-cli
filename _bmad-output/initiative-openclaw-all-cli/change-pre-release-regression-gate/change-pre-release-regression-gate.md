@@ -97,7 +97,7 @@ Order: R1, R2, R3, R4, R6, R5, R7, R8. R1 to R4 need nothing from the owner and 
 
 ## Approval
 
-Approved by the owner on 2026-11-27 ("start the full implementation"). Applied: epic `epic-regression-gate` with entries 1 to 8 (entry N = RN), the initiative Notes and breakdown, the architecture rows Tests and OpenClaw, epic-distribution Done when 1.
+Approved by the owner on 2026-11-27 ("start the full implementation"). Applied: epic `epic-regression-gate` with entries 1 to 10 (entry N = RN; the breakdown check split R3 into 3 and 9 and added 10, a refactor sweep), the initiative Notes and breakdown, the architecture rows Tests and OpenClaw, epic-distribution Done when 1.
 
 ## Implementation handoff
 
