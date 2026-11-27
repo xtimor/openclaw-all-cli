@@ -84,3 +84,9 @@
 - name: "upstream:post"
   color: "6f42c1"
   description: "Owner only: publish the agent's draft in openclaw/openclaw"
+
+# The weekly Gateway regression run on OpenClaw beta (.github/workflows/regression-beta.yml, scripts/regression-beta-issue.mjs)
+# marks the issue it opens with it; while one is open, later red runs comment there instead of opening another.
+- name: "regression:beta"
+  color: "f9d0c4"
+  description: "Weekly regression run on OpenClaw beta is red; later red runs comment here while it is open"

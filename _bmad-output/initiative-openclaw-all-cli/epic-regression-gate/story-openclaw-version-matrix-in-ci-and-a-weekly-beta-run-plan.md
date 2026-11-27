@@ -3,13 +3,13 @@ title: 'OpenClaw version matrix in CI and a weekly beta run'
 type: 'feature'
 ticket: '4'
 created: '2026-11-27'
-status: 'in-progress'
+status: 'in-review'
 baseline_revision: '54d6565b2b6d4e1b30f53d0e0d1f69d28ee9ba56'
 route: 'full'
 route_source: 'auto'
 risk: 'low'
-review: ''
-review_source: ''
+review: 'quick'
+review_source: 'auto'
 lenses_ran: []
 review_loop_iteration: 0
 followup_review_recommended: false
@@ -59,13 +59,13 @@ deferred: []
 ## Tasks & Acceptance
 
 **Execution:**
-- [ ] `.github/workflows/regression.yml` -- reusable (`workflow_call`, plus `workflow_dispatch` for a manual run): resolve job, per-version matrix job, summary, failure artifact
-- [ ] `scripts/regression.sh` -- resolve-only mode and an optional packed-`.tgz` flag, default behavior unchanged
-- [ ] `.github/workflows/ci.yml` -- `regression` job on min and latest
-- [ ] `.github/workflows/regression-beta.yml` (or similar) -- weekly schedule and dispatch on `beta`, issue job with `issues: write`
-- [ ] `scripts/regression-beta-issue.mjs` + its unit test -- open or comment, with the stubbed API
-- [ ] `.github/labels.yml`, `docs/release.md` -- marker label; a short section on the matrix and the weekly run
-- [ ] `MEMORY.md` -- the facts a later thread needs (job names, where results show)
+- [x] `.github/workflows/regression.yml` -- reusable (`workflow_call`, plus `workflow_dispatch` for a manual run): resolve job, per-version matrix job, summary, failure artifact
+- [x] `scripts/regression.sh` -- resolve-only mode and an optional packed-`.tgz` flag, default behavior unchanged
+- [x] `.github/workflows/ci.yml` -- `regression` job on min and latest
+- [x] `.github/workflows/regression-beta.yml` (or similar) -- weekly schedule and dispatch on `beta`, issue job with `issues: write`
+- [x] `scripts/regression-beta-issue.mjs` + its unit test -- open or comment, with the stubbed API
+- [x] `.github/labels.yml`, `docs/release.md` -- marker label; a short section on the matrix and the weekly run
+- [x] `MEMORY.md` -- the facts a later thread needs (job names, where results show)
 
 **Acceptance Criteria:**
 - Given this pull request, when CI runs, then the Gateway tier shows as one job per version (min and latest) with the resolved versions in the summary, and a red scenario turns only its version red.
@@ -75,11 +75,28 @@ deferred: []
 
 ## Implementation Notes
 
+- `scripts/regression.sh`: new `resolve <requests...>` mode (same `resolve_version` rules; prints `[{"version","requests"}]` grouped by version in request order, a request named twice listed once; an unknown tag exits 2 with the existing message). `gateway` gains `--tgz <file>` (installs that tarball, skips the build, the build-version setup, and the pack; a missing file exits 2 before any setup) and `--result <file>` (an EXIT trap writes `{requested, version, sha256, result: passed|failed|error, exitCode, seconds, failed[]}`; with it, Vitest also writes its JSON report to `<file minus .json>.vitest.json`, from which the failing test names come: `<file> > <full name>`, or `<file>: <first message line>` for a file that failed outside a test). Without the new flags the commands and output are the old ones (verbose reporter only; the trap only re-exits with the same code). Relative paths are the caller's (`CALLER_DIR`).
+- `.github/workflows/regression.yml` (reusable + dispatch): inputs `versions` (space or comma list), `tgz_artifact` (artifact of the same run with exactly one `.tgz`; for 4.7), `force_red`; output `results` (JSON array per version, with `requests`). Jobs `resolve` (an `::error::` annotation with the script's message on failure, the version table in the summary), `gateway (<requests> = <version>)` (a request equal to its version is not repeated, e.g. `gateway (2026.11.10)`; `fail-fast: false`; 35 min; one cache per OpenClaw version, `regression-<os>-node<v>-openclaw<v>`, for the tested version and, when different and no `.tgz` is given, the build version, so min and latest share the 2026.10.3 entry instead of storing it twice), `summary` (`!cancelled()`: table of requested, OpenClaw, result, time, sha256, then the failing tests; a version whose job wrote no result shows `no result`). Artifacts: `regression-result-<version>` always, `regression-logs-<version>` on failure (tier.log, Vitest JSON report, `<state>/logs/` for OpenClaw 2026.11+, `$TMPDIR/openclaw/*.log` for 2026.10, which is where 2026.10.3 writes its Gateway log; the scenario files' own `gateway.log` sits in a temp dir they remove, so it is not collected). `force_red` runs the tier, then marks the result failed with a `force_red: ...` entry and fails the job.
+- `ci.yml`: job `regression` calls it with `min latest` (`contents: read`). `.github/workflows/regression-beta.yml`: Mondays 05:37 UTC and dispatch (`force_red`, passed only when `github.event_name == 'workflow_dispatch'`), `concurrency: regression-beta` without cancel so two runs never race to open two issues; job `issue` (`if: !cancelled()`, the only job with `issues: write`) runs the script with `needs.regression.result`.
+- `scripts/regression-beta-issue.mjs report --outcome --results --run-url [--run-id]`: any outcome but `failure` exits 0 with no request (no token needed); red lists open issues labelled `regression:beta` (pull requests left out) and comments on the oldest, else opens one with labels `regression:beta` + `status:todo` and re-adds them if GitHub dropped them. A run reports once: its marker `<!-- regression-beta run=<id> -->` in the issue body or a comment makes a re-run a no-op. Missing or unreadable results still report ("No tier result reached this job", title `unknown version`). Lines are flattened, capped (30 failing names, 300 chars), and cannot forge the marker.
+- Issue-flow fit: an issue made with `GITHUB_TOKEN` starts no issue-flow run, so the script sets `status:todo` itself; no type label, because OpenClaw beta may be at fault: triage adds the type (docs/agents/triage.md already does). The body says so and tells the reader to close it once settled.
+- `regression:beta` added to `.github/labels.yml` (synced on merge); `test/sync-labels.test.ts` counts 21 labels now and names it beside `upstream:post`. Docs: `docs/release.md` "Regression tier in CI", a sentence each in `docs/setup.md` and `docs/issues.md` (Other labels). `MEMORY.md` has the job names, artifacts, and the issue rules. No `CHANGELOG.md` line (CI only). `src/`, `release.yml`, `.spike/` untouched.
+- Pinned action added: `actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2` (2026-10-07; a pattern that matches nothing downloads nothing without failing, a single match extracts without a subfolder, hence `merge-multiple: true` and per-version file names).
+- Risk, not changed (outside this ticket): `scripts/agent-write.mjs` `checkGreen` (used by `Batch merge`) needs every check run green, so the red `regression / gateway (min = 2026.10.3)` blocks every batch merge until bug #106 is fixed.
+
 ## Plan Change Log
 
 ## Review Triage Log
 
 ## Verification
+
+**Results (2026-11-27):**
+- `npm test`: 72 files passed, 26 skipped; 2106 tests passed, 90 skipped (new `test/regression-beta-issue-script.test.ts`, 15 tests: red with no issue opens one, red with one open comments, green and other outcomes make no request, same-run re-run is a no-op, oldest open issue and PRs left out, no result still reports, forced red, dropped labels re-added, capping, token and API failures, usage; plus `regression.sh resolve` with a stub `npm` (dedupe, unknown tag, bad request) and `--tgz` refusal).
+- `npm run typecheck`: clean.
+- `scripts/regression.sh resolve min latest beta extended-stable` (real npm): `[{"version":"2026.10.3","requests":["min"]},{"version":"2026.11.10","requests":["latest","beta"]},{"version":"2026.10.34","requests":["extended-stable"]}]`; `resolve min nightly` (stub npm): exit 2, `Unknown OpenClaw dist-tag 'nightly' ...`.
+- `scripts/regression.sh gateway` (no new flags, local, once): OpenClaw 2026.10.3, 8 files, 1 failed | 18 passed | 1 skipped, 560 s; the only red is `auth-setup.regression.test.ts > ... #39 ...` (bug #106, expected); output as before, no result file written.
+- `actionlint` 1.7.9 (release binary, checksum checked, in the scratchpad) on all workflows: clean. Its shellcheck pass did not run (shellcheck not available); the `run:` scripts were read by hand and their `jq` programs run locally against sample data.
+- Not provable here: the PR's CI run (matrix jobs `regression / gateway (min = 2026.10.3)` red on #39 only, `regression / gateway (latest = 2026.11.10)`, the summary table, caches, artifacts) and the weekly/dispatched beta run (only after merge to `main`).
 
 **Commands:**
 - `npm test` -- expected: green, including the new script test

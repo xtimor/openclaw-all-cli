@@ -100,3 +100,13 @@ jobs:
           path: ${{ runner.temp }}/clawhub-reports
           if-no-files-found: ignore
           retention-days: 7
+
+  # The Gateway regression tier (epic-regression-gate ticket 4) on the oldest supported OpenClaw (`min`, package.json
+  # openclaw.compat.minGatewayVersion) and npm `latest`, one job per version (`regression / gateway (min = X.Y.Z)`), the
+  # resolved versions and results in the summary. A red version is red only in its own job. No secret.
+  regression:
+    permissions:
+      contents: read
+    uses: ./.github/workflows/regression.yml
+    with:
+      versions: min latest
