@@ -20,7 +20,7 @@ A person installs the plugin with one command from npmjs.com or finds and instal
 
 ## Done when
 
-1. A pull request runs typecheck, the unit tests, the build, and a pack check in GitHub Actions; the live suite stays out of CI.
+1. A pull request runs typecheck, the unit tests, the build, and a pack check in GitHub Actions; the live suite stays out of pull-request CI (since 2026-11-27 it runs in every release: epic-regression-gate).
 2. Pushing a tag publishes the package to npmjs.com with provenance and attaches the same `.tgz` to a GitHub release; a dry run publishes nothing.
 3. In an isolated OpenClaw, `openclaw plugins install` of the published package gives a working `cursor-cli` turn with an OpenClaw tool call.
 4. The Control UI settings form for the plugin has labels and help for every field, marks the API key sensitive, and groups the limits as advanced.

@@ -4,7 +4,7 @@ title: "A pre-release regression gate: every past bug re-run on a real OpenClaw 
 parent: initiative-openclaw-all-cli
 date: 2026-11-27
 scope: moderate
-status: proposed
+status: approved
 ---
 
 # Change: a pre-release regression gate
@@ -94,6 +94,10 @@ Order: R1, R2, R3, R4, R6, R5, R7, R8. R1 to R4 need nothing from the owner and 
 1. **A Cursor key in GitHub Actions.** The live tier needs `CURSOR_API_KEY` as an Actions secret (in a protected `regression` environment), and every release plus each nightly run spends Cursor usage on it. Recommended: a separate key, ideally a separate Cursor account, so the spend is visible and can be revoked alone. Without it, T1 to T3 still gate releases and T4 stays manual. **Decided (user, 2026-11-27): the owner's current Cursor key**, not a separate one; its spend mixes with the owner's own Cursor use. R5 adds it as `CURSOR_API_KEY` in the `regression` environment.
 2. **How strict the gate is.** Recommended: any red in T1 to T3 blocks the release with no override; a T4 scenario that fails all 3 tries blocks it too, and the only way past is the owner's explicit "release despite red" in chat, recorded in the release notes.
 3. **Which OpenClaw versions we promise.** Recommended: keep the minimum at 2026.10.3 and test min, extended-stable and latest. Raising the minimum would shorten the matrix but drop users on older hosts.
+
+## Approval
+
+Approved by the owner on 2026-11-27 ("start the full implementation"). Applied: epic `epic-regression-gate` with entries 1 to 8 (entry N = RN), the initiative Notes and breakdown, the architecture rows Tests and OpenClaw, epic-distribution Done when 1.
 
 ## Implementation handoff
 
