@@ -4,6 +4,8 @@
 // without a Cursor login. Behavior is steered by env vars and by the prompt text.
 //
 //   FAKE_CURSOR_LOGGED_IN=0     `status` reports "Not logged in"
+//   FAKE_CURSOR_STATUS_TEXT=<t> `status` prints <t> and exits 0 (e.g. cursor-agent 2026.11.11's degraded "Logged in (unable to fetch
+//                               user details)"); FAKE_CURSOR_LOGGED_IN=0 still wins. Every `status` run logs `{method:"status", keyed}`
 //   FAKE_CURSOR_KEY_CACHE=1     like cursor-agent 2026.11.11: any run with CURSOR_API_KEY writes `cursor/auth.json` (a hash of the key, never
 //                               the key) under XDG_CONFIG_HOME (default `$HOME/.config`); `status` then answers from that file (logged in
 //                               when it holds a key) instead of FAKE_CURSOR_LOGGED_IN; `initialize` logs its `cachedKeyHash`
@@ -13,6 +15,8 @@
 //                               logged it; a `worker` line's `pid` is the worker's); the `initialize` line also carries
 //                               the process `argv`, CURSOR_CONFIG_DIR/CURSOR_DATA_DIR/XDG_CONFIG_HOME, `keyed`, and `keyHash` (8 hex of the key's sha256)
 //   FAKE_CURSOR_LOG_END=1       also log a `prompt/end` line when a prompt ends
+//   FAKE_CURSOR_PROMPT_ERROR=<json string>  every session/prompt answers with the decoded string as its one and only reply chunk,
+//                               then end_turn, like "[[error-json:...]]" for prompts the test does not write (a host's own request)
 //   FAKE_CURSOR_USAGE=1|<json> session/prompt answers with a small ACP usage, or with this JSON as its usage
 //                               (a prompt's own last "[[usage:<json>]]" wins for that turn)
 //   FAKE_CURSOR_VERSION=<text>  what `--version` prints (default "2026.10.14-fake")
@@ -102,11 +106,12 @@ if (args[0] === "--version") {
   process.exit(Number(process.env.FAKE_CURSOR_VERSION_EXIT ?? 0));
 }
 if (args[0] === "status") {
+  log({ method: "status", keyed: Boolean(process.env.CURSOR_API_KEY?.trim()) });
   if (process.env.FAKE_CURSOR_KEY_CACHE === "1" ? !cachedKeyHash() : process.env.FAKE_CURSOR_LOGGED_IN === "0") {
     console.log("Not logged in");
     process.exit(1);
   }
-  console.log("Logged in as fake@example.com");
+  console.log(process.env.FAKE_CURSOR_STATUS_TEXT ?? "Logged in as fake@example.com");
   process.exit(0);
 }
 if (args[0] === "about") {
@@ -257,6 +262,10 @@ async function runPrompt(id, params) {
   if (sleep) await new Promise((resolve) => setTimeout(resolve, Number(sleep[1])));
   if (text.includes("[[crash]]")) process.exit(3);
   if (text.includes("[[refuse]]")) return reply(id, { stopReason: "refusal" });
+  if (process.env.FAKE_CURSOR_PROMPT_ERROR) {
+    update(params.sessionId, { sessionUpdate: "agent_message_chunk", content: { type: "text", text: JSON.parse(process.env.FAKE_CURSOR_PROMPT_ERROR) } });
+    return reply(id, { stopReason: "end_turn" });
+  }
   const errorJson = /\[\[error-json:("(?:[^"\\]|\\.)*")\]\]/.exec(text);
   if (errorJson) {
     update(params.sessionId, { sessionUpdate: "agent_message_chunk", content: { type: "text", text: JSON.parse(errorJson[1]) } });

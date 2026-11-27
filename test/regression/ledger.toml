@@ -116,8 +116,9 @@ fixed = false
 tests = [
   { file = "test/provider-card-limit.test.ts", name = "derives the credential summary from config keys, env keys, and profiles", tier = "unit", reproduces = false },
   { file = "test/provider-card-limit.test.ts", name = "is in docs/setup.md and CHANGELOG.md with the upstream issue", tier = "unit", reproduces = false },
+  { file = "test/regression/gateway/auth-setup.regression.test.ts", name = "#39: a working cursor-agent login with no key is usable, and a key saved with the API key method is a cursor-cli api_key profile", tier = "gateway", reproduces = true },
 ]
-planned = "4.6, 4.9"
+planned = "4.6"
 
 [[bug]]
 issue = 40
@@ -224,8 +225,9 @@ fixed = true
 tests = [
   { file = "test/docs-update-instructions.test.ts", name = "README Update section gives a path that works with the Gateway running or stopped", tier = "unit", reproduces = false },
   { file = "test/docs-update-instructions.test.ts", name = "does not say a running Gateway is refreshed by plugins update", tier = "unit", reproduces = false },
+  { file = "test/regression/gateway/update-path.regression.test.ts", name = "#80: the README's running-Gateway update", tier = "gateway", reproduces = true },
+  { file = "test/regression/gateway/update-path.regression.test.ts", name = "#80: the old documented `plugins update openclaw-all-cli` does not update the plugin while the Gateway runs", tier = "gateway", reproduces = true },
 ]
-planned = "4.9"
 
 [[bug]]
 issue = 97
@@ -250,8 +252,10 @@ tests = [
   { file = "src/adapters/cursor/index.test.ts", name = "does not accept CURSOR_API_KEY as a login without confirming it works (issue #98)", tier = "unit", reproduces = false },
   { file = "src/adapters/cursor/index.test.ts", name = "issue #98: an unvalidated or degraded credential must not probe as authenticated", tier = "unit", reproduces = false },
   { file = "src/adapters/cursor/auth-probe-cache.test.ts", name = "createCursorKeyCheckCache (issue #98)", tier = "unit", reproduces = false },
+  { file = "test/regression/gateway/auth-setup.regression.test.ts", name = "#98: a CURSOR_API_KEY that cursor-agent refuses is no login on any Gateway surface", tier = "gateway", reproduces = true },
+  { file = "test/regression/gateway/auth-setup.regression.test.ts", name = "#98: a degraded `status` (Logged in, unable to fetch user details) with no key is no login on any Gateway surface", tier = "gateway", reproduces = true },
 ]
-planned = "4.6, 4.9"
+planned = "4.6"
 
 [[bug]]
 issue = 99

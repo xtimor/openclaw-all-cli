@@ -205,16 +205,19 @@ function gatewayProcesses(root: number): ProcessRow[] {
   return [...found.values()];
 }
 
-/** One `models.list` call: the `cursor-cli` rows and all rows, or why the call failed. */
-function catalogRows(port: number): { cursor: number; all: number } | { error: string } {
+/**
+ * One `models.list` call: the IDs of the `cursor-cli` rows and the number of all rows, or why the call failed. A
+ * cursor-cli row is listed only while the plugin's catalog says the CLI's login works (OpenClaw 2026.10.3).
+ */
+export function cursorCatalog(port: number): { cursor: string[]; all: number } | { error: string } {
   const listed = openclaw(["gateway", "call", "models.list", "--params", "{}", "--port", String(port), "--json", "--timeout", "10000"], {
     timeoutMs: 15_000,
   });
   if (listed.status !== 0) return { error: `exit ${listed.status}: ${listed.stdout}${listed.stderr}`.slice(0, 2_000) };
   try {
-    const models = (JSON.parse(listed.stdout) as { models?: Array<{ provider?: string }> }).models;
+    const models = (JSON.parse(listed.stdout) as { models?: Array<{ provider?: string; id?: string }> }).models;
     if (!Array.isArray(models)) return { error: `no models array: ${listed.stdout.slice(0, 2_000)}` };
-    return { cursor: models.filter((model) => model.provider === "cursor-cli").length, all: models.length };
+    return { cursor: models.filter((model) => model.provider === "cursor-cli").map((model) => String(model.id)), all: models.length };
   } catch {
     return { error: `not JSON: ${listed.stdout.slice(0, 2_000)}` };
   }
@@ -262,9 +265,9 @@ export async function startRegressionGateway(
     let lastError: string | undefined;
     let catalog: RegressionGateway["catalog"] | undefined;
     while (catalog === undefined && Date.now() - started < timeoutMs) {
-      const rows = catalogRows(port);
+      const rows = cursorCatalog(port);
       if ("error" in rows) lastError = rows.error;
-      else if (rows.cursor > 0) catalog = "cursor-cli";
+      else if (rows.cursor.length > 0) catalog = "cursor-cli";
       else if (rows.all > 0) sawModels = true;
       else if (!sawModels && Date.now() - started >= emptyMs) catalog = "empty";
       if (catalog === undefined) await new Promise((resolve) => setTimeout(resolve, 2_000));
@@ -293,11 +296,11 @@ export function gatewayLog(gateway: RegressionGateway): string {
 
 /**
  * One Gateway RPC with `openclaw gateway call <method> --json`: the parsed answer, or a thrown error that carries
- * the CLI's output.
+ * the CLI's output. `timeoutMs` is the call's own limit (default 15 s; `models.probe` runs a CLI turn and needs more).
  */
-export function gatewayCall(port: number, method: string, params: unknown = {}): any {
-  const called = openclaw(["gateway", "call", method, "--params", JSON.stringify(params), "--port", String(port), "--json", "--timeout", "15000"], {
-    timeoutMs: 30_000,
+export function gatewayCall(port: number, method: string, params: unknown = {}, timeoutMs = 15_000): any {
+  const called = openclaw(["gateway", "call", method, "--params", JSON.stringify(params), "--port", String(port), "--json", "--timeout", String(timeoutMs)], {
+    timeoutMs: timeoutMs + 15_000,
   });
   const output = `openclaw gateway call ${method} ${JSON.stringify(params)}: exit ${called.status}\n--- stdout\n${called.stdout}\n--- stderr\n${called.stderr}`;
   if (called.status !== 0) throw new Error(output.slice(0, 4_000));
@@ -431,6 +434,92 @@ export async function chatSend(
           seen.push(item);
           if (ofRun(item)) result.frames.push(item);
           if (result.response !== undefined && ended(result.frames)) endSoon();
+        }
+      };
+    });
+  } finally {
+    ws.close();
+  }
+  return result;
+}
+
+/** One step a setup wizard showed, as `wizard.next` returned it. */
+export type WizardStep = { id?: string; type?: string; message?: string; title?: string; sensitive?: boolean; [key: string]: unknown };
+
+export type AuthLoginResult = {
+  /** The `models.authLogin` response (`ok`, `payload` or `error`). */
+  start: any;
+  /** Every step the wizard showed, in order. */
+  steps: WizardStep[];
+  /** The last `wizard.next` payload (`done`, `status`, `error` when the method failed). */
+  final: any;
+};
+
+/**
+ * Runs a provider login the way the Control UI's Connect provider dialog does: an operator ws client (admin scope)
+ * calls `models.authLogin` `{sessionId, authChoice}`, then `wizard.next` until the wizard is done. A text step gets
+ * `text` (the key: give a dummy, never a real one), a confirm step "no", any other step is acknowledged. Needs a
+ * Gateway started with `--auth none`.
+ */
+export async function authLogin(port: number, authChoice: string, text: string, timeoutMs = 120_000): Promise<AuthLoginResult> {
+  const ws = new WebSocket(`ws://127.0.0.1:${port}`);
+  const pending = new Map<string, (frame: any) => void>();
+  let seq = 0;
+  const call = (method: string, params: unknown) =>
+    new Promise<any>((resolve) => {
+      const id = `auth-${++seq}`;
+      pending.set(id, resolve);
+      ws.send(JSON.stringify({ type: "req", id, method, params }));
+    });
+  const result: AuthLoginResult = { start: undefined, steps: [], final: undefined };
+  try {
+    await new Promise<void>((resolve, reject) => {
+      const timer = setTimeout(() => reject(new Error(`The login did not finish within ${timeoutMs} ms: ${JSON.stringify(result).slice(0, 2_000)}`)), timeoutMs);
+      const finish = (error?: Error) => {
+        clearTimeout(timer);
+        if (error) reject(error);
+        else resolve();
+      };
+      ws.onerror = () => finish(new Error("The login client could not reach the Gateway."));
+      ws.onmessage = (event) => {
+        const frame = JSON.parse(String(event.data)) as { type: string; event?: string; id?: string; ok?: boolean; payload?: any; error?: unknown };
+        if (frame.type === "event" && frame.event === "connect.challenge") {
+          ws.send(
+            JSON.stringify({
+              type: "req",
+              id: "connect",
+              method: "connect",
+              params: {
+                minProtocol: 4,
+                maxProtocol: 4,
+                client: { id: "gateway-client", version: "0", platform: "linux", mode: "backend" },
+                role: "operator",
+                scopes: ["operator.read", "operator.write", "operator.admin"],
+                caps: [],
+                auth: {},
+              },
+            }),
+          );
+        } else if (frame.type === "res" && frame.id === "connect") {
+          if (!frame.ok) return finish(new Error(`The Gateway refused the login client: ${JSON.stringify(frame.error)}`));
+          void (async () => {
+            const sessionId = `regression-login-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+            result.start = await call("models.authLogin", { sessionId, authChoice });
+            if (!result.start?.ok) return finish();
+            let answer: { stepId: string; value: unknown } | undefined;
+            for (let round = 0; round < 20; round += 1) {
+              const next = await call("wizard.next", { sessionId, ...(answer ? { answer } : {}) });
+              result.final = next?.ok ? next.payload : next;
+              const step = next?.payload?.step as WizardStep | undefined;
+              if (!next?.ok || next.payload?.done || !step?.id) return finish();
+              result.steps.push(step);
+              answer = { stepId: step.id, value: step.type === "text" ? text : step.type === "confirm" ? false : true };
+            }
+            finish(new Error(`The login wizard did not end after 20 steps: ${JSON.stringify(result.steps).slice(0, 2_000)}`));
+          })().catch((error: unknown) => finish(error instanceof Error ? error : new Error(String(error))));
+        } else if (frame.type === "res" && frame.id !== undefined) {
+          pending.get(frame.id)?.(frame);
+          pending.delete(frame.id);
         }
       };
     });
