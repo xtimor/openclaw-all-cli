@@ -203,7 +203,7 @@ flowchart LR
 | Config | `plugins.entries.openclaw-all-cli.config.<backendId>`, schema in `openclaw.plugin.json` (zod) |
 | Logging | OpenClaw runtime logger only; never log tokens, auth headers, or prompt text |
 | Secrets | Tokens and keys live in memory, in per-agent home files with mode `0600`, in `cursor-agent`'s own `~/.config/cursor/auth.json` (login tokens and any key it ran with, outside our control), and in `openclaw.json` with its rotated backups when `cursor-cli.env` holds a key |
-| Tests | Unit tests next to code (`*.test.ts`, vitest); live tests in `test/live/`, run only with `OPENCLAW_ALL_CLI_LIVE=1`, one per parity row |
+| Tests | Unit tests next to code (`*.test.ts`, vitest); live tests in `test/live/`, run only with `OPENCLAW_ALL_CLI_LIVE=1`, one per parity row; regression tiers (Gateway with `fake-cursor-agent`, Control UI, live) under `test/regression/`, one ledger entry per past bug in `test/regression/ledger.toml`; the release runs all tiers (epic-regression-gate) |
 | Docs | `docs/setup.md` plus `docs/providers/<cli>.md`, updated in the same change as setup, config, or behavior |
 | Language | English in code, docs, commits, and names |
 
@@ -212,7 +212,7 @@ flowchart LR
 | Name | Version |
 | --- | --- |
 | Node.js | ≥ 24.16 < 25, or ≥ 26.1 (OpenClaw engines) |
-| OpenClaw (peer) | ≥ 2026.10.3 |
+| OpenClaw (peer) | ≥ 2026.10.3; tested on min, npm `extended-stable`, and npm `latest` (epic-regression-gate) |
 | TypeScript | 7.0.2 |
 | @types/node | 24.19.2 |
 | vitest | 5.0.5 |

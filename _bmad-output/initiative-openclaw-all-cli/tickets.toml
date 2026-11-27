@@ -16,3 +16,9 @@ id = 3
 slug = "epic-distribution"
 title = "Install from npm, released by GitHub CI, and the GitHub issue loop"
 covers = []
+
+[[epic]]
+id = 4
+slug = "epic-regression-gate"
+title = "Pre-release regression gate: every past bug re-run on a real OpenClaw before any release"
+covers = []

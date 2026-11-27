@@ -1,0 +1,119 @@
+[[entry]]
+id = 2
+type = "story"
+title = "Gateway tier harness: packed plugin, fresh OpenClaw, real Gateway, scripted Cursor"
+description = "Adds `scripts/regression.sh` and `test/regression/gateway/` (`*.regression.test.ts`, gated by `OPENCLAW_ALL_CLI_REGRESSION=1` the way `describeLive` gates live tests, so `npm test` stays offline and fast) that pack the plugin, install the `.tgz` into a throwaway OpenClaw state for a given `OPENCLAW_VERSION`, configure `cursor-cli.command` to `fake-cursor-agent`, start a Gateway, and drive turns over the Gateway API (`openclaw agent` and `chat.send`); `fake-cursor-agent` gains the hooks scenarios need (log each prompt's text, the permission file and mode it was started with; scripted replies and errors per scenario). One tracer scenario (a plain turn returns one reply) proves the chain."
+verify = "`scripts/regression.sh gateway` on OpenClaw 2026.10.3 and latest runs the tracer scenario green with no secret, fails when the plugin's backend registration is broken (mutation), and `npm test` neither runs nor slows down because of it."
+covers = []
+after = []
+hitl = false
+risk = "medium"
+references = ["epic-regression-gate.md"]
+
+[[entry]]
+id = 1
+type = "story"
+title = "Regression ledger: one entry and one test per past bug"
+description = "Adds `test/regression/ledger.toml`, a committed list with one entry per closed `type:bug` issue (number, family, tier unit|gateway|ui|live, test file and test name, `reproduces` true when the test recreates the original conditions or false for a unit-level proxy), backfilled for all past bugs; `test/regression/ledger.test.ts` (offline, in `npm test`) fails when an entry names a missing file or test name; a CI step with the workflow's `GITHUB_TOKEN` (skipped locally without it) fails when a closed `type:bug` issue has no entry. The agent rules (`docs/agents/implement.md`, `_bmad/custom/bmad-build.toml` and `bmad-build-auto.toml`) require every bug fix to add its entry and a test at the tier where the bug showed, proved red before the fix."
+verify = "`npx vitest run test/regression/ledger.test.ts` passes on main and fails when an entry names a missing test (mutation); the CI step fails when an entry for a closed bug is removed (mutation, run in a scratch copy with a stub issue list)."
+covers = []
+after = []
+hitl = false
+risk = "low"
+references = ["epic-regression-gate.md", "../change-pre-release-regression-gate/change-pre-release-regression-gate.md"]
+
+[[entry]]
+id = 3
+type = "story"
+title = "Gateway scenarios for past turn, process, and prompt bugs"
+description = "Adds Gateway-tier scenarios recreating the conditions of past turn-level bugs, each with its ledger entry (tier gateway): #13 reply shown once over `chat.send`, #14 no backend clash, #12/#46 per-model context window, #40/#97 usage reading monotonic over turns, #67 empty native selection runs, #74 no leftover process after the chat ends, #11/#38 one cursor-agent per chat across turns, #76 the shell note reaches the CLI in agent mode, #99 throttle reported as retryable not as spent quota. The #102 scenario is not added here: the #102 bug ticket adds it with its fix (ledger rule from entry 1)."
+verify = "Each scenario fails when its fix is reverted in a scratch copy (one mutation per scenario, recorded in the plan), passes on main, and has a ledger entry with tier gateway."
+covers = []
+after = [1, 2]
+hitl = false
+risk = "medium"
+references = ["epic-regression-gate.md"]
+
+[[entry]]
+id = 9
+type = "story"
+title = "Gateway scenarios for past auth, setup, and install bugs"
+description = "Adds Gateway-tier scenarios with ledger entries for the setup side: #98 a refused key is not reported authenticated, #39 the provider status with a working login, Test connection runs one turn through cursor-agent (PR #96), managed install and Remove key (#92: the plugin-installed CLI is removed at the next Gateway start), #80 the documented update command works while the Gateway runs."
+verify = "Each scenario fails when its fix is reverted in a scratch copy (one mutation per scenario, recorded in the plan), passes on main, and has a ledger entry with tier gateway."
+covers = []
+after = [1, 2]
+hitl = false
+risk = "medium"
+references = ["epic-regression-gate.md"]
+
+[[entry]]
+id = 4
+type = "story"
+title = "OpenClaw version matrix in CI and a weekly beta run"
+description = "Runs the Gateway tier in `ci.yml` on OpenClaw min (from `package.json` compat) and npm `latest`, in a reusable workflow `regression.yml` that `release.yml` will call on min, `extended-stable`, and `latest`, resolved at run time and printed in the summary; adds a weekly workflow on OpenClaw `beta` that opens one issue when red (and comments on that issue instead of opening another while it is open)."
+verify = "A pull request shows the Gateway tier as separate green jobs per version with the resolved versions in the summary; a dispatch of the weekly workflow runs on the current beta, and a dispatch forced red opens exactly one issue."
+covers = []
+after = [2]
+hitl = false
+risk = "low"
+references = ["epic-regression-gate.md"]
+
+[[entry]]
+id = 6
+type = "story"
+title = "Control UI tier: provider card, icon, key, Test connection, tiles in a browser"
+description = "Adds Playwright checks against the Gateway tier's Control UI: provider listed with its icon, Connect with an API key, Test connection, Remove key, quota and context tiles after turns; screenshots on failure uploaded as a workflow artifact; ledger entries (tier ui) for #35/#45 icon, #39/#98 card status, #40/#97 context tile, Test connection; runs in `regression.yml` on latest for pull requests and on the full matrix for a release."
+verify = "`scripts/regression.sh ui` passes on main on OpenClaw latest and fails when the icon asset is removed or the auth status is forced wrong (mutation); a pull request shows the UI job green."
+covers = []
+after = [2, 4]
+hitl = false
+risk = "medium"
+references = ["epic-regression-gate.md"]
+
+[[entry]]
+id = 5
+type = "story"
+title = "Live tier in GitHub Actions with the real cursor-agent"
+description = "Adds a `live` job to `regression.yml`, bound to the environment `regression` with `CURSOR_API_KEY` and dispatchable on its own: the existing `test/live/` suite plus model-behavior scenarios (#76 exec, #75 GPT structured output, first-reply time against a budget, Test connection, quota), each up to 3 tries, with a per-run time and turn cap; ledger entries (tier live) for those bugs; the job summary shows results with tries, timings, and Cursor tokens from the usage ledger. Measures one full run's time and tokens and records them in MEMORY.md."
+verify = "A dispatched run with the key passes or fails per scenario with tries shown, the summary prints total time and tokens, and a run without the key fails fast with a clear message."
+covers = []
+after = [1, 4]
+hitl = true
+risk = "high"
+references = ["epic-regression-gate.md"]
+
+[[entry]]
+id = 7
+type = "story"
+title = "The release gate: nothing publishes while a tier is red"
+description = "`release.yml` calls `regression.yml` (Gateway and Control UI tiers on the full matrix, the live tier) against the exact `.tgz` it will publish, before `npm publish`; any red stops the run before publishing; a dry run runs the same; an override input exists only for the live tier and needs a reason that goes into the release notes; one combined release summary shows results, timings, and Cursor tokens across tiers; `docs/release.md` says so."
+verify = "A release dry run with a deliberately red scenario publishes nothing and fails, the same run green reaches the publish dry run with the combined summary, and the override writes its reason into the notes."
+covers = []
+after = [3, 5, 6, 9]
+hitl = false
+risk = "high"
+references = ["epic-regression-gate.md"]
+
+[[entry]]
+id = 10
+type = "story"
+title = "Refactor sweep of the regression code"
+description = "Reviews everything entries 1 to 7 and 9 added (harness, scenarios, workflows, fake-agent hooks) for duplication, dead options, and slow or flaky waits, and fixes them without changing what any scenario proves."
+verify = "Every regression tier still passes, each scenario's mutation still fails it, and the plan lists what was removed or merged."
+covers = []
+after = [7]
+hitl = false
+risk = "low"
+references = ["epic-regression-gate.md"]
+
+[[entry]]
+id = 8
+type = "story"
+title = "The release loop: regression, fix batch, regression again until green"
+description = "On the owner's \"release\", the agent dispatches a release dry run on main's head (the same `release.yml` with the gate); each red scenario becomes a `type:bug` issue with the new label `source:regression` (added to `.github/labels.yml`) and the run link; these skip triage and the owner's own-click approval because the owner's \"release\" is the approval (`docs/agents/implement.md` says so); one BMAD batch fixes them with ledger entries; after the merge the dry run repeats; green dispatches the real release, which runs the gate again on the same commit before it publishes; 3 red rounds or a flake stops the loop with a report to the owner. Documented in `docs/release.md` For agents."
+verify = "A rehearsal on a branch with one injected bug, on the offline tiers plus one live scenario, goes red, files one issue, the fix batch turns it green on the next round, and the loop then reaches the publish dry run; a forced third red stops with the report."
+covers = []
+after = [10]
+hitl = false
+risk = "high"
+references = ["epic-regression-gate.md"]
