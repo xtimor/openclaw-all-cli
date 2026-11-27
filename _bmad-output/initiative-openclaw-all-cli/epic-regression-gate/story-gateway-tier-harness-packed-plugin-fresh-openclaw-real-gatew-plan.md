@@ -3,7 +3,7 @@ title: 'Gateway tier harness: packed plugin, fresh OpenClaw, real Gateway, scrip
 type: 'feature'
 ticket: '2'
 created: '2026-11-27'
-status: 'built'
+status: done
 baseline_revision: '131ad24b75301cfff044ea97acad1daa12c01241'
 route: 'full'
 route_source: 'auto'
