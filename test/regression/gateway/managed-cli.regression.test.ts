@@ -3,17 +3,20 @@ import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, wr
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterAll, beforeAll, expect, it } from "vitest";
-import { waitFor } from "../../live/harness.ts";
+import { replyLines, waitFor } from "../../live/harness.ts";
 import {
-  CURSOR_COMMAND_KEY,
   REGRESSION_TIMEOUT_MS,
+  chatPids,
   configure,
   describeRegression,
   fakeCommand,
   finishRegression,
   freePort,
+  gatewayAgentTurn,
   gatewayLog,
+  linesOf,
   readFakeLog,
+  runsOfflineCatalog,
   startRegressionGateway,
   type FakeCommand,
   type RegressionGateway,
@@ -123,11 +126,23 @@ describeRegression("Gateway scenarios: the managed cursor-agent at a Gateway sta
       });
       try {
         await withGateway(`gateway-kept-${randomUUID().slice(0, 8)}.log`, async (gateway) => {
-          // The sweep starts when the plugin loads, which the Gateway's "http server listening (... openclaw-all-cli ...)" line
-          // follows; a removal came within 3 s of it in the case above (2026.11.10). Then twice that for a late sweep.
-          await waitFor(() => /http server listening \(.*openclaw-all-cli/.test(gatewayLog(gateway)), 60_000, 500);
-          expect(gatewayLog(gateway), evidence(gateway)).toMatch(/http server listening \(.*openclaw-all-cli/);
-          await new Promise((resolve) => setTimeout(resolve, 6_000));
+          // The sweep runs when the plugin loads; it reads the key first, so with a key it ends there. Positive signals that the
+          // plugin loaded with this config and the sweep's moment has passed, before the absence is checked: where the catalog
+          // runs offline, its keyed `about` check on the managed CLI at plugin load; on every version, a turn served by the
+          // managed CLI with the key (a keyed turn never starts a sweep of its own).
+          if (runsOfflineCatalog()) {
+            await waitFor(() => readFakeLog(fake!.log).some((line) => line.method === "about" && line.keyed === true), 60_000, 500);
+            expect(readFakeLog(fake!.log).some((line) => line.method === "about" && line.keyed === true), evidence(gateway)).toBe(true);
+          }
+          const id = randomUUID().slice(0, 8);
+          const logFrom = readFakeLog(fake!.log).length;
+          const run = await gatewayAgentTurn(gateway.port, `regression-managed-kept-${id}`, `say:kept${id}`);
+          const turnEvidence = `turn: exit ${run.status}\n--- stdout\n${run.stdout.slice(-2_000)}\n--- stderr\n${run.stderr.slice(-2_000)}\n--- ${evidence(gateway)}`;
+          expect(run.status, turnEvidence).toBe(0);
+          expect(replyLines(run.stdout), turnEvidence).toEqual([`kept${id}`]);
+          const chats = chatPids(readFakeLog(fake!.log).slice(logFrom), `say:kept${id}`);
+          expect(chats, turnEvidence).toHaveLength(1);
+          expect(linesOf(readFakeLog(fake!.log), chats[0]!).find((line) => line.method === "initialize")?.keyed, turnEvidence).toBe(true);
           expect(removedLines(gateway), evidence(gateway)).toEqual([]);
           expect(existsSync(launcher), evidence(gateway)).toBe(true);
           expect(existsSync(join(managed, ".key-saved")), evidence(gateway)).toBe(true);

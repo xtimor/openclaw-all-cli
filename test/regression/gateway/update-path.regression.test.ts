@@ -1,7 +1,8 @@
 import { randomUUID } from "node:crypto";
-import { mkdirSync, mkdtempSync, readdirSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, readdirSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { afterAll, beforeAll, expect, it } from "vitest";
 import { openclaw, replyLines } from "../../live/harness.ts";
 import {
@@ -15,16 +16,17 @@ import {
   freePort,
   gatewayAgentTurn,
   readFakeLog,
+  runsOfflineCatalog,
   startRegressionGateway,
   type FakeCommand,
   type RegressionGateway,
 } from "../harness.ts";
 
 // Gateway scenario for the past update-path bug (epic-regression-gate ticket 9, #80): the README told users to run
-// `openclaw plugins update` with the Gateway running, which current OpenClaw refuses (2026.11.x: offline-only) or which
-// leaves an archive install as it is (2026.10.3: "Skipping"). The fix was docs only: the README's running-Gateway path is
-// a reinstall over the old copy. Here that command runs with the ClawHub spec replaced by the packed `.tgz` (no network),
-// against a running Gateway with the installed plugin. Run with `scripts/regression.sh gateway [--openclaw <version>]`.
+// `openclaw plugins update` with the Gateway running, which OpenClaw 2026.11.x refuses (offline-only). The fix was docs
+// only: the README's running-Gateway path is a reinstall over the old copy. Here the README's own command runs, read from
+// its Update section with the ClawHub spec replaced by the packed `.tgz` (no network), against a running Gateway with the
+// installed plugin, so a README that goes back to the old path fails here. Run with `scripts/regression.sh gateway [--openclaw <version>]`.
 describeRegression("Gateway scenarios: updating the plugin while the Gateway runs", () => {
   let root: string | undefined;
   let fake: FakeCommand | undefined;
@@ -50,6 +52,21 @@ describeRegression("Gateway scenarios: updating the plugin while the Gateway run
     expect(found, `packed tarballs in ${pack}`).toHaveLength(1);
     return join(pack, found[0]!);
   };
+  /**
+   * The command README.md's Update section gives for a running Gateway: the first command of the section's first `sh`
+   * block, as argv after `openclaw`, with `clawhub:openclaw-all-cli` replaced by the packed `.tgz`.
+   */
+  const readmeUpdateCommand = () => {
+    const readme = readFileSync(fileURLToPath(new URL("../../../README.md", import.meta.url)), "utf8");
+    const section = /^## Update\n([\s\S]*?)(?=^## )/m.exec(readme)?.[1] ?? "";
+    const block = /```sh\n([\s\S]*?)```/.exec(section)?.[1] ?? "";
+    const line = block
+      .split("\n")
+      .map((text) => text.replace(/\s+#.*$/, "").trim())
+      .find((text) => text.length > 0);
+    expect(line, `README.md's Update section has no sh command:\n${section}`).toMatch(/^openclaw /);
+    return { line: line!, argv: line!.split(/\s+/).slice(1).map((arg) => (arg === "clawhub:openclaw-all-cli" ? tarball() : arg)) };
+  };
   const turn = async (word: string) => {
     const id = randomUUID().slice(0, 8);
     const logFrom = readFakeLog(fake!.log).length;
@@ -66,27 +83,37 @@ describeRegression("Gateway scenarios: updating the plugin while the Gateway run
     "#80: the README's running-Gateway update (`plugins install <package> --accept-capabilities --force`) succeeds while the Gateway runs, and turns still answer through the plugin",
     async () => {
       await turn("before");
-      const installed = openclaw(["plugins", "install", tarball(), "--accept-capabilities", "--force"], { timeoutMs: 180_000 });
-      expect(installed.status, output(installed)).toBe(0);
-      expect(`${installed.stdout}${installed.stderr}`, output(installed)).toMatch(/Installed plugin: openclaw-all-cli/);
+      const command = readmeUpdateCommand();
+      const installed = openclaw(command.argv, { timeoutMs: 180_000 });
+      const evidence = `README command: ${command.line}\nran: openclaw ${command.argv.join(" ")}\n${output(installed)}`;
+      expect(installed.status, evidence).toBe(0);
+      // A reinstall, not an update that may skip or refuse: the plugin was installed again over the running Gateway's copy.
+      expect(`${installed.stdout}${installed.stderr}`, evidence).toMatch(/Installed plugin: openclaw-all-cli/);
       // The reinstall keeps the plugin's config (the fake as cursor-cli.command), and the running Gateway serves turns with it.
-      const command = openclaw(["config", "get", CURSOR_COMMAND_KEY], { timeoutMs: 30_000 });
-      expect(command.stdout, output(command)).toContain(fake!.command);
+      const configured = openclaw(["config", "get", CURSOR_COMMAND_KEY], { timeoutMs: 30_000 });
+      expect(configured.stdout, output(configured)).toContain(fake!.command);
       await turn("after");
     },
     REGRESSION_TIMEOUT_MS,
   );
 
-  // The old documented path, kept as the bug's evidence: against a running Gateway it refreshes nothing for this install.
+  // The bug's original condition: the old documented path against a running Gateway. OpenClaw 2026.11.x refuses it while
+  // the Gateway owns the state. 2026.10.3 accepts `plugins update` with a running Gateway (README says so); for this
+  // archive install it prints `Skipping "openclaw-all-cli" (source: archive)`, which comes from the install source and
+  // would read the same with the Gateway stopped, so it shows nothing about the running Gateway there.
   it(
-    "#80: the old documented `plugins update openclaw-all-cli` does not update the plugin while the Gateway runs",
-    async () => {
+    "#80: OpenClaw 2026.11.x refuses the old documented `plugins update openclaw-all-cli` while the Gateway runs",
+    async (ctx) => {
+      if (runsOfflineCatalog()) {
+        ctx.skip(
+          `OpenClaw ${process.env.OPENCLAW_VERSION} accepts plugins update with a running Gateway; for an archive install it skips by install source, whether the Gateway runs or not`,
+        );
+      }
       const updated = openclaw(["plugins", "update", "openclaw-all-cli"], { timeoutMs: 180_000 });
       const text = `${updated.stdout}${updated.stderr}`;
-      // 2026.11.x refuses it (state ownership is the Gateway's); 2026.10.3 accepts the command but skips an archive install.
-      const refused = updated.status !== 0 && /offline-only|stop the Gateway/i.test(text);
-      const skipped = updated.status === 0 && /Skipping "openclaw-all-cli"/.test(text);
-      expect(refused || skipped, output(updated)).toBe(true);
+      expect(updated.status, output(updated)).not.toBe(0);
+      expect(text, output(updated)).toMatch(/requires exclusive offline state ownership/);
+      expect(text, output(updated)).toMatch(/offline-only/);
       await turn("still");
     },
     REGRESSION_TIMEOUT_MS,

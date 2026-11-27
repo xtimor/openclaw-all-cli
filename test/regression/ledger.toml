@@ -226,7 +226,8 @@ tests = [
   { file = "test/docs-update-instructions.test.ts", name = "README Update section gives a path that works with the Gateway running or stopped", tier = "unit", reproduces = false },
   { file = "test/docs-update-instructions.test.ts", name = "does not say a running Gateway is refreshed by plugins update", tier = "unit", reproduces = false },
   { file = "test/regression/gateway/update-path.regression.test.ts", name = "#80: the README's running-Gateway update", tier = "gateway", reproduces = true },
-  { file = "test/regression/gateway/update-path.regression.test.ts", name = "#80: the old documented `plugins update openclaw-all-cli` does not update the plugin while the Gateway runs", tier = "gateway", reproduces = true },
+  # Runs on OpenClaw 2026.11.x only: 2026.10.3 accepts `plugins update` with a running Gateway.
+  { file = "test/regression/gateway/update-path.regression.test.ts", name = "#80: OpenClaw 2026.11.x refuses the old documented `plugins update openclaw-all-cli` while the Gateway runs", tier = "gateway", reproduces = true },
 ]
 
 [[bug]]

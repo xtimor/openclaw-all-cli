@@ -16,8 +16,10 @@ import {
   freePort,
   gatewayCall,
   linesOf,
+  liveFakes,
   promptText,
   readFakeLog,
+  runsOfflineCatalog,
   startRegressionGateway,
   type FakeCommand,
   type FakeLogEntry,
@@ -43,6 +45,8 @@ describeRegression("Gateway scenarios: cursor-cli auth, key setup, and Test conn
   let root: string | undefined;
   let base: FakeCommand | undefined;
   const fakes: FakeCommand[] = [];
+  /** Whether the catalog, and with it Test connection's model, exists offline on this version (see `runsOfflineCatalog`). */
+  let catalogRuns = false;
   let gateway: RegressionGateway | undefined;
   let stopGateway: (() => Promise<void>) | undefined;
 
@@ -54,20 +58,31 @@ describeRegression("Gateway scenarios: cursor-cli auth, key setup, and Test conn
   };
 
   beforeAll(async () => {
+    catalogRuns = runsOfflineCatalog();
     root = mkdtempSync(join(tmpdir(), "oac-regression-auth-"));
     mkdirSync(join(root, "store"));
     // Logged in (the fake's default) and no key anywhere: a CLI login only.
     base = shim("cursor-agent");
     configure({ [CURSOR_CONFIG_KEY]: { command: base.command }, "agents.defaults.model.primary": "cursor-cli/auto" });
-    gateway = await startRegressionGateway(await freePort(), { logFile: join(root, "gateway.log"), onStarted: (stop) => (stopGateway = stop) });
+    // Where the catalog runs offline (decided by version, not by what the start saw), the readiness wait must end on the
+    // catalog's cursor-cli rows: an empty list for as long as the whole wait fails the start instead of skipping the cases.
+    gateway = await startRegressionGateway(await freePort(), {
+      logFile: join(root, "gateway.log"),
+      ...(catalogRuns ? { timeoutMs: 120_000, emptyMs: 120_000 } : {}),
+      onStarted: (stop) => (stopGateway = stop),
+    });
+    if (catalogRuns && gateway.catalog !== "cursor-cli") throw new Error(`OpenClaw ${process.env.OPENCLAW_VERSION} runs the catalog offline, but it never listed cursor-cli.`);
   }, REGRESSION_TIMEOUT_MS);
 
   afterAll(async () => {
     try {
       // The config and the auth store outlive this file: no key, profile, or shim of a case stays.
       if (gateway) {
-        gatewayCall(gateway.port, "models.authLogout", { provider: "cursor-cli" });
-        configure({ [CURSOR_CONFIG_KEY]: { command: base!.command } });
+        try {
+          gatewayCall(gateway.port, "models.authLogout", { provider: "cursor-cli" });
+        } finally {
+          configure({ [CURSOR_CONFIG_KEY]: { command: base!.command } });
+        }
       }
     } finally {
       await finishRegression({ stop: stopGateway, fakes, root });
@@ -76,7 +91,7 @@ describeRegression("Gateway scenarios: cursor-cli auth, key setup, and Test conn
 
   const nonce = () => randomUUID().slice(0, 8);
   const skipReason = () =>
-    `OpenClaw ${process.env.OPENCLAW_VERSION} lists no model offline (models.list is empty for every provider and runs no provider catalog), so the catalog cannot show cursor-cli's auth and models.probe answers "format" without starting the CLI`;
+    `OpenClaw ${process.env.OPENCLAW_VERSION} runs no provider catalog offline (models.list is empty for every provider), so the catalog cannot show cursor-cli's auth and models.probe answers "format" without starting the CLI`;
   const describeLines = (lines: readonly FakeLogEntry[]) =>
     lines
       .map((line) => `${line.method ?? line.event}${line.params?.sessionId ? ` ${line.params.sessionId}` : ""}${line.pid ? ` pid=${line.pid}` : ""}${line.keyed === undefined ? "" : ` keyed=${String(line.keyed)}`}`)
@@ -109,7 +124,7 @@ describeRegression("Gateway scenarios: cursor-cli auth, key setup, and Test conn
   /** Points cursor-cli at the file's logged-in shim again (no key) and waits until the catalog lists it again. */
   const restoreBase = async () => {
     configure({ [CURSOR_CONFIG_KEY]: { command: base!.command } });
-    if (gateway!.catalog === "cursor-cli") await waitCatalog((ids) => ids.length > 1);
+    if (catalogRuns) await waitCatalog((ids) => ids.length > 1);
   };
 
   // #39: the provider card read "Not configured" although the cursor-agent login worked. The host limit is documented
@@ -120,7 +135,7 @@ describeRegression("Gateway scenarios: cursor-cli auth, key setup, and Test conn
     async () => {
       const before = authStatus();
       expect(before.provider?.profiles ?? [], `a cursor-cli profile exists before any key was saved: ${before.text}`).toEqual([]);
-      if (gateway!.catalog === "cursor-cli") {
+      if (catalogRuns) {
         const rows = catalogNow();
         // The login counts: the catalog holds the CLI's own listing (five models), not the one default row it falls back to.
         expect(rows.cursor, `models.list cursor-cli rows with only the CLI login: ${JSON.stringify(rows)}`).toHaveLength(5);
@@ -143,13 +158,15 @@ describeRegression("Gateway scenarios: cursor-cli auth, key setup, and Test conn
         expect(login.steps.map((step) => step.message ?? "").join("\n"), evidence).toContain("accepted the key");
         // The key was checked with `about` before it was saved.
         expect(readFakeLog(base!.log).slice(logFrom).filter((line) => line.method === "about" && line.keyed === true).length, evidence).toBeGreaterThan(0);
-        // The Control UI reads the card again after the dialog: give the host's auth snapshot a moment to catch up. (On OpenClaw
-        // 2026.10.3, in a Gateway that loaded the plugin at start with no profile in the store, it never does: a new bug, see
-        // the ticket 9 plan.)
+        // The Control UI reads the card again after the dialog: give the host's auth snapshot a moment to catch up. On OpenClaw
+        // 2026.10.3, in a Gateway that loaded the plugin at start with no profile in the store, it never does (issue #106).
         await waitFor(() => (authStatus().provider?.profiles ?? []).length > 0, 30_000, 1_000);
         const after = authStatus();
         const profiles = (after.provider?.profiles ?? []) as Array<{ profileId?: string; type?: string }>;
-        expect(profiles.map((profile) => [profile.profileId, profile.type]), `${after.text}\n--- ${evidence}`).toEqual([["cursor-cli:default", "api_key"]]);
+        expect(
+          profiles.map((profile) => [profile.profileId, profile.type]),
+          `models.authStatus has no saved cursor-cli profile 30 s after the save (on OpenClaw 2026.10.3: issue #106, the auth snapshot of a Gateway that loaded the plugin at start with an empty store stays stale)\n${after.text}\n--- ${evidence}`,
+        ).toEqual([["cursor-cli:default", "api_key"]]);
       } finally {
         logout();
       }
@@ -164,7 +181,7 @@ describeRegression("Gateway scenarios: cursor-cli auth, key setup, and Test conn
   it(
     "PR #96: Test connection (models.probe) with a saved key runs one text-only turn through the plugin and is ok; a refused turn is reported as auth, not a timeout",
     async (ctx) => {
-      if (gateway!.catalog === "empty") ctx.skip(skipReason());
+      if (!catalogRuns) ctx.skip(skipReason());
       const login = await authLogin(gateway!.port, apiKeyChoice(), `regression-dummy-key-${nonce()}`);
       try {
         expect(login.final?.status, JSON.stringify(login).slice(0, 3_000)).toBe("done");
@@ -211,29 +228,35 @@ describeRegression("Gateway scenarios: cursor-cli auth, key setup, and Test conn
   );
 
   /**
-   * Points cursor-cli at `fake` (with `env` as its plugin-config env, if any), waits until the plugin's catalog ran on
-   * it, and checks that no Gateway surface counts its credential as a login.
+   * Points cursor-cli at `fake` (with `env` as its plugin-config env, if any), waits for its login probe (`probed`) and the
+   * catalog run that follows it, and checks that the catalog did not count the credential as a login. `alsoCheck` runs while
+   * `fake` is still the command. "Test connection is not ok" is not checked here: `models.probe` probes only auth-store
+   * profiles, and a plugin-config key is never one.
    */
-  const expectNoLogin = async (fake: FakeCommand, env: Record<string, string> | undefined) => {
+  const expectNoLogin = async (
+    fake: FakeCommand,
+    env: Record<string, string> | undefined,
+    probed: (line: FakeLogEntry) => boolean,
+    alsoCheck?: () => Promise<void>,
+  ) => {
     const catalogBefore = await waitCatalog((ids) => ids.length > 1);
     expect(catalogBefore.cursor.length, `the CLI login did not list the catalog before the case: ${JSON.stringify(catalogBefore)}`).toBeGreaterThan(1);
     configure({ [CURSOR_CONFIG_KEY]: { command: fake.command, ...(env ? { env } : {}) } });
     try {
-      // The catalog runs again for the new command (a config change): the shim logs its first run (the login probe).
-      await waitFor(() => readFakeLog(fake.log).length > 0, 60_000, 500);
       const evidence = () => `models.list: ${JSON.stringify(catalogNow())}\n--- fake log:\n${describeLines(readFakeLog(fake.log))}`;
-      expect(readFakeLog(fake.log).length, `the plugin never probed the new command\n${evidence()}`).toBeGreaterThan(0);
-      // The catalog falls back to its unauthenticated form, which this OpenClaw does not list (no cursor-cli row) ...
+      // 1. The catalog runs again for the new command (a config change) and probes its login first.
+      await waitFor(() => readFakeLog(fake.log).some(probed), 60_000, 500);
+      expect(readFakeLog(fake.log).some(probed), `the plugin never ran the expected login probe on the new command\n${evidence()}`).toBe(true);
+      // 2. That catalog run ended in its unauthenticated form, which this OpenClaw does not list (no cursor-cli row) ...
       const after = await waitCatalog((ids) => ids.length === 0, 60_000);
       expect(after.cursor, evidence()).toEqual([]);
-      // ... and stays there: no model listing ever ran on the credential (it runs only after a login probe said "available").
-      await new Promise((resolve) => setTimeout(resolve, 5_000));
-      expect(catalogNow().cursor, evidence()).toEqual([]);
+      // 3. ... and every process the shim started has exited, so a model listing (which starts right after a probe that said
+      // "available") would be in the log by now: none ran on the credential.
+      await waitFor(() => liveFakes(fake).length === 0, 30_000, 500);
+      expect(liveFakes(fake), `shim processes still running\n${evidence()}`).toEqual([]);
       expect(readFakeLog(fake.log).filter((line) => line.method === "initialize" || line.method === "session/new"), evidence()).toEqual([]);
-      const status = authStatus();
-      expect(status.provider?.profiles ?? [], `${status.text}\n--- ${evidence()}`).toEqual([]);
-      const probed = probe();
-      expect(probed?.status, `models.probe: ${JSON.stringify(probed)}\n--- ${evidence()}`).not.toBe("ok");
+      expect(catalogNow().cursor, evidence()).toEqual([]);
+      await alsoCheck?.();
       return readFakeLog(fake.log);
     } finally {
       await restoreBase();
@@ -245,9 +268,30 @@ describeRegression("Gateway scenarios: cursor-cli auth, key setup, and Test conn
   it(
     "#98: a CURSOR_API_KEY that cursor-agent refuses is no login on any Gateway surface",
     async (ctx) => {
-      if (gateway!.catalog === "empty") ctx.skip(skipReason());
+      if (!catalogRuns) ctx.skip(skipReason());
       const refused = shim("cursor-agent-refused", { FAKE_CURSOR_ABOUT: "invalid" });
-      const lines = await expectNoLogin(refused, { CURSOR_API_KEY: `regression-dummy-refused-${nonce()}` });
+      // Test connection cannot be shown "not ok" for a refused key at the Gateway: `models.probe` probes only auth-store
+      // profiles, and the API key method checks a key with `about` before it saves it, so a refused key never becomes one.
+      // What is checked instead is that refusal: the save fails, and `models.probe` then has no profile to probe.
+      const refusedSave = async () => {
+        try {
+          const login = await authLogin(gateway!.port, apiKeyChoice(), `regression-dummy-refused-${nonce()}`);
+          const probed = probe();
+          const evidence = `models.authLogin: ${JSON.stringify(login).slice(0, 3_000)}\n--- models.probe: ${JSON.stringify(probed)}\n--- fake log:\n${describeLines(readFakeLog(refused.log))}`;
+          expect(login.final?.status, evidence).toBe("error");
+          expect(String(login.final?.error ?? ""), evidence).toMatch(/says the key is invalid\. It was not saved/);
+          expect(probed?.results ?? [], evidence).toEqual([]);
+          expect(probed?.status, evidence).not.toBe("ok");
+        } finally {
+          logout();
+        }
+      };
+      const lines = await expectNoLogin(
+        refused,
+        { CURSOR_API_KEY: `regression-dummy-refused-${nonce()}` },
+        (line) => line.method === "about" && line.keyed === true,
+        refusedSave,
+      );
       // The key was checked, never trusted: `about` with the key, and no `status` read it as a login.
       expect(lines.filter((line) => line.method === "about" && line.keyed === true).length, describeLines(lines)).toBeGreaterThan(0);
       expect(lines.filter((line) => line.method === "status" && line.keyed === true), describeLines(lines)).toEqual([]);
@@ -260,9 +304,9 @@ describeRegression("Gateway scenarios: cursor-cli auth, key setup, and Test conn
   it(
     "#98: a degraded `status` (Logged in, unable to fetch user details) with no key is no login on any Gateway surface",
     async (ctx) => {
-      if (gateway!.catalog === "empty") ctx.skip(skipReason());
+      if (!catalogRuns) ctx.skip(skipReason());
       const degraded = shim("cursor-agent-degraded", { FAKE_CURSOR_STATUS_TEXT: DEGRADED_STATUS });
-      const lines = await expectNoLogin(degraded, undefined);
+      const lines = await expectNoLogin(degraded, undefined, (line) => line.method === "status" && line.keyed === false);
       expect(lines.filter((line) => line.method === "status" && line.keyed === false).length, describeLines(lines)).toBeGreaterThan(0);
       expect(lines.filter((line) => line.method === "about"), describeLines(lines)).toEqual([]);
     },

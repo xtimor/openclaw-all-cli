@@ -34,6 +34,27 @@ function guardedDescribe(): typeof describe {
   return describe;
 }
 
+/**
+ * The OpenClaw version under test as `[year, month, patch]`: `OPENCLAW_VERSION` (scripts/regression.sh exports it), else
+ * what `openclaw --version` prints.
+ */
+export function openclawVersion(): [number, number, number] {
+  const text = process.env.OPENCLAW_VERSION?.trim() || openclaw(["--version"], { timeoutMs: 60_000 }).stdout;
+  const match = /\b(\d{4})\.(\d{1,2})\.(\d{1,3})\b/.exec(text);
+  if (!match) throw new Error(`Cannot tell the OpenClaw version from '${text.slice(0, 200)}'.`);
+  return [Number(match[1]), Number(match[2]), Number(match[3])];
+}
+
+/**
+ * Whether this OpenClaw runs the plugin's provider catalog offline. 2026.10.x does (its `models.list` lists the cursor-cli rows
+ * the plugin returns); 2026.11.x takes its catalog from catalog.openclaw.ai, lists no model at all offline, and never calls
+ * the plugin's catalog, so nothing that only the catalog shows can be checked there.
+ */
+export function runsOfflineCatalog(): boolean {
+  const [year, month] = openclawVersion();
+  return year < 2026 || (year === 2026 && month < 11);
+}
+
 /** A free TCP port on the loopback interface. */
 export async function freePort(): Promise<number> {
   return new Promise((resolve, reject) => {
