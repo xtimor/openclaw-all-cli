@@ -4,7 +4,7 @@ import { createServer } from "node:net";
 import { join, sep } from "node:path";
 import { describe } from "vitest";
 import { FAKE_CURSOR_AGENT } from "../fixtures/paths.ts";
-import { openclaw, openclawAsync, startGateway, waitFor, type OpenClawResult, type TestGateway } from "../live/harness.ts";
+import { openclaw, openclawAsync, startGateway, type OpenClawResult, type TestGateway } from "../live/harness.ts";
 
 /**
  * The Gateway regression tier (epic-regression-gate): the packed plugin in a fresh OpenClaw of a chosen
@@ -100,43 +100,54 @@ export function configure(entries: Record<string, unknown>): void {
   for (const [key, value] of Object.entries(entries)) {
     const args =
       typeof value === "string" ? ["config", "set", key, value] : ["config", "set", key, JSON.stringify(value), "--strict-json"];
-    const result = openclaw(args);
+    const result = openclaw(args, { timeoutMs: 30_000 });
     if (result.status !== 0) throw new Error(`openclaw config set ${key} failed:\n${result.stdout}${result.stderr}`);
   }
 }
 
-/** Whether a process (or, with a negative pid, a process group) exists. */
-function alive(pid: number): boolean {
+type ProcessRow = { pid: number; ppid: number; pgid: number; args: string };
+
+/** Every process on the host now (pid, parent, group, command line), from one `ps` snapshot. */
+function processTable(): Map<number, ProcessRow> {
+  const listed = spawnSync("ps", ["-A", "-o", "pid=,ppid=,pgid=,args="], { encoding: "utf8" });
+  const table = new Map<number, ProcessRow>();
+  for (const line of (listed.stdout ?? "").split("\n")) {
+    const match = /^\s*(\d+)\s+(\d+)\s+(\d+)\s+(.*)$/.exec(line);
+    if (match) table.set(Number(match[1]), { pid: Number(match[1]), ppid: Number(match[2]), pgid: Number(match[3]), args: match[4]! });
+  }
+  return table;
+}
+
+/** SIGKILL to one process, ignoring one that is already gone. */
+function killPid(pid: number): void {
   try {
-    process.kill(pid, 0);
-    return true;
-  } catch (error) {
-    return (error as NodeJS.ErrnoException).code === "EPERM";
+    process.kill(pid, "SIGKILL");
+  } catch {
+    // Gone in between.
   }
 }
 
-/** SIGKILL to every process the shim recorded and to the group it leads, when still there. */
-export function killFakes(fake: FakeCommand): void {
-  if (!existsSync(fake.pids)) return;
-  for (const pid of readFileSync(fake.pids, "utf8").split(/\s+/).map(Number).filter((value) => value > 0)) {
-    for (const target of [-pid, pid]) {
-      if (!alive(target)) continue;
-      try {
-        process.kill(target, "SIGKILL");
-      } catch {
-        // Gone in between.
-      }
-    }
-  }
-}
-
-/** The pids of the shim's processes that are still running. */
-export function liveFakes(fake: FakeCommand): number[] {
+/** The pids the shim recorded, read from its file. */
+function recordedPids(fake: FakeCommand): number[] {
   if (!existsSync(fake.pids)) return [];
   return readFileSync(fake.pids, "utf8")
     .split(/\s+/)
     .map(Number)
-    .filter((pid) => pid > 0 && alive(pid));
+    .filter((pid) => pid > 0);
+}
+
+/**
+ * The recorded pids that still run fake-cursor-agent. A pid whose command line no longer names the fake was
+ * recycled by an unrelated process and is left alone.
+ */
+export function liveFakes(fake: FakeCommand): number[] {
+  const table = processTable();
+  return recordedPids(fake).filter((pid) => table.get(pid)?.args.includes(FAKE_CURSOR_AGENT) === true);
+}
+
+/** SIGKILL to every recorded process that is still the fake (see `liveFakes`), one process at a time. */
+export function killFakes(fake: FakeCommand): void {
+  for (const pid of liveFakes(fake)) killPid(pid);
 }
 
 export type RegressionGateway = TestGateway & {
@@ -149,89 +160,94 @@ export type RegressionGateway = TestGateway & {
   stop(): Promise<void>;
 };
 
-/** Every descendant of `pid` (children, their children, ...), from one `ps` snapshot. */
-function descendants(pid: number): number[] {
-  const listed = spawnSync("ps", ["-A", "-o", "pid=,ppid="], { encoding: "utf8" });
-  const children = new Map<number, number[]>();
-  for (const line of (listed.stdout ?? "").split("\n")) {
-    const [child, parent] = line.trim().split(/\s+/).map(Number);
-    if (!child || parent === undefined) continue;
-    children.set(parent, [...(children.get(parent) ?? []), child]);
-  }
-  const found: number[] = [];
-  const queue = [pid];
+/** The Gateway's process tree and process group (the Gateway included), from one snapshot. */
+function gatewayProcesses(root: number): ProcessRow[] {
+  const table = processTable();
+  const found = new Map<number, ProcessRow>();
+  const queue = [root];
   while (queue.length > 0) {
-    for (const child of children.get(queue.shift()!) ?? []) {
-      found.push(child);
-      queue.push(child);
-    }
+    const pid = queue.shift()!;
+    const row = table.get(pid);
+    if (row && !found.has(pid)) found.set(pid, row);
+    for (const child of table.values()) if (child.ppid === pid && !found.has(child.pid)) queue.push(child.pid);
   }
-  return found;
+  for (const row of table.values()) if (row.pgid === root) found.set(row.pid, row);
+  return [...found.values()];
 }
 
-/** The number of `cursor-cli` rows and of all rows in the Gateway's model catalog; undefined when the call failed. */
-function catalogRows(port: number): { cursor: number; all: number } | undefined {
-  const listed = openclaw(["gateway", "call", "models.list", "--params", "{}", "--port", String(port), "--json", "--timeout", "20000"], {
-    timeoutMs: 30_000,
+/** One `models.list` call: the `cursor-cli` rows and all rows, or why the call failed. */
+function catalogRows(port: number): { cursor: number; all: number } | { error: string } {
+  const listed = openclaw(["gateway", "call", "models.list", "--params", "{}", "--port", String(port), "--json", "--timeout", "10000"], {
+    timeoutMs: 15_000,
   });
-  if (listed.status !== 0) return undefined;
+  if (listed.status !== 0) return { error: `exit ${listed.status}: ${listed.stdout}${listed.stderr}`.slice(0, 2_000) };
   try {
-    const models = (JSON.parse(listed.stdout) as { models?: Array<{ provider?: string }> }).models ?? [];
+    const models = (JSON.parse(listed.stdout) as { models?: Array<{ provider?: string }> }).models;
+    if (!Array.isArray(models)) return { error: `no models array: ${listed.stdout.slice(0, 2_000)}` };
     return { cursor: models.filter((model) => model.provider === "cursor-cli").length, all: models.length };
   } catch {
-    return undefined;
+    return { error: `not JSON: ${listed.stdout.slice(0, 2_000)}` };
   }
 }
 
 /**
  * `startGateway`, then a wait until the Gateway's catalog lists a `cursor-cli/` model: the plugin's catalog
  * loads several seconds after the port opens (about 12 s on OpenClaw 2026.10.3), and a turn before it sees no
- * plugin rows. Throws (after stopping the Gateway) when other providers are listed but cursor-cli never is.
+ * plugin rows. Throws (after stopping the Gateway) when other providers are listed but cursor-cli never is, or
+ * when `models.list` keeps failing.
  *
- * An OpenClaw that lists no model at all for `emptyMs` (2026.11.10 offline: its catalog comes from
- * catalog.openclaw.ai, so `models.list` is empty for every provider) cannot show readiness this way: the wait
- * then ends with `catalog: "empty"` and the turns themselves are the check.
+ * An OpenClaw whose successful `models.list` calls list no model at all for `emptyMs` (2026.11.10 offline: its
+ * catalog comes from catalog.openclaw.ai, so the list is empty for every provider) cannot show readiness this
+ * way: the wait then ends with `catalog: "empty"` and the turns themselves are the check.
+ *
+ * Budget: the health wait and the readiness wait take at most `timeoutMs` each, plus one call and a stop, so
+ * the whole start stays well under a 300 s hook. `onStarted` gets the stop function as soon as the Gateway
+ * answers, so a caller's `afterAll` can stop it even when the readiness wait is cut short.
  */
 export async function startRegressionGateway(
   port: number,
-  options: { timeoutMs?: number; emptyMs?: number } = {},
+  options: { timeoutMs?: number; emptyMs?: number; onStarted?: (stop: () => Promise<void>) => void } = {},
 ): Promise<RegressionGateway> {
-  const { timeoutMs = 120_000, emptyMs = 30_000 } = options;
+  const { timeoutMs = 90_000, emptyMs = 30_000 } = options;
   // No secret reaches the tier: the fake CLI needs no key, and a real one must not leak into a fresh state.
-  const gateway = await startGateway(port, { omitEnv: ["CURSOR_API_KEY", "CURSOR_AUTH_TOKEN"] });
-  const stop = async () => {
-    // OpenClaw starts workers (and the plugin its CLIs) in process groups of their own: note the whole tree first.
-    const tree = descendants(gateway.pid);
-    await gateway.stop();
-    for (const target of [-gateway.pid, ...tree]) {
-      if (!alive(target)) continue;
-      try {
-        process.kill(target, "SIGKILL");
-      } catch {
-        // Gone in between.
-      }
-    }
-  };
-  const started = Date.now();
-  let sawAny = false;
-  let catalog: RegressionGateway["catalog"] | undefined;
-  await waitFor(
-    () => {
+  const gateway = await startGateway(port, { timeoutMs, omitEnv: ["CURSOR_API_KEY", "CURSOR_AUTH_TOKEN"] });
+  let stopped: Promise<void> | undefined;
+  const stop = () =>
+    (stopped ??= (async () => {
+      // OpenClaw starts workers (and the plugin its CLIs) in process groups of their own: note the tree first.
+      const before = gatewayProcesses(gateway.pid);
+      await gateway.stop();
+      const now = processTable();
+      // Only a pid that still runs the same command line is ours; a recycled pid is left alone.
+      for (const row of before) if (now.get(row.pid)?.args === row.args) killPid(row.pid);
+    })());
+  options.onStarted?.(stop);
+  try {
+    const started = Date.now();
+    let sawModels = false;
+    let lastError: string | undefined;
+    let catalog: RegressionGateway["catalog"] | undefined;
+    while (catalog === undefined && Date.now() - started < timeoutMs) {
       const rows = catalogRows(port);
-      if (rows && rows.cursor > 0) catalog = "cursor-cli";
-      else if (rows && rows.all > 0) sawAny = true;
-      else if (!sawAny && Date.now() - started >= emptyMs) catalog = "empty";
-      return catalog !== undefined;
-    },
-    timeoutMs,
-    2_000,
-  );
-  if (catalog === undefined) {
+      if ("error" in rows) lastError = rows.error;
+      else if (rows.cursor > 0) catalog = "cursor-cli";
+      else if (rows.all > 0) sawModels = true;
+      else if (!sawModels && Date.now() - started >= emptyMs) catalog = "empty";
+      if (catalog === undefined) await new Promise((resolve) => setTimeout(resolve, 2_000));
+    }
+    if (catalog === undefined) {
+      throw new Error(
+        sawModels
+          ? `The Gateway on port ${port} never listed a cursor-cli model: the plugin's catalog did not load.`
+          : `The Gateway on port ${port} gave no usable models.list answer. Last failure: ${lastError ?? "none"}`,
+      );
+    }
+    if (catalog === "empty") console.warn(`The Gateway on port ${port} lists no model at all; the turns alone show whether the plugin works.`);
+    return { ...gateway, catalog, stop };
+  } catch (error) {
     await stop();
-    throw new Error(`The Gateway on port ${port} never listed a cursor-cli model: the plugin's catalog did not load.`);
+    throw error;
   }
-  if (catalog === "empty") console.warn(`The Gateway on port ${port} lists no model at all; the turns alone show whether the plugin works.`);
-  return { ...gateway, catalog, stop };
 }
 
 /** One turn through the Gateway with `openclaw agent` (the CLI reaches it through `OPENCLAW_GATEWAY_PORT`). */

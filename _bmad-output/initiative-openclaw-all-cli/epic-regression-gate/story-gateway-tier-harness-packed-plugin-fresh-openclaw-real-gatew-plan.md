@@ -3,14 +3,14 @@ title: 'Gateway tier harness: packed plugin, fresh OpenClaw, real Gateway, scrip
 type: 'feature'
 ticket: '2'
 created: '2026-11-27'
-status: 'in-review'
+status: 'built'
 baseline_revision: '131ad24b75301cfff044ea97acad1daa12c01241'
 route: 'full'
 route_source: 'auto'
 risk: 'medium'
-review: ''
-review_source: ''
-lenses_ran: []
+review: 'quick'
+review_source: 'pinned'
+lenses_ran: ['quick']
 review_loop_iteration: 0
 followup_review_recommended: false
 context: []
@@ -79,6 +79,7 @@ deferred: []
 - The runner unsets `CURSOR_API_KEY`/`CURSOR_AUTH_TOKEN` and `startRegressionGateway` omits them from the Gateway env (no secret; the host had a key set and the plugin ran a key check with it before this).
 - `describeRegression` throws when enabled with a `SPIKE_DIR` outside `.regression/`, so a direct `OPENCLAW_ALL_CLI_REGRESSION=1 npx vitest run` cannot touch `.spike/`.
 - Cleanup: OpenClaw 2026.11.10 starts its workers in process groups of their own, and the plugin starts each CLI in its own group, so killing the Gateway's group alone may not reach them. `stop()` notes the Gateway's whole process tree first, SIGTERMs the group (the Gateway then stops its workers and CLIs itself, observed on both versions), then SIGKILLs whatever of the tree is left. Every shim records its pid; `afterAll` waits for them to exit and SIGKILLs leftovers with a warning.
+- Review fixes: the chat.send check requires `payload.message` and counts the nonce only in its text (the session key carries no nonce); pids are signalled only while their command line still matches (fake-cursor-agent for the shim's pids, the snapshot's command line for the Gateway tree and group; no group-wide kill); a failed or non-JSON `models.list` never counts as an empty catalog, and only failures end in a thrown error; the health and readiness waits take 90 s each, `config set` 30 s, and `onStarted` hands `afterAll` the stop function before the readiness wait; the tracer's temp dir is made in `beforeAll`.
 - `chatSend` keeps listening 2 s after the run's first `final`/`error`/`aborted` frame, so a second final would be counted.
 - The runner adds `--reporter=verbose` so a CI log names each scenario.
 - `docs/setup.md` (development section) names `npm run test:regression` (AGENTS.md rule: docs change with setup).
@@ -87,11 +88,32 @@ deferred: []
 
 - Prompt check: OpenClaw wraps the user's message (a timestamp before it on the `openclaw agent` path, its messaging hints after it on both paths), so "text ends with the message" is never true. The tracer instead requires exactly one prompt line that ends with the message.
 - Readiness wait: on OpenClaw 2026.11.10 (npm `latest` on 2026-11-27), offline, `models.list` is empty for every provider (`{}`, `view: all`, `provider: cursor-cli`, `refresh: true`; the log shows `remote model catalog refresh failed ... ENOTFOUND catalog.openclaw.ai`), so a cursor-cli row never shows up, while a turn works. The wait now ends with `catalog: "empty"` (and a warning) when no model at all is listed for 30 s; when other models are listed and cursor-cli never is, it still throws. On 2026.10.3 the cursor-cli rows show up as before.
-- Build without `.spike/`: `tsconfig.json` maps the SDK types to `.spike/openclaw`, so `npm run build` fails in a clean checkout without `.spike/`. The runner then builds with a generated `.regression/tsconfig.build.json` that points the same `paths` at `.regression/openclaw-<openclaw.build.openclawVersion>` (set up there when it is not the version under test). `.spike/` is never written.
+- Build: `tsconfig.json` maps the SDK types to `.spike/openclaw`, which the tier must not read (and which a clean checkout lacks). The runner always builds with a generated `.regression/tsconfig.build.json` that points the same `paths` at `.regression/openclaw-<openclaw.build.openclawVersion>` (set up there when it is not the version under test), and it never puts `.spike/node` on PATH; without any Node on PATH it exits 2 asking for one to bootstrap.
 
 ## Plan Change Log
 
 ## Review Triage Log
+
+### 2026-11-27 — Review pass
+- verdicts: 8 findings — high 0, medium 4, low 3, false 0, maybe-false 0, rejected (plan edit) 1
+- findings:
+  - `[medium]` `[patch]` chat.send nonce counted in the whole payload while the session key held the nonce, so a final without text passed — fixed: `payload.message` required, nonce counted only in its text, session key uses its own id.
+  - `[medium]` `[patch]` recorded pids and the Gateway tree snapshot were SIGKILLed (with process groups) without checking they were still ours — fixed: one `ps` snapshot, only pids whose command line still matches are signalled; group kills removed.
+  - `[medium]` `[patch]` worst-case `beforeAll` exceeded the 300 s hook timeout and left a detached Gateway — fixed: inner waits 90 s, calls bounded, `onStarted(stop)` hands the stop to `afterAll` before readiness, self-stop on error.
+  - `[low]` `[patch]` a failed `models.list` call counted as an empty catalog — fixed: `empty` only after a successful zero-row answer; no successful call throws.
+  - `[medium]` `[patch]` the script read `.spike/` (PATH, SDK types) while header and docs said it never does, and built against an unpinned version — fixed: always builds against `openclaw.build.openclawVersion` under `.regression/`, `.spike/node` dropped.
+  - `[low]` `[patch]` no Node on the host died with exit 127 — fixed: up-front check, exit 2 with a message.
+  - `[low]` `[patch]` `mkdtempSync` in the describe factory left a temp dir on every `npm test` — fixed: created in `beforeAll`.
+  - `[low]` `[reject]` duplicate `## Plan Change Log` heading in this plan — the fix edits this build's plan (rule: rejected).
+
+## Auto Run Result
+
+- **Summary:** Gateway regression tier: `scripts/regression.sh gateway [--openclaw <min|latest|extended-stable|beta|X.Y.Z>]` installs Node and the chosen OpenClaw under `.regression/`, packs the plugin once (built against the pinned SDK version), installs the `.tgz` into a fresh state, and runs `test/regression/gateway/` (skipped in `npm test`); harness `test/regression/harness.ts`; tracer over `openclaw agent` and `chat.send`.
+- **Files:** `scripts/regression.sh` (runner), `test/regression/harness.ts` (shared helpers), `test/regression/gateway/tracer.regression.test.ts` (tracer), `vitest.config.ts` (no file parallelism in regression runs), `package.json` (`test:regression`), `.gitignore` (`.regression/`), `docs/setup.md` (how to run), `MEMORY.md` (where things are).
+- **Review:** 7 patched (medium 4: chat.send nonce, pid reuse, hook timeout, `.spike` use; low 3: failed catalog call, no Node, temp dir), 0 deferred, 1 rejected (plan heading, plan-edit rule).
+- **Follow-up review recommended:** false (no high patched; the four medium patches are narrow and re-verified).
+- **Verification:** `npm run typecheck` clean; `npm test` 69 files passed, 19 skipped (2059 tests passed); `scripts/regression.sh gateway` (2026.10.3) 2/2 green, exit 0; `--openclaw latest` (2026.11.10) and `extended-stable` (2026.10.34) 2/2 green (implementer); broken `registerCliBackend` went red on 2026.10.3 and 2026.11.10 (before the review patches; not re-run after them); no Gateway or fake process left; no temp dir left.
+- **Residual risks:** on OpenClaw 2026.11.10 offline `models.list` is empty, so readiness relies on the turns; 2026.11.10 logs `cli backend "cursor-cli" is missing modelProvider` (to watch in tickets 5 and 6); Node 24.22.0 is below 2026.11.10's recommended 24.22.1; no GitHub Actions run yet (ticket 4).
 
 ## Verification
 

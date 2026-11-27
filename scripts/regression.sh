@@ -40,10 +40,14 @@ while [ $# -gt 0 ]; do
   esac
 done
 
-# The isolated Node from an earlier run (or .spike's) serves `npm view` and the project's npm commands when the host has none.
-for dir in "$ROOT"/.regression/openclaw-*/node/bin "$ROOT/.spike/node/bin"; do
+# The isolated Node from an earlier run serves `npm view` and package.json reads when the host has none.
+for dir in "$ROOT"/.regression/openclaw-*/node/bin; do
   if ! command -v npm >/dev/null 2>&1 && [ -x "$dir/npm" ]; then PATH="$dir:$PATH"; fi
 done
+if ! command -v node >/dev/null 2>&1 || ! command -v npm >/dev/null 2>&1; then
+  echo "scripts/regression.sh needs Node and npm (any version) on PATH to bootstrap; it then installs its own Node under .regression/." >&2
+  exit 2
+fi
 
 resolve_version() {
   local wanted="$1" found
@@ -90,22 +94,18 @@ fi
 step "Build and pack the plugin ($PACK_DIR)"
 rm -rf "$PACK_DIR"
 mkdir -p "$PACK_DIR"
-# tsconfig.json maps the SDK types to .spike/openclaw. Without it (a clean checkout), build against the same
-# OpenClaw version (package.json openclaw.build.openclawVersion) set up under .regression/ instead.
-if [ -d "$ROOT/.spike/openclaw/node_modules/openclaw/dist/plugin-sdk" ]; then
-  npm run build
-else
-  BUILD_VERSION="$(node -p 'require(process.argv[1]).openclaw.build.openclawVersion' "$ROOT/package.json")"
-  BUILD_SPIKE="$ROOT/.regression/openclaw-$BUILD_VERSION"
-  if [ "$BUILD_VERSION" != "$VERSION" ]; then
-    SPIKE_DIR="$BUILD_SPIKE" OPENCLAW_VERSION="$BUILD_VERSION" "$DEV" setup >/dev/null
-  fi
-  printf '{\n  "extends": "../tsconfig.build.json",\n  "compilerOptions": { "paths": { "openclaw/plugin-sdk/*": ["%s/*"] } }\n}\n' \
-    "$BUILD_SPIKE/openclaw/node_modules/openclaw/dist/plugin-sdk" > "$ROOT/.regression/tsconfig.build.json"
-  echo "Building against the SDK types of OpenClaw $BUILD_VERSION ($BUILD_SPIKE)"
-  rm -rf "$ROOT/dist"
-  npx tsc -p "$ROOT/.regression/tsconfig.build.json"
+# Always build against the pinned OpenClaw (package.json openclaw.build.openclawVersion) under .regression/, never
+# .spike/ (where tsconfig.json points): the same build locally and in CI, whatever OpenClaw the tier tests.
+BUILD_VERSION="$(node -p 'require(process.argv[1]).openclaw.build.openclawVersion' "$ROOT/package.json")"
+BUILD_SPIKE="$ROOT/.regression/openclaw-$BUILD_VERSION"
+if [ "$BUILD_VERSION" != "$VERSION" ]; then
+  SPIKE_DIR="$BUILD_SPIKE" OPENCLAW_VERSION="$BUILD_VERSION" "$DEV" setup >/dev/null
 fi
+printf '{\n  "extends": "../tsconfig.build.json",\n  "compilerOptions": { "paths": { "openclaw/plugin-sdk/*": ["%s/*"] } }\n}\n' \
+  "$BUILD_SPIKE/openclaw/node_modules/openclaw/dist/plugin-sdk" > "$ROOT/.regression/tsconfig.build.json"
+echo "Building against the SDK types of OpenClaw $BUILD_VERSION ($BUILD_SPIKE)"
+rm -rf "$ROOT/dist"
+npx tsc -p "$ROOT/.regression/tsconfig.build.json"
 npm pack --pack-destination "$PACK_DIR" >/dev/null
 TARBALL="$(ls "$PACK_DIR"/openclaw-all-cli-*.tgz)"
 if command -v sha256sum >/dev/null 2>&1; then
