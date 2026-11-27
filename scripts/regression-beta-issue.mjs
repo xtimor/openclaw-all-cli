@@ -2,7 +2,8 @@
 // The weekly beta run's issue (epic-regression-gate ticket 4, .github/workflows/regression-beta.yml): when the Gateway
 // regression tier is red on OpenClaw `beta`, open one issue labelled `regression:beta`, or, while such an issue is open,
 // comment on it instead. A green run does nothing: an open issue stays open for a person to close. A run reports once:
-// its marker (`<!-- regression-beta run=<id> -->`) in the issue or a comment makes a re-run of the job a no-op.
+// its marker (`<!-- regression-beta run=<id> -->`) in the open issue or a comment, or in one of the 100 newest issues (one
+// that lost its label), makes a re-run of the job a no-op.
 // The issue is not a confirmed plugin bug (the OpenClaw beta may be at fault), so it enters the issue flow as
 // `status:todo` with no type label, and triage decides. Dependency-free, like scripts/regression-ledger.mjs.
 //
@@ -193,18 +194,34 @@ async function main(argv, env) {
     return 0;
   }
 
+  // An issue this run already opened but that lost its label (GitHub dropped it and the re-add failed) is found by its
+  // marker among the newest issues, open or closed, so a re-run never opens a second one.
+  const recent = await request("GET", `${base}?state=all&sort=created&direction=desc&per_page=${PAGE_SIZE}&page=1`);
+  if (!Array.isArray(recent)) throw new ReportError(`GET ${base}: GitHub answered with no list`);
+  const own = recent.find((row) => row && typeof row.number === "number" && !row.pull_request && String(row.body ?? "").includes(marker(runId)));
+  if (own) {
+    // Only the marker label: the issue's status is the issue flow's by now.
+    if (own.state === "open") await ensureLabels(request, base, own, [LABEL]);
+    console.log(`regression-beta-issue: run ${runId} is already reported on #${own.number}`);
+    return 0;
+  }
+
   const created = await request("POST", base, {
     title: `OpenClaw beta ${versionsOf(results)}: the Gateway regression tier is red`,
     body: issueBody(results, runUrl, runId),
     labels: [LABEL, STATUS],
   });
   if (!created || typeof created.number !== "number") throw new ReportError(`POST ${base}: GitHub answered with no issue`);
-  // GitHub drops labels silently for a token that may not set them; add them again so the next run finds the issue.
-  const names = new Set((created.labels ?? []).map((label) => (typeof label === "string" ? label : label?.name)));
-  const missing = [LABEL, STATUS].filter((name) => !names.has(name));
-  if (missing.length > 0) await request("POST", `${base}/${created.number}/labels`, { labels: missing });
   console.log(`regression-beta-issue: opened #${created.number}`);
+  await ensureLabels(request, base, created, [LABEL, STATUS]);
   return 0;
+}
+
+/** GitHub drops labels silently for a token that may not set them; add them again so the next run finds the issue. */
+async function ensureLabels(request, base, issue, wanted) {
+  const names = new Set((Array.isArray(issue.labels) ? issue.labels : []).map((label) => (typeof label === "string" ? label : label?.name)));
+  const missing = wanted.filter((name) => !names.has(name));
+  if (missing.length > 0) await request("POST", `${base}/${issue.number}/labels`, { labels: missing });
 }
 
 try {

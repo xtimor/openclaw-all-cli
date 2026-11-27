@@ -133,24 +133,9 @@ REPORT=""
 write_result() {
   local code=$?
   if [ -n "$RESULT_FILE" ]; then
-    if ! node -e '
-      const fs = require("node:fs");
-      const path = require("node:path");
-      const [file, requested, version, sha256, tierStatus, code, seconds, report] = process.argv.slice(1);
-      const failed = [];
-      let parsed = null;
-      try { parsed = report ? JSON.parse(fs.readFileSync(report, "utf8")) : null; } catch { /* no report: none failed by name */ }
-      for (const suite of parsed?.testResults ?? []) {
-        const name = path.basename(String(suite.name ?? ""));
-        const tests = (suite.assertionResults ?? []).filter((test) => test.status === "failed");
-        for (const test of tests) failed.push(`${name} > ${test.fullName ?? test.title}`);
-        if (tests.length === 0 && suite.status === "failed") failed.push(`${name}: ${String(suite.message || "failed").split("\n")[0]}`);
-      }
-      const result = tierStatus === "" ? "error" : tierStatus === "0" ? "passed" : "failed";
-      fs.mkdirSync(path.dirname(file), { recursive: true });
-      const summary = { requested, version: version || null, sha256: sha256 || null, result, exitCode: Number(code), seconds: Number(seconds), failed };
-      fs.writeFileSync(file, JSON.stringify(summary, null, 2) + "\n");
-    ' "$RESULT_FILE" "$requested" "$VERSION" "$SHA" "$TIER_STATUS" "$code" "$SECONDS" "$REPORT"; then
+    # scripts/regression-result.mjs reads the failing test names from the Vitest JSON report.
+    if ! node "$ROOT/scripts/regression-result.mjs" --out "$RESULT_FILE" --requested "$requested" --version "$VERSION" --sha256 "$SHA" \
+      --tier-status "$TIER_STATUS" --exit-code "$code" --seconds "$SECONDS" --report "$REPORT"; then
       echo "scripts/regression.sh: could not write the result file $RESULT_FILE" >&2
     fi
   fi

@@ -27,6 +27,11 @@ env:
   # Same default as ci.yml and scripts/dev-openclaw.sh.
   NODE_VERSION: 24.22.0
 
+# An explicit bash runs every step with `-eo pipefail` (the implicit default is `bash -e`, without pipefail).
+defaults:
+  run:
+    shell: bash
+
 jobs:
   regression:
     permissions:
@@ -48,6 +53,8 @@ jobs:
       issues: write # opens the beta issue or comments on it
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: ${{ env.NODE_VERSION }}

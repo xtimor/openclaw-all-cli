@@ -44,6 +44,12 @@ env:
   # Same default as ci.yml and scripts/dev-openclaw.sh (the isolated Node the tier runs on).
   NODE_VERSION: 24.22.0
 
+# An explicit bash runs every step with `-eo pipefail` (the implicit default is `bash -e`, without pipefail), so the
+# tier's exit code survives `| tee`.
+defaults:
+  run:
+    shell: bash
+
 jobs:
   resolve:
     runs-on: ubuntu-latest
@@ -55,6 +61,8 @@ jobs:
       versions: ${{ steps.resolve.outputs.versions }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: ${{ env.NODE_VERSION }}
@@ -100,6 +108,8 @@ jobs:
       RESULT: .regression/logs/result-${{ matrix.version }}.json
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: ${{ env.NODE_VERSION }}
@@ -108,15 +118,19 @@ jobs:
         name: OpenClaw the plugin builds against
         run: echo "version=$(node -p 'require("./package.json").openclaw.build.openclawVersion')" >>"$GITHUB_OUTPUT"
       # Node and OpenClaw per version, like the .spike cache in ci.yml; the state is always fresh (the script wipes it).
-      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+      # Restore and save are separate so a red leg saves too (actions/cache saves only after a green job): the save runs
+      # once the setup is complete (the tier ran), whatever its result.
+      - id: cache-tested
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: |
             .regression/openclaw-${{ matrix.version }}/node
             .regression/openclaw-${{ matrix.version }}/openclaw
           key: regression-${{ runner.os }}-node${{ env.NODE_VERSION }}-openclaw${{ matrix.version }}
       # The script builds against the pinned OpenClaw whatever version it tests; not needed with a given .tgz.
-      - if: steps.build.outputs.version != matrix.version && !inputs.tgz_artifact
-        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+      - id: cache-build
+        if: steps.build.outputs.version != matrix.version && !inputs.tgz_artifact
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: |
             .regression/openclaw-${{ steps.build.outputs.version }}/node
@@ -127,7 +141,8 @@ jobs:
         with:
           name: ${{ inputs.tgz_artifact }}
           path: ${{ runner.temp }}/regression-tgz
-      - name: Gateway tier (OpenClaw ${{ matrix.version }})
+      - id: tier
+        name: Gateway tier (OpenClaw ${{ matrix.version }})
         env:
           REQUESTS: ${{ matrix.requests }}
           TGZ_DIR: ${{ inputs.tgz_artifact && format('{0}/regression-tgz', runner.temp) || '' }}
@@ -144,10 +159,17 @@ jobs:
             fi
             args+=(--tgz "${tgz[0]}")
           fi
-          status=0
-          scripts/regression.sh "${args[@]}" 2>&1 | tee .regression/logs/tier.log || status=$?
+          # The script's own exit code, not tee's, with or without pipefail.
+          set +e
+          scripts/regression.sh "${args[@]}" 2>&1 | tee .regression/logs/tier.log
+          status="${PIPESTATUS[0]}"
+          set -e
           if [ ! -f "$RESULT" ]; then
             jq -n --arg v "$OPENCLAW" '{version: $v, result: "error", failed: []}' >"$RESULT"
+          fi
+          # passed or failed: the tier ran, so Node and OpenClaw are complete and worth caching.
+          if jq -e '.result == "passed" or .result == "failed"' "$RESULT" >/dev/null; then
+            echo "setup=done" >>"$GITHUB_OUTPUT"
           fi
           if [ "$FORCE_RED" = true ]; then
             echo "::warning title=Regression::force_red: this version fails on purpose"
@@ -158,6 +180,20 @@ jobs:
           jq --arg r "$REQUESTS" '.requests = ($r | split(", "))' "$RESULT" >"$RESULT.tmp"
           mv "$RESULT.tmp" "$RESULT"
           exit "$status"
+      - if: always() && steps.tier.outputs.setup == 'done' && steps.cache-tested.outputs.cache-hit != 'true'
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            .regression/openclaw-${{ matrix.version }}/node
+            .regression/openclaw-${{ matrix.version }}/openclaw
+          key: ${{ steps.cache-tested.outputs.cache-primary-key }}
+      - if: always() && steps.tier.outputs.setup == 'done' && steps.cache-build.outcome == 'success' && steps.cache-build.outputs.cache-hit != 'true'
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            .regression/openclaw-${{ steps.build.outputs.version }}/node
+            .regression/openclaw-${{ steps.build.outputs.version }}/openclaw
+          key: ${{ steps.cache-build.outputs.cache-primary-key }}
       - if: always()
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
