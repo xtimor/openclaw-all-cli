@@ -77,8 +77,8 @@ export function fakeCommand(root: string, name: string, env: Record<string, stri
   return { command, log, pids };
 }
 
-/** One request the fake logged. */
-export type FakeLogEntry = { method?: string; params?: any; t: number; [key: string]: unknown };
+/** One request the fake logged, with the pid of the process that logged it. */
+export type FakeLogEntry = { method?: string; params?: any; t: number; pid?: number; [key: string]: unknown };
 
 /** The fake's request log, parsed; empty when the fake never ran. */
 export function readFakeLog(file: string): FakeLogEntry[] {
@@ -155,15 +155,19 @@ export function killFakes(fake: FakeCommand): void {
  * processes, SIGKILLs any left (with a warning naming them), and removes the file's temp dir.
  */
 export async function finishRegression(parts: { stop?: () => Promise<void>; fakes?: Array<FakeCommand | undefined>; root?: string }): Promise<void> {
-  await parts.stop?.();
-  for (const fake of parts.fakes ?? []) {
-    if (!fake) continue;
-    await waitFor(() => liveFakes(fake).length === 0, 10_000, 250);
-    const leftover = liveFakes(fake);
-    if (leftover.length > 0) console.warn(`fake cursor-agent processes left after the Gateway stopped: ${leftover.join(", ")}`);
-    killFakes(fake);
+  // The fakes are killed and the temp dir removed even when the stop throws; the stop's error still fails the hook.
+  try {
+    await parts.stop?.();
+  } finally {
+    for (const fake of parts.fakes ?? []) {
+      if (!fake) continue;
+      await waitFor(() => liveFakes(fake).length === 0, 10_000, 250);
+      const leftover = liveFakes(fake);
+      if (leftover.length > 0) console.warn(`fake cursor-agent processes left after the Gateway stopped: ${leftover.join(", ")}`);
+      killFakes(fake);
+    }
+    if (parts.root) rmSync(parts.root, { recursive: true, force: true });
   }
-  if (parts.root) rmSync(parts.root, { recursive: true, force: true });
 }
 
 /** The text of a chat message: a string, or the text parts of its `content` (string or parts), or its `text`. */
@@ -304,9 +308,23 @@ export function gatewayCall(port: number, method: string, params: unknown = {}):
   }
 }
 
-/** The pids of the `acp` processes whose start is in these log lines (each logs its pid with `initialize`). */
-export function acpPids(lines: readonly FakeLogEntry[]): number[] {
-  return lines.filter((line) => line.method === "initialize" && typeof line.pid === "number").map((line) => line.pid as number);
+/**
+ * The pids of the chat processes in these log lines: the processes that received a `session/prompt` (whose text
+ * holds `marker`, when given), each once, in the order of their first prompt. A process that never got a prompt,
+ * such as the catalog's model listing (it opens ACP sessions of its own, with `initialize` and `session/new`), is
+ * not one.
+ */
+export function chatPids(lines: readonly FakeLogEntry[], marker?: string): number[] {
+  const pids = lines
+    .filter((line) => line.method === "session/prompt" && typeof line.pid === "number")
+    .filter((line) => marker === undefined || promptText(line).includes(marker))
+    .map((line) => line.pid as number);
+  return [...new Set(pids)];
+}
+
+/** The log lines of one process (by the pid the fake logs on every line). */
+export function linesOf(lines: readonly FakeLogEntry[], pid: number): FakeLogEntry[] {
+  return lines.filter((line) => line.pid === pid);
 }
 
 /** Whether `pid` still runs fake-cursor-agent (a recycled pid that runs something else counts as gone). */

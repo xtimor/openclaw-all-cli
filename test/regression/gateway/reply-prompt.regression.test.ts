@@ -9,6 +9,7 @@ import {
   CURSOR_COMMAND_KEY,
   REGRESSION_TIMEOUT_MS,
   chatMessageText,
+  chatPids,
   chatSend,
   configure,
   describeRegression,
@@ -17,6 +18,7 @@ import {
   freePort,
   gatewayAgentTurn,
   gatewayCall,
+  linesOf,
   promptText,
   readFakeLog,
   startRegressionGateway,
@@ -89,8 +91,12 @@ describeRegression("Gateway scenarios: replies, prompts, and errors of a turn", 
       const output = `exit ${run.status}\n--- stdout\n${run.stdout}\n--- stderr\n${run.stderr}`;
       expect(run.status, output).toBe(0);
       expect(replyLines(run.stdout), output).toEqual([`shell${id}`]);
-      const lines = readFakeLog(fake!.log).slice(logFrom);
-      const methods = lines.map((line) => `${line.method}${line.method === "session/set_mode" ? ` ${line.params?.modeId}` : ""}`).join("\n");
+      const all = readFakeLog(fake!.log).slice(logFrom);
+      const methods = all.map((line) => `${line.method}${line.method === "session/set_mode" ? ` ${line.params?.modeId}` : ""} pid=${line.pid}`).join("\n");
+      // The turn's process is the one its prompt reached; a model-listing process may log lines in the same window.
+      const chats = chatPids(all, `say:shell${id}`);
+      expect(chats, methods).toHaveLength(1);
+      const lines = linesOf(all, chats[0]!);
       const prompts = lines.filter((line) => line.method === "session/prompt");
       expect(prompts, methods).toHaveLength(1);
       const text = promptText(prompts[0]!);

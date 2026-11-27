@@ -42,7 +42,7 @@ fixed = true
 tests = [
   { file = "src/adapters/cursor/models.test.ts", name = "gives a row its own context window, else its family's, else none", tier = "unit", reproduces = false },
   { file = "src/core/catalog.test.ts", name = "carries a model's context window into its row", tier = "unit", reproduces = false },
-  { file = "test/regression/gateway/context-usage.regression.test.ts", name = "#12/#46: the Gateway's catalog gives each cursor-cli row its own context window and offers no 1M row", tier = "gateway", reproduces = true },
+  { file = "test/regression/gateway/context-usage.regression.test.ts", name = "#12/#46: the Gateway's catalog gives each cursor-cli row its own context window and offers no 1M row the ACP did not list", tier = "gateway", reproduces = true },
 ]
 
 # Closed not_planned: OpenClaw itself sends the final assistant event; the plugin's result only sets the final text.
@@ -164,7 +164,7 @@ tier = "gateway"
 fixed = true
 tests = [
   { file = "src/adapters/cursor/models.test.ts", name = "1M variants (issue #46)", tier = "unit", reproduces = false },
-  { file = "test/regression/gateway/context-usage.regression.test.ts", name = "#12/#46: the Gateway's catalog gives each cursor-cli row its own context window and offers no 1M row", tier = "gateway", reproduces = true },
+  { file = "test/regression/gateway/context-usage.regression.test.ts", name = "#12/#46: the Gateway's catalog gives each cursor-cli row its own context window and offers no 1M row the ACP did not list", tier = "gateway", reproduces = true },
 ]
 
 [[bug]]

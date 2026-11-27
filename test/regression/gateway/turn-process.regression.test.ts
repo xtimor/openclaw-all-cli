@@ -9,7 +9,7 @@ import {
   REGRESSION_TIMEOUT_MS,
   configure,
   describeRegression,
-  acpPids,
+  chatPids,
   fakeAlive,
   fakeCommand,
   finishRegression,
@@ -17,6 +17,7 @@ import {
   gatewayAgentTurn,
   gatewayCall,
   gatewayLog,
+  linesOf,
   readFakeLog,
   startRegressionGateway,
   type FakeCommand,
@@ -70,16 +71,22 @@ describeRegression("Gateway scenarios: cursor-agent processes per chat", () => {
       expect(replyLines(second.stdout), turnOutput(second)).toEqual([`warm${id}b`]);
 
       const lines = fakeLines(logFrom);
+      // The chat's processes are the ones its prompts reached; the catalog's model listing opens ACP processes and
+      // sessions of its own (`initialize`, `session/new`) at any time, so those lines alone do not name a chat process.
+      const chats = chatPids(lines, `say:warm${id}`);
       const hostLines = gatewayLog(gateway!)
         .slice(hostLogFrom)
         .split("\n")
         .filter((line) => line.includes("cli exec") || line.includes("cli live session"));
       const evidence = `fake log:\n${describeLines(lines)}\n--- Gateway log (cli lines):\n${hostLines.join("\n")}`;
-      const count = (method: string) => lines.filter((line) => line.method === method).length;
-      expect(acpPids(lines), evidence).toHaveLength(1);
+      expect(chats, `processes that got this session's prompts: ${chats.join(",")}\n${evidence}`).toHaveLength(1);
+      const chatLines = linesOf(lines, chats[0]!);
+      const count = (method: string) => chatLines.filter((line) => line.method === method).length;
+      expect(count("initialize"), evidence).toBe(1);
       expect(count("session/new"), evidence).toBe(1);
-      expect(count("session/load"), evidence).toBe(0);
-      const prompts = lines.filter((line) => line.method === "session/prompt");
+      // No process resumed a chat: the model listing never loads one, so this holds for every process in the window.
+      expect(lines.filter((line) => line.method === "session/load"), evidence).toEqual([]);
+      const prompts = chatLines.filter((line) => line.method === "session/prompt");
       expect(prompts, evidence).toHaveLength(2);
       expect(prompts[1]!.params?.sessionId, evidence).toBe(prompts[0]!.params?.sessionId);
       // The host's own record of the same: one live session start for the two turns.
@@ -96,14 +103,14 @@ describeRegression("Gateway scenarios: cursor-agent processes per chat", () => {
       const id = nonce();
       const ended = `regression-ended-${id}`;
       const kept = `regression-kept-${id}`;
-      const endedFrom = readFakeLog(fake!.log).length;
+      const logFrom = readFakeLog(fake!.log).length;
       const endedTurn = await gatewayAgentTurn(gateway!.port, ended, `say:ended${id}`);
       expect(endedTurn.status, turnOutput(endedTurn)).toBe(0);
-      const keptFrom = readFakeLog(fake!.log).length;
-      const endedPids = acpPids(fakeLines(endedFrom));
       const keptTurn = await gatewayAgentTurn(gateway!.port, kept, `say:kept${id}`);
       expect(keptTurn.status, turnOutput(keptTurn)).toBe(0);
-      const keptPids = acpPids(fakeLines(keptFrom));
+      // Each chat's process is the one its prompt reached (not a model-listing process started in between).
+      const endedPids = chatPids(fakeLines(logFrom), `say:ended${id}`);
+      const keptPids = chatPids(fakeLines(logFrom), `say:kept${id}`);
       const pidEvidence = () =>
         `ended chat pids ${endedPids.join(",")} alive=${endedPids.map(fakeAlive).join(",")}; kept chat pids ${keptPids.join(",")} alive=${keptPids.map(fakeAlive).join(",")}`;
       expect(endedPids, pidEvidence()).toHaveLength(1);
@@ -137,9 +144,20 @@ describeRegression("Gateway scenarios: cursor-agent processes per chat", () => {
       );
       expect(added.status, turnOutput(added)).toBe(0);
       const job = JSON.parse(added.stdout.slice(added.stdout.indexOf("{"))) as { id?: string; payload?: { toolsAllow?: string[] } };
-      expect(job.payload?.toolsAllow, added.stdout).toEqual(["sessions_history"]);
-      const ran = openclaw(["cron", "run", job.id!, "--wait", "--wait-timeout", "120s", "--port", port, "--json"], { timeoutMs: 180_000 });
-      const runs = openclaw(["cron", "runs", "--id", job.id!, "--port", port, "--json"], { timeoutMs: 60_000 });
+      expect(job.id, added.stdout).toBeTypeOf("string");
+      let ran: ReturnType<typeof openclaw>;
+      let runs: ReturnType<typeof openclaw>;
+      let removed: ReturnType<typeof openclaw>;
+      try {
+        expect(job.payload?.toolsAllow, added.stdout).toEqual(["sessions_history"]);
+        ran = openclaw(["cron", "run", job.id!, "--wait", "--wait-timeout", "120s", "--port", port, "--json"], { timeoutMs: 180_000 });
+        runs = openclaw(["cron", "runs", "--id", job.id!, "--port", port, "--json"], { timeoutMs: 60_000 });
+      } finally {
+        // The job lives in the tier's shared state, which later files reuse: remove it however the run went.
+        removed = openclaw(["cron", "rm", job.id!, "--port", port, "--json"], { timeoutMs: 60_000 });
+        if (removed.status !== 0) console.warn(`cron rm ${job.id} failed: ${turnOutput(removed)}`);
+      }
+      expect(removed.status, `cron rm ${job.id}: ${turnOutput(removed)}`).toBe(0);
       const lines = fakeLines(logFrom);
       const evidence = `cron run: ${turnOutput(ran)}\n--- cron runs: ${runs.stdout.slice(0, 3_000)}\n--- fake log:\n${describeLines(lines)}`;
       expect(ran.status, evidence).toBe(0);
@@ -147,7 +165,10 @@ describeRegression("Gateway scenarios: cursor-agent processes per chat", () => {
       expect(entry?.status, evidence).toBe("ok");
       expect(entry?.summary, evidence).toBe(`restricted${id}`);
 
-      const opened = lines.filter((line) => line.method === "initialize");
+      // The run's process is the one its prompt reached; a model-listing process may start in the same window.
+      const chats = chatPids(lines, `say:restricted${id}`);
+      expect(chats, `processes that got the run's prompt: ${chats.join(",")}\n${evidence}`).toHaveLength(1);
+      const opened = linesOf(lines, chats[0]!).filter((line) => line.method === "initialize");
       expect(opened, evidence).toHaveLength(1);
       const configDir = (opened[0]!.env as { CURSOR_CONFIG_DIR?: string } | undefined)?.CURSOR_CONFIG_DIR ?? "";
       const home = join(process.env.SPIKE_DIR!, "state", "agents", "main", "agent", "openclaw-all-cli", "cursor-cli");

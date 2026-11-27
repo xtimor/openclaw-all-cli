@@ -6,6 +6,7 @@ import { afterAll, beforeAll, expect, it } from "vitest";
 import { replyLines } from "../../live/harness.ts";
 import {
   CURSOR_COMMAND_KEY,
+  chatPids,
   REGRESSION_TIMEOUT_MS,
   configure,
   describeRegression,
@@ -14,6 +15,8 @@ import {
   freePort,
   gatewayAgentTurn,
   gatewayCall,
+  linesOf,
+  promptText,
   readFakeLog,
   startRegressionGateway,
   type FakeCommand,
@@ -23,7 +26,10 @@ import {
 /**
  * A Cursor listing shaped like the one in bugs #12 and #46 (cursor-agent 2026.10.16 / 2026.10.22 `session/new`): rows
  * with their own `context=` value, a row whose family has a known window but no value, rows with no known window,
- * and Opus 5.5 only as the 300k row ACP reports (Cursor refuses every `context=1m` ID over ACP).
+ * and Opus 5.5 as the 300k row ACP reports. Real Cursor lists no `context=1m` row over ACP and refuses every 1M ID it
+ * did not list; the listing here also has one `context=1m` variant (the matrix row of ticket 4.3), listed after the
+ * 300k row, so the scenario shows what #46 settled for a 1M row the ACP does list: its own model with its own
+ * 1,000,000 window, the 300k row keeping its name and window, and no 1M row the listing did not have.
  */
 const MODELS = [
   { modelId: "default[]", name: "Auto" },
@@ -32,9 +38,18 @@ const MODELS = [
   { modelId: "claude-opus-5[effort=high]", name: "Opus 5" },
   { modelId: "fake-mini[context=200k]", name: "fake-mini" },
   { modelId: "composer-2.5[fast=true]", name: "Composer 2.5" },
+  { modelId: "claude-opus-5-5[context=1m,effort=medium,fast=false]", name: "Opus 5.5" },
 ];
+/** The listed 1M variant's name: the bare name stays with the first Opus 5.5 row, so this one takes its values. */
+const LISTED_1M = "claude-opus-5-5-1m-medium-false";
 /** The windows the plugin must publish for those rows (own value, else the family's); the rest have none. */
-const WINDOWS: Record<string, number> = { "grok-4.7": 256_000, "claude-opus-5-5": 300_000, "claude-opus-5": 300_000, "fake-mini": 200_000 };
+const WINDOWS: Record<string, number> = {
+  "grok-4.7": 256_000,
+  "claude-opus-5-5": 300_000,
+  "claude-opus-5": 300_000,
+  "fake-mini": 200_000,
+  [LISTED_1M]: 1_000_000,
+};
 /** The model the usage turns run on, and its window. */
 const USAGE_MODEL = "grok-4.7";
 const USAGE_WINDOW = WINDOWS[USAGE_MODEL]!;
@@ -60,9 +75,10 @@ describeRegression("Gateway scenarios: context windows and the context reading",
   afterAll(() => finishRegression({ stop: stopGateway, fakes: [fake], root }), 120_000);
 
   // #12: every cursor-cli row was published with no window, so OpenClaw showed and budgeted 128k for all of them.
-  // #46: Opus 5.5 is offered only as the 300k row; a 1M row would be one ACP refuses (`Invalid model value`).
+  // #46: a 1M row the ACP did not list is one it refuses (`Invalid model value`), so the plugin builds none; a 1M
+  // row the ACP lists is its own model with its own window.
   it(
-    "#12/#46: the Gateway's catalog gives each cursor-cli row its own context window and offers no 1M row",
+    "#12/#46: the Gateway's catalog gives each cursor-cli row its own context window and offers no 1M row the ACP did not list",
     async (ctx) => {
       // OpenClaw 2026.11.10 offline lists no model at all (its catalog comes from catalog.openclaw.ai), so the
       // windows cannot be read through the Gateway there; startRegressionGateway reports that as `empty`.
@@ -71,11 +87,14 @@ describeRegression("Gateway scenarios: context windows and the context reading",
       const rows = ((listed?.models ?? []) as Array<{ id?: string; provider?: string; contextWindow?: number }>).filter((row) => row.provider === "cursor-cli");
       const evidence = `cursor-cli rows:\n${rows.map((row) => `${row.id}: ${row.contextWindow}`).join("\n")}`;
       const windowOf = Object.fromEntries(rows.map((row) => [row.id, row.contextWindow]));
-      expect(Object.keys(windowOf).sort(), evidence).toEqual(["auto", "claude-opus-5", "claude-opus-5-5", "composer-2.5", "fake-mini", "grok-4.7"].sort());
+      expect(Object.keys(windowOf).sort(), evidence).toEqual(["auto", "claude-opus-5", "claude-opus-5-5", "composer-2.5", "fake-mini", "grok-4.7", LISTED_1M].sort());
       for (const [id, window] of Object.entries(WINDOWS)) expect(windowOf[id], `${id}\n${evidence}`).toBe(window);
-      expect(new Set(Object.values(WINDOWS).map((window) => window)).size, evidence).toBeGreaterThan(1);
-      // No row the ACP refuses: none with a 1M window, none named for a 1M variant.
-      expect(rows.filter((row) => (row.contextWindow ?? 0) >= 1_000_000 || /1m/i.test(row.id ?? "")), evidence).toEqual([]);
+      // The rows the Gateway returned, not the expectation above, carry more than one window.
+      const published = new Set(rows.map((row) => row.contextWindow).filter((window) => typeof window === "number"));
+      expect(published.size, evidence).toBeGreaterThan(1);
+      // No row the ACP refuses: the only row with a 1M window or a 1M name is the one the listing had.
+      const oneM = rows.filter((row) => (row.contextWindow ?? 0) >= 1_000_000 || /1m/i.test(row.id ?? "")).map((row) => row.id);
+      expect(oneM, evidence).toEqual([LISTED_1M]);
     },
     REGRESSION_TIMEOUT_MS,
   );
@@ -92,12 +111,14 @@ describeRegression("Gateway scenarios: context windows and the context reading",
    * reading after each turn (with the evidence: the usage sent, the row, the CLI output).
    */
   const runUsageTurns = async (name: string, usages: Array<Record<string, number>>) => {
-    const sessionId = `regression-${name}-${randomUUID().slice(0, 8)}`;
+    const tag = randomUUID().slice(0, 8);
+    const sessionId = `regression-${name}-${tag}`;
     const key = `agent:main:explicit:${sessionId}`;
     const readings: Array<number | undefined> = [];
     const notes: string[] = [];
+    const logFrom = readFakeLog(fake!.log).length;
     for (const [index, usage] of usages.entries()) {
-      const reply = `${name}${index}`;
+      const reply = `${name}${tag}t${index}`;
       const run = await gatewayAgentTurn(gateway!.port, sessionId, `[[usage:${JSON.stringify(usage)}]] say:${reply}`);
       const output = `exit ${run.status}\n--- stdout\n${run.stdout}\n--- stderr\n${run.stderr}`;
       expect(run.status, output).toBe(0);
@@ -107,11 +128,29 @@ describeRegression("Gateway scenarios: context windows and the context reading",
       const tokens = Object.fromEntries(Object.entries((row ?? {}) as Record<string, unknown>).filter(([field]) => /token|context/i.test(field)));
       notes.push(`turn ${index + 1}: usage ${JSON.stringify(usage)} -> session ${JSON.stringify(tokens)}`);
     }
-    // The model the turns ran on: the fake switched each new session to it.
-    const switched = readFakeLog(fake!.log).some((line) => JSON.stringify(line.params ?? {}).includes(MODELS[1]!.modelId));
-    notes.push(`fake switched a session to ${MODELS[1]!.modelId}: ${switched}`);
-    return { readings, evidence: notes.join("\n") };
+    // The model each turn ran on: the last model switch the turn's Cursor chat got before its prompt.
+    const lines = readFakeLog(fake!.log).slice(logFrom);
+    const models = usages.map((_, index) => {
+      const marker = `say:${name}${tag}t${index}`;
+      const pids = chatPids(lines, marker);
+      const own = pids.length === 1 ? linesOf(lines, pids[0]!) : [];
+      const at = own.findIndex((line) => line.method === "session/prompt" && promptText(line).includes(marker));
+      const chat = own[at]?.params?.sessionId;
+      const switches = own
+        .slice(0, Math.max(at, 0))
+        .filter((line) => line.params?.sessionId === chat)
+        .flatMap((line) =>
+          line.method === "session/set_model" ? [line.params.modelId] : line.method === "session/set_config_option" && line.params.configId === "model" ? [line.params.value] : [],
+        );
+      return pids.length === 1 ? switches.at(-1) : `(${pids.length} processes got this prompt: ${pids.join(",")})`;
+    });
+    notes.push(`model of each turn's chat: ${JSON.stringify(models)}`);
+    return { readings, models, evidence: notes.join("\n") };
   };
+
+  /** Every turn ran on the model whose window the readings are held to. */
+  const expectUsageModel = (models: unknown[], evidence: string) =>
+    expect(models, `the turns ran on another model than ${MODELS[1]!.modelId}\n${evidence}`).toEqual(models.map(() => MODELS[1]!.modelId));
 
   /** Every reading is within the window, and no reading is below an earlier one. */
   const expectBoundedAndRising = (readings: Array<number | undefined>, evidence: string) => {
@@ -138,11 +177,12 @@ describeRegression("Gateway scenarios: context windows and the context reading",
   it(
     "#40: a tool-heavy turn's summed usage never reads as a context above the model's window",
     async () => {
-      const { readings, evidence } = await runUsageTurns("summed", [
+      const { readings, models, evidence } = await runUsageTurns("summed", [
         plain(5_074, 10_240, 31),
         { inputTokens: 100_000, cachedReadTokens: 5_400_000, outputTokens: 86_800, totalTokens: 5_586_800 },
         plain(5_200, 10_400, 40),
       ]);
+      expectUsageModel(models, evidence);
       expectBoundedAndRising(readings, evidence);
     },
     REGRESSION_TIMEOUT_MS,
@@ -153,11 +193,12 @@ describeRegression("Gateway scenarios: context windows and the context reading",
   it(
     "#97: the context reading does not go down when a plain turn follows a tool-heavy one",
     async () => {
-      const { readings, evidence } = await runUsageTurns("falling", [
+      const { readings, models, evidence } = await runUsageTurns("falling", [
         plain(5_074, 10_240, 31),
         { inputTokens: 10_000, cachedReadTokens: 90_000, outputTokens: 900, totalTokens: 100_900 },
         plain(5_300, 10_500, 50),
       ]);
+      expectUsageModel(models, evidence);
       expectBoundedAndRising(readings, evidence);
     },
     REGRESSION_TIMEOUT_MS,

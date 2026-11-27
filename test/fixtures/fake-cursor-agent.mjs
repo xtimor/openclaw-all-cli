@@ -9,11 +9,12 @@
 //                               when it holds a key) instead of FAKE_CURSOR_LOGGED_IN; `initialize` logs its `cachedKeyHash`
 //   FAKE_CURSOR_NO_ASK_MODE=1   the agent lists no "ask" mode
 //   FAKE_CURSOR_START_MODE=<id> the mode a session starts in (default "agent"); prompt "[[mode]]" replies "mode:<current mode>"
-//   FAKE_CURSOR_LOG=<file>      append one JSON line per request the agent receives (with `t`, the epoch ms); the `initialize` line also carries
+//   FAKE_CURSOR_LOG=<file>      append one JSON line per request the agent receives (with `t`, the epoch ms, and `pid`, the process that
+//                               logged it; a `worker` line's `pid` is the worker's); the `initialize` line also carries
 //                               the process `argv`, CURSOR_CONFIG_DIR/CURSOR_DATA_DIR/XDG_CONFIG_HOME, `keyed`, and `keyHash` (8 hex of the key's sha256)
 //   FAKE_CURSOR_LOG_END=1       also log a `prompt/end` line when a prompt ends
 //   FAKE_CURSOR_USAGE=1|<json> session/prompt answers with a small ACP usage, or with this JSON as its usage
-//                               (a prompt's own "[[usage:<json>]]" wins for that turn)
+//                               (a prompt's own last "[[usage:<json>]]" wins for that turn)
 //   FAKE_CURSOR_VERSION=<text>  what `--version` prints (default "2026.10.14-fake")
 //   FAKE_CURSOR_VERSION_EXIT=<n> `--version` exits with this code after printing
 //   FAKE_CURSOR_ABOUT=ok|invalid|unknown  what `about` answers when CURSOR_API_KEY is set (default "ok": a `User Email` line;
@@ -54,7 +55,8 @@
 // "[[error]]<text>" sends <text> as the one and only reply chunk (a failed Cursor turn: "\n\nError: ...") and ends with end_turn.
 // "[[error-json:<json string>]]" does the same with the decoded string, so the reply holds exactly that text (a host that
 // wraps the prompt in its own lines cannot add them to the error, and "\n\n" fits in a one-line message).
-// "[[usage:<json object>]]" makes this turn answer with that JSON as its ACP usage (per-turn FAKE_CURSOR_USAGE).
+// "[[usage:<json object>]]" makes this turn answer with that JSON as its ACP usage (per-turn FAKE_CURSOR_USAGE). When the
+// prompt holds several (a host that repeats earlier messages in the prompt), the last one counts.
 // "[[sleep:<ms>]]" waits <ms> before the reply (a turn that takes a while), then answers like any other prompt. Every turn
 // sends one thought chunk first, so the wait comes between the first thought and the first text; "[[no-think]]" sends no thought.
 // "[[images]]" replies "images:<n>:<mime>/<bytes>,..." for the image blocks of the prompt. The log's `session/prompt` line shows each
@@ -77,7 +79,7 @@ import { createInterface } from "node:readline";
 
 const args = process.argv.slice(2);
 const log = (entry) => {
-  if (process.env.FAKE_CURSOR_LOG) appendFileSync(process.env.FAKE_CURSOR_LOG, `${JSON.stringify({ ...entry, t: Date.now() })}\n`);
+  if (process.env.FAKE_CURSOR_LOG) appendFileSync(process.env.FAKE_CURSOR_LOG, `${JSON.stringify({ pid: process.pid, ...entry, t: Date.now() })}\n`);
 };
 
 /** Cursor's own key cache (`$XDG_CONFIG_HOME/cursor/auth.json`), imitated with FAKE_CURSOR_KEY_CACHE=1. */
@@ -393,10 +395,10 @@ async function runPrompt(id, params) {
 
 /**
  * `FAKE_CURSOR_USAGE`: "1" reports a small ACP usage; a JSON object is reported as the usage itself. A prompt's
- * own `[[usage:<json>]]` wins for its turn.
+ * own `[[usage:<json>]]` wins for its turn; with several in the prompt, the last one.
  */
 function promptUsage(text) {
-  const own = /\[\[usage:(\{.*?\})\]\]/.exec(text);
+  const own = [...text.matchAll(/\[\[usage:(\{.*?\})\]\]/g)].at(-1);
   if (own) return { usage: JSON.parse(own[1]) };
   const value = process.env.FAKE_CURSOR_USAGE?.trim();
   if (value === "1") return { usage: { totalTokens: 7, inputTokens: 3, outputTokens: 4 } };
