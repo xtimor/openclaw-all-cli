@@ -1,7 +1,7 @@
 import { spawnSync } from "node:child_process";
-import { chmodSync, existsSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { createServer } from "node:net";
-import { join, sep } from "node:path";
+import { dirname, join, sep } from "node:path";
 import { describe } from "vitest";
 import { FAKE_CURSOR_AGENT } from "../fixtures/paths.ts";
 import { openclaw, openclawAsync, startGateway, waitFor, type OpenClawResult, type TestGateway } from "../live/harness.ts";
@@ -114,6 +114,51 @@ export function readFakeLog(file: string): FakeLogEntry[] {
 export function promptText(entry: FakeLogEntry): string {
   const blocks = (entry.params?.prompt ?? []) as Array<{ text?: string }>;
   return blocks.map((block) => block.text ?? "").join("\n");
+}
+
+/** A scenario file's own OpenClaw state; see `isolatedState`. */
+export type IsolatedState = {
+  /** The file's `SPIKE_DIR` (state and config), under `.regression/`. */
+  dir: string;
+  /** Points `SPIKE_DIR` back at the tier's shared state and removes `dir`. Call it after the file's Gateway stopped. */
+  restore(): void;
+};
+
+/**
+ * Gives the calling scenario file an OpenClaw state and config of its own, for a scenario whose config must never reach
+ * the tier's shared state (the config outlives the file: a second agent in `agents.entries` changes how every later
+ * Gateway loads the plugin). The new `SPIKE_DIR` lies beside the shared one under `.regression/`, links the tier's
+ * Node and OpenClaw, has `gateway.auth.mode none`, and gets the plugin the tier installed, packed again from the
+ * shared state (so a `--tgz` run tests the same build). It sets `process.env.SPIKE_DIR`, which every harness call
+ * passes on; Vitest runs each file in a worker of its own, so the other files keep the shared state.
+ */
+export function isolatedState(name: string): IsolatedState {
+  const shared = process.env.SPIKE_DIR ?? "";
+  if (!shared.includes(`${sep}.regression${sep}`)) throw new Error(`isolatedState needs the tier's SPIKE_DIR under .regression/, got '${shared}'.`);
+  const dir = mkdtempSync(join(dirname(shared), `scenario-${name}-`));
+  const restore = () => {
+    process.env.SPIKE_DIR = shared;
+    rmSync(dir, { recursive: true, force: true });
+  };
+  try {
+    for (const part of ["node", "openclaw"]) symlinkSync(join(shared, part), join(dir, part));
+    // The tier's Node is first on PATH (scripts/regression.sh). The installed copy holds the packed files; its own
+    // dependencies stay out of the pack, and the install below fetches them as the tier's install did.
+    const packed = spawnSync("npm", ["pack", "--ignore-scripts", "--pack-destination", dir, join(shared, "state", "extensions", "openclaw-all-cli")], {
+      encoding: "utf8",
+      timeout: 60_000,
+    });
+    const tarball = (packed.stdout ?? "").trim().split("\n").at(-1) ?? "";
+    if (packed.status !== 0 || !tarball.endsWith(".tgz")) throw new Error(`npm pack of the installed plugin failed:\n${packed.stdout}${packed.stderr}`);
+    process.env.SPIKE_DIR = dir;
+    configure({ "gateway.auth.mode": "none" });
+    const installed = openclaw(["plugins", "install", "--force", "--accept-capabilities", join(dir, tarball)], { timeoutMs: 180_000 });
+    if (installed.status !== 0) throw new Error(`plugins install into ${dir} failed:\n${installed.stdout}${installed.stderr}`);
+    return { dir, restore };
+  } catch (error) {
+    restore();
+    throw error;
+  }
 }
 
 /** Sets config values with `openclaw config set`: strings as they are, anything else as strict JSON. */
@@ -359,9 +404,12 @@ export function fakeAlive(pid: number): boolean {
   return processTable().get(pid)?.args.includes(FAKE_CURSOR_AGENT) === true;
 }
 
-/** One turn through the Gateway with `openclaw agent` (the CLI reaches it through `OPENCLAW_GATEWAY_PORT`). */
-export function gatewayAgentTurn(port: number, sessionId: string, message: string, timeoutMs = 180_000): Promise<OpenClawResult> {
-  return openclawAsync(["agent", "--session-id", sessionId, "--message", message], {
+/**
+ * One turn through the Gateway with `openclaw agent` (the CLI reaches it through `OPENCLAW_GATEWAY_PORT`), for the
+ * agent `agent` when given (`--agent`), else the one the host routes to.
+ */
+export function gatewayAgentTurn(port: number, sessionId: string, message: string, timeoutMs = 180_000, agent?: string): Promise<OpenClawResult> {
+  return openclawAsync(["agent", ...(agent === undefined ? [] : ["--agent", agent]), "--session-id", sessionId, "--message", message], {
     timeoutMs,
     env: { OPENCLAW_GATEWAY_PORT: String(port) },
   });
