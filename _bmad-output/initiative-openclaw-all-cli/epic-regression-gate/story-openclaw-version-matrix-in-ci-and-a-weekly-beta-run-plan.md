@@ -3,14 +3,14 @@ title: 'OpenClaw version matrix in CI and a weekly beta run'
 type: 'feature'
 ticket: '4'
 created: '2026-11-27'
-status: 'in-review'
+status: done
 baseline_revision: '54d6565b2b6d4e1b30f53d0e0d1f69d28ee9ba56'
 route: 'full'
 route_source: 'auto'
 risk: 'low'
 review: 'quick'
 review_source: 'auto'
-lenses_ran: []
+lenses_ran: ['quick']
 review_loop_iteration: 0
 followup_review_recommended: true
 context: []
@@ -99,6 +99,14 @@ Quick review by the coordinator after commit 50b2a71 (5 findings: 1 high, 4 low;
 | 3 | low | checkout without `persist-credentials: false` in `resolve`, `gateway`, `issue` | patched |
 | 4 | low | regression-beta-issue.mjs could open a duplicate when GitHub dropped the label at create and the re-add failed | patched: marker search among the 100 newest issues (any state and label) before creating; test added |
 | 5 | low | tests: no paging past 100 rows or page cap; `regression.sh --result` untested | patched: tests for >100 comments, >100 open issues, the 2000-row cap; result writer moved to `scripts/regression-result.mjs`, tests for passed, failed (names), error (no report), and the trap through `regression.sh gateway --result` |
+
+## Auto Run Result
+
+- **Summary:** `.github/workflows/regression.yml` (reusable and manual) resolves the requested OpenClaw versions with `scripts/regression.sh resolve`, runs the Gateway tier as one job per distinct version, and writes a summary table from per-version result files (`scripts/regression-result.mjs`); `ci.yml` calls it on min and latest; `regression-beta.yml` runs `beta` weekly (Mondays 05:37 UTC) and by dispatch, and `scripts/regression-beta-issue.mjs` opens one `regression:beta` issue or comments on the open one; `scripts/regression.sh` gains `resolve`, `--tgz` and `--result` with the default unchanged.
+- **Review:** 5 patched (high 1: the tier's exit code lost in the `tee` pipe, so every red leg would show green; low 4), 0 deferred, 0 rejected.
+- **Follow-up review recommended:** true (a high was patched); the risk: the beta issue path runs for real only after merge (scheduled and dispatched workflows need the file on the default branch).
+- **Verification:** CI run 46081609543 on 2274a24: `regression / gateway (min = 2026.10.3)` red on the #39 case only (#106, 18 passed, 1 skipped, 367 s of tests), `regression / gateway (latest = 2026.11.10)` green (about 11 min), summary and failure-log artifacts uploaded; `npm test` 2114 passed; typecheck and actionlint clean.
+- **Residual risks:** the red min job blocks Batch merge until #106 is fixed (the gate working); each PR adds two jobs of about 7 to 11 minutes and about 800 MB of cache per OpenClaw version.
 
 ## Verification
 
