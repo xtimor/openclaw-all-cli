@@ -307,8 +307,8 @@ issue = 102
 title = "In ask mode (no OpenClaw exec) the model reads a missing native edit tool as a read-only session and refuses writes the OpenClaw tools allow"
 family = "native-tools-note"
 tier = "live"
-# fixed = false while the live scenario is red (2026-11-28: the model still refuses, citing Ask mode); the #102 follow-up flips it.
-fixed = false
+# Live scenario green on 2026.11.11 and 2026.10.3 after the follow-up (agent mode for a no-exec turn offered writers).
+fixed = true
 tests = [
   { file = "test/ask-tools-hint.test.ts", name = "tells the model the chat is not read-only and names the OpenClaw tools that change things, when the host serves no exec", tier = "unit", reproduces = false },
   { file = "test/ask-tools-hint.test.ts", name = "sends the sentence on every prompt of the process, not only the first", tier = "unit", reproduces = false },
