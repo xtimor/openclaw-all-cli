@@ -8,10 +8,10 @@ baseline_revision: 'cd8a412cd3177daefc602f47154ca2118ebb0e13'
 route: 'full'
 route_source: 'pinned'
 risk: 'low'
-review: ''
-review_source: ''
-lenses_ran: []
-review_loop_iteration: 0
+review: 'quick'
+review_source: 'auto'
+lenses_ran: [self-review, quick]
+review_loop_iteration: 1
 followup_review_recommended: false
 context: []
 warnings: []
@@ -83,6 +83,16 @@ deferred: []
 
 ## Review Triage Log
 
+### 2026-11-28 — Review pass 1 (quick lens, triaged by the orchestrator; patches in one commit)
+- verdicts: 6 findings — high 0, medium 5, low 1, false 0, maybe-false 0
+- findings:
+  - `[medium]` `[patch]` a no-`exec` process whose tool list was unreadable at open never got the sentence on a warm turn (no marker, so not `degraded`) — `LiveEntry.withoutHostShell`; a warm turn of such a process with no `askToolsNote` reads the list (one read shared with the `structured_output` re-read) and sets it. Unit test: three turns, first list read fails, turns 2 and 3 carry the sentence (red before).
+  - `[medium]` `[patch]` a warm turn whose proxy target was cleared ("OpenClaw tools are unavailable in this turn") still said "every OpenClaw tool offered here stays usable" — the sentence goes only when the turn's target is usable (`turnTarget.ok`). Unit test: turn 2 with a missing MCP config file has no sentence, turn 3 has it again (red before).
+  - `[medium]` `[patch]` P10 in the manifest and the parity matrix tied the sentence to the restricted profile; a restricted run can still be served `exec` — worded as "a turn whose tool list has no `exec`, restricted or not".
+  - `[medium]` `[patch]` `docs/providers/cursor.md` did not say which ask-mode turns get the sentence — the mode paragraph, the "No `exec`" limit, Shell commands and the P10 row now name the conditions (list read, one of the named tools, usable OpenClaw tools) and the exceptions (side question, unreadable list, no such tool, unavailable tools; a warm process re-reads).
+  - `[low]` `[patch]` the CHANGELOG examples (`write`, `edit`, `workboard_comment`) do not appear on a default-profile run — reworded: `file_write`, or `write` and `edit` when Cursor's native file readers are off.
+  - `[medium]` `[patch]` the ledger called a fake-Cursor scenario a reproduction of model behavior — #102 is `tier = "live"` like #76, the Gateway scenario `reproduces = false`, `planned = "4.5"` (the ledger test accepts a bug without a reproducing test at its tier when `planned` is set).
+
 ## Design Notes
 
 Decision: the mutating set is a fixed, ordered list of OpenClaw tool names that change files or records: `write`, `edit`, `apply_patch` (core `fs` group), `file_write` (file-transfer plugin), `workboard_create`, `workboard_comment` (Workboard plugin), `wiki_apply` (memory-wiki plugin). `listed` is the raw `tools/list` names of the host's MCP loopback (`listToolNames`), which carry no `readOnlyHint` (the host's `buildMcpToolSchema` sends name, description, schema only), so the plugin cannot classify tools itself; listing every non-read tool (Workboard alone has 39) would make the sentence long and vague. The sentence says "every OpenClaw tool offered here stays usable, including ..." so tools outside the set are not implied read-only.
@@ -106,3 +116,20 @@ Decision: the Gateway scenario reaches `ask` mode through a per-session exec hos
 - `scripts/regression.sh gateway --openclaw min` (2026.10.3): 21 passed, 1 skipped, 1 failed (654 s): only #39, the known #106 (`models.authStatus has no saved cursor-cli profile 30 s after the save`), not touched; #102 6.7 s.
 - Matrix audit: ask turn, warm turns, marker without exec, exec turn, nothing mutating, unreadable list and side question each have a unit test that ran and passed.
 - Live Cursor check: not run.
+
+**Results after review pass 1 (2026-11-28):**
+- New unit tests (warm turn after an unreadable list; warm turn with an unusable target): red before the patch (`expected 'do it 1' to match /does not make this chat…/`; `expected '[OpenClaw] The native shell…' to be 'do it 1'`), green after; `test/ask-tools-hint.test.ts` 12 passed.
+- `npm run typecheck`: green. `npm test`: 73 files passed, 30 skipped; 2169 tests passed, 102 skipped.
+- `node scripts/changelog.mjs check`, `test/regression/ledger.test.ts`, `test/parity-suite.test.ts`: green.
+- #102 Gateway scenario alone (`-t "#102"`, fresh state with the patched build): green on 2026.11.11 and on 2026.10.3. Whole tiers not re-run.
+
+## Auto Run Result
+
+Status: in-review
+
+- Summary: a turn without OpenClaw `exec` (Cursor `ask` mode) now carries, on every prompt of its process, one neutral sentence: the native shell, write and edit tools are disabled, that does not make the chat read-only, and the named OpenClaw tools in the list (`write`, `edit`, `apply_patch`, `file_write`, `workboard_create`, `workboard_comment`, `wiki_apply`) change files and records. Left out when the turn's OpenClaw tools are unavailable; a warm process re-reads the list when it had no sentence yet.
+- Files: `src/core/turn-prompt.ts`, `src/core/live-entry.ts`, `src/core/execute.ts`, `src/adapters/cursor/manifest.ts`, `src/adapters/cursor/index.ts` (comment), `test/ask-tools-hint.test.ts`, `test/fixtures/host-tools-turn.ts`, `test/regression/gateway/reply-prompt.regression.test.ts`, `test/regression/ledger.toml`, `docs/providers/cursor.md`, the parity matrix, `CHANGELOG.md`, `MEMORY.md`.
+- Review: self-review, then quick lens (orchestrator-triaged): 6 findings, all patched.
+- Follow-up review recommended: false.
+- Verification: unit and Gateway reproductions red before, green after; tiers latest green and min green except #39 (#106) before the review patches; after them typecheck, `npm test` and the #102 scenario on latest and min green.
+- Residual risks: whether a real model follows the sentence is unverified (live scenario planned in ticket 4.5); the write-tool list is fixed; about 60 tokens per ask-mode prompt; a no-`exec` process without a write tool reads the tool list once per warm turn.

@@ -306,10 +306,12 @@ tests = [
 issue = 102
 title = "In ask mode (no OpenClaw exec) the model reads a missing native edit tool as a read-only session and refuses writes the OpenClaw tools allow"
 family = "native-tools-note"
-tier = "gateway"
+tier = "live"
 fixed = true
 tests = [
   { file = "test/ask-tools-hint.test.ts", name = "tells the model the chat is not read-only and names the OpenClaw tools that change things, when the host serves no exec", tier = "unit", reproduces = false },
   { file = "test/ask-tools-hint.test.ts", name = "sends the sentence on every prompt of the process, not only the first", tier = "unit", reproduces = false },
-  { file = "test/regression/gateway/reply-prompt.regression.test.ts", name = "#102: an ask-mode turn where the host serves no `exec` sends the not-read-only note on turn 1 and turn 2 of one process, and the mode stays `ask`", tier = "gateway", reproduces = true },
+  { file = "test/regression/gateway/reply-prompt.regression.test.ts", name = "#102: an ask-mode turn where the host serves no `exec` sends the not-read-only note on turn 1 and turn 2 of one process, and the mode stays `ask`", tier = "gateway", reproduces = false },
 ]
+# Model behavior: the Gateway scenario (fake Cursor) only shows the sentence is sent; ticket 4.5 adds the live scenario.
+planned = "4.5"

@@ -50,6 +50,23 @@ describe("the ask-mode tools hint", () => {
     }
   });
 
+  it("sends the sentence from the next warm turn on when the tool list could not be read at open", async () => {
+    const { prompts, opens } = await turnWithHostTools((turn) => (turn === 0 ? null : ["write", "edit"]), { marker: false, turns: 3 });
+    expect(opens).toHaveLength(1);
+    expect(prompts[0]).toBe("do it 0");
+    expect(prompts[1]).toMatch(NOT_READ_ONLY);
+    expect(prompts[1]).toMatch(/`write` and `edit`/);
+    expect(prompts[2]).toMatch(NOT_READ_ONLY);
+  });
+
+  it("leaves the sentence out of a warm turn whose OpenClaw tools are unavailable, and sends it again after", async () => {
+    const { prompts, opens } = await turnWithHostTools(["write"], { turns: 3, noTarget: (turn) => turn === 1 });
+    expect(opens).toHaveLength(1);
+    expect(prompts[0]).toMatch(NOT_READ_ONLY);
+    expect(prompts[1]).toBe("do it 1");
+    expect(prompts[2]).toMatch(NOT_READ_ONLY);
+  });
+
   it("says nothing of the kind to a side question, which has no OpenClaw tools", async () => {
     const { prompts, opens } = await turnWithHostTools(["write", "edit"], { ctx: { executionMode: "side-question" } });
     expect(opens[0]).toMatchObject({ executionMode: "side-question" });

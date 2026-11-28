@@ -272,7 +272,10 @@ export function createExecute(adapter: CliAdapter, options: ExecuteOptions): Cli
       const listed = turnTarget.ok ? await listToolNames(turnTarget.target, ctx.abortSignal) : undefined;
       const hostShell = marked && listed?.includes(HOST_SHELL_TOOL) === true;
       if (hostShell) fresh.shellNote = shellNote(listed?.includes(HOST_PROCESS_TOOL) === true);
-      else if (listed) fresh.askToolsNote = askToolsNote(listed);
+      else {
+        fresh.withoutHostShell = true;
+        if (listed) fresh.askToolsNote = askToolsNote(listed);
+      }
       if (listed?.includes(HOST_STRUCTURED_TOOL)) fresh.structuredNote = structuredOutputNote();
       // The host may serve exec but the list could not be read (an error, a cold cache): this
       // process opened in the restrictive mode. Never reuse it, so the next turn reads the list again.
@@ -414,13 +417,20 @@ export function createExecute(adapter: CliAdapter, options: ExecuteOptions): Cli
     // The shell sentence goes the same way: once per process, after the continuity note. The ask-mode tools sentence
     // (no `exec`) takes the shell sentence's place and goes with every prompt of the process (issue #102).
     // The `structured_output` sentence follows them, once per process (Decision, ticket 24): a warm process
-    // whose first prompt lacked it reads the tool list again until the tool shows up, then sends it once.
-    if (!opened && !active.structuredNote && !active.structuredSent && turnTarget.ok) {
+    // whose first prompt lacked it reads the tool list again until the tool shows up, then sends it once. A process
+    // without `exec` whose list named no write tool, or could not be read, at open reads it again the same way.
+    const wantsStructured = !active.structuredNote && !active.structuredSent;
+    const wantsAskTools = active.withoutHostShell === true && active.askToolsNote === undefined;
+    if (!opened && (wantsStructured || wantsAskTools) && turnTarget.ok) {
       const target = active.target ?? turnTarget.target;
-      if ((await listToolNames(target, ctx.abortSignal))?.includes(HOST_STRUCTURED_TOOL)) active.structuredNote = structuredOutputNote();
+      const listed = await listToolNames(target, ctx.abortSignal);
+      if (wantsStructured && listed?.includes(HOST_STRUCTURED_TOOL)) active.structuredNote = structuredOutputNote();
+      if (wantsAskTools && listed) active.askToolsNote = askToolsNote(listed);
       ctx.abortSignal?.throwIfAborted();
     }
-    const note = [active.freshChat ? CONTINUITY_NOTE : undefined, active.shellNote, active.askToolsNote, active.structuredNote].filter(Boolean).join("\n\n") || undefined;
+    // The ask-mode sentence promises usable OpenClaw tools: not in a turn whose proxy has no target.
+    const askNote = turnTarget.ok ? active.askToolsNote : undefined;
+    const note = [active.freshChat ? CONTINUITY_NOTE : undefined, active.shellNote, askNote, active.structuredNote].filter(Boolean).join("\n\n") || undefined;
     active.freshChat = false;
     active.shellNote = undefined;
     if (active.structuredNote) active.structuredSent = true;

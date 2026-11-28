@@ -49,9 +49,14 @@ export type LiveEntry = {
   /**
    * The process opened for a turn without the host's `exec` whose tool list holds OpenClaw tools that change files
    * or records: the sentence that says the chat is not read-only. Unlike `shellNote` it goes with every prompt of the
-   * process, since the model refused on later turns too (issue #102).
+   * process whose turn has a usable OpenClaw target, since the model refused on later turns too (issue #102).
    */
   askToolsNote?: string;
+  /**
+   * The process opened without the host's `exec` (its mode cannot change). While `askToolsNote` is unset (the list
+   * was unreadable or named no write tool), each warm turn reads the tool list again to set it.
+   */
+  withoutHostShell?: boolean;
   /**
    * The sentence that says the final answer goes through `structured_output`, until a prompt sends
    * it. Pending only when the host's tool list held the tool at open.
