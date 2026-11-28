@@ -10,6 +10,7 @@ import { STUB_EXEC_TOOL, startStubMcpHost } from "../fixtures/stub-mcp-host.ts";
 import {
   LIVE_TIMEOUT_MS,
   describeLive,
+  freshDir,
   liveHostEnv,
   makeLiveSession,
   openclaw,
@@ -82,7 +83,7 @@ describeLive("permission requests go to the host (P8, P9)", () => {
     "falls back to OpenClaw exec when the host denies the native shell",
     async () => {
       const workspace = join(root, "workspace-deny");
-      mkdirSync(workspace);
+      freshDir(workspace);
       const { adapter, decisions } = observed();
       const execute = createExecute(adapter, { home: askingHome("home-deny"), warn: (message) => console.warn(message) });
       const host = await startStubMcpHost({ execTool: true });
@@ -124,7 +125,7 @@ describeLive("permission requests go to the host (P8, P9)", () => {
       // Cursor's ask mode (the session's second lock, see the adapter) makes the model refuse
       // commands that change files even when the host approves, so the command only reads.
       const workspace = join(root, "workspace-allow");
-      mkdirSync(workspace);
+      freshDir(workspace);
       const { adapter, decisions } = observed();
       const execute = createExecute(adapter, { home: askingHome("home-allow"), warn: (message) => console.warn(message) });
       const host = await startStubMcpHost();
@@ -159,7 +160,7 @@ describeLive("permission requests go to the host (P8, P9)", () => {
     "ends the turn cleanly when it is aborted while the host waits for a human",
     async () => {
       const workspace = join(root, "workspace-abort");
-      mkdirSync(workspace);
+      freshDir(workspace);
       const { adapter, decisions, sessions } = observed();
       const execute = createExecute(adapter, { home: askingHome("home-abort"), warn: (message) => console.warn(message) });
       const host = await startStubMcpHost();

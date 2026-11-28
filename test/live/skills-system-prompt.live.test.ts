@@ -3,7 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterAll, beforeAll, expect, it } from "vitest";
 import { FAKE_CURSOR_AGENT } from "../fixtures/paths.ts";
-import { ISOLATED_STATE_DIR, LIVE_TIMEOUT_MS, describeLive, openclaw } from "./harness.ts";
+import { ISOLATED_STATE_DIR, LIVE_TIMEOUT_MS, describeLive, freshDir, openclaw } from "./harness.ts";
 
 // AD-15 with parity rows P11 (skills) and P12 (system prompt). Real Cursor sees OpenClaw's system
 // prompt: a reply rule that lives only in the workspace's SOUL.md (OpenClaw injects it, Cursor does not
@@ -120,7 +120,8 @@ describeLive("skills and system prompt (P11, P12)", () => {
   it("sends the block once for an unchanged prompt, keeps the chat when the tool list changes, and sends the new block (e)", () => {
     const log = join(root, "drift.jsonl");
     const store = join(root, "drift-store");
-    mkdirSync(store);
+    freshDir(store);
+    rmSync(log, { force: true });
     const shim = join(root, "fake-cursor.sh");
     writeFileSync(
       shim,

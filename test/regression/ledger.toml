@@ -312,6 +312,6 @@ tests = [
   { file = "test/ask-tools-hint.test.ts", name = "tells the model the chat is not read-only and names the OpenClaw tools that change things, when the host serves no exec", tier = "unit", reproduces = false },
   { file = "test/ask-tools-hint.test.ts", name = "sends the sentence on every prompt of the process, not only the first", tier = "unit", reproduces = false },
   { file = "test/regression/gateway/reply-prompt.regression.test.ts", name = "#102: an ask-mode turn where the host serves no `exec` sends the not-read-only note on turn 1 and turn 2 of one process, and the mode stays `ask`", tier = "gateway", reproduces = false },
+  { file = "test/live/ask-mode-write.live.test.ts", name = "#102: in ask mode a file asked for without naming a tool is written through an OpenClaw tool, on turn 1 and turn 2 of one process", tier = "live", reproduces = true },
 ]
-# Model behavior: the Gateway scenario (fake Cursor) only shows the sentence is sent; ticket 4.5 adds the live scenario.
-planned = "4.5"
+# Model behavior: the Gateway scenario (fake Cursor) only shows the sentence is sent; the live scenario shows the model acts on it.

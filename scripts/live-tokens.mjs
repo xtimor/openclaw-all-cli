@@ -22,22 +22,33 @@ const EVENTS_PATH = "/aiserver.v1.DashboardService/GetFilteredUsageEvents";
 const PAGE_SIZE = 100;
 const MAX_PAGES = 200;
 
-/** The meter log's conversations: every session id a prompt went to, and those with a finished (not refused) turn. */
+/**
+ * The meter log's conversations: every session id a prompt went to, and those with a finished (not refused) turn.
+ * A turn a test failed on purpose (an `unbilled` window it wrote with `markUnbilled` in test/live/harness.ts, such as
+ * the refused model host of test/live/errors.live.test.ts) leaves no ledger event, so a turn that ended inside such a
+ * window does not count as finished.
+ */
 export function conversationsOf(text) {
   const all = new Set();
   const finished = new Set();
+  const entries = [];
+  const windows = [];
   for (const line of text.split("\n")) {
     if (!line.trim()) continue;
-    let entry;
     try {
-      entry = JSON.parse(line);
+      const entry = JSON.parse(line);
+      if (entry?.kind === "unbilled" && Number.isFinite(entry.from) && Number.isFinite(entry.to)) windows.push([entry.from, entry.to]);
+      else entries.push(entry);
     } catch {
-      continue;
+      // Not a log line.
     }
+  }
+  const unbilled = (at) => Number.isFinite(at) && windows.some(([from, to]) => at >= from && at <= to);
+  for (const entry of entries) {
     if (typeof entry?.sessionId !== "string" || !entry.sessionId) continue;
     if (entry.kind === "prompt") all.add(entry.sessionId);
     // A cancelled turn may leave no ledger event; any other answered turn does.
-    if (entry.kind === "done" && entry.stopReason !== undefined && entry.stopReason !== "cancelled" && !entry.error) finished.add(entry.sessionId);
+    if (entry.kind === "done" && entry.stopReason !== undefined && entry.stopReason !== "cancelled" && !entry.error && !unbilled(entry.at)) finished.add(entry.sessionId);
   }
   return { all, finished };
 }
@@ -60,7 +71,8 @@ export function sumRun(events, conversations, since, matchTurnEvents) {
     for (const key of Object.keys(totals)) totals[key] += usage[key];
   }
   const seen = new Set(events.filter((event) => Number(event?.timestamp) >= since).map((event) => event?.conversationId));
-  const missing = [...conversations.finished].filter((id) => !seen.has(id)).length;
+  const missingIds = [...conversations.finished].filter((id) => !seen.has(id));
+  const missing = missingIds.length;
   const sum = totals.input + totals.output + totals.cacheRead + totals.cacheWrite;
   return {
     ...totals,
@@ -69,6 +81,8 @@ export function sumRun(events, conversations, since, matchTurnEvents) {
     matched,
     missing,
     events: eventCount,
+    // The ACP session ids of the missing conversations (no key, token or account id), to look them up in the turn log.
+    ...(missing > 0 ? { missingConversations: missingIds } : {}),
   };
 }
 

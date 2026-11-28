@@ -3,7 +3,7 @@ title: 'Live tier in GitHub Actions with the real cursor-agent'
 type: 'feature'
 ticket: '5'
 created: '2026-11-28'
-status: 'in-progress'
+status: 'in-review'
 baseline_revision: '5478be7'
 route: 'full'
 route_source: 'auto'
@@ -89,4 +89,22 @@ deferred: []
 - Decision: the checks that need a cursor-cli model in the Gateway's catalog (#75, Test connection) skip with the reason on OpenClaw 2026.11 and later when that catalog lists none: those versions take it from `catalog.openclaw.ai`, unreachable in this container. 2026.10.x lists the plugin's rows offline and never skips.
 - Decision: the harness finds Gateway logs where each version writes them (`<state>/logs` from 2026.11, `$TMPDIR/openclaw` before; `history-continuity` and `turn-latency` read them) and follows `SPIKE_DIR`, so the tier's isolated state under `.regression/` is the one the files read.
 - Decision: live tests record numbers with `recordMeasurement` (`OAC_LIVE_MEASURE_FILE`), and the result file carries them (`measurements`), so the first-reply budget can be checked against what each run saw.
+- Decision: the first-reply budget is 20 s on the median of three new sessions: measured 2026-11-28 in this (loaded, 4-core) container at 8.8-9.5 s on OpenClaw 2026.10.3 and 11.4-13.2 s on 2026.11.11; 20 s is the slower median (12.4 s) plus about 60 %. The test states it in `FIRST_REPLY_BUDGET_NOTE`.
+- Decision: Vitest's retry re-runs a test in the same file state, so the live tests that made a fixed folder (`mcp-proxy`, `per-agent-home`, `permission-routing`, `skills-system-prompt`, `streaming`) make it with `freshDir` (harness), which removes what an earlier try left; their assertions are unchanged. Found in the first full run, where every retry of those tests failed with `EEXIST`.
+- Decision: `scripts/regression-result.mjs` lists a live run's failures from the tries reporter (`<file> > <describe> > <test>: <last message>`): the JSON report joins titles with spaces and has no message, so matching the two never worked. The tier filters `test/live/` with the slash (a bare `test/live` also ran `test/live-tier.test.ts`); `npm run test:live` too.
+- Decision: a turn a test fails on purpose before it reaches a model (the refused model host of `errors.live.test.ts`) has no ledger event; the test marks its window with `markUnbilled` in the turn log, and the token reader does not wait for such turns. The first full run had exactly that one turn missing (an `end_turn` 0.36 s after the prompt), so its total read `unknown`; with the window its total is 8,464,981.
+- Decision: #102's live scenario (`ask-mode-write.live.test.ts`) follows the Gateway scenario: `sessions.patch {key, execHost: "node"}` before the first turn, then two turns of one session that ask for a file without naming a tool; it passes when each file holds its unguessable content and the turn called an OpenClaw tool that changes things, and (in the tier) both prompts went to one cursor-agent process (the turn log, now exported as `OAC_LIVE_TURN_LOG`).
 - Decision: the live job is its own job in `regression.yml`, not the `tier` job with a conditional environment, so the gateway and ui jobs can never see the key; its first step checks the key before checkout; uploaded logs pass through `scripts/scrub-key.mjs` and the state (which holds the saved profile) is never uploaded. Versions default to the tier's own (`min latest`, or `latest` for live) when the input is empty, and several versions run one at a time (`max-parallel: 1`).
+
+## Verification (2026-11-28, this container)
+
+- `npm test`, `npm run typecheck`, `node scripts/plan-gate.mjs --changed`, and `actionlint` 1.7.9 on the workflows: green (one known load flake in `src/core/pid-locks.test.ts`, green alone).
+- First full run, `scripts/regression.sh live --openclaw latest` (2026.11.11, on baseline 21cb142, before #105/#106/#102 were merged): 5150 s, 139 turns, 8,464,981 tokens; 68 passed, 17 red, 3 skipped. After the harness fixes the red files ran again on 2026.11.11 and on 2026.10.3 (with #102's new scenario), on 2b9286b.
+- Red because of this container (catalog.openclaw.ai unreachable, so 2026.11.x lists no cursor-cli model): `model-catalog` (3 tests), `turn-latency` "a new agent on a Gateway whose model catalog has loaded"; the new #75 and Test connection checks skip with that reason.
+- Red because the tests read a 2026.10 host log line (`cli exec: provider=… useResume=… historyPrompt=…`) that 2026.11.11 no longer writes: `history-continuity` (a)-(d) and `session-resume` "resumes through the real OpenClaw" (green on 2026.10.3, except history-continuity (c), below).
+- Red on the plugin side, reported, not changed here:
+  - #102 (new scenario): red on 2026.11.11 and 2026.10.3, 3 tries each. With `execHost: "node"` (and also with `tools.deny: ["exec","process"]`) cursor-cli/auto refuses in turn 1 without calling any tool: "This chat is in Ask mode, so I can't write files, even though the OpenClaw instructions mention `file_write`." The only tool the sentence names there is `file_write` (OpenClaw's file-transfer plugin, which writes on paired nodes), no `write` or `edit`.
+  - `permission-routing` "falls back to OpenClaw exec when the host denies the native shell": `expected [] to include 'exec'` on both versions (the model never calls exec).
+  - 2026.11.11 only, green on 2026.10.3: `images-compaction` (c) and `success-signal` (AD-7): the workspace gains `.openclaw/tmp/cursor-agent-logs-*`, because OpenClaw 2026.11 points `TMPDIR` of agent runs at `<workspace>/.openclaw/tmp` (`prepareAgentExecScratch`) and cursor-agent writes its logs there; `operations` "locks the model listing's process … leaves no process or lock" (`expected 1 to be +0`) and "stops a hung model listing … by the time a Gateway SIGTERM completes" (`expected false to be true`); `skills-system-prompt` (e) (a changed tool list opened a second chat: `expected [ 'fake-session-…', …(1) ] to have a length of 1 but got 2`).
+  - 2026.10.3: `history-continuity` (c) "a lost cursor-cli chat gets the host's history prompt": the log has no `reason=session_expired`, 3 tries.
+- Flaky: `mcp-proxy` (3 tries on 2026.11.11, 1 on 2026.10.3); `exec-tool` "stops a foreground command that runs past Cursor's 60 s call limit" (3 tries); `permission-routing` abort test (2 tries on 2026.10.3, timed out on 2026.11.11 before the fixes).

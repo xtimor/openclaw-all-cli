@@ -28,7 +28,7 @@
     "build": "rm -rf dist && tsc -p tsconfig.build.json",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
-    "test:live": "NODE_USE_ENV_PROXY=1 OPENCLAW_ALL_CLI_LIVE=1 vitest run test/live",
+    "test:live": "NODE_USE_ENV_PROXY=1 OPENCLAW_ALL_CLI_LIVE=1 vitest run test/live/",
     "test:regression": "scripts/regression.sh gateway",
     "test:regression:ui": "scripts/regression.sh ui",
     "test:regression:live": "scripts/regression.sh live",

@@ -138,8 +138,15 @@ function liveFields(options, failed) {
     const file = basename(String(error?.file ?? ""));
     byFile.set(file, { ...(byFile.get(file) ?? { file, tests: 0, tries: 0, seconds: 0 }), result: "failed" });
   }
-  const messages = new Map(tests.filter((test) => test.state === "failed" && test.message).map((test) => [`${test.file} > ${test.name}`, test.message]));
-  const withMessages = failed.map((entry) => (messages.has(entry) ? `${entry}: ${messages.get(entry)}` : entry));
+  // The tries reporter names a test `<describe> > <test>` and keeps its last failure message; the JSON report joins the
+  // titles with spaces and keeps none. So a file the reporter saw lists its failures from the reporter, and only a file
+  // it never saw (it stopped early) keeps the report's entries.
+  const seen = new Set([...byFile.keys()]);
+  const withMessages = [
+    ...tests.filter((test) => test.state === "failed").map((test) => `${test.file} > ${test.name}${test.message ? `: ${test.message}` : ""}`),
+    ...(Array.isArray(tries?.fileErrors) ? tries.fileErrors : []).map((error) => `${basename(String(error?.file ?? ""))}: ${String(error?.message ?? "failed").split("\n")[0]}`),
+    ...failed.filter((entry) => !seen.has(entry.split(/ > |: /)[0])),
+  ];
   const { turns, refusedTurns } = turnCounts(options.turns);
   if (refusedTurns) withMessages.push(`turn cap ${options.turnCap} reached: ${refusedTurns} turns refused`);
   const tokens = readJson(options.tokens);

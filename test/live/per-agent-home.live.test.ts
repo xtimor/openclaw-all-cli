@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterAll, expect, it } from "vitest";
@@ -6,7 +6,7 @@ import { cursorAdapter } from "../../src/adapters/cursor/index.ts";
 import { homeDirFor } from "../../src/core/home.ts";
 import type { NormalizedEvent } from "../../src/core/ports.ts";
 import { AcpSession, type AcpPermissionRequest } from "../../src/transports/acp/session.ts";
-import { LIVE_TIMEOUT_MS, describeLive } from "./harness.ts";
+import { LIVE_TIMEOUT_MS, describeLive, freshDir } from "./harness.ts";
 
 // Parity row P8 (native shell and writers are not available). The adapter's own sessions run in `ask` mode; this test opens the session in
 // `agent` mode, where Cursor would apply edits, to prove the prepared home denies them.
@@ -30,7 +30,7 @@ describeLive("per-agent Cursor home denies native writes in agent mode (P8)", ()
     "denies write, edit, and delete requests while grep still answers",
     async () => {
       const workspace = join(root, "workspace");
-      mkdirSync(workspace);
+      freshDir(workspace);
       writeFileSync(join(workspace, "seed.txt"), "needle-7f3a\n");
       const home = homeDirFor(join(root, "agent"), "cursor-cli");
       const homeEnv = await cursorAdapter.prepareHome(home);

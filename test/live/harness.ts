@@ -1,5 +1,5 @@
 import { spawn, spawnSync } from "node:child_process";
-import { appendFileSync, closeSync, existsSync, openSync, readdirSync, statSync, writeFileSync } from "node:fs";
+import { appendFileSync, closeSync, existsSync, mkdirSync, openSync, readdirSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { createServer, type Server } from "node:http";
 import { connect, type Socket } from "node:net";
 import { join } from "node:path";
@@ -170,6 +170,27 @@ export function openclawVersion(): [number, number, number] {
     isolatedVersion = match ? [Number(match[1]), Number(match[2]), Number(match[3])] : [0, 0, 0];
   }
   return isolatedVersion;
+}
+
+/**
+ * Tells the live tier's token reader (scripts/live-tokens.mjs) that the turns which ended between `from` and `to`
+ * (epoch ms) failed on purpose before reaching a model, so Cursor's usage ledger has no event for them. Written to the
+ * turn meter's log (`OAC_LIVE_TURN_LOG`); nothing outside the tier.
+ */
+export function markUnbilled(from: number, to: number): void {
+  const log = process.env.OAC_LIVE_TURN_LOG;
+  if (log) appendFileSync(log, `${JSON.stringify({ at: Date.now(), kind: "unbilled", from, to })}\n`);
+}
+
+/**
+ * An empty folder at `path`, made fresh: what an earlier try of the test left there is removed first. The live tier
+ * gives each test up to 3 tries in the same file state (Vitest `retry`), so a test that makes a fixed folder makes it
+ * with this.
+ */
+export function freshDir(path: string): string {
+  rmSync(path, { recursive: true, force: true });
+  mkdirSync(path, { recursive: true });
+  return path;
 }
 
 /** The folder the isolated Gateway writes its log files to: `$TMPDIR/openclaw` on OpenClaw 2026.10, `<state>/logs` from 2026.11. */

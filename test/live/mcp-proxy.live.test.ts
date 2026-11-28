@@ -1,4 +1,4 @@
-import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterAll, expect, it } from "vitest";
@@ -11,6 +11,7 @@ import { STUB_TOOL, startStubMcpHost } from "../fixtures/stub-mcp-host.ts";
 import {
   LIVE_TIMEOUT_MS,
   describeLive,
+  freshDir,
   hostMcpArgs,
   liveHostEnv,
   makeLiveSession,
@@ -32,7 +33,7 @@ describeLive("OpenClaw tools through the per-session MCP proxy (P7)", () => {
     "reaches the opening target with the opening headers on every turn, and rejects calls between turns",
     async () => {
       const workspace = join(root, "workspace");
-      mkdirSync(workspace);
+      freshDir(workspace);
       const opens: OpenParams[] = [];
       const adapter: CliAdapter = {
         ...cursorAdapter,

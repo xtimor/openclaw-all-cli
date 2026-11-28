@@ -230,10 +230,24 @@ describe("scripts/live-tokens.mjs (the run's Cursor tokens)", () => {
     );
     expect([...conversations.finished]).toEqual(["a", "late"]);
     const partial = sumRun([event("a", 2_000, { inputTokens: 10 })], conversations, SINCE, matchTurnEvents);
-    expect(partial).toMatchObject({ input: 10, total: null, missing: 1, matched: 1 });
+    expect(partial).toMatchObject({ input: 10, total: null, missing: 1, matched: 1, missingConversations: ["late"] });
     expect(sumRun([], conversations, SINCE, matchTurnEvents)).toMatchObject({ total: null, matched: 0 });
     const complete = sumRun([event("a", 2_000, { inputTokens: 10 }), event("late", 4_000, { outputTokens: 4 })], conversations, SINCE, matchTurnEvents);
     expect(complete).toMatchObject({ total: 14, missing: 0 });
+  });
+
+  it("does not expect a ledger event for a turn that ended inside a window a test marked unbilled", () => {
+    const conversations = conversationsOf(
+      log([
+        { at: 1_000, kind: "prompt", sessionId: "a" },
+        { at: 1_500, kind: "done", sessionId: "a", stopReason: "end_turn" },
+        { at: 2_000, kind: "prompt", sessionId: "refused-host" },
+        { at: 2_100, kind: "done", sessionId: "refused-host", stopReason: "end_turn" },
+        { at: 2_200, kind: "unbilled", from: 1_900, to: 2_150 },
+      ]),
+    );
+    expect([...conversations.all]).toEqual(["a", "refused-host"]);
+    expect([...conversations.finished]).toEqual(["a"]);
   });
 });
 
@@ -245,8 +259,11 @@ describe("scripts/regression-result.mjs --tier live (tries, turns, tokens)", () 
       report,
       JSON.stringify({
         testResults: [
-          { name: "/w/test/live/a.live.test.ts", status: "failed", message: "", assertionResults: [{ fullName: "a red", status: "failed" }, { fullName: "a flaky", status: "passed" }] },
+          // The report joins the titles with spaces; the tries reporter with " > " and keeps the message.
+          { name: "/w/test/live/a.live.test.ts", status: "failed", message: "", assertionResults: [{ fullName: "group a red", status: "failed" }, { fullName: "group a flaky", status: "passed" }] },
           { name: "/w/test/live/b.live.test.ts", status: "passed", message: "", assertionResults: [{ fullName: "b green", status: "passed" }] },
+          // A file the tries reporter never saw keeps the report's entry.
+          { name: "/w/test/live/c.live.test.ts", status: "failed", message: "", assertionResults: [{ fullName: "c red", status: "failed" }] },
         ],
       }),
     );
@@ -255,8 +272,8 @@ describe("scripts/regression-result.mjs --tier live (tries, turns, tokens)", () 
       tries,
       JSON.stringify({
         tests: [
-          { file: "test/live/a.live.test.ts", name: "a red", state: "failed", tries: 3, seconds: 30, message: "expected 1 to be 2" },
-          { file: "test/live/a.live.test.ts", name: "a flaky", state: "passed", tries: 2, seconds: 20.5 },
+          { file: "test/live/a.live.test.ts", name: "group > a red", state: "failed", tries: 3, seconds: 30, message: "expected 1 to be 2" },
+          { file: "test/live/a.live.test.ts", name: "group > a flaky", state: "passed", tries: 2, seconds: 20.5 },
           { file: "test/live/b.live.test.ts", name: "b green", state: "passed", tries: 1, seconds: 10 },
         ],
         fileErrors: [],
@@ -275,12 +292,12 @@ describe("scripts/regression-result.mjs --tier live (tries, turns, tokens)", () 
     expect(result.code, result.stderr).toBe(0);
     const json = JSON.parse(readFileSync(out, "utf8"));
     expect(json).toMatchObject({ tier: "live", result: "failed", seconds: 3600, turns: 2, refusedTurns: 1, turnCap: 2, measurements: { "first-reply-ms": [21000, 25000] } });
-    expect(json.failed).toEqual(["a.live.test.ts > a red: expected 1 to be 2", "turn cap 2 reached: 1 turns refused"]);
+    expect(json.failed).toEqual(["a.live.test.ts > group > a red: expected 1 to be 2", "c.live.test.ts > c red", "turn cap 2 reached: 1 turns refused"]);
     expect(json.files).toEqual([
       { file: "a.live.test.ts", result: "failed", tests: 2, tries: 3, seconds: 50.5 },
       { file: "b.live.test.ts", result: "passed", tests: 1, tries: 1, seconds: 10 },
     ]);
-    expect(json.neededRetries).toEqual(["a.live.test.ts > a flaky (tries 2)"]);
+    expect(json.neededRetries).toEqual(["a.live.test.ts > group > a flaky (tries 2)"]);
     expect(json.tokens.total).toBe(10);
 
     // An unknown total stays null, never 0; refused turns fail a run whose tests all passed.

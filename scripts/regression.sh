@@ -258,6 +258,8 @@ if [ "$tier" = live ]; then
   printf '#!/bin/sh\nOAC_LIVE_REAL_AGENT=%q OAC_LIVE_TURN_LOG=%q OAC_LIVE_TURN_CAP=%q exec %q %q "$@"\n' \
     "$REAL_AGENT" "$TURN_LOG" "$TURN_CAP" "$(command -v node)" "$ROOT/test/live/turn-meter.mjs" >"$LIVE_DIR/bin/cursor-agent"
   chmod +x "$LIVE_DIR/bin/cursor-agent"
+  # The tests read the same log (one turn per process, #102).
+  export OAC_LIVE_TURN_LOG="$TURN_LOG"
   export PATH="$LIVE_DIR/bin:$PATH"
   export CURSOR_AGENT_BIN="$LIVE_DIR/bin/cursor-agent"
   echo "cursor-agent: $("$CURSOR_AGENT_BIN" --version 2>/dev/null | head -n 1) behind the turn meter (cap $TURN_CAP turns)"
@@ -279,7 +281,8 @@ fi
 if [ "$tier" = live ]; then
   RUN_START_MS="$(node -p 'Date.now()')"
   # LIVE_TESTS narrows the run to some files (a local check); the release and CI run all of test/live.
-  read -r -a live_tests <<<"${LIVE_TESTS:-test/live}"
+  # `test/live/`, with the slash: a bare `test/live` filter also matches test/live-tier.test.ts.
+  read -r -a live_tests <<<"${LIVE_TESTS:-test/live/}"
   OAC_LIVE_TRIES_FILE="$TRIES_FILE" OPENCLAW_ALL_CLI_LIVE=1 npx vitest run "${reporters[@]}" --reporter=./test/live/tries-reporter.ts "${live_tests[@]}" || status=$?
   # A refused turn fails the run even when every test that saw it passed.
   if grep -q '"kind":"refused"' "$TURN_LOG"; then
