@@ -1,5 +1,5 @@
 import { spawn, spawnSync } from "node:child_process";
-import { closeSync, openSync, writeFileSync } from "node:fs";
+import { appendFileSync, closeSync, existsSync, openSync, readdirSync, statSync, writeFileSync } from "node:fs";
 import { createServer, type Server } from "node:http";
 import { connect, type Socket } from "node:net";
 import { join } from "node:path";
@@ -135,11 +135,56 @@ export function writeSettingsFile(dir: string, name: string, url: string, token:
   return file;
 }
 
-/** The isolated OpenClaw's state directory (`.spike/state`), where agent homes live. */
-export const ISOLATED_STATE_DIR = fileURLToPath(new URL("../../.spike/state", import.meta.url));
+/**
+ * The isolated OpenClaw's folder: `SPIKE_DIR` when set (the live regression tier sets `.regression/openclaw-<version>`),
+ * else `.spike/`, the same rule as `scripts/dev-openclaw.sh`.
+ */
+export const ISOLATED_DIR = process.env.SPIKE_DIR || fileURLToPath(new URL("../../.spike", import.meta.url));
 
-/** The isolated OpenClaw's config file (`.spike/openclaw.json`). */
-export const ISOLATED_CONFIG_PATH = fileURLToPath(new URL("../../.spike/openclaw.json", import.meta.url));
+/** The isolated OpenClaw's state directory (`<isolated>/state`), where agent homes live. */
+export const ISOLATED_STATE_DIR = join(ISOLATED_DIR, "state");
+
+/** The isolated OpenClaw's config file (`<isolated>/openclaw.json`). */
+export const ISOLATED_CONFIG_PATH = join(ISOLATED_DIR, "openclaw.json");
+
+/**
+ * Records a number a live test measured (a latency) as one JSON line in `OAC_LIVE_MEASURE_FILE`, which
+ * `scripts/regression.sh live` sets and copies into the tier's result as `measurements`. A no-op without it.
+ */
+export function recordMeasurement(name: string, value: number): void {
+  const file = process.env.OAC_LIVE_MEASURE_FILE;
+  if (!file) return;
+  try {
+    appendFileSync(file, `${JSON.stringify({ name, value, at: Date.now() })}\n`);
+  } catch {
+    // A measurement that cannot be written must not fail the test.
+  }
+}
+
+let isolatedVersion: [number, number, number] | undefined;
+/** The isolated OpenClaw's version as `[year, month, patch]`: `OPENCLAW_VERSION` (the regression tiers export it), else `openclaw --version`. */
+export function openclawVersion(): [number, number, number] {
+  if (!isolatedVersion) {
+    const text = process.env.OPENCLAW_VERSION || openclaw(["--version"], { timeoutMs: 60_000 }).stdout;
+    const match = /(\d{4})\.(\d+)\.(\d+)/.exec(text);
+    isolatedVersion = match ? [Number(match[1]), Number(match[2]), Number(match[3])] : [0, 0, 0];
+  }
+  return isolatedVersion;
+}
+
+/** The folder the isolated Gateway writes its log files to: `$TMPDIR/openclaw` on OpenClaw 2026.10, `<state>/logs` from 2026.11. */
+export function gatewayLogDir(): string {
+  const [year, month] = openclawVersion();
+  return year > 2026 || (year === 2026 && month >= 11) ? join(ISOLATED_STATE_DIR, "logs") : join(process.env.TMPDIR || "/tmp", "openclaw");
+}
+
+/** The Gateway's newest log file (`openclaw-<date>.log`, JSON lines, in `gatewayLogDir()`) and its size now. */
+export function gatewayLogFile(): { file: string | undefined; offset: number } {
+  const dir = gatewayLogDir();
+  const files = existsSync(dir) ? readdirSync(dir).filter((name) => /^openclaw-.*\.log$/.test(name)).sort() : [];
+  const file = files.length > 0 ? join(dir, files.at(-1)!) : undefined;
+  return { file, offset: file ? statSync(file).size : 0 };
+}
 
 export type TestGateway = {
   port: number;

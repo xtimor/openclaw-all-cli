@@ -1,14 +1,13 @@
 import { type ChildProcess, spawn } from "node:child_process";
-import { existsSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, readdirSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { randomBytes } from "node:crypto";
 import { afterAll, beforeAll, expect, it } from "vitest";
 import { MOCK_API_SCRIPT } from "../fixtures/paths.ts";
-import { ISOLATED_STATE_DIR, LIVE_TIMEOUT_MS, describeLive, openclaw, startGateway, type TestGateway } from "./harness.ts";
+import { ISOLATED_STATE_DIR, LIVE_TIMEOUT_MS, describeLive, gatewayLogFile, openclaw, startGateway, type TestGateway } from "./harness.ts";
 
 const PORT = 18_913;
-const LOG_DIR = "/tmp/openclaw";
 const PROFILE = "cursor-cli:manual";
 
 // Parity row P15 (history reseed and the continuity note). Real cursor-agent and a local mock API
@@ -27,14 +26,8 @@ describeLive("chat continuity across a model switch (P15)", () => {
 
   /** The newest Gateway log file, and its size now: what a step appends to it is that step's evidence. */
   function hostLog() {
-    const file = existsSync(LOG_DIR)
-      ? readdirSync(LOG_DIR)
-          .filter((name) => /^openclaw-.*\.log$/.test(name))
-          .sort()
-          .at(-1)
-      : undefined;
-    const path = file ? join(LOG_DIR, file) : undefined;
-    return { path, offset: path ? statSync(path).size : 0 };
+    const { file, offset } = gatewayLogFile();
+    return { path: file, offset };
   }
   function logSince(mark: ReturnType<typeof hostLog>): string {
     if (!mark.path) return "";

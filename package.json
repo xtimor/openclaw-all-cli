@@ -31,6 +31,7 @@
     "test:live": "NODE_USE_ENV_PROXY=1 OPENCLAW_ALL_CLI_LIVE=1 vitest run test/live",
     "test:regression": "scripts/regression.sh gateway",
     "test:regression:ui": "scripts/regression.sh ui",
+    "test:regression:live": "scripts/regression.sh live",
     "dev:setup": "scripts/dev-openclaw.sh setup",
     "dev:env": "scripts/dev-setup.sh",
     "dev:install": "scripts/dev-openclaw.sh install",

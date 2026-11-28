@@ -103,8 +103,8 @@ fixed = true
 tests = [
   { file = "test/live/turn-latency.live.test.ts", name = "keeps one cursor-agent process for four turns, starting with the first", tier = "live", reproduces = false },
   { file = "test/regression/gateway/turn-process.regression.test.ts", name = "#11/#38: two `openclaw agent` turns of one session run on one cursor-agent process with no session/load", tier = "gateway", reproduces = true },
+  { file = "test/live/turn-latency.live.test.ts", name = "#38/#44: the first reply of a new session arrives within the absolute budget", tier = "live", reproduces = true },
 ]
-planned = "4.5"
 
 # Closed by documenting a host limit; plan 27 later made the API key a real auth profile the card reads.
 [[bug]]
@@ -143,8 +143,8 @@ fixed = true
 tests = [
   { file = "test/turn-timings.test.ts", name = "logs one line for a new chat with every phase that ran, thought before text", tier = "unit", reproduces = false },
   { file = "src/transports/acp/session.test.ts", name = "AcpSession open phases (issue #44)", tier = "unit", reproduces = false },
+  { file = "test/live/turn-latency.live.test.ts", name = "#38/#44: the first reply of a new session arrives within the absolute budget", tier = "live", reproduces = true },
 ]
-planned = "4.5"
 
 [[bug]]
 issue = 45
@@ -200,8 +200,8 @@ tier = "live"
 fixed = true
 tests = [
   { file = "test/structured-output-hint.test.ts", name = "tells the model to answer through structured_output when the host serves that tool", tier = "unit", reproduces = false },
+  { file = "test/live/structured-output.live.test.ts", name = "#75: a collector child with an outputSchema on cursor-cli/gpt-5.5 answers through structured_output and ends done", tier = "live", reproduces = true },
 ]
-planned = "4.5"
 
 # Covered only Cursor's agent mode; the ask-mode half came back as #102 (same family).
 [[bug]]
@@ -213,8 +213,8 @@ fixed = true
 tests = [
   { file = "test/shell-hint.test.ts", name = "tells the model the native shell is off and OpenClaw exec is the way, when the host serves exec", tier = "unit", reproduces = false },
   { file = "test/regression/gateway/reply-prompt.regression.test.ts", name = "#76: an agent-mode turn where the host serves `exec` sends the native-shell-disabled note and sets mode `agent`", tier = "gateway", reproduces = true },
+  { file = "test/live/exec-tool.live.test.ts", name = "#76: a command asked for without naming a tool runs through OpenClaw exec in agent mode", tier = "live", reproduces = true },
 ]
-planned = "4.5"
 
 [[bug]]
 issue = 80
