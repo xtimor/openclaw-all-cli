@@ -111,6 +111,49 @@ describeRegression("Gateway scenarios: replies, prompts, and errors of a turn", 
     REGRESSION_TIMEOUT_MS,
   );
 
+  // #102: without OpenClaw's `exec` (here a session whose exec host is `node`, one of the reasons the host serves no
+  // `exec`) the turn runs in Cursor's `ask` mode, which has no edit tool, and the model took that for a read-only
+  // session and refused writes the OpenClaw tools allow, on consecutive turns of one process. Every prompt of such a
+  // process now says the chat is not read-only and names the OpenClaw tools that change files and records.
+  it(
+    "#102: an ask-mode turn where the host serves no `exec` sends the not-read-only note on turn 1 and turn 2 of one process, and the mode stays `ask`",
+    async () => {
+      const id = nonce();
+      const key = sessionKey(`regression-ask-${id}`);
+      const logFrom = readFakeLog(fake!.log).length;
+      const patched = gatewayCall(gateway!.port, "sessions.patch", { key, execHost: "node" });
+      expect(patched?.entry?.execHost, JSON.stringify(patched)).toBe("node");
+      const first = await chatSend(gateway!.port, key, `say:ask${id}`);
+      const second = await chatSend(gateway!.port, key, `[[mode]] ask${id}-2`);
+      const replies = [first, second].map((sent) => {
+        const finals = sent.frames.filter((frame) => frame.payload?.state === "final");
+        return finals.length === 1 ? chatMessageText(finals[0]!.payload?.message) : `no single final: ${JSON.stringify(sent.frames).slice(0, 2_000)}`;
+      });
+      // The fake answers `[[mode]]` with the session's current Cursor mode.
+      expect(replies).toEqual([`ask${id}`, "mode:ask"]);
+      const all = readFakeLog(fake!.log).slice(logFrom);
+      const methods = all.map((line) => `${line.method}${line.method === "session/set_mode" ? ` ${line.params?.modeId}` : ""} pid=${line.pid}`).join("\n");
+      const chats = chatPids(all, `ask${id}`);
+      expect(chats, methods).toHaveLength(1);
+      const lines = linesOf(all, chats[0]!);
+      const prompts = lines.filter((line) => line.method === "session/prompt").map((line) => promptText(line));
+      expect(prompts, methods).toHaveLength(2);
+      for (const [turn, text] of prompts.entries()) {
+        // The system block mentions "read-only" too: show the note, or the text before the user's message without it.
+        const at = text.indexOf("does not make this chat");
+        const user = text.indexOf(`ask${id}`);
+        const around = JSON.stringify(at < 0 ? text.slice(Math.max(0, user - 1_500), user + 100) : text.slice(Math.max(0, at - 200), at + 400));
+        expect(text, `turn ${turn + 1} prompt (note ${at < 0 ? "absent" : "found"}): ${around}`).toMatch(/\[OpenClaw\] [^\n]*does not make this chat or this session read-only/);
+        // OpenClaw's own file tools are on the loopback of a default run.
+        expect(text, `turn ${turn + 1} prompt: ${around}`).toMatch(/read-only: [^\n]*`write`[^\n]*`edit`/);
+        expect(text, `turn ${turn + 1}`).not.toContain("native shell is disabled");
+      }
+      const modes = lines.filter((line) => line.method === "session/set_mode").map((line) => line.params?.modeId);
+      expect(modes.filter((mode) => mode !== "ask"), methods).toEqual([]);
+    },
+    REGRESSION_TIMEOUT_MS,
+  );
+
   // #99: Cursor's transient throttle (`RetriableError`, Connect code `resource_exhausted`) was reported as a spent
   // plan quota ("usage limit"). The Gateway's error for the turn must read as a temporary rate limit.
   it(
