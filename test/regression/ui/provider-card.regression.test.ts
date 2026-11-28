@@ -1,4 +1,4 @@
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { mkdirSync, mkdtempSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -30,16 +30,18 @@ import {
   pollUntil,
   readProviderCard,
   removeKeyButton,
-  samePixels,
   submitKey,
   withUiPage,
 } from "./browser.ts";
+import { samePngPixels } from "./png.ts";
 
 /** The plugin's whole cursor-cli config entry: setting it replaces `command` and drops any `env` a case set. */
 const CURSOR_CONFIG_KEY = "plugins.entries.openclaw-all-cli.config.cursor-cli";
 const ROOT = join(import.meta.dirname, "..", "..", "..");
 /** The packaged icon: what `/__openclaw__/plugin-icon/openclaw-all-cli` must serve (re-encoded by the host: same pixels). */
 const ICON = readFileSync(join(ROOT, "assets", "icon.png"));
+/** The host's route for an installed plugin's icon. */
+const ICON_ROUTE = "/__openclaw__/plugin-icon/openclaw-all-cli";
 /**
  * The setup page's icon for the API key choice: the raw GitHub URL of the packaged icon on the default branch (#45), built
  * from package.json's repository, so a manifest that loses its `icon` cannot also change what is expected.
@@ -110,7 +112,8 @@ describeRegression("Control UI: the cursor-cli provider's icon, name, and card",
   /** The auth store's cursor-cli profiles, as Test connection (`models.probe`) sees them: it probes auth-store profiles only. */
   const storedProfiles = () => {
     const probed = gatewayCall(gateway!.port, "models.probe", { provider: "cursor-cli", timeoutMs: 60_000 }, 90_000);
-    return { ids: ((probed?.results ?? []) as Array<{ profileId?: string }>).map((result) => result.profileId), text: JSON.stringify(probed).slice(0, 1_500) };
+    expect(Array.isArray(probed?.results), `models.probe answered no results list: ${JSON.stringify(probed).slice(0, 1_500)}`).toBe(true);
+    return { ids: (probed.results as Array<{ profileId?: string }>).map((result) => result.profileId), text: JSON.stringify(probed).slice(0, 1_500) };
   };
   const waitCatalog = async (holds: (ids: string[]) => boolean, timeoutMs = 60_000) => {
     const read = () => {
@@ -136,23 +139,33 @@ describeRegression("Control UI: the cursor-cli provider's icon, name, and card",
     "#35/#45: the Plugins page draws the packaged icon, and the model setup page asks for the manifest icon of the API key choice",
     async () => {
       await ui("35-45-icon", async (ui) => {
+        // The icon's response, awaited as it arrives (registered before the page loads), with its whole body.
+        const response = ui.page.waitForResponse((answer) => new URL(answer.url()).pathname === ICON_ROUTE, { timeout: 30_000 }).catch(() => undefined);
         await ui.page.goto(ui.url("/settings/plugins"), { waitUntil: "load" });
         const row = ui.page.locator("[data-plugin-id]").filter({ has: ui.page.getByText("OpenClaw All CLI", { exact: true }) }).first();
         await row.waitFor({ timeout: 30_000 }).catch(() => {});
         await row.scrollIntoViewIfNeeded().catch(() => {});
+        const served = await response;
+        const body = served ? await served.body().catch(() => undefined) : undefined;
         const icon = row.locator("img").first();
         const width = await pollUntil(() => icon.evaluate((img) => (img as unknown as { naturalWidth: number }).naturalWidth).catch(() => 0), (value) => value > 0, 30_000);
-        const served = ui.pluginIcons.filter((response) => response.url.endsWith("/__openclaw__/plugin-icon/openclaw-all-cli"));
+        const src = (await icon.getAttribute("src", { timeout: 2_000 }).catch(() => null)) ?? "";
+        // The bytes the drawn image's src holds (a blob: URL the page made from the response, or the route itself), read in
+        // the page as bytes; decoding happens in Node (png.ts), not in the browser.
+        const drawn = width > 0 ? await icon.evaluate(async (img) => Array.from(new Uint8Array(await (await fetch((img as unknown as { src: string }).src)).arrayBuffer()))).then(Buffer.from, () => undefined) : undefined;
+        const sha = (bytes: Buffer | undefined) => (bytes ? `${createHash("sha256").update(bytes).digest("hex").slice(0, 16)} (${bytes.length} bytes)` : "none");
+        const pixels = body ? samePngPixels(body, ICON) : { same: false, sizes: ["no body"] };
         const evidence = await ui.evidence(
           row,
-          `plugin icon responses for openclaw-all-cli: ${JSON.stringify(served.map(({ url, status, contentType, body }) => ({ url, status, contentType, bytes: body?.length })))}`,
+          `icon response: ${served ? `${served.status()} ${served.headers()["content-type"] ?? ""} ${served.url()}` : `none for ${ICON_ROUTE} within 30 s`}; served ${sha(body)}, drawn ${sha(drawn)}, packaged ${sha(ICON)}; img src ${JSON.stringify(src.slice(0, 120))}, naturalWidth ${width}; decoded ${pixels.sizes.join(" vs ")}`,
         );
         expect(await row.count(), `the Plugins page lists no "OpenClaw All CLI" row\n${evidence}`).toBe(1);
         expect(width, `the "OpenClaw All CLI" row draws no icon image\n${evidence}`).toBeGreaterThan(0);
-        expect(served.map((response) => [response.status, response.contentType]), evidence).toContainEqual([200, "image/png"]);
-        const body = served.find((response) => response.status === 200)?.body;
-        const pixels = body ? await samePixels(ui.context, body, ICON) : { same: false, sizes: [] };
-        expect(pixels, `the served icon is not the packaged assets/icon.png (decoded sizes ${pixels.sizes.join(" vs ")})\n${evidence}`).toMatchObject({ same: true });
+        expect(src, `the row's icon is not drawn from the plugin icon route\n${evidence}`).toMatch(new RegExp(`^blob:|${ICON_ROUTE}$`));
+        expect(served && [served.status(), (served.headers()["content-type"] ?? "").split(";")[0]], `the Gateway did not serve ${ICON_ROUTE} as a PNG\n${evidence}`).toEqual([200, "image/png"]);
+        expect(drawn !== undefined && body !== undefined && drawn.equals(body), `the drawn icon is not the bytes the Gateway served\n${evidence}`).toBe(true);
+        // The host re-encodes the icon (other bytes, same pixels), so the pixels are compared, decoded in Node.
+        expect(pixels.same, `the served icon is not the packaged assets/icon.png\n${evidence}`).toBe(true);
 
         // The model setup page (a first run's "Set up a model"): its provider picker asks the Gateway's catalog-icon proxy for
         // each choice's `icon`; the request is recorded and aborted, never loaded (it would reach raw.githubusercontent.com).
@@ -268,12 +281,29 @@ describeRegression("Control UI: the cursor-cli provider's icon, name, and card",
           const probeFrom = readFakeLog(refused.log).length;
           configure({ [CURSOR_CONFIG_KEY]: { command: refused.command, env: { CURSOR_API_KEY: `regression-dummy-refused-${nonce()}` } } });
           // The catalog runs again for the changed config and probes the key with `about` first.
-          await waitFor(() => readFakeLog(refused.log).slice(probeFrom).some((line) => line.method === "about" && line.keyed === true), 60_000, 500);
+          const probed = await waitFor(() => readFakeLog(refused.log).slice(probeFrom).some((line) => line.method === "about" && line.keyed === true), 60_000, 500);
           const rows = await waitCatalog((ids) => ids.length === 0, 60_000);
           await ui("98-refused-config-key", async (ui) => {
-            const card = await readProviderCard(ui);
-            const evidence = await ui.evidence(card.present ? card.card : undefined, `models.list cursor-cli rows: ${JSON.stringify(rows)}`);
+            // Read once the card's credential line has rendered (or the list has rendered without the card), so the model
+            // count below is the one the card settled on.
+            const credentialLine = /Credentials|Not configured/;
+            const card = await readProviderCard(ui, (text) => credentialLine.test(text));
+            const evidence = await ui.evidence(
+              card.present ? card.card : undefined,
+              `keyed about runs since the config change: ${readFakeLog(refused.log).slice(probeFrom).filter((line) => line.method === "about" && line.keyed === true).length}\nmodels.list cursor-cli rows: ${JSON.stringify(rows)}`,
+            );
+            expect(rows.error, `models.list failed\n${evidence}`).toBeUndefined();
+            expect(rows.cursor, `models.list still lists cursor-cli models on a key cursor-agent refused\n${evidence}`).toEqual([]);
+            // With no cursor-cli model the page may draw no card at all: then the list itself has rendered, empty.
+            if (!card.present) {
+              expect(card.text, `the Models page shows neither a cursor-cli card nor its empty provider list\n${evidence}`).toMatch(/No model providers configured/);
+              expect(probed, `the login probe never checked the config key with cursor-agent about\n${evidence}`).toBe(true);
+              return;
+            }
+            expect(card.text, `the card's credential line never rendered\n${evidence}`).toMatch(credentialLine);
             expect(card.text, `the card lists cursor-cli models on a key cursor-agent refused\n${evidence}`).not.toMatch(/\b[1-9]\d* models?\b/);
+            // The empty listing comes from the login probe's check of the key, not from a catalog that never ran.
+            expect(probed, `the login probe never checked the config key with cursor-agent about\n${evidence}`).toBe(true);
           });
         }
       } finally {

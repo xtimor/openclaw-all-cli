@@ -5,7 +5,7 @@ import type { Browser, BrowserContext, Locator, Page } from "playwright";
 /**
  * Browser helpers for the Control UI regression tier (epic-regression-gate ticket 4.6): Playwright's Chromium against
  * the Control UI of a Gateway the gateway harness started (`startRegressionGateway`, `--auth none`). The page reaches
- * nothing but that Gateway: every other request is aborted and recorded, and so are the Gateway's own catalog-icon
+ * nothing but that Gateway: every other request and WebSocket is aborted and recorded, and so are the Gateway's own catalog-icon
  * proxy requests (`/__openclaw__/catalog-icon/<url>`, which would make the Gateway fetch the URL from the network), so
  * a check reads such an icon by the URL the page asked for, never by its pixels. A failing check leaves a screenshot
  * and the page's text in `uiArtifactDir()`, and every assertion message names that screenshot.
@@ -32,18 +32,13 @@ export async function launchBrowser(): Promise<Browser> {
   return chromium.launch({ headless: true, ...(executablePath ? { executablePath } : {}) });
 }
 
-/** One response the page received for a plugin icon (`/__openclaw__/plugin-icon/<id>`), with its body. */
-export type IconResponse = { url: string; status: number; contentType: string; body: Buffer | undefined };
-
 export type UiPage = {
   page: Page;
   context: BrowserContext;
-  /** Requests the page tried to send anywhere but the Gateway (aborted). */
+  /** Requests and WebSockets the page tried to open anywhere but the Gateway (aborted). */
   blocked: string[];
   /** The icon URLs the page asked the Gateway's catalog-icon proxy for, decoded (aborted: never loaded). */
   catalogIcons: string[];
-  /** Plugin icon responses the page got from the Gateway. */
-  pluginIcons: IconResponse[];
   /** The screenshot a failure of this check leaves. */
   screenshot: string;
   /** `http://127.0.0.1:<port><path>`. */
@@ -78,9 +73,18 @@ export async function withUiPage<T>(browser: Browser, port: number, name: string
   const context = await browser.newContext({ viewport: { width: 1400, height: 1000 }, deviceScaleFactor: 1, serviceWorkers: "block" });
   const blocked: string[] = [];
   const catalogIcons: string[] = [];
-  const pluginIcons: IconResponse[] = [];
   const own = (url: string) => url === origin || url.startsWith(`${origin}/`);
-  // HTTP only: the Control UI's one WebSocket goes to the page's own origin.
+  // The Control UI's WebSocket goes to the Gateway (ws://127.0.0.1:<port>); any other is closed unopened.
+  const wsOrigin = origin.replace(/^http/, "ws");
+  await context.routeWebSocket(/.*/, (socket) => {
+    const url = socket.url();
+    if (url === wsOrigin || url.startsWith(`${wsOrigin}/`) || url.startsWith(`${wsOrigin}?`)) {
+      socket.connectToServer();
+      return;
+    }
+    blocked.push(url);
+    void socket.close({ code: 1008, reason: "regression tier: not the Gateway" }).catch(() => {});
+  });
   await context.route("**/*", async (route) => {
     const url = route.request().url();
     if (!own(url)) {
@@ -95,20 +99,11 @@ export async function withUiPage<T>(browser: Browser, port: number, name: string
     return route.continue();
   });
   const page = await context.newPage();
-  page.on("response", (response) => {
-    if (!response.url().includes("/__openclaw__/plugin-icon/")) return;
-    const row = { url: response.url(), status: response.status(), contentType: response.headers()["content-type"] ?? "" };
-    void response
-      .body()
-      .then((body) => pluginIcons.push({ ...row, body }))
-      .catch(() => pluginIcons.push({ ...row, body: undefined }));
-  });
   const ui: UiPage = {
     page,
     context,
     blocked,
     catalogIcons,
-    pluginIcons,
     screenshot: `${base}.png`,
     url: (path) => `${origin}${path}`,
     evidence: async (scope, note) => {
@@ -140,37 +135,6 @@ export async function withUiPage<T>(browser: Browser, port: number, name: string
     throw error;
   } finally {
     await context.close().catch(() => {});
-  }
-}
-
-/**
- * Whether two images decode to the same pixels, read in a blank page of `context` (from data: URLs, so nothing is
- * fetched): the Gateway re-encodes a plugin icon, so its bytes differ from the packaged file while its pixels do not.
- */
-export async function samePixels(context: BrowserContext, a: Buffer, b: Buffer, type = "image/png"): Promise<{ same: boolean; sizes: string[] }> {
-  const page = await context.newPage();
-  try {
-    return await page.evaluate(
-      async ([first, second]) => {
-        const g = globalThis as any;
-        const decode = async (url: string) => {
-          const image = new g.Image();
-          image.src = url;
-          await image.decode();
-          const canvas = g.document.createElement("canvas");
-          canvas.width = image.naturalWidth;
-          canvas.height = image.naturalHeight;
-          const draw = canvas.getContext("2d");
-          draw.drawImage(image, 0, 0);
-          return { size: `${image.naturalWidth}x${image.naturalHeight}`, data: Array.from(draw.getImageData(0, 0, canvas.width, canvas.height).data as ArrayLike<number>) };
-        };
-        const [x, y] = [await decode(first), await decode(second)];
-        return { same: x.size === y.size && x.data.length === y.data.length && x.data.every((value, index) => value === y.data[index]), sizes: [x.size, y.size] };
-      },
-      [`data:${type};base64,${a.toString("base64")}`, `data:${type};base64,${b.toString("base64")}`] as const,
-    );
-  } finally {
-    await page.close().catch(() => {});
   }
 }
 
@@ -290,17 +254,28 @@ export type ProviderCard = {
 /**
  * Opens (or reloads) the Models page and reads the cursor-cli card once the provider list has rendered (the card, or the
  * empty list's "No model providers configured"). A folded card (2026.11.x) is expanded first, so its accounts and
- * buttons are part of `text`.
+ * buttons are part of `text`. `rendered`, when given, is what the card's text must show before it is read.
  */
-export async function readProviderCard(ui: UiPage): Promise<ProviderCard> {
+export async function readProviderCard(ui: UiPage, rendered?: (text: string) => boolean): Promise<ProviderCard> {
   await ui.page.goto(ui.url("/model-providers"), { waitUntil: "load" });
   const card = ui.page.locator('[data-provider-id="cursor-cli"]').first();
   const empty = ui.page.getByText("No model providers configured");
   await pollUntil(async () => (await card.count()) + (await empty.count()), (count) => count > 0, 30_000);
-  // The list fills in as the Gateway's answers arrive: give the card's credentials a moment to settle.
-  await ui.page.waitForTimeout(2_000);
+  // The list fills in as the Gateway's answers arrive: wait until the card shows what `rendered` asks for, or the list
+  // shows no card (up to 30 s); without `rendered`, give the card's credentials a moment to settle.
+  if (rendered) {
+    await pollUntil(
+      async () => ((await card.count()) > 0 ? rendered(await visibleText(card, 1_000)) : (await empty.count()) > 0),
+      Boolean,
+      30_000,
+    );
+  }
+  else await ui.page.waitForTimeout(2_000);
   if ((await card.count()) === 0) {
-    return { present: false, text: await visibleText(ui.page.getByText(/PROVIDER ACCESS/i).locator("xpath=..")), card };
+    // No card: the page's provider section (from its "Provider access" heading on), as the evidence of what it drew.
+    const body = await visibleText(ui.page.locator("body"), 5_000);
+    const from = body.search(/PROVIDER ACCESS/i);
+    return { present: false, text: from >= 0 ? body.slice(from) : body, card };
   }
   const fold = card.locator('button[aria-expanded="false"]').first();
   if ((await fold.count()) > 0) {

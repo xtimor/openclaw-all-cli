@@ -104,7 +104,18 @@ describeRegression("Control UI: the chat's context tile", () => {
         .waitFor({ timeout: 120_000 })
         .then(() => true, () => false);
       expect(answered, `turn ${index + 1} got no reply ${reply}\n${await ui.evidence(undefined, notes.join("\n"))}`).toBe(true);
-      let row = sessionReading(key);
+      // The tile is read only once the session row holds this turn's usage (its own input and output counts), so a
+      // reading still left from the turn before cannot pass for this turn's.
+      let row = await pollUntil(
+        async () => sessionReading(key),
+        (current) => current.fields.inputTokens === usage.inputTokens && current.fields.outputTokens === usage.outputTokens,
+        30_000,
+        500,
+      );
+      expect(
+        [row.fields.inputTokens, row.fields.outputTokens],
+        `turn ${index + 1}: the session row never took this turn's usage (row ${JSON.stringify(row.fields)})\n${await ui.evidence(undefined, notes.join("\n"))}`,
+      ).toEqual([usage.inputTokens, usage.outputTokens]);
       const agrees = (text: string | null) => {
         row = sessionReading(key);
         const shown = parseTile(text);

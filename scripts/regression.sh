@@ -204,9 +204,17 @@ rm -rf "$SPIKE_DIR/state" "$SPIKE_DIR/openclaw.json"
 if [ "$tier" = ui ]; then
   TIER_TITLE="Control UI"
   # Failure screenshots and page texts (test/regression/ui/browser.ts); CI uploads this folder when the tier fails.
-  export OPENCLAW_ALL_CLI_UI_ARTIFACTS="${OPENCLAW_ALL_CLI_UI_ARTIFACTS:-$ROOT/.regression/ui-screenshots/$VERSION}"
-  rm -rf "$OPENCLAW_ALL_CLI_UI_ARTIFACTS"
-  mkdir -p "$OPENCLAW_ALL_CLI_UI_ARTIFACTS"
+  # The default folder is the tier's own and starts empty; a folder the caller named keeps everything but the
+  # screenshots and page texts of an earlier run.
+  if [ -z "${OPENCLAW_ALL_CLI_UI_ARTIFACTS:-}" ]; then
+    export OPENCLAW_ALL_CLI_UI_ARTIFACTS="$ROOT/.regression/ui-screenshots/$VERSION"
+    rm -rf "$OPENCLAW_ALL_CLI_UI_ARTIFACTS"
+    mkdir -p "$OPENCLAW_ALL_CLI_UI_ARTIFACTS"
+  else
+    export OPENCLAW_ALL_CLI_UI_ARTIFACTS
+    mkdir -p "$OPENCLAW_ALL_CLI_UI_ARTIFACTS"
+    find "$OPENCLAW_ALL_CLI_UI_ARTIFACTS" -maxdepth 1 -type f \( -name '*.png' -o -name '*.txt' \) -delete
+  fi
 else
   TIER_TITLE="Gateway"
 fi

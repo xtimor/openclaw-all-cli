@@ -72,7 +72,8 @@ describeRegression("Control UI: Test connection and Remove key on the cursor-cli
   /** The auth store's cursor-cli profiles, as `models.probe` (which probes auth-store profiles only) lists them. */
   const storedProfiles = () => {
     const probed = gatewayCall(gateway!.port, "models.probe", { provider: "cursor-cli", timeoutMs: 60_000 }, 90_000);
-    return { ids: ((probed?.results ?? []) as Array<{ profileId?: string }>).map((result) => result.profileId), text: JSON.stringify(probed).slice(0, 1_500) };
+    expect(Array.isArray(probed?.results), `models.probe answered no results list: ${JSON.stringify(probed).slice(0, 1_500)}`).toBe(true);
+    return { ids: (probed.results as Array<{ profileId?: string }>).map((result) => result.profileId), text: JSON.stringify(probed).slice(0, 1_500) };
   };
 
   /**
