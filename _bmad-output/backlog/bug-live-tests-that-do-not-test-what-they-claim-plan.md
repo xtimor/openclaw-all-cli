@@ -3,7 +3,7 @@ title: 'Live tests that do not test what they claim'
 type: 'bugfix'
 ticket: '41'
 created: '2026-11-28'
-status: 'in-review'
+status: 'done'
 baseline_revision: '6d512552c94ca8563a02864d4af7ad043ed82d63'
 route: 'oneshot'
 route_source: 'auto'
@@ -74,7 +74,7 @@ deferred: []
 
 ## Auto Run Result
 
-Status: in-review
+Status: done
 
 - Summary: the fallback test runs the production case (static `Shell(*)` deny, OpenClaw serving `exec`, no fallback named) and asserts the order; (c) loses its chat for real and always restarts the Gateway. Both green live on OpenClaw 2026.10.3.
 - Review: quick (coordinator), 3 findings for this ticket, all patched.

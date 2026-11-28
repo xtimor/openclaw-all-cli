@@ -3,7 +3,7 @@ title: "A codex model skips structured_output after the host's reply-normally li
 type: 'bugfix'
 ticket: '40'
 created: '2026-11-28'
-status: 'in-review'
+status: 'done'
 baseline_revision: '6d512552c94ca8563a02864d4af7ad043ed82d63'
 route: 'oneshot'
 route_source: 'auto'
@@ -85,7 +85,7 @@ Oneshot: one argument of `composePrompt`, one sentence, the order of one array i
 
 ## Auto Run Result
 
-Status: in-review
+Status: done
 
 - Summary: the `structured_output` sentence now ends the prompt, after the host's appended reply guidance, and says prose fails also where the text above says to reply normally; a codex collector child answers through the tool.
 - Review: self-review, then the coordinator's quick review: 6 findings, all patched (1-4 in backlog 41, 5-6 here), one commit.
