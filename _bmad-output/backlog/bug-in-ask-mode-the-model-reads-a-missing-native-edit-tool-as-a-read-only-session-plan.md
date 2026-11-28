@@ -3,7 +3,7 @@ title: 'In ask mode the model reads a missing native edit tool as a read-only se
 type: 'bugfix'
 ticket: '33'
 created: '2026-11-28'
-status: 'in-review'
+status: 'done'
 baseline_revision: 'cd8a412cd3177daefc602f47154ca2118ebb0e13'
 route: 'full'
 route_source: 'pinned'
