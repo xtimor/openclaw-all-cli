@@ -17,6 +17,7 @@ import {
   makeLiveSession,
   openclaw,
   openclawAsync,
+  openclawVersion,
   recordMeasurement,
   startGateway,
   waitFor,
@@ -312,12 +313,19 @@ describeLive("a new agent on a Gateway whose model catalog has loaded (P4)", () 
 /**
  * The absolute bound on a new session's first reply (issues #38 and #44: first replies took 15-20 s and more), from the
  * `openclaw agent` call to the Gateway's first assistant frame: the CLI's own start, the plugin's process start, and the
- * model's thinking over the main agent's bootstrap. Set from measured runs plus a margin (MEMORY.md, "Live regression
- * tier"): FIRST_REPLY_BUDGET_NOTE says which.
+ * model's thinking over the main agent's bootstrap. Set per OpenClaw line from measured runs plus a margin (MEMORY.md,
+ * "Live regression tier"), and below the 15 s the issues reported, so the bug coming back fails it: FIRST_REPLY_BUDGET
+ * says which.
  */
-const FIRST_REPLY_BUDGET_MS = 20_000;
-const FIRST_REPLY_BUDGET_NOTE =
-  "measured 2026-11-28 in a loaded 4-core container: medians 9.1 s on OpenClaw 2026.10.3 (8.8-9.5 s) and 12.4 s on 2026.11.11 (11.4-13.2 s); budget = the slower median plus about 60 %";
+function firstReplyBudget(): { ms: number; note: string } {
+  const [year, month] = openclawVersion();
+  return year > 2026 || (year === 2026 && month >= 11)
+    ? { ms: 14_000, note: "OpenClaw 2026.11+: measured 2026-11-28 in a loaded 4-core container at 11.4-13.2 s (median 12.4 s) on 2026.11.11; 14 s, under the 15 s of #38/#44" }
+    : {
+        ms: 14_000,
+        note: "OpenClaw 2026.10: measured 2026-11-28 in a loaded 4-core container, medians 9.1, 9.4 and 13.8 s over three runs on 2026.10.3 (8.8-14.7 s; 12 s failed the 13.8 s run); 14 s, under the 15 s of #38/#44",
+      };
+}
 
 // Issues #38 and #44 at the live tier: a new session's first reply through the real Gateway on the main agent (its
 // bootstrap in the prompt), after one warm-up turn so the plugin has loaded. Three new sessions; their median must stay
@@ -350,7 +358,8 @@ describeLive("first reply of a new session through the real Gateway (#38, #44)",
         await gateway.stop();
       }
       const median = [...firsts].sort((a, b) => a - b)[1]!;
-      expect(median, `first replies ${firsts.join(", ")} ms; budget ${FIRST_REPLY_BUDGET_MS} ms (${FIRST_REPLY_BUDGET_NOTE})`).toBeLessThanOrEqual(FIRST_REPLY_BUDGET_MS);
+      const budget = firstReplyBudget();
+      expect(median, `first replies ${firsts.join(", ")} ms; budget ${budget.ms} ms (${budget.note})`).toBeLessThanOrEqual(budget.ms);
     },
     LIVE_TIMEOUT_MS * 3,
   );

@@ -12,12 +12,15 @@
 // that failed outside its tests (a hook, an import); no or an unreadable report lists none. Exit 2: usage.
 //
 // The live tier (`--tier live`) adds `tier: "live"`, `tests` (file, name, state, tries, seconds, and the last failure's
-// first line, from the tries reporter test/live/tries-reporter.ts), `files` (per file: result, tests, the most tries one
-// of its tests took, seconds), `neededRetries` (tests that passed after their first try), `turns` and `refusedTurns`
+// first line or a skip's reason, from the tries reporter test/live/tries-reporter.ts), `files` (per file: result passed,
+// failed (a test, an import or a describe's beforeAll failed) or skipped (every test skipped), tests, the most tries one
+// of its tests took, seconds), `skipped` (every skipped test, with its reason), `neededRetries` (tests that passed after
+// their first try), `turns` and `refusedTurns`
 // (the turn meter's log, test/live/turn-meter.mjs), `turnCap`, `tokens` (scripts/live-tokens.mjs: the summed counts,
 // or null while unknown, never 0), and `measurements` ({name: [values]}, from `recordMeasurement` in
 // test/live/harness.ts). Its `failed` entries end with the last failure message (`<file> > <name>: <message>`), and
-// refused turns add `turn cap <n> reached: <m> turns refused` and make it failed.
+// refused turns add `turn cap <n> reached: <m> turns refused` and make it failed. With CURSOR_API_KEY set, the key is
+// replaced by `<CURSOR_API_KEY>` everywhere in the file.
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { basename, dirname } from "node:path";
 
@@ -124,16 +127,22 @@ function liveFields(options, failed) {
     tries: Number.isFinite(row?.tries) ? row.tries : 0,
     seconds: Number.isFinite(row?.seconds) ? row.seconds : 0,
     ...(row?.message ? { message: String(row.message) } : {}),
+    ...(row?.note ? { note: String(row.note) } : {}),
   }));
+  // A file is failed when a test or an error outside its tests (an import, a describe's beforeAll) failed, skipped when
+  // every test it has was skipped, else passed.
   const byFile = new Map();
+  const ran = new Set();
   for (const test of tests) {
     const entry = byFile.get(test.file) ?? { file: test.file, result: "passed", tests: 0, tries: 0, seconds: 0 };
     entry.tests += 1;
     entry.tries = Math.max(entry.tries, test.tries);
     entry.seconds = Math.round((entry.seconds + test.seconds) * 10) / 10;
     if (test.state === "failed") entry.result = "failed";
+    if (test.state === "passed" || test.state === "failed") ran.add(test.file);
     byFile.set(test.file, entry);
   }
+  for (const entry of byFile.values()) if (entry.result === "passed" && !ran.has(entry.file)) entry.result = "skipped";
   for (const error of Array.isArray(tries?.fileErrors) ? tries.fileErrors : []) {
     const file = basename(String(error?.file ?? ""));
     byFile.set(file, { ...(byFile.get(file) ?? { file, tests: 0, tries: 0, seconds: 0 }), result: "failed" });
@@ -155,6 +164,8 @@ function liveFields(options, failed) {
     live: {
       tests,
       files: [...byFile.values()],
+      // Every skipped test, with its reason when it gave one (`ctx.skip(reason)`).
+      skipped: tests.filter((test) => test.state === "skipped" || test.state === "pending").map((test) => `${test.file} > ${test.name}${test.note ? `: ${test.note}` : ""}`),
       neededRetries: tests.filter((test) => test.state === "passed" && test.tries > 1).map((test) => `${test.file} > ${test.name} (tries ${test.tries})`),
       turns,
       refusedTurns,
@@ -185,7 +196,13 @@ try {
     ...live,
   };
   mkdirSync(dirname(options.out), { recursive: true });
-  writeFileSync(options.out, `${JSON.stringify(summary, null, 2)}\n`);
+  // Failure messages quote Gateway answers and stderr: the live tier's key never reaches the file (it is uploaded as an
+  // artifact and printed in the run summary). regression.sh passes the key to this script for that alone.
+  const key = (process.env.CURSOR_API_KEY ?? "").trim();
+  let text = `${JSON.stringify(summary, null, 2)}\n`;
+  // As it is and as JSON escapes it.
+  for (const form of key ? new Set([key, JSON.stringify(key).slice(1, -1)]) : []) text = text.split(form).join("<CURSOR_API_KEY>");
+  writeFileSync(options.out, text);
 } catch (error) {
   console.error(`regression-result: ${error instanceof Error ? error.message : String(error)}`);
   console.error("usage: regression-result.mjs --out <file> --requested <request> [--version <v>] [--sha256 <sha>] [--tier-status <code>] --exit-code <code> --seconds <n> [--report <file>] [--tier live --turn-cap <n> --tries <file> --turns <file> --tokens <file> --measurements <file>]");

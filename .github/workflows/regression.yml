@@ -284,12 +284,31 @@ jobs:
           if-no-files-found: ignore
           retention-days: 7
 
+  # The live tier runs only the code of `main` or of a tag (a release, ticket 4.7): on any other ref this job fails with
+  # one line and the `live` job, the only one with the key, never starts. For `workflow_call`, `github.ref` is the
+  # caller's. The real control is the `regression` environment's deployment branches (main and release tags,
+  # docs/release.md); this makes a dispatch from another branch fail clearly instead of waiting on that rule.
+  live-ref:
+    needs: resolve
+    if: inputs.tier == 'live' && github.ref != 'refs/heads/main' && !startsWith(github.ref, 'refs/tags/')
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions: {}
+    steps:
+      - name: Live tier on main or a tag only
+        env:
+          REF: ${{ github.ref }}
+        run: |
+          echo "::error title=Live tier::the live tier runs only on main or a tag, not on $REF: dispatch it from main"
+          exit 1
+
   # The live tier (ticket 4.5): the only job with the Cursor key, from the environment `regression`. The key is in the
-  # env of the steps that need it, never in an output; the logs it uploads are scrubbed of it first. One version at a
-  # time (the turns share one Cursor account). About an hour of tier; the turn cap and `timeout-minutes` bound the cost.
+  # env of the steps that need it, never in an output; the result and the logs it uploads are scrubbed of it first. One
+  # version at a time (the turns share one Cursor account). About an hour and a half of tier; the turn cap and
+  # `timeout-minutes` bound the cost.
   live:
     needs: resolve
-    if: inputs.tier == 'live'
+    if: inputs.tier == 'live' && (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/'))
     name: live (${{ matrix.label }})
     runs-on: ubuntu-latest
     timeout-minutes: 120
@@ -408,6 +427,15 @@ jobs:
         with:
           path: .regression/cursor-agent
           key: ${{ steps.cache-agent.outputs.cache-primary-key }}
+      # The result's failure messages quote Gateway answers and stderr, and the summary job prints them: whatever the
+      # outcome, it is scrubbed of the key again before it leaves the job (the writer already scrubs it). Nothing to do
+      # when the job stopped before the checkout (no key) or before the tier wrote a result.
+      - if: always()
+        name: Scrub the key from the result
+        env:
+          CURSOR_API_KEY: ${{ secrets.CURSOR_API_KEY }}
+        run: |
+          if [ -f scripts/scrub-key.mjs ] && [ -f "$RESULT" ]; then node scripts/scrub-key.mjs "$RESULT"; fi
       - if: always()
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
@@ -424,6 +452,11 @@ jobs:
         env:
           CURSOR_API_KEY: ${{ secrets.CURSOR_API_KEY }}
         run: |
+          # The key check failed before the checkout: there is nothing to collect, and no scrubber.
+          if [ ! -f scripts/scrub-key.mjs ]; then
+            echo "No checkout (the job stopped at the key check): no logs to collect."
+            exit 0
+          fi
           mkdir -p .regression/logs/gateway .regression/logs/live
           cp -r ".regression/openclaw-$OPENCLAW/state/logs" .regression/logs/gateway/state-logs 2>/dev/null || true
           cp "${TMPDIR:-/tmp}"/openclaw/*.log .regression/logs/gateway/ 2>/dev/null || true
@@ -479,6 +512,7 @@ jobs:
               "| File | Result | Tests | Tries | Time |",
               "| --- | --- | --- | --- | --- |",
               ((.files // [])[] | "| `\(.file)` | \(.result) | \(.tests) | \(.tries) | \(.seconds | dur) |"),
-              (if ((.neededRetries // []) | length) > 0 then "\nNeeded retries:\n", (.neededRetries[] | "- `\(gsub("`"; "'"'"'"))`") else empty end)
+              (if ((.neededRetries // []) | length) > 0 then "\nNeeded retries:\n", (.neededRetries[] | "- `\(gsub("`"; "'"'"'"))`") else empty end),
+              (if ((.skipped // []) | length) > 0 then "\nSkipped:\n", (.skipped[] | "- `\(gsub("`"; "'"'"'"))`") else empty end)
             ' <<<"$results"
           } >>"$GITHUB_STEP_SUMMARY"

@@ -8,10 +8,10 @@ baseline_revision: '5478be7'
 route: 'full'
 route_source: 'auto'
 risk: 'high'
-review: ''
+review: 'quick'
 review_source: ''
-lenses_ran: []
-review_loop_iteration: 0
+lenses_ran: [quick]
+review_loop_iteration: 1
 context: []
 warnings: []
 deferred: []
@@ -89,7 +89,7 @@ deferred: []
 - Decision: the checks that need a cursor-cli model in the Gateway's catalog (#75, Test connection) skip with the reason on OpenClaw 2026.11 and later when that catalog lists none: those versions take it from `catalog.openclaw.ai`, unreachable in this container. 2026.10.x lists the plugin's rows offline and never skips.
 - Decision: the harness finds Gateway logs where each version writes them (`<state>/logs` from 2026.11, `$TMPDIR/openclaw` before; `history-continuity` and `turn-latency` read them) and follows `SPIKE_DIR`, so the tier's isolated state under `.regression/` is the one the files read.
 - Decision: live tests record numbers with `recordMeasurement` (`OAC_LIVE_MEASURE_FILE`), and the result file carries them (`measurements`), so the first-reply budget can be checked against what each run saw.
-- Decision: the first-reply budget is 20 s on the median of three new sessions: measured 2026-11-28 in this (loaded, 4-core) container at 8.8-9.5 s on OpenClaw 2026.10.3 and 11.4-13.2 s on 2026.11.11; 20 s is the slower median (12.4 s) plus about 60 %. The test states it in `FIRST_REPLY_BUDGET_NOTE`.
+- Decision: the first-reply budget is 14 s on the median of three new sessions, on both OpenClaw lines, under the 15 s that #38/#44 reported, so the bug coming back fails it (review: the first 20 s could not). Measured 2026-11-28 in this loaded 4-core container: 2026.10.3 medians 9.1, 9.4 and 13.8 s over three runs (8.8-14.7 s; a 12 s budget failed the 13.8 s run, whose retry passed), 2026.11.11 median 12.4 s (11.4-13.2 s). The margin is thin under that load; the 3 tries absorb one slow set, and an unloaded CI runner should be faster (check the first dispatched run). `firstReplyBudget()` in the test keeps a value per line.
 - Decision: Vitest's retry re-runs a test in the same file state, so the live tests that made a fixed folder (`mcp-proxy`, `per-agent-home`, `permission-routing`, `skills-system-prompt`, `streaming`) make it with `freshDir` (harness), which removes what an earlier try left; their assertions are unchanged. Found in the first full run, where every retry of those tests failed with `EEXIST`.
 - Decision: `scripts/regression-result.mjs` lists a live run's failures from the tries reporter (`<file> > <describe> > <test>: <last message>`): the JSON report joins titles with spaces and has no message, so matching the two never worked. The tier filters `test/live/` with the slash (a bare `test/live` also ran `test/live-tier.test.ts`); `npm run test:live` too.
 - Decision: a turn a test fails on purpose before it reaches a model (the refused model host of `errors.live.test.ts`) has no ledger event; the test marks its window with `markUnbilled` in the turn log, and the token reader does not wait for such turns. The first full run had exactly that one turn missing (an `end_turn` 0.36 s after the prompt), so its total read `unknown`; with the window its total is 8,464,981.
@@ -108,3 +108,32 @@ deferred: []
   - 2026.11.11 only, green on 2026.10.3: `images-compaction` (c) and `success-signal` (AD-7): the workspace gains `.openclaw/tmp/cursor-agent-logs-*`, because OpenClaw 2026.11 points `TMPDIR` of agent runs at `<workspace>/.openclaw/tmp` (`prepareAgentExecScratch`) and cursor-agent writes its logs there; `operations` "locks the model listing's process … leaves no process or lock" (`expected 1 to be +0`) and "stops a hung model listing … by the time a Gateway SIGTERM completes" (`expected false to be true`); `skills-system-prompt` (e) (a changed tool list opened a second chat: `expected [ 'fake-session-…', …(1) ] to have a length of 1 but got 2`).
   - 2026.10.3: `history-continuity` (c) "a lost cursor-cli chat gets the host's history prompt": the log has no `reason=session_expired`, 3 tries.
 - Flaky: `mcp-proxy` (3 tries on 2026.11.11, 1 on 2026.10.3); `exec-tool` "stops a foreground command that runs past Cursor's 60 s call limit" (3 tries); `permission-routing` abort test (2 tries on 2026.10.3, timed out on 2026.11.11 before the fixes).
+
+## Plan Change Log
+
+- 2026-11-28: the coordinator added the #102 live scenario to this ticket's scope after the #102 fix (bug 33) landed, because the owner's rule is that a regression finding is fixed at once. The intent's "Never: add a #102 scenario (it comes with the #102 fix)" is superseded by that: the fix came first, so its live scenario comes here. A plugin-side scenario that is red (#102, and the 2026.11.11 reds under Verification) is handled by the fix wave of other agents, never by weakening the scenario here.
+- 2026-11-28: quick review, one patch round (below).
+
+## Review Triage Log
+
+| # | Finding (quick review, coordinator) | Severity | Verdict | Route |
+|---|---|---|---|---|
+| 1 | The result file (uploaded as `regression-live-result-<v>`) and the summary job print failing tests' last messages, which quote raw stderr and Gateway answers: a key in one would leak | high | accepted | patched: `scripts/regression-result.mjs` replaces the key (as is and JSON-escaped) before writing; `test/live/tries-reporter.ts` scrubs every message and skip note; the workflow runs `scripts/scrub-key.mjs` on the result before its upload, whatever the outcome; unit tests with a stand-in key |
+| 2 | The key is in the env of `npm ci`, the OpenClaw install and the build on the live path | high | accepted | patched: `scripts/regression.sh` keeps it in an unexported `LIVE_KEY` (unsets `CURSOR_API_KEY` for every tier) and passes it only to the live tests, the token reader and the result writer; a unit test puts a stand-in `npm` on `PATH` and shows the first npm call after the key check gets no key |
+| 3 | Live can run on code that is not on `main` | medium | accepted | patched: the `live` job runs only for `refs/heads/main` or a tag (`github.ref`, the caller's for `workflow_call`); a `live-ref` job fails with one line on any other ref; docs/release.md asks the owner to limit the `regression` environment's deployment branches to `main` and `v*` tags (the real control; the coordinator asks the owner) |
+| 4 | A file whose describe-level `beforeAll` fails shows as passed | medium | accepted | patched: the tries reporter adds every suite's `errors()` as a file error (`<describe>: <message>`), which fails the file; unit test runs a real Vitest file with a failing `beforeAll` |
+| 5 | Skipped scenarios show as passed | medium | accepted | patched: a file whose tests all skipped is `skipped`; the result lists `skipped` tests with their reasons (`ctx.skip(note)`, recorded by the reporter); the summary prints them; unit tests |
+| 6 | A 20 s first-reply budget cannot catch #38/#44 (15-20 s) | medium | accepted | patched: 14 s, under the 15 s symptom, from the measured medians (Decision above); re-run once on 2026.10.3, where a 12 s budget failed one set (Auto Run Result) |
+| 7 | Ledger #102 says `fixed = true` while its live test is red | medium | accepted | patched: `fixed = false` with a comment; the #102 follow-up flips it when the scenario is green |
+| 8 | "Collect the failure logs" fails when the checkout never ran (missing key) | low | accepted | patched: the step ends at once, with a line, when there is no checkout |
+| 9 | The turn meter's cap check is not atomic: parallel prompts can overshoot the cap by a few turns | low | rejected | the overshoot is a few turns at most (files run one at a time); a lock adds complexity for no real cost saving |
+| 10 | history-continuity and session-resume read a 2026.10 log line that 2026.11.11 no longer writes | medium | rejected here | out of this ticket: the 2026.11.11 agent adapts those tests |
+
+## Auto Run Result
+
+Status: in-review (quick review, patch round 1 applied; owner checks outstanding below).
+
+- Review: quick (coordinator), 10 findings: 8 accepted and patched, 2 rejected (log above). Blocking conditions: none in this ticket; the plugin-side reds under Verification go to the fix wave.
+- Checks after the patches: `npm test` green (2187 passed, 107 skipped), `npm run typecheck` green, actionlint 1.7.9 clean on regression.yml, ci.yml and regression-beta.yml; the tier's script tests (`test/live-tier.test.ts`, 17) green, among them a real Vitest run of the tries reporter and the stand-in `npm` that shows no key reaches it.
+- Live: only the changed first-reply test, once, on 2026.10.3: green on its second try (try 1 median 13.8 s against the 12 s first tried; try 2 9.4 s), so the budget is 14 s on both lines.
+- Owner: limit the `regression` environment's deployment branches to `main` and `v*` tags; dispatch `tier=live` once after the merge (the summary, tries, time and tokens are verified then, hitl).

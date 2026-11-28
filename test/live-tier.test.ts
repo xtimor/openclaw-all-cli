@@ -252,6 +252,9 @@ describe("scripts/live-tokens.mjs (the run's Cursor tokens)", () => {
 });
 
 describe("scripts/regression-result.mjs --tier live (tries, turns, tokens)", () => {
+  /** A stand-in key; the result writer gets it as CURSOR_API_KEY and must never write it. */
+  const KEY = "key_result.4567-abc";
+
   it("adds per-test tries, per-file results, retried tests, turns, the cap, tokens and measurements; failures carry their last message", async () => {
     const dir = tempDir();
     const report = join(dir, "r.vitest.json");
@@ -275,8 +278,14 @@ describe("scripts/regression-result.mjs --tier live (tries, turns, tokens)", () 
           { file: "test/live/a.live.test.ts", name: "group > a red", state: "failed", tries: 3, seconds: 30, message: "expected 1 to be 2" },
           { file: "test/live/a.live.test.ts", name: "group > a flaky", state: "passed", tries: 2, seconds: 20.5 },
           { file: "test/live/b.live.test.ts", name: "b green", state: "passed", tries: 1, seconds: 10 },
+          { file: "test/live/b.live.test.ts", name: "b later", state: "skipped", tries: 0, seconds: 0 },
+          // A file whose tests all skipped is skipped, not passed; its reason is listed.
+          { file: "test/live/d.live.test.ts", name: "d needs the catalog", state: "skipped", tries: 0, seconds: 0, note: "no cursor-cli model here" },
+          // A message that quotes the key comes out redacted.
+          { file: "test/live/e.live.test.ts", name: "e quotes", state: "failed", tries: 3, seconds: 1, message: `answer ${KEY} end` },
         ],
-        fileErrors: [],
+        // A describe whose beforeAll failed: its tests show as skipped, the file as failed.
+        fileErrors: [{ file: "test/live/f.live.test.ts", message: "group: setup broke" }],
       }),
     );
     const turns = join(dir, "turns.jsonl");
@@ -288,15 +297,26 @@ describe("scripts/regression-result.mjs --tier live (tries, turns, tokens)", () 
     const out = join(dir, "result.json");
     const args = ["--out", out, "--requested", "latest", "--version", "2026.11.10", "--sha256", "a".repeat(64), "--tier-status", "1", "--exit-code", "1", "--seconds", "3600"];
     const live = ["--tier", "live", "--turn-cap", "2", "--tries", tries, "--turns", turns, "--tokens", tokens, "--measurements", measurements, "--report", report];
-    const result = await exec(process.execPath, [RESULT, ...args, ...live], cleanEnv());
+    const result = await exec(process.execPath, [RESULT, ...args, ...live], { ...cleanEnv(), CURSOR_API_KEY: KEY });
     expect(result.code, result.stderr).toBe(0);
+    expect(readFileSync(out, "utf8")).not.toContain(KEY);
     const json = JSON.parse(readFileSync(out, "utf8"));
     expect(json).toMatchObject({ tier: "live", result: "failed", seconds: 3600, turns: 2, refusedTurns: 1, turnCap: 2, measurements: { "first-reply-ms": [21000, 25000] } });
-    expect(json.failed).toEqual(["a.live.test.ts > group > a red: expected 1 to be 2", "c.live.test.ts > c red", "turn cap 2 reached: 1 turns refused"]);
+    expect(json.failed).toEqual([
+      "a.live.test.ts > group > a red: expected 1 to be 2",
+      "e.live.test.ts > e quotes: answer <CURSOR_API_KEY> end",
+      "f.live.test.ts: group: setup broke",
+      "c.live.test.ts > c red",
+      "turn cap 2 reached: 1 turns refused",
+    ]);
     expect(json.files).toEqual([
       { file: "a.live.test.ts", result: "failed", tests: 2, tries: 3, seconds: 50.5 },
-      { file: "b.live.test.ts", result: "passed", tests: 1, tries: 1, seconds: 10 },
+      { file: "b.live.test.ts", result: "passed", tests: 2, tries: 1, seconds: 10 },
+      { file: "d.live.test.ts", result: "skipped", tests: 1, tries: 0, seconds: 0 },
+      { file: "e.live.test.ts", result: "failed", tests: 1, tries: 3, seconds: 1 },
+      { file: "f.live.test.ts", result: "failed", tests: 0, tries: 0, seconds: 0 },
     ]);
+    expect(json.skipped).toEqual(["b.live.test.ts > b later", "d.live.test.ts > d needs the catalog: no cursor-cli model here"]);
     expect(json.neededRetries).toEqual(["a.live.test.ts > group > a flaky (tries 2)"]);
     expect(json.tokens.total).toBe(10);
 
@@ -319,6 +339,22 @@ describe("scripts/regression.sh live without a key", () => {
     expect(result.stdout).not.toContain("==>");
     expect(Date.now() - started).toBeLessThan(15_000);
     expect(JSON.parse(readFileSync(out, "utf8"))).toMatchObject({ tier: "live", result: "error", exitCode: 1, turns: null, tokens: null });
+  });
+
+  it("keeps the key from npm and the installs: the first npm call after the key check sees no CURSOR_API_KEY", async () => {
+    const dir = tempDir();
+    const bin = join(dir, "bin");
+    mkdirSync(bin);
+    const seen = join(dir, "npm-env.txt");
+    // A stand-in npm: records whether it got the key, then fails the dist-tag lookup (the script stops there).
+    writeFileSync(join(bin, "npm"), `#!/bin/sh\nprintf '%s\\n' "key:\${CURSOR_API_KEY:+set}" >>"${seen}"\nexit 1\n`, { mode: 0o755 });
+    const out = join(dir, "result.json");
+    const env = { ...cleanEnv(), CURSOR_API_KEY: "key_scope.test-890", PATH: `${bin}:${join(process.execPath, "..")}:/usr/bin:/bin` };
+    const result = await exec(REGRESSION, ["live", "--openclaw", "latest", "--result", out], env);
+    expect(result.stderr).toContain("Could not ask npm for the OpenClaw dist-tag 'latest'");
+    expect(result.code).toBe(1);
+    expect(readFileSync(seen, "utf8").trim().split("\n")).toEqual(["key:"]);
+    expect(JSON.parse(readFileSync(out, "utf8"))).toMatchObject({ tier: "live", result: "error" });
   });
 
   it("refuses a turn cap that is not a positive whole number", async () => {
@@ -355,4 +391,41 @@ describe("scripts/scrub-key.mjs (no key in the live tier's artifacts)", () => {
     expect(readFileSync(join(dir, "a.log"), "utf8")).toBe("text\n");
     expect((await exec(process.execPath, [SCRUB], cleanEnv())).code).toBe(2);
   });
+});
+
+describe("test/live/tries-reporter.ts (what each live test did)", () => {
+  // A real Vitest run of three small files, with the reporter, in a folder of its own under the repository (so the
+  // files resolve `vitest` from its node_modules); `.regression/` is gitignored and outside the unit tests' include.
+  it("records a describe whose beforeAll failed as a file error, a skip's reason, and no key in any message", async () => {
+    const dir = join(ROOT, ".regression", `tries-probe-${process.pid}-${Date.now()}`);
+    mkdirSync(dir, { recursive: true });
+    dirs.push(dir);
+    writeFileSync(join(dir, "hook.test.ts"), 'import { beforeAll, describe, it } from "vitest";\ndescribe("group", () => {\n  beforeAll(() => { throw new Error("setup broke"); });\n  it("a", () => {});\n});\n');
+    writeFileSync(
+      join(dir, "skip.test.ts"),
+      'import { it } from "vitest";\nit("noted", (ctx) => { ctx.skip("no catalog here"); });\nit.skip("plain", () => {});\nit("passes", () => {});\n',
+    );
+    writeFileSync(join(dir, "leak.test.ts"), 'import { it } from "vitest";\nit("leaks", () => { throw new Error(`answer ${process.env.CURSOR_API_KEY} end`); });\n');
+    const out = join(dir, "tries.json");
+    const key = "key_probe.0123+/=xyz";
+    const vitest = join(ROOT, "node_modules", "vitest", "vitest.mjs");
+    const result = await new Promise<{ code: number; stdout: string; stderr: string }>((done) => {
+      execFile(
+        process.execPath,
+        [vitest, "run", "--root", dir, "--reporter=dot", `--reporter=${join(ROOT, "test", "live", "tries-reporter.ts")}`],
+        { env: { ...cleanEnv(), OAC_LIVE_TRIES_FILE: out, CURSOR_API_KEY: key }, timeout: 120_000 },
+        (error, stdout, stderr) => done({ code: error ? (typeof error.code === "number" ? error.code : 1) : 0, stdout, stderr }),
+      );
+    });
+    expect(result.code, result.stdout + result.stderr).toBe(1);
+    const tries = JSON.parse(readFileSync(out, "utf8")) as { tests: any[]; fileErrors: Array<{ file: string; message: string }> };
+    expect(tries.fileErrors).toEqual([{ file: "hook.test.ts", message: "group: setup broke" }]);
+    const byName = Object.fromEntries(tries.tests.map((test) => [test.name, test]));
+    expect(byName["group > a"]).toMatchObject({ file: "hook.test.ts", state: "skipped", tries: 0 });
+    expect(byName.noted).toMatchObject({ state: "skipped", note: "no catalog here", tries: 0 });
+    expect(byName.plain).toMatchObject({ state: "skipped", tries: 0 });
+    expect(byName.passes).toMatchObject({ state: "passed", tries: 1 });
+    expect(byName.leaks).toMatchObject({ state: "failed", message: "answer <CURSOR_API_KEY> end" });
+    expect(readFileSync(out, "utf8")).not.toContain(key);
+  }, 150_000);
 });

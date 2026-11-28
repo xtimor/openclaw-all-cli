@@ -11,7 +11,8 @@
 # (the Control UI of such a Gateway in Playwright's headless Chromium; failure screenshots in
 # .regression/ui-screenshots/<version>, or OPENCLAW_ALL_CLI_UI_ARTIFACTS). gateway and ui need no secret and no
 # network beyond installing Node and OpenClaw, and unset any Cursor key. live (ticket 4.5) needs CURSOR_API_KEY (it
-# fails first, before any install, without it): the same setup, then the pinned cursor-agent behind a turn meter and
+# fails first, before any install, without it; only the live tests, the token reader and the result writer get it,
+# never npm, the OpenClaw install or the build): the same setup, then the pinned cursor-agent behind a turn meter and
 # test/live (real Cursor turns, each test up to 3 tries), stopping new turns at --turn-cap (default LIVE_TURN_CAP or
 # 400); its result adds tries, turns and Cursor tokens. Everything lives under .regression/ (gitignored); .spike/ and
 # ~/.openclaw are never read or written. --tgz installs that packed plugin instead of building and packing;
@@ -25,7 +26,7 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 CALLER_DIR="$PWD"
 cd "$ROOT"
 usage() {
-  sed -n '2,20p' "${BASH_SOURCE[0]}" >&2
+  sed -n '2,21p' "${BASH_SOURCE[0]}" >&2
   exit 2
 }
 
@@ -43,10 +44,14 @@ case "$tier" in
   live) ;;
   *) usage ;;
 esac
-if [ "$tier" != live ]; then
-  # No secret: these tiers run on the fake cursor-agent, and a real key must not reach the fresh state.
-  unset CURSOR_API_KEY CURSOR_AUTH_TOKEN
+# live: the key is kept in a shell variable that is never exported, and given only to the three commands that need it
+# (the live tests, the token reader, the result writer), never to npm, the OpenClaw install or the build.
+LIVE_KEY=""
+if [ "$tier" = live ]; then
+  LIVE_KEY="${CURSOR_API_KEY:-}"
 fi
+# No secret anywhere else: gateway and ui run on the fake cursor-agent, and a real key must not reach the fresh state.
+unset CURSOR_API_KEY CURSOR_AUTH_TOKEN
 
 requested=min
 requests=()
@@ -150,7 +155,8 @@ write_result() {
   local code=$?
   if [ -n "$RESULT_FILE" ]; then
     # scripts/regression-result.mjs reads the failing test names from the Vitest JSON report.
-    if ! node "$ROOT/scripts/regression-result.mjs" --out "$RESULT_FILE" --requested "$requested" --version "$VERSION" --sha256 "$SHA" \
+    # The key only to scrub it from the failure messages it writes.
+    if ! CURSOR_API_KEY="$LIVE_KEY" node "$ROOT/scripts/regression-result.mjs" --out "$RESULT_FILE" --requested "$requested" --version "$VERSION" --sha256 "$SHA" \
       --tier-status "$TIER_STATUS" --exit-code "$code" --seconds "$SECONDS" --report "$REPORT" ${LIVE_ARGS[@]+"${LIVE_ARGS[@]}"}; then
       echo "scripts/regression.sh: could not write the result file $RESULT_FILE" >&2
     fi
@@ -162,7 +168,7 @@ trap write_result EXIT
 # live: the key comes first, before any install or turn (CI gives it only through the `regression` environment).
 if [ "$tier" = live ]; then
   LIVE_ARGS=(--tier live --turn-cap "$TURN_CAP")
-  if [ -z "${CURSOR_API_KEY:-}" ]; then
+  if [ -z "${LIVE_KEY//[[:space:]]/}" ]; then
     echo "CURSOR_API_KEY is not set: the live tier needs the \`regression\` environment" >&2
     exit 1
   fi
@@ -283,14 +289,14 @@ if [ "$tier" = live ]; then
   # LIVE_TESTS narrows the run to some files (a local check); the release and CI run all of test/live.
   # `test/live/`, with the slash: a bare `test/live` filter also matches test/live-tier.test.ts.
   read -r -a live_tests <<<"${LIVE_TESTS:-test/live/}"
-  OAC_LIVE_TRIES_FILE="$TRIES_FILE" OPENCLAW_ALL_CLI_LIVE=1 npx vitest run "${reporters[@]}" --reporter=./test/live/tries-reporter.ts "${live_tests[@]}" || status=$?
+  CURSOR_API_KEY="$LIVE_KEY" OAC_LIVE_TRIES_FILE="$TRIES_FILE" OPENCLAW_ALL_CLI_LIVE=1 npx vitest run "${reporters[@]}" --reporter=./test/live/tries-reporter.ts "${live_tests[@]}" || status=$?
   # A refused turn fails the run even when every test that saw it passed.
   if grep -q '"kind":"refused"' "$TURN_LOG"; then
     echo "Turn cap $TURN_CAP reached: $(grep -c '"kind":"refused"' "$TURN_LOG") turns were refused" >&2
     [ "$status" -ne 0 ] || status=1
   fi
   step "Cursor tokens of this run (usage ledger, by conversation id)"
-  node "$ROOT/scripts/live-tokens.mjs" --turns "$TURN_LOG" --since "$RUN_START_MS" --out "$TOKENS_FILE" || echo "The token reader failed; tokens stay unknown." >&2
+  CURSOR_API_KEY="$LIVE_KEY" node "$ROOT/scripts/live-tokens.mjs" --turns "$TURN_LOG" --since "$RUN_START_MS" --out "$TOKENS_FILE" || echo "The token reader failed; tokens stay unknown." >&2
 else
   OPENCLAW_ALL_CLI_REGRESSION=1 npx vitest run "${reporters[@]}" "test/regression/$tier" || status=$?
 fi
