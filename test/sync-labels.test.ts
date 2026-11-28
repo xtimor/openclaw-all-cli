@@ -506,6 +506,9 @@ describe("sync-labels.mjs", () => {
       ["an unknown key", '- name: "type:bug"\n  color: "d73a4a"\n  description: "d"\n  emoji: "x"\n', /unknown key "emoji"/],
       ["no entries", "# only a comment\n", /no entries/],
       ["an empty renamed_from", '- name: "type:bug"\n  color: "d73a4a"\n  description: "d"\n  renamed_from: " "\n', /type:bug.*empty renamed_from/],
+      ...["source:regression", "Source:Regression", "source:agent", "status:approved", "status:rework", "status:upstream", "upstream:post"].map(
+        (name) => [`a renamed_from on ${name}`, `- name: "${name}"\n  color: "d73a4a"\n  description: "d"\n  renamed_from: "old-label"\n`, /renamed_from is not allowed on a source:, owner-only, or workflow-only label/] as [string, string, RegExp],
+      ),
       ["a renamed_from equal to the name", '- name: "type:bug"\n  color: "d73a4a"\n  description: "d"\n  renamed_from: "type:bug"\n', /type:bug.*renamed_from is the label's own name/],
       ["a renamed_from equal to the name in another case", '- name: "type:bug"\n  color: "d73a4a"\n  description: "d"\n  renamed_from: "Type:Bug"\n', /renamed_from is the label's own name/],
       [

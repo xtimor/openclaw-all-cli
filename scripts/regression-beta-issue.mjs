@@ -8,10 +8,15 @@
 // `source:regression`, `type:bug`, and `status:todo`, so triage skips it and the next implementation run builds it without the
 // owner's approval (docs/agents/implement.md, "Regression issues"); that run reproduces it and hands it to the owner when the fault
 // is in OpenClaw beta and no plugin-side fix exists. A GITHUB_TOKEN-made issue starts no issue-flow run, so the script sets the status
-// itself. Dependency-free, like scripts/regression-ledger.mjs.
+// itself. The issue flow trusts the label only when the run named in the issue's first line is a run of this workflow on `main`
+// (scripts/issue-flow/transitions.mjs, regressionRunVerdict). A run with `force_red` (--forced true) is no finding: its marker says
+// `forced`, which is never trusted, and its issue gets no `source:regression` and no type, so it goes through triage.
+// A run comments only on an open issue this script opened (author github-actions[bot], its marker on the first line) of the same
+// kind (forced or not); a `regression:beta` label someone put on another issue never stops a new one. Dependency-free, like
+// scripts/regression-ledger.mjs.
 //
 //   GITHUB_TOKEN=... GITHUB_REPOSITORY=owner/repo node scripts/regression-beta-issue.mjs report \
-//     --outcome <success|failure|cancelled|skipped> --results <file> --run-url <url> [--run-id <id>]
+//     --outcome <success|failure|cancelled|skipped> --results <file> --run-url <url> [--run-id <id>] [--forced <true|false>]
 //
 // --outcome is the regression job's result (`needs.<job>.result`); only `failure` reports. --results is the JSON array
 // regression.yml outputs (`results`: version, requests, result, seconds, sha256, failed); missing, empty, or unreadable
@@ -33,6 +38,12 @@ const STATUS = "status:todo";
 const SOURCE = "source:regression";
 const TYPE = "type:bug";
 const LABELS = [LABEL, SOURCE, TYPE, STATUS];
+// A forced red run exercises the issue path only: no finding, so no shortcut and no type (triage looks at it).
+const FORCED_LABELS = [LABEL, STATUS];
+// The login of the GITHUB_TOKEN this script runs with in Actions: an issue by anyone else is never this script's.
+const WRITER = "github-actions[bot]";
+// The first line of an issue this script opened: the run id, and ` forced` for a forced run.
+const FIRST_LINE = /^<!-- regression-beta run=(\d{1,20})( forced)? -->$/;
 const MAX_FAILED = 30;
 const MAX_LINE = 300;
 
@@ -41,8 +52,8 @@ class UsageError extends ReportError {}
 
 function parseArgs(argv) {
   const [command, ...rest] = argv;
-  if (command !== "report") throw new UsageError("usage: regression-beta-issue.mjs report --outcome <result> --results <file> --run-url <url> [--run-id <id>]");
-  const names = { "--outcome": "outcome", "--results": "results", "--run-url": "runUrl", "--run-id": "runId" };
+  if (command !== "report") throw new UsageError("usage: regression-beta-issue.mjs report --outcome <result> --results <file> --run-url <url> [--run-id <id>] [--forced <true|false>]");
+  const names = { "--outcome": "outcome", "--results": "results", "--run-url": "runUrl", "--run-id": "runId", "--forced": "forced" };
   const options = {};
   for (let i = 0; i < rest.length; i += 2) {
     const name = Object.hasOwn(names, rest[i]) ? names[rest[i]] : undefined;
@@ -50,6 +61,7 @@ function parseArgs(argv) {
     options[name] = rest[i + 1];
   }
   if (!options.outcome) throw new UsageError("--outcome is required");
+  if (options.forced !== undefined && options.forced !== "true" && options.forced !== "false") throw new UsageError("--forced must be true or false");
   return options;
 }
 
@@ -73,7 +85,15 @@ const line = (text) => {
 const code = (text) => `\`${line(text).replace(/`/g, "'")}\``;
 const minutes = (seconds) => (Number.isFinite(seconds) && seconds >= 0 ? `${Math.floor(seconds / 60)}m ${Math.round(seconds % 60)}s` : "-");
 
-const marker = (runId) => `<!-- regression-beta run=${runId} -->`;
+const marker = (runId, forced = false) => `<!-- regression-beta run=${runId}${forced ? " forced" : ""} -->`;
+/** Whether `text` carries this run's marker, forced or not (so a re-run of the job never reports twice). */
+const hasRunMarker = (text, runId) => String(text ?? "").includes(marker(runId)) || String(text ?? "").includes(marker(runId, true));
+/** An issue this script opened, of this run's kind: its author is WRITER and its first line is a marker with the same forced flag. */
+function isOwnIssue(row, forced) {
+  if (!row || typeof row.number !== "number" || row.pull_request || String(row.user?.login ?? "").toLowerCase() !== WRITER) return false;
+  const match = FIRST_LINE.exec(String(row.body ?? "").split("\n", 1)[0].replace(/\r$/, ""));
+  return match !== null && Boolean(match[2]) === forced;
+}
 
 /** The versions the run tested, for the title: the resolved ones, else the requests. */
 function versionsOf(results) {
@@ -104,21 +124,23 @@ function details(results, runUrl) {
   return out.join("\n");
 }
 
-function issueBody(results, runUrl, runId) {
+function issueBody(results, runUrl, runId, forced) {
   return [
-    marker(runId),
+    marker(runId, forced),
     "The weekly Gateway regression tier (`.github/workflows/regression-beta.yml`, `scripts/regression.sh gateway`) is red on OpenClaw `beta`.",
     "",
     details(results, runUrl),
     "",
-    `A regression finding is fixed at once: \`${SOURCE}\` skips triage and the owner's approval, and the next implementation run takes it (docs/agents/implement.md, "Regression issues"). It reproduces it on \`main\` (\`scripts/regression.sh gateway --openclaw <version>\`) and fixes the plugin through the normal batch pull request; when the OpenClaw beta is at fault and no plugin-side fix exists, it hands the issue to the owner (\`status:blocked\`).`,
+    forced
+      ? "This run was red on purpose (`force_red`, dispatch only) to exercise the issue path: it is no regression finding, so it has no `source:regression` and no type, and it goes through triage like any issue."
+      : `A regression finding is fixed at once: \`${SOURCE}\` skips triage and the owner's approval, and the next implementation run takes it (docs/agents/implement.md, "Regression issues"). It reproduces it on \`main\` (\`scripts/regression.sh gateway --openclaw <version>\`) and fixes the plugin through the normal batch pull request; when the OpenClaw beta is at fault and no plugin-side fix exists, it hands the issue to the owner (\`status:blocked\`).`,
     "",
     `While this issue is open, a red weekly run comments here instead of opening another. A green run changes nothing, so close it once it is settled; the next red run then opens a new one. The label \`${LABEL}\` marks it.`,
   ].join("\n");
 }
 
-function commentBody(results, runUrl, runId) {
-  return [marker(runId), `Red again on OpenClaw beta (${line(versionsOf(results))}).`, "", details(results, runUrl)].join("\n");
+function commentBody(results, runUrl, runId, forced) {
+  return [marker(runId, forced), `Red again on OpenClaw beta (${line(versionsOf(results))}).`, "", details(results, runUrl)].join("\n");
 }
 
 function client(api, token) {
@@ -185,18 +207,20 @@ async function main(argv, env) {
   const request = client(api, token);
   const results = readResults(options.results);
   const base = `/repos/${repo}/issues`;
+  const forced = options.forced === "true";
+  const labels = forced ? FORCED_LABELS : LABELS;
 
-  const open = (await all(request, `${base}?state=open&labels=${encodeURIComponent(LABEL)}`))
-    .filter((row) => row && typeof row.number === "number" && !row.pull_request)
-    .sort((a, b) => a.number - b.number);
+  // Only an issue this script opened counts: anyone with triage rights can add `regression:beta` to another issue, which must not
+  // swallow a new finding.
+  const open = (await all(request, `${base}?state=open&labels=${encodeURIComponent(LABEL)}`)).filter((row) => isOwnIssue(row, forced)).sort((a, b) => a.number - b.number);
   if (open.length > 0) {
     const issue = open[0];
-    const seen = String(issue.body ?? "").includes(marker(runId)) || (await all(request, `${base}/${issue.number}/comments`)).some((row) => String(row?.body ?? "").includes(marker(runId)));
+    const seen = hasRunMarker(issue.body, runId) || (await all(request, `${base}/${issue.number}/comments`)).some((row) => hasRunMarker(row?.body, runId));
     if (seen) {
       console.log(`regression-beta-issue: run ${runId} is already reported on #${issue.number}`);
       return 0;
     }
-    await request("POST", `${base}/${issue.number}/comments`, { body: commentBody(results, runUrl, runId) });
+    await request("POST", `${base}/${issue.number}/comments`, { body: commentBody(results, runUrl, runId, forced) });
     console.log(`regression-beta-issue: commented on the open issue #${issue.number}`);
     return 0;
   }
@@ -205,10 +229,10 @@ async function main(argv, env) {
   // marker among the newest issues, open or closed, so a re-run never opens a second one.
   const recent = await request("GET", `${base}?state=all&sort=created&direction=desc&per_page=${PAGE_SIZE}&page=1`);
   if (!Array.isArray(recent)) throw new ReportError(`GET ${base}: GitHub answered with no list`);
-  const own = recent.find((row) => row && typeof row.number === "number" && !row.pull_request && String(row.body ?? "").includes(marker(runId)));
+  const own = recent.find((row) => isOwnIssue(row, forced) && String(row.body ?? "").split("\n", 1)[0].replace(/\r$/, "") === marker(runId, forced));
   if (own) {
-    // Only the marker label: the issue's status is the issue flow's by now. Never `source:regression`: the marker is plain text that
-    // anyone can put in an issue, and the label must stay on issues this script opened itself.
+    // Only the marker label: the issue's status is the issue flow's by now. Never `source:regression` here: the issue flow judges that
+    // label by the run, and a re-add would be a new label event outside the run's time.
     if (own.state === "open") await ensureLabels(request, base, own, [LABEL]);
     console.log(`regression-beta-issue: run ${runId} is already reported on #${own.number}`);
     return 0;
@@ -216,12 +240,12 @@ async function main(argv, env) {
 
   const created = await request("POST", base, {
     title: `OpenClaw beta ${versionsOf(results)}: the Gateway regression tier is red`,
-    body: issueBody(results, runUrl, runId),
-    labels: LABELS,
+    body: issueBody(results, runUrl, runId, forced),
+    labels,
   });
   if (!created || typeof created.number !== "number") throw new ReportError(`POST ${base}: GitHub answered with no issue`);
   console.log(`regression-beta-issue: opened #${created.number}`);
-  await ensureLabels(request, base, created, LABELS);
+  await ensureLabels(request, base, created, labels);
   return 0;
 }
 

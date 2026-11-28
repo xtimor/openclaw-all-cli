@@ -33,7 +33,9 @@ interface StubIssue {
   body: string;
   comments: string[];
   pull_request?: object;
+  author?: string;
 }
+const WRITER = "github-actions[bot]";
 
 let server: Server;
 let base = "";
@@ -59,7 +61,7 @@ beforeAll(async () => {
       const perPage = Number(url.searchParams.get("per_page") ?? "30");
       const page = Number(url.searchParams.get("page") ?? "1");
       const paged = <T>(rows: T[]) => rows.slice((page - 1) * perPage, page * perPage);
-      const issueRow = (issue: StubIssue) => ({ number: issue.number, state: issue.state, body: issue.body, labels: issue.labels.map((name) => ({ name })), pull_request: issue.pull_request });
+      const issueRow = (issue: StubIssue) => ({ number: issue.number, state: issue.state, body: issue.body, user: { login: issue.author ?? WRITER }, labels: issue.labels.map((name) => ({ name })), pull_request: issue.pull_request });
       if (req.method === "GET" && url.pathname === `/repos/${REPO}/issues`) {
         const label = url.searchParams.get("labels");
         const state = url.searchParams.get("state") ?? "open";
@@ -68,7 +70,7 @@ beforeAll(async () => {
         return send(200, paged(rows).map(issueRow));
       }
       if (req.method === "POST" && url.pathname === `/repos/${REPO}/issues`) {
-        const issue: StubIssue = { number: 100 + issues.length, labels: dropLabels ? [] : body.labels, state: "open", body: body.body, comments: [] };
+        const issue: StubIssue = { number: 100 + issues.length, labels: dropLabels ? [] : body.labels, state: "open", body: body.body, comments: [], author: WRITER };
         issues.push(issue);
         return send(201, issueRow(issue));
       }
@@ -144,7 +146,8 @@ const red = [
   },
 ];
 const report = (outcome: string, results: string, extra: string[] = []) => run(["report", "--outcome", outcome, "--results", results, "--run-url", RUN_URL, ...extra]);
-const openIssue = (number: number, body = "earlier report"): StubIssue => ({ number, labels: [LABEL, "status:todo"], state: "open", body, comments: [] });
+/** An open issue an earlier run of the script opened (its author is the workflow's token, its first line that run's marker). */
+const openIssue = (number: number, body = "<!-- regression-beta run=1 -->\nearlier report", author = WRITER): StubIssue => ({ number, labels: [LABEL, "status:todo"], state: "open", body, comments: [], author });
 const writes = () => calls.filter((call) => call.method !== "GET");
 
 describe("report", () => {
@@ -237,11 +240,52 @@ describe("report", () => {
     expect((await run(["report", "--outcome", "failure", "--run-url", RUN_URL])).code).toBe(0);
   });
 
-  it("a forced red (the dispatch input) reports like a real one", async () => {
+  it("a forced red (the dispatch input) opens an issue marked forced, with no source:regression and no type, so it is never trusted", async () => {
     const forced = [{ ...red[0], failed: ["force_red: failed on purpose (workflow_dispatch input)"] }];
-    const result = await report("failure", resultsFile(forced));
+    const result = await report("failure", resultsFile(forced), ["--forced", "true"]);
     expect(result.code, result.stderr).toBe(0);
-    expect(writes()[0]!.body.body).toContain("- `force_red: failed on purpose (workflow_dispatch input)`");
+    const post = writes()[0]!;
+    expect(post.body.labels).toEqual([LABEL, "status:todo"]);
+    const body: string = post.body.body;
+    expect(body.split("\n")[0]).toBe(`<!-- regression-beta run=${RUN_ID} forced -->`);
+    expect(body).toContain("- `force_red: failed on purpose (workflow_dispatch input)`");
+    expect(body).toContain("it is no regression finding, so it has no `source:regression`");
+    expect(body).not.toContain("is fixed at once");
+    // Its re-run is a no-op, and `--forced false` is the default.
+    expect((await report("failure", resultsFile(forced), ["--forced", "true"])).stdout).toContain(`run ${RUN_ID} is already reported on #100`);
+    expect(issues).toHaveLength(1);
+  });
+
+  it("forced and real issues never mix: a forced run never comments on a real finding, and a real run never on a forced issue", async () => {
+    issues = [openIssue(7)];
+    expect((await report("failure", resultsFile(red), ["--forced", "true", "--run-id", "5000"])).stdout).toContain("opened #101");
+    expect(issues[0]?.comments).toEqual([]);
+    expect((await report("failure", resultsFile(red), ["--forced", "true", "--run-id", "5001"])).stdout).toContain("commented on the open issue #101");
+    issues = [openIssue(8, "<!-- regression-beta run=2 forced -->\nforced")];
+    expect((await report("failure", resultsFile(red), ["--run-id", "5002"])).stdout).toContain("opened #101");
+    expect(issues.at(-1)?.labels).toEqual(LABELS);
+  });
+
+  it("comments only on an issue it opened: a regression:beta someone put on another issue, or a lookalike body, never swallows a new finding", async () => {
+    issues = [
+      openIssue(3, "<!-- regression-beta run=1 -->\nnot ours", "mallory"),
+      openIssue(4, "earlier report"),
+      openIssue(5, `see <!-- regression-beta run=1 -->`),
+      openIssue(6, "<!-- regression-beta run=1 --> trailing"),
+    ];
+    const result = await report("failure", resultsFile(red));
+    expect(result.code, result.stderr).toBe(0);
+    expect(result.stdout).toContain("opened #104");
+    expect(issues.slice(0, 4).every((issue) => issue.comments.length === 0)).toBe(true);
+  });
+
+  it("never treats another person's issue that carries this run's marker as its own: it opens its own and labels nothing else", async () => {
+    issues = [{ ...openIssue(9, `<!-- regression-beta run=${RUN_ID} -->\nplanted`, "mallory"), labels: [] }];
+    const result = await report("failure", resultsFile(red));
+    expect(result.code, result.stderr).toBe(0);
+    expect(result.stdout).toContain("opened #101");
+    expect(issues[0]?.labels).toEqual([]);
+    expect(issues[1]?.labels).toEqual(LABELS);
   });
 
   it("never opens a second issue for a run whose issue lost its label: a re-run finds the marker among the newest issues", async () => {
@@ -339,6 +383,7 @@ describe("report", () => {
     expect((await run(["report", "--outcome", "failure", "--nope", "x"])).code).toBe(2);
     expect((await run(["report", "--outcome", "failure", "--run-url", RUN_URL], { GITHUB_RUN_ID: "" })).code).toBe(2);
     expect((await run(["report", "--outcome", "failure", "--run-url", "not a url"])).code).toBe(2);
+    for (const value of ["yes", "1", "TRUE", ""]) expect((await run(["report", "--outcome", "failure", "--run-url", RUN_URL, "--forced", value])).code, value).toBe(2);
     expect(writes()).toEqual([]);
   });
 });

@@ -1,8 +1,8 @@
 // Applies the decisions of transitions.mjs to GitHub. Entry points for .github/workflows/issue-flow.yml, which
 // calls them from actions/github-script (`github` is its octokit, `context` the event, `core` the logger).
-// No model, no text from an issue is evaluated; the owner list comes from the workflow's ISSUE_FLOW_OWNERS, the agent logins (also the
-// regression writers of `source:regression`, beside github-actions[bot]) from ISSUE_FLOW_AGENTS.
-import { STALE_DAYS, STALE_STATUSES, decide, isBot, isStatusName, linkedIssues, needsTimeline, parseOwners, staleIssues, staleStatus, statusSince, canonicalStatus, issueHasLabel, latestEventIsLabeled, OWNER_ONLY_STATUSES, AGENT_MARKER_RE, SOURCE_REGRESSION } from "./transitions.mjs";
+// No model, no text from an issue is evaluated; the owner list comes from the workflow's ISSUE_FLOW_OWNERS, the agent logins from ISSUE_FLOW_AGENTS.
+// For an issue with `source:regression` it also reads the workflow run its first line names (needs `actions: read`).
+import { STALE_DAYS, STALE_STATUSES, decide, isBot, isStatusName, linkedIssues, needsTimeline, parseOwners, staleIssues, staleStatus, statusSince, canonicalStatus, issueHasLabel, latestEventIsLabeled, OWNER_ONLY_STATUSES, AGENT_MARKER_RE, SOURCE_REGRESSION, regressionRunRef } from "./transitions.mjs";
 
 const EVENT_ATTEMPTS = 4; // the events list can lag a moment behind the event that started the run (as in scripts/upstream-post.mjs)
 const EVENT_DELAY_MS = 2000;
@@ -51,6 +51,33 @@ export async function applyActions(github, context, issueNumber, actions) {
 async function readTimeline(github, context, issueNumber) {
   const { owner, repo } = context.repo;
   return github.paginate(github.rest.issues.listEvents, { owner, repo, issue_number: issueNumber, per_page: 100 });
+}
+
+/**
+ * The run a `source:regression` issue names in its first line, for `regressionRunVerdict`: `{run, onMain}`. `run` is null when the
+ * body names none or the run cannot be read (untrusted); `onMain` is true when GitHub's compare of its `head_sha` with `main` says
+ * `identical` or `ahead` (the commit is `main` or an ancestor of it), false when it says otherwise or cannot be read.
+ */
+async function readRegressionRun(github, context, issue, core) {
+  const { owner, repo } = context.repo;
+  const ref = regressionRunRef(issue.body);
+  if (ref === null) return { run: null, onMain: false };
+  let run;
+  try {
+    run = (await github.rest.actions.getWorkflowRun({ owner, repo, run_id: Number(ref.runId) })).data;
+  } catch (error) {
+    core.warning(`issue-flow: #${issue.number} regression run ${ref.runId} not read (untrusted): ${error?.message ?? error}`);
+    return { run: null, onMain: false };
+  }
+  const sha = typeof run?.head_sha === "string" && /^[0-9a-f]{40}$/i.test(run.head_sha) ? run.head_sha : null;
+  if (sha === null) return { run, onMain: false };
+  try {
+    const status = (await github.rest.repos.compareCommitsWithBasehead({ owner, repo, basehead: `${sha}...main`, per_page: 1 })).data?.status;
+    return { run, onMain: status === "identical" || status === "ahead" };
+  } catch (error) {
+    core.warning(`issue-flow: #${issue.number} regression run ${ref.runId}: its commit was not compared with main (untrusted): ${error?.message ?? error}`);
+    return { run, onMain: false };
+  }
 }
 
 async function readIssue(github, context, issueNumber) {
@@ -116,7 +143,9 @@ export async function runEvent({ github, context, core, env = process.env }) {
         return;
       }
     }
-    const actions = decide(event, issue, { owners, agents, timeline });
+    const { owner, repo } = context.repo;
+    const regression = event.name === "issues" && issue.state === "open" && issueHasLabel(issue, SOURCE_REGRESSION) ? await readRegressionRun(github, context, issue, core) : undefined;
+    const actions = decide(event, issue, { owners, agents, timeline, regression, repo: `${owner}/${repo}` });
     if (actions.length === 0) {
       core.info(`issue-flow: #${number} nothing to do (${event.name} ${event.action})`);
       return;
