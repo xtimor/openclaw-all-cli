@@ -1,5 +1,5 @@
 ---
-id: 31
+id: 32
 type: bug
 title: "A key saved through Connect provider stays Not configured until a restart on OpenClaw 2026.10.3"
 parent: none
