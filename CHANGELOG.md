@@ -7,6 +7,7 @@ What changed for people who use the plugin, newest first. Format: [Keep a Change
 ### Fixed
 
 - On OpenClaw 2026.10.3 with more than one agent in the config, ending a chat (`/new`, a reset, a deletion, or an idle or daily rollover) now closes its `cursor-agent` process again, instead of leaving it running until the 15-minute idle close ([#105](https://github.com/xtimor/openclaw-all-cli/issues/105)).
+- On OpenClaw 2026.10.3, a Cursor key saved through **Connect provider** now shows on the `cursor-cli` card at once, instead of the card staying "Not configured" until a Gateway restart when the Gateway had started with `cursor-cli` as the model on a state with no saved key yet ([#106](https://github.com/xtimor/openclaw-all-cli/issues/106)). The cause is in OpenClaw 2026.10.3 (2026.11 is not affected): at each Gateway start on 2026.10.3 the plugin now has OpenClaw settle where it keeps saved keys, as the first saved key would; it saves nothing.
 
 ## 0.1.11 - 2026-11-20
 

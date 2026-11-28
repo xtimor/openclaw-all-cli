@@ -2,7 +2,7 @@ import { lstat } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join, resolve } from "node:path";
 import { API_KEY_METHOD_ID } from "./auth-ids.ts";
-import { findAnyStoredKey, type FindAnyStoredKey } from "./auth-store.ts";
+import { findAnyStoredKey, settleSharedAuthStore, type FindAnyStoredKey, type SettleOutcome } from "./auth-store.ts";
 import { backendIdFor, buildCliBackend } from "./backend.ts";
 import { closeListings } from "./catalog.ts";
 import { RELEASING_REASONS, releaseConversationEverywhere, shareConversationPool } from "./conversation.ts";
@@ -209,12 +209,21 @@ function configuredAgentIds(config: unknown): string[] {
   return [...ids];
 }
 
+/** What `registerAdapters` takes besides the host's API (tests). */
+export type RegisterOptions = {
+  /** Settles the auth store's location at a full load (issue #106). Default: `settleSharedAuthStore`. */
+  settleAuthStore?: () => Promise<SettleOutcome>;
+};
+
 /**
  * Registers one CLI backend per adapter (AD-1), each with its own process pool (AD-14). The pools
  * close when the plugin unloads, and a full load reaps what a killed Gateway left in the homes of
  * the configured agents (any other agent's home is reaped at its first use).
  */
-export function registerAdapters(api: OpenClawPluginApi, adapters: readonly CliAdapter[]): void {
+export function registerAdapters(api: OpenClawPluginApi, adapters: readonly CliAdapter[], options: RegisterOptions = {}): void {
+  // First, before the host's model-catalog worker reads the store: on OpenClaw 2026.10.3 a fresh state's
+  // auth store location is settled now, so a key saved later shows in `models.authStatus` (issue #106).
+  if (api.registrationMode === "full") void (options.settleAuthStore ?? settleSharedAuthStore)();
   const warn = (message: string) => api.logger.warn(message);
   // Hosts without a debug channel drop the per-turn timing line.
   const debug = (message: string) => api.logger.debug?.(message);

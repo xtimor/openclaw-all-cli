@@ -282,3 +282,19 @@ tests = [
   { file = "test/regression/gateway/multi-agent.regression.test.ts", name = "#105: with a second agent in the config, `sessions.reset` of a chat ends that chat's cursor-agent process and leaves another chat's running", tier = "gateway", reproduces = true },
   { file = "test/regression/gateway/multi-agent.regression.test.ts", name = "#105: `sessions.reset` of the second agent's chat ends that chat's cursor-agent process", tier = "gateway", reproduces = true },
 ]
+
+# OpenClaw 2026.10.3 only (2026.11.x is fine): its model-catalog worker thread caches a fresh state's auth store location
+# before the first save moves it, so models.authStatus misses the saved key; the plugin settles the location at start.
+[[bug]]
+issue = 106
+title = "A key saved through Connect provider stays Not configured until a restart on OpenClaw 2026.10.3"
+family = "auth-status"
+tier = "gateway"
+fixed = true
+tests = [
+  { file = "test/auth-store.test.ts", name = "settling the shared store's location at Gateway start (issue #106)", tier = "unit", reproduces = false },
+  { file = "test/auth-store.test.ts", name = "settling a fresh state's auth store location (host contract, issue #106)", tier = "unit", reproduces = false },
+  { file = "test/backend.test.ts", name = "reaps the homes of the configured agents and settles the auth store's location when fully loaded, and only then", tier = "unit", reproduces = false },
+  { file = "test/regression/gateway/auth-setup.regression.test.ts", name = "#39: a working cursor-agent login with no key is usable, and a key saved with the API key method is a cursor-cli api_key profile", tier = "gateway", reproduces = true },
+  { file = "test/regression/ui/provider-card.regression.test.ts", name = "#39: a key saved through Connect provider in the browser shows on the provider card with Remove key, not Not configured", tier = "ui", reproduces = true },
+]

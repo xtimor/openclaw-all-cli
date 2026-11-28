@@ -441,7 +441,7 @@ describe("operations wiring (P17, P19)", () => {
     expect(warnings).toEqual([]);
   });
 
-  it("reaps the homes of the configured agents when fully loaded, and only then", async () => {
+  it("reaps the homes of the configured agents and settles the auth store's location when fully loaded, and only then", async () => {
     const agentRoot = mkdtempSync(join(scratch, "reg-"));
     const agentDirOf = (id: string) => join(agentRoot, id);
     const lock = (id: string) => {
@@ -461,13 +461,18 @@ describe("operations wiring (P17, P19)", () => {
         registerCliBackend: () => {},
         registerProvider: () => {},
       }) as never;
+    let settles = 0;
+    const settleAuthStore = async () => (settles++, "settled" as const);
     const discovery = [lock("main-d"), lock("work-d")];
-    registerAdapters(api("discovery"), ADAPTERS);
+    registerAdapters(api("discovery"), ADAPTERS, { settleAuthStore });
     await sleep(300);
     expect(discovery.every((file) => existsSync(file))).toBe(true);
+    expect(settles).toBe(0);
 
     const files = [lock("main"), lock("work"), lock("other")];
-    registerAdapters(api("full"), ADAPTERS);
+    registerAdapters(api("full"), ADAPTERS, { settleAuthStore });
+    // Issue #106: a full load settles the auth store's location once, for all adapters.
+    expect(settles).toBe(1);
     await sleep(500);
     expect(existsSync(files[0]!)).toBe(false);
     expect(existsSync(files[1]!)).toBe(false);
