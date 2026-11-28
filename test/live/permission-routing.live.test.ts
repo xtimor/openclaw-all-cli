@@ -3,7 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterAll, expect, it } from "vitest";
 import { cursorAdapter } from "../../src/adapters/cursor/index.ts";
-import { createExecute } from "../../src/core/execute.ts";
+import { HOST_SHELL_ARG, createExecute } from "../../src/core/execute.ts";
 import type { CliAdapter, CliSession, NormalizedEvent, PermissionDecision } from "../../src/core/ports.ts";
 import type { ExecuteContext } from "../../src/core/sdk-types.ts";
 import { STUB_EXEC_TOOL, startStubMcpHost } from "../fixtures/stub-mcp-host.ts";
@@ -39,10 +39,11 @@ describeLive("permission requests go to the host (P8, P9)", () => {
     return { dir, env: { CURSOR_CONFIG_DIR: dir, CURSOR_DATA_DIR: join(dir, "data") } };
   }
 
-  /** Records the decisions the core gave the CLI and the sessions it opened. */
+  /** Records the decisions the core gave the CLI, the sessions it opened, and whether each opened with the host's shell. */
   function observed() {
     const decisions: Array<{ tool: string; decision: PermissionDecision }> = [];
     const sessions: CliSession[] = [];
+    const hostShell: boolean[] = [];
     const adapter: CliAdapter = {
       ...cursorAdapter,
       open: async (params) => {
@@ -55,16 +56,19 @@ describeLive("permission requests go to the host (P8, P9)", () => {
           },
         });
         sessions.push(session);
+        hostShell.push(params.hostShell === true);
         return session;
       },
     };
-    return { adapter, decisions, sessions };
+    return { adapter, decisions, sessions, hostShell };
   }
 
-  function turnContext(name: string, host: { url: string }, workspace: string, overrides: Partial<ExecuteContext>): ExecuteContext {
+  /** `hostShell`: the marker the backend adds when OpenClaw serves its own `exec` for the run (`HOST_SHELL_ARG`). */
+  function turnContext(name: string, host: { url: string }, workspace: string, overrides: Partial<ExecuteContext>, hostShell = false): ExecuteContext {
+    const settings = writeSettingsFile(root, `settings-${name}`, host.url, `token-${name}`, `capture-${name}`);
     return {
       command: process.env.CURSOR_AGENT_BIN ?? cursorAdapter.command,
-      args: [...cursorAdapter.launchArgs, ...hostMcpArgs(writeSettingsFile(root, `settings-${name}`, host.url, `token-${name}`, `capture-${name}`))],
+      args: [...cursorAdapter.launchArgs, ...hostMcpArgs(settings), ...(hostShell ? [HOST_SHELL_ARG] : [])],
       cwd: workspace,
       env: liveHostEnv(),
       prompt: "",
@@ -84,17 +88,23 @@ describeLive("permission requests go to the host (P8, P9)", () => {
     async () => {
       const workspace = join(root, "workspace-deny");
       freshDir(workspace);
-      const { adapter, decisions } = observed();
+      const { adapter, decisions, hostShell } = observed();
       const execute = createExecute(adapter, { home: askingHome("home-deny"), warn: (message) => console.warn(message) });
       const host = await startStubMcpHost({ execTool: true });
       const asked: Array<{ toolName: string; toolInput: Record<string, unknown> }> = [];
+      // As in production when OpenClaw serves exec: the backend's marker, so Cursor's agent mode and the shell
+      // sentence (#76). Told that, the model goes to exec at once and never asks (live, 2026-11-28), so the prompt
+      // asks for the native shell first: Cursor asks the host, the host says no. Without the marker the turn ran in
+      // ask mode with no shell sentence, and the model either never asked or gave up after the denial: the host's
+      // deny message never reaches the model (an ACP permission answer is an option id only).
       const ctx = turnContext("deny", host, workspace, {
-        prompt: "Run the shell command `echo oac-fallback-7f3a` and reply with its output only. Use whichever tool works.",
+        prompt:
+          "Run the shell command `echo oac-fallback-7f3a` with your own built-in shell tool first. If that is refused, run it with whichever tool works. Reply with its output only.",
         requestToolPermission: async (request) => {
           asked.push({ toolName: request.toolName, toolInput: request.toolInput });
           return { behavior: "deny", message: "Use OpenClaw exec; the native shell is unavailable." };
         },
-      });
+      }, true);
       try {
         let reply = "";
         for await (const record of execute(ctx)) {
@@ -102,6 +112,8 @@ describeLive("permission requests go to the host (P8, P9)", () => {
           if (event.kind === "result") reply = event.text;
           if (event.kind === "error") throw new Error(`turn failed: ${event.error.message}`);
         }
+        // The turn ran as a host-shell turn (agent mode, the shell sentence sent).
+        expect(hostShell).toEqual([true]);
         // Cursor asked, the host said no, and the shell never ran.
         expect(asked.map((request) => request.toolName)).toContain("exec");
         expect(JSON.stringify(asked[0]!.toolInput)).toContain("oac-fallback-7f3a");

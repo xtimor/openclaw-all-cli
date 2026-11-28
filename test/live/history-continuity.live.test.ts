@@ -181,7 +181,7 @@ describeLive("chat continuity across a model switch (P15)", () => {
 
   it(
     "(c) with a profile, a lost cursor-cli chat gets the host's history prompt (the fresh retry itself is recorded)",
-    () => {
+    async () => {
       expect(profileAdded, "step (b) must run first").toBe(true);
       const id = `agent:main:${sessionId("c")}`;
       const fact = word("FIG");
@@ -189,6 +189,10 @@ describeLive("chat continuity across a model switch (P15)", () => {
       const before = new Set(existsSync(sessions) ? readdirSync(sessions) : []);
       const first = ask("cursor-cli/auto", id, `Remember this: the code word is ${fact}. Say ok.`, "--session-key");
       expect(first.status, first.raw).toBe(0);
+      // The chat is lost only once no process holds it: the turn's cursor-agent stays warm for the next turn and
+      // answers it from memory (`reuse=reusable`, the fact in the reply), whatever is on disk. Stop the Gateway (and
+      // its warm process) before the chat goes, start it again after: the host's binding stays in its session store.
+      await gateway.stop();
       // The new native chat is the new directory that holds the fact (a model listing may add another).
       const holdsFact = (dir: string) =>
         readdirSync(join(sessions, dir), { recursive: true, withFileTypes: true }).some(
@@ -198,6 +202,7 @@ describeLive("chat continuity across a model switch (P15)", () => {
       const added = readdirSync(sessions).filter((name) => !before.has(name));
       expect(created, `new chat dirs: ${JSON.stringify(added)}; holding the fact: ${JSON.stringify(created)}; first reply: ${first.raw}`).toHaveLength(1);
       rmSync(join(sessions, created[0]!), { recursive: true, force: true });
+      gateway = await startGateway(PORT);
       const next = ask("cursor-cli/auto", id, question, "--session-key");
       // reseedFromRawTranscriptWhenUncompacted: the host builds its history prompt for the resumed turn
       // (without the flag the log says historyPrompt=none), the native chat is gone, and the turn is classified session_expired.
