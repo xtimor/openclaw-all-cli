@@ -3,16 +3,16 @@ title: 'A key saved through Connect provider stays Not configured until a restar
 type: 'bugfix'
 ticket: '31'
 created: '2026-11-28'
-status: 'in-progress'
+status: 'in-review'
 baseline_revision: 'd467522ce1d83620ff67bfa8b7ac4b7b6128370a'
 route: 'full'
 route_source: 'pinned'
 risk: 'medium'
-review: ''
-review_source: ''
+review: 'quick'
+review_source: 'auto'
 lenses_ran: []
 review_loop_iteration: 0
-followup_review_recommended: false
+followup_review_recommended: true
 context: []
 warnings: []
 deferred: []
@@ -65,11 +65,11 @@ host that has `ensureAuthProfileStoreAsync`; import host internals outside `open
 ## Tasks & Acceptance
 
 **Execution:**
-- [ ] `src/core/auth-store.ts` -- add a start-time "settle the shared store" call: on a host without the async reader, one `updateAuthProfileStoreWithLock` with an updater that changes nothing; never throws -- the host commits the store's location before its catalog worker caches it
-- [ ] `src/core/register.ts` -- run it once at a full load, before the start-time store reads -- the earliest point the plugin has in the Gateway's main thread
-- [ ] `test/auth-store.test.ts` -- unit tests for every row of the matrix, and a host-contract test that the no-op update settles a fresh state's location and writes no profile
-- [ ] `test/regression/ledger.toml` -- `[[bug]]` for #106 (tier gateway), naming the gateway and UI `#39` tests (`reproduces = true`) and the unit tests (`reproduces = false`)
-- [ ] `CHANGELOG.md` -- one `### Fixed` line under `## Unreleased` with the issue link
+- [x] `src/core/auth-store.ts` -- add a start-time "settle the shared store" call: on a host without the async reader, one `updateAuthProfileStoreWithLock` with an updater that changes nothing; never throws -- the host commits the store's location before its catalog worker caches it
+- [x] `src/core/register.ts` -- run it once at a full load, before the start-time store reads -- the earliest point the plugin has in the Gateway's main thread
+- [x] `test/auth-store.test.ts` -- unit tests for every row of the matrix, and a host-contract test that the no-op update settles a fresh state's location and writes no profile
+- [x] `test/regression/ledger.toml` -- `[[bug]]` for #106 (tier gateway), naming the gateway and UI `#39` tests (`reproduces = true`) and the unit tests (`reproduces = false`)
+- [x] `CHANGELOG.md` -- one `### Fixed` line under `## Unreleased` with the issue link
 
 **Acceptance Criteria:**
 - Given OpenClaw 2026.10.3 and a fresh state with `cursor-cli` configured, when a key is saved through Connect provider, then `models.authStatus` lists `cursor-cli:default` (`api_key`) without a restart and the card shows it (gateway and UI `#39` cases green, red before the fix)
@@ -77,15 +77,66 @@ host that has `ensureAuthProfileStoreAsync`; import host internals outside `open
 
 ## Implementation Notes
 
+**Root cause (confirmed in the installed 2026.10.3 dist, not the ticket's suspect).**
+- The suspect is ruled out: with every plugin store read disabled in the installed plugin (`ensureAuthProfileStore` replaced by "no reader", so nothing of ours touches the store), the `#39` gateway case stays red.
+- Instrumenting the host (copies of `store-*.mjs`, `runtime-snapshots-*.mjs`, `agents/prepared-model-catalog.worker.js` with `appendFileSync` logs, restored after) showed the sequence:
+  1. The main thread's prepared runtime gets `cursor-cli:default` right after the save.
+  2. The catalog worker thread then republishes the store with no profile, and `models.authStatus` reads that.
+- Cause, all in OpenClaw 2026.10.3:
+  - `resolveSharedAuthStoreOwnership` (`path-resolve-*.mjs`) caches the shared store's location per thread. An absent `auth.sharedStore` row means `legacy-main`, `agents/main/agent/openclaw-agent.sqlite`.
+  - On a fresh state the first auth write runs `initializeFreshSharedAuthStore` (`sqlite-*.mjs`). It moves the location to `state-db` (`state/openclaw.sqlite`) and updates only the writing thread's cache. `refreshModelAuthStateAfterMutation` reloads only the main thread's.
+  - The catalog worker was started at Gateway start for the configured `cursor-cli` catalog, so it keeps `legacy-main`.
+  - Its `refreshAuthStore` reads the empty old store, and `replacePreparedModelCatalogAuth` puts that view into the published owner that `models.authStatus` shows. It drops `cursor-cli:default` because main marks it `runtimePersistedProfileIds`, and the worker trusts its own durable read for those.
+- Proof:
+  - Patching the worker to reload the location per request turned `#39` green; the worker's log went from `legacy-main` to `state-db` after the save.
+  - Without the patch it stays `legacy-main` throughout.
+- This also explains the ticket's other facts:
+  - The main thread serves `models.probe` and `models auth list`, so both see the profile.
+  - With no plugin provider at start, no worker caches the old location.
+  - A restart or a plugin hot reload rotates the worker (MEMORY ticket 4.6 line).
+  - 2026.11.x is not affected.
+
+**Fix.**
+- `settleSharedStore` in `createAuthStore`, exported as `settleSharedAuthStore`.
+  - On a host without `ensureAuthProfileStoreAsync` (the module's existing 2026.10.3 test), it runs one `updateAuthProfileStoreWithLock({ updater: () => false })`. That is a shared-store write, so the host settles the location as the first saved key would, before the worker's first read.
+  - On a fresh state it writes only the `config_machine_state` row `auth.sharedStore = {"location":"state-db"}` (checked with `node:sqlite`): no profile, no store save.
+  - On a settled state, or one with legacy sources, the host returns at once. A failing or contended update reads as `failed`.
+  - It never throws, and it does nothing on 2026.11.x.
+- `registerAdapters` calls it once per full load, first, injectable through a new optional `RegisterOptions.settleAuthStore` for tests. In the experiment that proved it (the same call patched into the installed plugin, with the host's worker logging), the settle finished about 6 ms after it started, and the worker's first read came about 4.5 s later and already saw `state-db`.
+- Files: `src/core/auth-store.ts`, `src/core/register.ts`, `test/auth-store.test.ts` (unit tests for every matrix row, plus a host-contract test on the 2026.10.3 dist: `legacy-main` becomes `state-db`, no profile, idempotent), `test/backend.test.ts` (a full load settles once, a discovery load does not; the one full-mode call now passes a stub, so `npm test` never writes a real store), `test/regression/ledger.toml` (#106), `CHANGELOG.md`, `docs/release.md` (dropped "the min job is red while #106 is open"), `MEMORY.md`.
+- Local only: a `.spike` symlink to `.regression/openclaw-2026.10.3`, so `npm run typecheck` and the host-contract tests find the 2026.10.3 SDK. It is untracked and not committed.
+
+**Review (inline self-review, no subagents).**
+- Race: the settle is async at register. If the worker's first store read came before it commits, that one Gateway run would still show the bug. In practice the margin is seconds.
+- The update fails on a state whose legacy auth files need `openclaw doctor --fix`: the host throws there, and the result is `failed`, silent and harmless.
+- A no-op write lock at every full load on 2026.10.3: cheap.
+- Test gap, not changed (`test/regression/` is outside this ticket): the UI tier's `#39` check reproduces #106 only when `provider-card` is the first file to save a key in the tier's shared state. In a full `ui` run `key-actions` goes first, so that check passes with or without the fix (see Verification). The gateway tier's `#39` case does reproduce it (`auth-setup` saves the first key there).
+- No patch was needed. No independent review lens ran, so a follow-up review is recommended.
+
 ## Plan Change Log
 
 ## Review Triage Log
 
+### 2026-11-28 — Inline self-review (no subagents)
+
+- verdicts: 0 high, 0 medium, 3 low (all accepted as residual risk, none patched), 0 false
+- findings:
+  - `[low]` `[accept]` The async settle can lose a race with the worker's first read. It completed in about 6 ms against a margin of about 4.5 s in the probe; if lost, that Gateway run behaves as before the fix.
+  - `[low]` `[accept]` A state with legacy auth files that need `openclaw doctor --fix` makes the host's update throw. The result is `failed`, nothing else happens, and the bug does not occur there: the location stays `legacy-main` in every thread.
+  - `[low]` `[accept]` The UI tier's `#39` check depends on file order to reproduce #106 (see Implementation Notes). Changing the shared regression tests is out of this ticket's scope.
+
 ## Verification
 
 **Commands:**
-- `scripts/regression.sh gateway` (2026.10.3) -- expected: all pass, the `#39` case included
-- `scripts/regression.sh gateway --openclaw latest` -- expected: all pass
-- `scripts/regression.sh ui` (2026.10.3) -- expected: all pass, the `#39` card check included
-- `npm test` -- expected: all pass
-- `npm run typecheck` -- expected: clean
+- `scripts/regression.sh gateway` (2026.10.3) -- expected: all pass, the `#39` case included.
+  - Before the fix (d467522): failed, 612 s, only `#39` red ("models.authStatus has no saved cursor-cli profile 30 s after the save").
+  - After: passed, 601 s, 19 passed, 1 skipped (the 2026.11.x-only `#80` case).
+- `scripts/regression.sh gateway --openclaw latest` (resolved to 2026.11.11) -- expected: all pass. Result: passed, 960 s (run beside a UI run), 16 passed, 4 skipped (the offline-catalog cases, as before).
+- `scripts/regression.sh ui` (2026.10.3) -- expected: all pass, the `#39` card check included. Result: passed, 269 s, 8 of 8.
+- Red before for the UI check:
+  - The full UI tier does not reproduce #106. `key-actions` runs before `provider-card` in the tier's shared state and saves a key first, so the location is already settled when `provider-card`'s Gateway starts. A full `scripts/regression.sh ui --tgz <the fix's package with the settle call removed>` passed 8 of 8 (424 s).
+  - So the reproduction ran `provider-card.regression.test.ts` alone on a fresh 2026.10.3 state (the script's own steps). Without the settle: `#39` red, "the card still reads Not configured 30 s after the save (#106 on 2026.10.3)" (217 s). With the fix's package: 4 of 4 green (178 s).
+- `npm test` -- expected: all pass. Result: 73 files passed, 28 skipped; 2118 tests passed, 98 skipped (live and regression only).
+- `npm run typecheck` -- expected: clean. Result: clean (with `.spike` linked to `.regression/openclaw-2026.10.3`).
+- `node scripts/changelog.mjs check` -- expected: clean. Result: clean.
+- Live Cursor check: not run (no `cursor-agent` login here; the change has no Cursor-side path).
