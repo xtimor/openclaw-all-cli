@@ -33,13 +33,15 @@ import {
   submitKey,
   withUiPage,
 } from "./browser.ts";
-import { samePngPixels } from "./png.ts";
+import { decodePng, samePngPixels } from "./png.ts";
 
 /** The plugin's whole cursor-cli config entry: setting it replaces `command` and drops any `env` a case set. */
 const CURSOR_CONFIG_KEY = "plugins.entries.openclaw-all-cli.config.cursor-cli";
 const ROOT = join(import.meta.dirname, "..", "..", "..");
 /** The packaged icon: what `/__openclaw__/plugin-icon/openclaw-all-cli` must serve (re-encoded by the host: same pixels). */
 const ICON = readFileSync(join(ROOT, "assets", "icon.png"));
+/** Its width in pixels: what the drawn icon's naturalWidth must be. */
+const ICON_WIDTH = decodePng(ICON).width;
 /** The host's route for an installed plugin's icon. */
 const ICON_ROUTE = "/__openclaw__/plugin-icon/openclaw-all-cli";
 /**
@@ -139,33 +141,43 @@ describeRegression("Control UI: the cursor-cli provider's icon, name, and card",
     "#35/#45: the Plugins page draws the packaged icon, and the model setup page asks for the manifest icon of the API key choice",
     async () => {
       await ui("35-45-icon", async (ui) => {
-        // The icon's response, awaited as it arrives (registered before the page loads), with its whole body.
+        // The page's own request for the icon route (status and type; its body is not read: CI's Chromium hands the page's
+        // fetch-to-blob body to Playwright empty).
         const response = ui.page.waitForResponse((answer) => new URL(answer.url()).pathname === ICON_ROUTE, { timeout: 30_000 }).catch(() => undefined);
         await ui.page.goto(ui.url("/settings/plugins"), { waitUntil: "load" });
         const row = ui.page.locator("[data-plugin-id]").filter({ has: ui.page.getByText("OpenClaw All CLI", { exact: true }) }).first();
         await row.waitFor({ timeout: 30_000 }).catch(() => {});
         await row.scrollIntoViewIfNeeded().catch(() => {});
         const served = await response;
-        const body = served ? await served.body().catch(() => undefined) : undefined;
         const icon = row.locator("img").first();
         const width = await pollUntil(() => icon.evaluate((img) => (img as unknown as { naturalWidth: number }).naturalWidth).catch(() => 0), (value) => value > 0, 30_000);
         const src = (await icon.getAttribute("src", { timeout: 2_000 }).catch(() => null)) ?? "";
         // The bytes the drawn image's src holds (a blob: URL the page made from the response, or the route itself), read in
         // the page as bytes; decoding happens in Node (png.ts), not in the browser.
         const drawn = width > 0 ? await icon.evaluate(async (img) => Array.from(new Uint8Array(await (await fetch((img as unknown as { src: string }).src)).arrayBuffer()))).then(Buffer.from, () => undefined) : undefined;
+        // The route fetched again on its own, from the Gateway (not through the page).
+        const fetched = await ui.page.request.get(ui.url(ICON_ROUTE), { timeout: 30_000 }).then(
+          async (answer) => ({ status: answer.status(), type: answer.headers()["content-type"] ?? "", body: await answer.body() }),
+          (error: unknown) => ({ status: 0, type: String(error).split("\n")[0]!, body: undefined as Buffer | undefined }),
+        );
         const sha = (bytes: Buffer | undefined) => (bytes ? `${createHash("sha256").update(bytes).digest("hex").slice(0, 16)} (${bytes.length} bytes)` : "none");
-        const pixels = body ? samePngPixels(body, ICON) : { same: false, sizes: ["no body"] };
+        const drawnPixels = drawn && fetched.body ? samePngPixels(drawn, fetched.body) : { same: false, sizes: ["no bytes"] };
+        const packagedPixels = fetched.body ? samePngPixels(fetched.body, ICON) : { same: false, sizes: ["no bytes"] };
         const evidence = await ui.evidence(
           row,
-          `icon response: ${served ? `${served.status()} ${served.headers()["content-type"] ?? ""} ${served.url()}` : `none for ${ICON_ROUTE} within 30 s`}; served ${sha(body)}, drawn ${sha(drawn)}, packaged ${sha(ICON)}; img src ${JSON.stringify(src.slice(0, 120))}, naturalWidth ${width}; decoded ${pixels.sizes.join(" vs ")}`,
+          `page's icon response: ${served ? `${served.status()} ${served.headers()["content-type"] ?? ""} ${served.url()}` : `none for ${ICON_ROUTE} within 30 s`}; ` +
+            `fetched again: ${fetched.status} ${fetched.type} ${sha(fetched.body)}; drawn ${sha(drawn)}; packaged ${sha(ICON)}; ` +
+            `img src ${JSON.stringify(src.slice(0, 120))}, naturalWidth ${width}; decoded drawn vs fetched ${drawnPixels.sizes.join(" vs ")}, fetched vs packaged ${packagedPixels.sizes.join(" vs ")}`,
         );
         expect(await row.count(), `the Plugins page lists no "OpenClaw All CLI" row\n${evidence}`).toBe(1);
         expect(width, `the "OpenClaw All CLI" row draws no icon image\n${evidence}`).toBeGreaterThan(0);
+        expect(width, `the drawn icon is not as wide as the packaged one\n${evidence}`).toBe(ICON_WIDTH);
         expect(src, `the row's icon is not drawn from the plugin icon route\n${evidence}`).toMatch(new RegExp(`^blob:|${ICON_ROUTE}$`));
-        expect(served && [served.status(), (served.headers()["content-type"] ?? "").split(";")[0]], `the Gateway did not serve ${ICON_ROUTE} as a PNG\n${evidence}`).toEqual([200, "image/png"]);
-        expect(drawn !== undefined && body !== undefined && drawn.equals(body), `the drawn icon is not the bytes the Gateway served\n${evidence}`).toBe(true);
+        expect(served && [served.status(), (served.headers()["content-type"] ?? "").split(";")[0]], `the page did not get ${ICON_ROUTE} as a PNG\n${evidence}`).toEqual([200, "image/png"]);
+        expect([fetched.status, fetched.type.split(";")[0]], `the Gateway did not serve ${ICON_ROUTE} as a PNG when fetched again\n${evidence}`).toEqual([200, "image/png"]);
+        expect(drawnPixels.same, `the drawn icon is not the icon the Gateway serves\n${evidence}`).toBe(true);
         // The host re-encodes the icon (other bytes, same pixels), so the pixels are compared, decoded in Node.
-        expect(pixels.same, `the served icon is not the packaged assets/icon.png\n${evidence}`).toBe(true);
+        expect(packagedPixels.same, `the served icon is not the packaged assets/icon.png\n${evidence}`).toBe(true);
 
         // The model setup page (a first run's "Set up a model"): its provider picker asks the Gateway's catalog-icon proxy for
         // each choice's `icon`; the request is recorded and aborted, never loaded (it would reach raw.githubusercontent.com).
