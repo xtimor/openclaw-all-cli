@@ -10,8 +10,8 @@ route_source: 'pinned'
 risk: 'medium'
 review: 'quick'
 review_source: 'auto'
-lenses_ran: []
-review_loop_iteration: 0
+lenses_ran: [self-review, quick]
+review_loop_iteration: 1
 followup_review_recommended: true
 context: []
 warnings: []
@@ -58,7 +58,7 @@ host that has `ensureAuthProfileStoreAsync`; import host internals outside `open
 - `src/core/synthetic-auth.ts` -- catalog `run` and `prepareSyntheticAuth`; read the store at catalog time (the ticket's suspect; they run in the host's catalog worker thread).
 - `test/auth-store.test.ts` -- unit and host-contract tests of the reader; gets the fix's unit and host-contract tests.
 - `test/regression/gateway/auth-setup.regression.test.ts` -- the `#39` gateway case, red on 2026.10.3 (the reproduction).
-- `test/regression/ui/provider-card.regression.test.ts` -- the `#39` card check, red on 2026.10.3.
+- `test/regression/ui/provider-card.regression.test.ts` -- the `#39` card check, red on 2026.10.3 only when this file saves the first key in the tier's shared state (run alone on a fresh state).
 - `test/regression/ledger.toml` -- gets the `[[bug]]` entry for #106.
 - Host (2026.10.3, read-only): `dist/path-resolve-*.mjs` (`resolveSharedAuthStoreOwnership`, per-thread cache), `dist/sqlite-*.mjs` (`initializeFreshSharedAuthStore`), `dist/agents/prepared-model-catalog.worker.js` (`refreshAuthStore`), `dist/model-auth-refresh-*.mjs` (`refreshModelAuthStateAfterMutation`).
 
@@ -66,13 +66,13 @@ host that has `ensureAuthProfileStoreAsync`; import host internals outside `open
 
 **Execution:**
 - [x] `src/core/auth-store.ts` -- add a start-time "settle the shared store" call: on a host without the async reader, one `updateAuthProfileStoreWithLock` with an updater that changes nothing; never throws -- the host commits the store's location before its catalog worker caches it
-- [x] `src/core/register.ts` -- run it once at a full load, before the start-time store reads -- the earliest point the plugin has in the Gateway's main thread
+- [x] `src/core/register.ts` -- run it once at a full load, in the background, before the start-time store reads, and log one line when it fails -- the earliest point the plugin has in the Gateway's main thread
 - [x] `test/auth-store.test.ts` -- unit tests for every row of the matrix, and a host-contract test that the no-op update settles a fresh state's location and writes no profile
-- [x] `test/regression/ledger.toml` -- `[[bug]]` for #106 (tier gateway), naming the gateway and UI `#39` tests (`reproduces = true`) and the unit tests (`reproduces = false`)
+- [x] `test/regression/ledger.toml` -- `[[bug]]` for #106 (tier gateway), naming the gateway `#39` test (`reproduces = true`), the UI `#39` test and the unit tests (`reproduces = false`; the UI check reproduces #106 only by file order)
 - [x] `CHANGELOG.md` -- one `### Fixed` line under `## Unreleased` with the issue link
 
 **Acceptance Criteria:**
-- Given OpenClaw 2026.10.3 and a fresh state with `cursor-cli` configured, when a key is saved through Connect provider, then `models.authStatus` lists `cursor-cli:default` (`api_key`) without a restart and the card shows it (gateway and UI `#39` cases green, red before the fix)
+- Given OpenClaw 2026.10.3 and a fresh state with `cursor-cli` configured, when a key is saved through Connect provider, then `models.authStatus` lists `cursor-cli:default` (`api_key`) without a restart and the card shows it (gateway `#39` case and the UI `#39` check green; the gateway case red before the fix, the UI check red before it when run alone on a fresh state)
 - Given OpenClaw latest (2026.11.x), when the gateway tier runs, then it stays green and the plugin makes no new call
 
 ## Implementation Notes
@@ -102,16 +102,18 @@ host that has `ensureAuthProfileStoreAsync`; import host internals outside `open
   - On a fresh state it writes only the `config_machine_state` row `auth.sharedStore = {"location":"state-db"}` (checked with `node:sqlite`): no profile, no store save.
   - On a settled state, or one with legacy sources, the host returns at once. A failing or contended update reads as `failed`.
   - It never throws, and it does nothing on 2026.11.x.
-- `registerAdapters` calls it once per full load, first, injectable through a new optional `RegisterOptions.settleAuthStore` for tests. In the experiment that proved it (the same call patched into the installed plugin, with the host's worker logging), the settle finished about 6 ms after it started, and the worker's first read came about 4.5 s later and already saw `state-db`.
+- `registerAdapters` calls it once per full load, first, injectable through a new optional `RegisterOptions.settleAuthStore` for tests. It runs in the background (fire-and-forget), so it is a timing race with the worker's first read, not a guarantee: nothing in the host orders the two. In the experiment that proved it (the same call patched into the installed plugin, with the host's worker logging), the settle finished about 6 ms after it started, and the worker's first read came about 4.5 s later and already saw `state-db`.
+- A `failed` outcome logs one plugin line: "could not settle the auth store location on OpenClaw 2026.10.3; a key saved before the next restart may show as Not configured". `settled` and `skipped` (2026.11.x, or no updater) log nothing.
+- A failed settle is not silent on the host side either: for a state with an invalid `auth.sharedStore` row, or legacy auth files that need `openclaw doctor --fix`, the host's update throws and the host itself warns "auth profile store update failed" on each full load. The plugin line above says which plugin caused it and what it means for a saved key.
 - Files: `src/core/auth-store.ts`, `src/core/register.ts`, `test/auth-store.test.ts` (unit tests for every matrix row, plus a host-contract test on the 2026.10.3 dist: `legacy-main` becomes `state-db`, no profile, idempotent), `test/backend.test.ts` (a full load settles once, a discovery load does not; the one full-mode call now passes a stub, so `npm test` never writes a real store), `test/regression/ledger.toml` (#106), `CHANGELOG.md`, `docs/release.md` (dropped "the min job is red while #106 is open"), `MEMORY.md`.
 - Local only: a `.spike` symlink to `.regression/openclaw-2026.10.3`, so `npm run typecheck` and the host-contract tests find the 2026.10.3 SDK. It is untracked and not committed.
 
 **Review (inline self-review, no subagents).**
-- Race: the settle is async at register. If the worker's first store read came before it commits, that one Gateway run would still show the bug. In practice the margin is seconds.
-- The update fails on a state whose legacy auth files need `openclaw doctor --fix`: the host throws there, and the result is `failed`, silent and harmless.
+- Race: the settle is async at register. If the worker's first store read came before it commits, that one Gateway run would still show the bug. In the one probe the margin was seconds; nothing guarantees it.
+- The update fails on a state whose legacy auth files need `openclaw doctor --fix`: the host throws there, and the result is `failed`. Since review pass 1 that logs one plugin line, and the host warns "auth profile store update failed" too.
 - A no-op write lock at every full load on 2026.10.3: cheap.
 - Test gap, not changed (`test/regression/` is outside this ticket): the UI tier's `#39` check reproduces #106 only when `provider-card` is the first file to save a key in the tier's shared state. In a full `ui` run `key-actions` goes first, so that check passes with or without the fix (see Verification). The gateway tier's `#39` case does reproduce it (`auth-setup` saves the first key there).
-- No patch was needed. No independent review lens ran, so a follow-up review is recommended.
+- No patch was needed in the self-review. The quick lens (review pass 1) then found six issues, all patched; see the Review Triage Log.
 
 ## Plan Change Log
 
@@ -124,6 +126,19 @@ host that has `ensureAuthProfileStoreAsync`; import host internals outside `open
   - `[low]` `[accept]` The async settle can lose a race with the worker's first read. It completed in about 6 ms against a margin of about 4.5 s in the probe; if lost, that Gateway run behaves as before the fix.
   - `[low]` `[accept]` A state with legacy auth files that need `openclaw doctor --fix` makes the host's update throw. The result is `failed`, nothing else happens, and the bug does not occur there: the location stays `legacy-main` in every thread.
   - `[low]` `[accept]` The UI tier's `#39` check depends on file order to reproduce #106 (see Implementation Notes). Changing the shared regression tests is out of this ticket's scope.
+
+### 2026-11-28 — Review pass 1 (quick lens, triaged by the coordinator)
+
+- verdicts: 1 high, 3 medium, 2 low; all patched (route: patch), 0 deferred, 0 false
+
+| # | Finding | Verdict | Route | What changed |
+|---|---------|---------|-------|--------------|
+| 1 | `docs/release.md`: the Weekly beta run bullet lost the 4.11 text (`source:regression`/`type:bug` labels, the "fixed at once ... no triage and no approval" note, the `force_red` ... `forced` sentence) because the hunk was made on an older base | high, real | patch | Bullet restored to the 4.11 text, checked against `scripts/regression-beta-issue.mjs`; only the two "#106 is open" sentences are dropped |
+| 2 | Ledger #106 marks the UI `#39` check `reproduces = true`, but a full ui run passes it without the fix | medium, real | patch | UI `#39` test is `reproduces = false`, with a comment saying why; the gateway `#39` case stays the reproduction |
+| 3 | `register.ts`: a failed settle is invisible, and the comment reads as a guarantee | medium, real | patch | Settle stays fire-and-forget; a `failed` outcome logs one line ("could not settle the auth store location on OpenClaw 2026.10.3; a key saved before the next restart may show as Not configured"); the comment, this plan and MEMORY call it a timing race. New unit test in `test/backend.test.ts`: one line for `failed`, none for `settled` or `skipped` (in the #106 ledger entry, `reproduces = false`) |
+| 4 | "A failed settle is silent" is wrong: the host warns "auth profile store update failed" on each full load for an invalid shared-store row or legacy files needing `openclaw doctor --fix` | low, real | patch | Implementation Notes and the self-review note now say so; the plugin line from 3 gives the attribution |
+| 5 | `docs/providers/cursor.md` does not say the plugin now takes the auth-store write lock on 2026.10.3 | medium, real | patch | "The key at run time" says: on 2026.10.3, one write lock per full load, a no-op update that on a fresh state records `auth.sharedStore` (no profile), background and not guaranteed, the log line on failure; nothing on 2026.11.x |
+| 6 | `MEMORY.md`: the ticket 4.6 line still describes #106 as current; the #106 line overstates the fix | low, real | patch | Ticket 4.6 line in past tense, pointing to the bug 32 line, and records that the UI `#39` check reproduces #106 only when provider-card saves the first key in the shared state; the bug 32 line calls the settle a timing race (about 6 ms vs the worker's read about 4.5 s later in one probe) and names both warning lines |
 
 ## Verification
 
@@ -140,3 +155,16 @@ host that has `ensureAuthProfileStoreAsync`; import host internals outside `open
 - `npm run typecheck` -- expected: clean. Result: clean (with `.spike` linked to `.regression/openclaw-2026.10.3`).
 - `node scripts/changelog.mjs check` -- expected: clean. Result: clean.
 - Live Cursor check: not run (no `cursor-agent` login here; the change has no Cursor-side path).
+
+**After review pass 1** (on the branch tip 77a441e plus the patches):
+- `npm run typecheck` -- clean (with `.spike` linked to `.regression/openclaw-2026.10.3`, removed after).
+- `npm test` -- 73 files passed, 29 skipped; 2158 tests passed, 100 skipped (84 s).
+- `test/regression/gateway/auth-setup.regression.test.ts` alone, on a fresh 2026.10.3 state with the plugin built and packed from this tree -- 4 of 4 passed (`#39`, PR #96, #98 x2; 154 s). The whole gateway and ui tiers were not re-run (the patches change only the failure log line, docs, and the ledger flag).
+- `node scripts/changelog.mjs check` -- clean.
+
+## Auto Run Result
+
+- Status: in-review, review loop iteration 1 (lenses: self-review, quick). Six quick-lens findings, all patched in one commit; none deferred.
+- Fix: one no-op `updateAuthProfileStoreWithLock` per full load on OpenClaw 2026.10.3 settles a fresh state's auth store location before the host's model-catalog worker reads it, so a key saved through Connect provider shows without a restart. It is a timing race won by seconds in the probe, not a guarantee; a failure logs one plugin line. Nothing changes on 2026.11.x.
+- Evidence: gateway `#39` red before (d467522), green after on 2026.10.3; gateway tier green on 2026.10.3 and 2026.11.11; ui tier green on 2026.10.3 (the UI `#39` check red without the fix only when run alone on a fresh state).
+- Residual risk: a lost race or a state that needs `openclaw doctor --fix` leaves that Gateway run as before the fix (logged).

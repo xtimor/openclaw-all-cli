@@ -285,6 +285,8 @@ tests = [
 
 # OpenClaw 2026.10.3 only (2026.11.x is fine): its model-catalog worker thread caches a fresh state's auth store location
 # before the first save moves it, so models.authStatus misses the saved key; the plugin settles the location at start.
+# The gateway #39 case is the reproduction. The UI #39 check is not: in a full ui run key-actions saves a key first in the
+# shared state, which settles the location already, so it passed 8/8 without the fix (it fails only run alone on a fresh state).
 [[bug]]
 issue = 106
 title = "A key saved through Connect provider stays Not configured until a restart on OpenClaw 2026.10.3"
@@ -295,6 +297,7 @@ tests = [
   { file = "test/auth-store.test.ts", name = "settling the shared store's location at Gateway start (issue #106)", tier = "unit", reproduces = false },
   { file = "test/auth-store.test.ts", name = "settling a fresh state's auth store location (host contract, issue #106)", tier = "unit", reproduces = false },
   { file = "test/backend.test.ts", name = "reaps the homes of the configured agents and settles the auth store's location when fully loaded, and only then", tier = "unit", reproduces = false },
+  { file = "test/backend.test.ts", name = "logs one line when the auth store's location could not be settled, and none when it was or there was nothing to settle (issue #106)", tier = "unit", reproduces = false },
   { file = "test/regression/gateway/auth-setup.regression.test.ts", name = "#39: a working cursor-agent login with no key is usable, and a key saved with the API key method is a cursor-cli api_key profile", tier = "gateway", reproduces = true },
-  { file = "test/regression/ui/provider-card.regression.test.ts", name = "#39: a key saved through Connect provider in the browser shows on the provider card with Remove key, not Not configured", tier = "ui", reproduces = true },
+  { file = "test/regression/ui/provider-card.regression.test.ts", name = "#39: a key saved through Connect provider in the browser shows on the provider card with Remove key, not Not configured", tier = "ui", reproduces = false },
 ]

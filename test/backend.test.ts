@@ -479,6 +479,29 @@ describe("operations wiring (P17, P19)", () => {
     // An agent the config does not name waits for its first use.
     expect(existsSync(files[2]!)).toBe(true);
   });
+
+  it("logs one line when the auth store's location could not be settled, and none when it was or there was nothing to settle (issue #106)", async () => {
+    const warningsFor = async (outcome: "settled" | "skipped" | "failed") => {
+      const warnings: string[] = [];
+      const api = {
+        pluginConfig: {},
+        registrationMode: "full",
+        config: {},
+        runtime: { agent: { resolveAgentDir: () => join(scratch, "settle-none") } },
+        logger: { warn: (message: string) => warnings.push(message) },
+        registerCliBackend: () => {},
+        registerProvider: () => {},
+      } as never;
+      registerAdapters(api, ADAPTERS, { settleAuthStore: async () => outcome });
+      await sleep(50);
+      return warnings.filter((message) => message.includes("auth store location"));
+    };
+    expect(await warningsFor("settled")).toEqual([]);
+    expect(await warningsFor("skipped")).toEqual([]);
+    expect(await warningsFor("failed")).toEqual([
+      "could not settle the auth store location on OpenClaw 2026.10.3; a key saved before the next restart may show as Not configured",
+    ]);
+  });
 });
 
 describe("backend fields by parity row (AD-10)", () => {

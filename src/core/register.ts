@@ -221,10 +221,17 @@ export type RegisterOptions = {
  * the configured agents (any other agent's home is reaped at its first use).
  */
 export function registerAdapters(api: OpenClawPluginApi, adapters: readonly CliAdapter[], options: RegisterOptions = {}): void {
-  // First, before the host's model-catalog worker reads the store: on OpenClaw 2026.10.3 a fresh state's
-  // auth store location is settled now, so a key saved later shows in `models.authStatus` (issue #106).
-  if (api.registrationMode === "full") void (options.settleAuthStore ?? settleSharedAuthStore)();
   const warn = (message: string) => api.logger.warn(message);
+  // Issue #106: on OpenClaw 2026.10.3 a fresh state's auth store location is settled at a full load, so
+  // a key saved later shows in `models.authStatus`. It runs in the background and races the host's
+  // model-catalog worker, which reads the location when it starts: in one probe the settle took about
+  // 6 ms and the worker read 4.5 s later, but nothing orders them. Not settled means the key may show
+  // only after a restart, so that is logged once; on 2026.11.x there is nothing to settle.
+  if (api.registrationMode === "full") {
+    void (options.settleAuthStore ?? settleSharedAuthStore)().then((outcome) => {
+      if (outcome === "failed") warn("could not settle the auth store location on OpenClaw 2026.10.3; a key saved before the next restart may show as Not configured");
+    });
+  }
   // Hosts without a debug channel drop the per-turn timing line.
   const debug = (message: string) => api.logger.debug?.(message);
   const pools: ProcessPool[] = [];
