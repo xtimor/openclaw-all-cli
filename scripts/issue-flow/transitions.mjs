@@ -61,6 +61,14 @@ export const STALE_DAYS = 30;
 /** The actor whose events the workflow itself causes; never handled again (no loops). */
 export const BOT_LOGIN = "github-actions[bot]";
 
+/**
+ * Marks an issue a regression run filed (epic-regression-gate ticket 11, owner decision 2026-11-28: a regression finding is fixed at once).
+ * A trusted one in `status:todo` is skipped by triage and built by the next implementation run with no owner approval
+ * (docs/agents/implement.md, "Regression issues"). It counts only when a regression writer (`isRegressionWriter`) both opened the issue
+ * and made the latest `labeled` event of the label; on any other open issue the automation removes it (one comment per event).
+ */
+export const SOURCE_REGRESSION = "source:regression";
+
 const DAY_MS = 24 * 60 * 60 * 1000;
 // Marks the automation's own comments; fixed text, no issue data inside.
 const MARKER = "<!-- issue-flow -->";
@@ -78,6 +86,14 @@ export function approvalComment(eventId) {
 export function reworkComment(eventId) {
   const key = `<!-- issue-flow:rework:${eventId} -->`;
   return { op: "comment", body: `${NON_OWNER_REWORK_COMMENT}\n${key}`, once: key };
+}
+
+export const UNTRUSTED_REGRESSION_COMMENT = `${MARKER}\nOnly this repository's regression workflows mark an issue \`${SOURCE_REGRESSION}\`, and only an issue they opened themselves: it lets the next implementation run build the issue without triage or the owner's approval. The label was removed because someone else set it, or set it on an issue someone else opened. The issue takes the normal path: triage, then the owner's approval.`;
+
+/** The comment for a removed untrusted `source:regression`; its own hidden key, so one label event gets one comment. */
+export function regressionComment(eventId) {
+  const key = `<!-- issue-flow:regression:${eventId} -->`;
+  return { op: "comment", body: `${UNTRUSTED_REGRESSION_COMMENT}\n${key}`, once: key };
 }
 
 // GitHub logins: letters, digits, hyphens (and `_` of managed users). A bot login (`name[bot]`) or anything else gets no mention.
@@ -131,6 +147,15 @@ export function parseOwners(value) {
 function isOwner(login, owners) {
   const wanted = lower(login);
   return wanted !== "" && parseOwners(owners).includes(wanted);
+}
+
+/**
+ * Whether `login` may set `source:regression`: this repository's workflows (`github-actions[bot]`, whose GITHUB_TOKEN the regression
+ * workflows use) or a login of the issue agents' GitHub App (`agents`, ISSUE_FLOW_AGENTS; the `Agent write` relay refuses the label, so an
+ * agent session cannot set it through the app). Never an owner and never a person: the owner approves instead.
+ */
+export function isRegressionWriter(login, agents = []) {
+  return isBot(login) || isOwner(login, agents);
 }
 
 /**
@@ -232,15 +257,15 @@ export const canonicalStatus = canonical;
 export const isStatusName = (label) => isStatus(canonical(label));
 
 /**
- * True when the labels alone cannot settle the status: several status labels, an approval or a rework whose author matters, or an
- * opened/reopened event that must not override a status labeled after it.
+ * True when the labels alone cannot settle the issue: several status labels, an approval or a rework whose author matters, an
+ * opened/reopened event that must not override a status labeled after it, or a `source:regression` whose author matters.
  */
 export function needsTimeline(rawIssue, event) {
   const issue = normalizeIssue(rawIssue);
   if (issue.state !== "open") return false;
   const statuses = issue.labels.filter(isStatus);
   const opening = event?.action === "opened" || event?.action === "reopened";
-  return statuses.length > 1 || statuses.some((label) => OWNER_ONLY_STATUSES.includes(label)) || (opening && statuses.length > 0);
+  return statuses.length > 1 || statuses.some((label) => OWNER_ONLY_STATUSES.includes(label)) || (opening && statuses.length > 0) || issue.labels.includes(SOURCE_REGRESSION);
 }
 
 /**
@@ -298,8 +323,34 @@ function reconcile(issue, { timeline, owners, event }) {
   return actions;
 }
 
-function onIssues(event, issue, owners, timeline) {
-  if (isBot(event.actor)) return [];
+/**
+ * Removes an untrusted `source:regression` from an open issue. Trusted means: a regression writer opened the issue, and every known
+ * actor of the label's latest `labeled` event is one. The actors are the latest `labeled` event in the timeline and, when this run handles
+ * a `labeled source:regression` event, its actor too (the timeline can lag; if they differ, either may be the newest, so an untrusted one
+ * wins); with neither, an `opened` event's actor (labels set at creation are the opener's). No known actor on an issue a regression
+ * writer opened: nothing is changed here (the agents check the events themselves and give an unproven label no shortcut).
+ */
+function regressionLabelActions(issue, { timeline, agents, event }) {
+  if (issue.state !== "open" || !issue.labels.includes(SOURCE_REGRESSION)) return [];
+  const clicks = normalizeTimeline(timeline).filter((entry) => entry.kind === "labeled" && entry.label === SOURCE_REGRESSION);
+  const actors = clicks.length > 0 ? [{ id: clicks[clicks.length - 1].id, actor: clicks[clicks.length - 1].actor }] : [];
+  if (event?.action === "labeled" && event.label === SOURCE_REGRESSION) actors.push({ id: "event", actor: event.actor ?? null });
+  else if (actors.length === 0 && event?.action === "opened") actors.push({ id: "event", actor: event.actor ?? null });
+  const untrusted = actors.find((entry) => !isRegressionWriter(entry.actor, agents));
+  if (isRegressionWriter(issue.author, agents) && untrusted === undefined) return [];
+  const id = untrusted?.id ?? actors[0]?.id ?? "event";
+  const names = issue.rawLabels.filter((name) => name === SOURCE_REGRESSION);
+  return [...names.map(removeLabel), regressionComment(id)];
+}
+
+const ISSUE_ACTIONS = new Set(["opened", "reopened", "closed", "labeled", "unlabeled"]);
+
+function onIssues(event, issue, owners, agents, timeline) {
+  if (isBot(event.actor) || !ISSUE_ACTIONS.has(event.action)) return [];
+  return [...statusOnIssues(event, issue, owners, timeline), ...regressionLabelActions(issue, { timeline, agents, event })];
+}
+
+function statusOnIssues(event, issue, owners, timeline) {
   if (event.action === "opened" || event.action === "reopened") {
     if (issue.state !== "open") return clearStatus(issue);
     // `todo` unless a current status was labeled after this event (that run's label wins, whichever run is first).
@@ -381,8 +432,8 @@ function onStale(issue, owners) {
  *   - `stale`: the daily job found the issue (in `needs-info` or `declined`; `owners` are mentioned on a declined one).
  * issue: a REST issue or a normalized one (`normalizeIssue`), as read now.
  * options: `owners` (logins that may approve), `agents` (logins of the issue agents' GitHub App; their marker comments are
- *   not replies, and they are not owners), and `timeline` (the issue's label events, see `normalizeTimeline`; read it
- *   when `needsTimeline(issue)`).
+ *   not replies, they are not owners, and beside `github-actions[bot]` they are the regression writers of `source:regression`), and
+ *   `timeline` (the issue's label events, see `normalizeTimeline`; read it when `needsTimeline(issue)`).
  * Returns `[{op: "addLabel" | "removeLabel", label} | {op: "comment", body} | {op: "close", reason}]`, in the order to apply.
  */
 export function decide(event, issue, { owners = [], agents = [], timeline = [] } = {}) {
@@ -390,7 +441,7 @@ export function decide(event, issue, { owners = [], agents = [], timeline = [] }
   if (current.isPullRequest || !event) return [];
   switch (event.name) {
     case "issues":
-      return onIssues(event, current, owners, timeline);
+      return onIssues(event, current, owners, agents, timeline);
     case "issue_comment":
       return onComment(event, current, owners, agents);
     case "pull_request":

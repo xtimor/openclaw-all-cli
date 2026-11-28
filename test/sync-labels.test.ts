@@ -194,8 +194,9 @@ describe("labels file", () => {
     // `upstream:post` (ticket 3.25) is the owner's approval to publish an agent's upstream draft; it is not part of the issue-flow design.
     // `regression:beta` (epic-regression-gate ticket 4) marks the weekly beta run's issue (scripts/regression-beta-issue.mjs).
     expect(entries.map((entry) => entry.name).sort()).toEqual([...named, "upstream:post", "regression:beta"].sort());
-    // The design lists 12 states, 2 types, 4 priorities, and the agent source.
-    expect(named).toHaveLength(19);
+    // The design lists 12 states, 2 types, 4 priorities, and the agent and regression sources (ticket 11 of epic-regression-gate).
+    expect(named).toHaveLength(20);
+    expect(named).toContain("source:regression");
     for (const entry of entries) {
       expect(entry.color).toMatch(/^[0-9a-f]{6}$/);
       expect(entry.description.length).toBeGreaterThan(0);
@@ -217,7 +218,7 @@ describe("labels file", () => {
   it("passes the script's own validation (dry run)", async () => {
     const result = await run(["--dry-run"]);
     expect(result.code).toBe(0);
-    expect(result.stdout).toContain("21 to create");
+    expect(result.stdout).toContain("22 to create");
   });
 });
 
@@ -271,7 +272,7 @@ describe("sync-labels.mjs", () => {
     const second = await run();
     expect(second.code, second.stderr).toBe(0);
     expect(writes()).toEqual([]);
-    expect(second.stdout).toContain("0 to create, 0 to update, 21 unchanged");
+    expect(second.stdout).toContain("0 to create, 0 to update, 22 unchanged");
   });
 
   it("SECOND_SYNC: a label GitHub reports with an upper-case color is still equal", async () => {

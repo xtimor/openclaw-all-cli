@@ -4,8 +4,11 @@
 // comment on it instead. A green run does nothing: an open issue stays open for a person to close. A run reports once:
 // its marker (`<!-- regression-beta run=<id> -->`) in the open issue or a comment, or in one of the 100 newest issues (one
 // that lost its label), makes a re-run of the job a no-op.
-// The issue is not a confirmed plugin bug (the OpenClaw beta may be at fault), so it enters the issue flow as
-// `status:todo` with no type label, and triage decides. Dependency-free, like scripts/regression-ledger.mjs.
+// A regression finding is fixed at once (owner decision 2026-11-28, epic-regression-gate ticket 11): the issue is opened with
+// `source:regression`, `type:bug`, and `status:todo`, so triage skips it and the next implementation run builds it without the
+// owner's approval (docs/agents/implement.md, "Regression issues"); that run reproduces it and hands it to the owner when the fault
+// is in OpenClaw beta and no plugin-side fix exists. A GITHUB_TOKEN-made issue starts no issue-flow run, so the script sets the status
+// itself. Dependency-free, like scripts/regression-ledger.mjs.
 //
 //   GITHUB_TOKEN=... GITHUB_REPOSITORY=owner/repo node scripts/regression-beta-issue.mjs report \
 //     --outcome <success|failure|cancelled|skipped> --results <file> --run-url <url> [--run-id <id>]
@@ -26,6 +29,10 @@ const MAX_PAGES = 20;
 const REQUEST_TIMEOUT_MS = 30_000;
 const LABEL = "regression:beta";
 const STATUS = "status:todo";
+// The regression shortcut (no triage, no approval) and the type the ledger check reads. Set only on an issue this script opens.
+const SOURCE = "source:regression";
+const TYPE = "type:bug";
+const LABELS = [LABEL, SOURCE, TYPE, STATUS];
 const MAX_FAILED = 30;
 const MAX_LINE = 300;
 
@@ -104,7 +111,7 @@ function issueBody(results, runUrl, runId) {
     "",
     details(results, runUrl),
     "",
-    "This is not a confirmed bug of the plugin: the OpenClaw beta may be at fault. Triage decides: reproduce it on `main` (`scripts/regression.sh gateway --openclaw <version>`), then a plugin bug (`type:bug`) or an issue for OpenClaw.",
+    `A regression finding is fixed at once: \`${SOURCE}\` skips triage and the owner's approval, and the next implementation run takes it (docs/agents/implement.md, "Regression issues"). It reproduces it on \`main\` (\`scripts/regression.sh gateway --openclaw <version>\`) and fixes the plugin through the normal batch pull request; when the OpenClaw beta is at fault and no plugin-side fix exists, it hands the issue to the owner (\`status:blocked\`).`,
     "",
     `While this issue is open, a red weekly run comments here instead of opening another. A green run changes nothing, so close it once it is settled; the next red run then opens a new one. The label \`${LABEL}\` marks it.`,
   ].join("\n");
@@ -200,7 +207,8 @@ async function main(argv, env) {
   if (!Array.isArray(recent)) throw new ReportError(`GET ${base}: GitHub answered with no list`);
   const own = recent.find((row) => row && typeof row.number === "number" && !row.pull_request && String(row.body ?? "").includes(marker(runId)));
   if (own) {
-    // Only the marker label: the issue's status is the issue flow's by now.
+    // Only the marker label: the issue's status is the issue flow's by now. Never `source:regression`: the marker is plain text that
+    // anyone can put in an issue, and the label must stay on issues this script opened itself.
     if (own.state === "open") await ensureLabels(request, base, own, [LABEL]);
     console.log(`regression-beta-issue: run ${runId} is already reported on #${own.number}`);
     return 0;
@@ -209,11 +217,11 @@ async function main(argv, env) {
   const created = await request("POST", base, {
     title: `OpenClaw beta ${versionsOf(results)}: the Gateway regression tier is red`,
     body: issueBody(results, runUrl, runId),
-    labels: [LABEL, STATUS],
+    labels: LABELS,
   });
   if (!created || typeof created.number !== "number") throw new ReportError(`POST ${base}: GitHub answered with no issue`);
   console.log(`regression-beta-issue: opened #${created.number}`);
-  await ensureLabels(request, base, created, [LABEL, STATUS]);
+  await ensureLabels(request, base, created, LABELS);
   return 0;
 }
 

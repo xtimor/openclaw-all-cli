@@ -43,6 +43,10 @@ interface Transitions {
   OWNER_ONLY_STATUSES: string[];
   NON_OWNER_REWORK_COMMENT: string;
   reworkComment(eventId: unknown): Action;
+  SOURCE_REGRESSION: string;
+  UNTRUSTED_REGRESSION_COMMENT: string;
+  regressionComment(eventId: unknown): Action;
+  isRegressionWriter(login: unknown, agents?: unknown): boolean;
   LEGACY_STATUS: Record<string, string>;
   AWAITING_POST: string;
   UPSTREAM: string;
@@ -1718,5 +1722,160 @@ describe("workflow file", () => {
     const scripts = [...text.matchAll(/script: \|\n((?: {12}.*\n?)+)/g)].map((m) => m[1]);
     expect(scripts).toHaveLength(2);
     for (const script of scripts) expect([...(script ?? "").matchAll(/\$\{\{([^}]*)\}\}/g)].map((m) => m[1]?.trim())).toEqual(["github.workspace"]);
+  });
+});
+
+describe("source:regression (epic-regression-gate ticket 11)", () => {
+  // A regression run's finding goes straight to work: a trusted `source:regression` in `status:todo` is skipped by triage and built by
+  // the next implementation run with no approval. Trusted: a regression writer (github-actions[bot] or an agent app login) opened the
+  // issue and made the label's latest labeled event. The automation removes any other, and never changes the issue's status for it.
+  const SOURCE = "source:regression";
+  const BOT = "github-actions[bot]";
+  const AGENT = "openclaw-all-cli-agent[bot]";
+  const options = (timeline: unknown[] = []) => ({ owners: OWNERS, agents: [AGENT], timeline });
+  const filed = (labels: string[], author = BOT, extra: IssueIn = {}) => issue(labels, { user: { login: author }, ...extra });
+  const removed = (id: unknown): Action[] => [remove(SOURCE), t.regressionComment(id)];
+  const labeled = (label: string, actor: string) => ({ name: "issues", action: "labeled", actor, label });
+
+  it("is a label of .github/labels.yml, not a status; the writers are the workflow bot and the agent app logins, never an owner or a person", () => {
+    expect(t.SOURCE_REGRESSION).toBe(SOURCE);
+    expect(t.STATUS_LABELS).not.toContain(SOURCE);
+    expect(readFileSync(join(ROOT, ".github", "labels.yml"), "utf8")).toContain(`- name: "${SOURCE}"`);
+    expect(t.isRegressionWriter(BOT)).toBe(true);
+    expect(t.isRegressionWriter("GitHub-Actions[bot]")).toBe(true);
+    expect(t.isRegressionWriter(AGENT, [AGENT])).toBe(true);
+    expect(t.isRegressionWriter(AGENT)).toBe(false);
+    for (const login of ["xtimor", "mallory", "", null, undefined, "github-actions", "claude[bot]"]) expect(t.isRegressionWriter(login, [AGENT]), String(login)).toBe(false);
+    expect(t.regressionComment(5)).toEqual({ op: "comment", body: `${t.UNTRUSTED_REGRESSION_COMMENT}\n<!-- issue-flow:regression:5 -->`, once: "<!-- issue-flow:regression:5 -->" });
+    expect(t.regressionComment(5)).not.toEqual(t.approvalComment(5));
+    expect(JSON.stringify(t.regressionComment(5))).not.toContain("issue-flow:approval:");
+  });
+
+  it("needsTimeline: an open issue with source:regression needs the label history; a closed one does not", () => {
+    expect(t.needsTimeline(filed(["status:todo", SOURCE]))).toBe(true);
+    expect(t.needsTimeline(filed(["status:todo", SOURCE], BOT, { state: "closed" }))).toBe(false);
+  });
+
+  it("TRUSTED: a label set by the workflow bot or the agent app on an issue it opened stays, and status:todo stays (the ready-to-build state)", () => {
+    const labels = ["status:todo", SOURCE, "type:bug", "regression:beta"];
+    for (const writer of [BOT, AGENT]) {
+      const timeline = [labeledAt(SOURCE, writer, 0, 1), labeledAt("status:todo", writer, 0, 2)];
+      // Later events by people (a priority, a type) leave it alone.
+      expect(t.decide(labeled("priority:p1", "xtimor"), filed(labels, writer), options(timeline)), writer).toEqual([]);
+      expect(t.decide({ name: "issues", action: "unlabeled", actor: "xtimor", label: "regression:beta" }, filed(labels, writer), options(timeline)), writer).toEqual([]);
+      // The opened event of an issue the agent app files (labels set at creation are the opener's), before its events show.
+      expect(t.decide({ name: "issues", action: "opened", actor: writer }, filed(labels, writer), options()), writer).toEqual([]);
+      // The handled labeled event when the events lag.
+      expect(t.decide(labeled(SOURCE, writer), filed(labels, writer), options()), writer).toEqual([]);
+    }
+  });
+
+  it("UNTRUSTED_ACTOR: set by an outsider, the owner (own click or through an app), or an agent session is removed with one comment; the status is untouched", () => {
+    const labels = ["status:todo", SOURCE, "type:bug"];
+    for (const actor of ["mallory", "xtimor", "alice"]) {
+      const timeline = [labeledAt("status:todo", BOT, 0, 1), labeledAt(SOURCE, actor, 5, 7)];
+      expect(t.decide(labeled(SOURCE, actor), filed(labels), options(timeline)), actor).toEqual(removed(7));
+      // Found from the timeline whichever event this run handles.
+      expect(t.decide(labeled("priority:p2", "bob"), filed(labels), options(timeline)), actor).toEqual(removed(7));
+    }
+    const viaApp = [{ ...labeledAt(SOURCE, "xtimor", 5, 8), performed_via_github_app: { slug: "claude" } }];
+    expect(t.decide(labeled(SOURCE, "xtimor"), filed(labels), options(viaApp))).toEqual(removed(8));
+    // An agent login that ISSUE_FLOW_AGENTS does not list is no writer.
+    expect(t.decide(labeled(SOURCE, AGENT), filed(labels), { owners: OWNERS, agents: [], timeline: [labeledAt(SOURCE, AGENT, 5, 9)] })).toEqual(removed(9));
+  });
+
+  it("UNTRUSTED_AUTHOR: on an issue a person opened the label is removed even when a writer set it (the issue text is not the workflow's)", () => {
+    const timeline = [labeledAt(SOURCE, BOT, 5, 3)];
+    expect(t.decide(labeled("type:bug", "bob"), filed(["status:todo", SOURCE], "alice"), options(timeline))).toEqual(removed(3));
+    expect(t.decide({ name: "issues", action: "opened", actor: "alice" }, filed(["status:todo", SOURCE], "alice"), options())).toEqual(removed("event"));
+    // Without any known actor, too.
+    expect(t.decide({ name: "issues", action: "unlabeled", actor: "bob", label: "type:bug" }, filed(["status:todo", SOURCE], "alice"), options())).toEqual(removed("event"));
+  });
+
+  it("LATEST_WINS: only the latest labeled event counts: a person's re-add after a removal is untrusted, a writer's re-add after a person's is trusted", () => {
+    const unlabeledAt = (label: string, actor: string, minutes: number, id: number) => ({ ...labeledAt(label, actor, minutes, id), event: "unlabeled" });
+    const labels = ["status:todo", SOURCE];
+    const reAdded = [labeledAt(SOURCE, BOT, 0, 1), unlabeledAt(SOURCE, "bob", 5, 2), labeledAt(SOURCE, "bob", 6, 3)];
+    expect(t.decide(labeled("priority:p1", "xtimor"), filed(labels), options(reAdded))).toEqual(removed(3));
+    const backByWriter = [labeledAt(SOURCE, "bob", 0, 1), unlabeledAt(SOURCE, BOT, 5, 2), labeledAt(SOURCE, BOT, 6, 3)];
+    expect(t.decide(labeled("priority:p1", "xtimor"), filed(labels), options(backByWriter))).toEqual([]);
+  });
+
+  it("EVENT_LAG: a person's labeled event not yet in the events beside an older writer's one is untrusted (the untrusted actor wins)", () => {
+    expect(t.decide(labeled(SOURCE, "mallory"), filed(["status:todo", SOURCE]), options([labeledAt(SOURCE, BOT, 0, 1)]))).toEqual(removed("event"));
+  });
+
+  it("UNKNOWN: no labeled event and no actor in this event on an issue a writer opened changes nothing (the agents check the events themselves)", () => {
+    expect(t.decide({ name: "issues", action: "unlabeled", actor: "bob", label: "type:bug" }, filed(["status:todo", SOURCE]), options())).toEqual([]);
+  });
+
+  it("only issue events of the flow act on it: closed issues, comments, pull requests, and the bot's own events leave it alone", () => {
+    const outsider = [labeledAt(SOURCE, "mallory", 0, 1)];
+    expect(t.decide({ name: "issues", action: "closed", actor: "xtimor" }, filed([SOURCE, "type:bug"], BOT, { state: "closed" }), options(outsider))).toEqual([]);
+    expect(t.decide({ name: "issue_comment", action: "created", actor: "mallory" }, filed(["status:todo", SOURCE]), options(outsider))).toEqual([]);
+    expect(t.decide(labeled(SOURCE, BOT), filed(["status:todo", SOURCE], "alice"), options(outsider))).toEqual([]);
+    expect(t.decide({ name: "issues", action: "edited", actor: "mallory" }, filed(["status:todo", SOURCE], "alice"), options(outsider))).toEqual([]);
+  });
+
+  it("OWN_CLICK_UNCHANGED: a trusted regression issue gives no one an approval or a rework: an agent's or the bot-issue opener's status:approved is still reverted", () => {
+    const timeline = [labeledAt(SOURCE, BOT, 0, 1), labeledAt("status:todo", BOT, 0, 2), labeledAt("status:approved", AGENT, 5, 3)];
+    expect(t.decide(labeled("status:approved", AGENT), filed(["status:todo", SOURCE, "status:approved"]), options(timeline))).toEqual([remove("status:approved"), revert(3)]);
+    const rework = [labeledAt(SOURCE, BOT, 0, 1), labeledAt("status:blocked", AGENT, 3, 2), labeledAt("status:rework", "xtimor", 5, 4)];
+    const viaApp = rework.map((entry) => (entry.id === 4 ? { ...entry, performed_via_github_app: { slug: "claude" } } : entry));
+    expect(t.decide(labeled("status:rework", "xtimor"), filed(["status:blocked", SOURCE, "status:rework"]), options(viaApp))).toEqual([remove("status:rework"), t.reworkComment(4)]);
+  });
+
+  it("OWNER_STOPS_IT: the owner's blocked (or any later status) wins as on any issue, and the trusted label stays", () => {
+    const timeline = [labeledAt(SOURCE, BOT, 0, 1), labeledAt("status:todo", BOT, 0, 2), labeledAt("status:blocked", "xtimor", 5, 3)];
+    expect(t.decide(labeled("status:blocked", "xtimor"), filed(["status:todo", SOURCE, "status:blocked"]), options(timeline))).toEqual([remove("status:todo")]);
+  });
+
+  it("an untrusted label and a stranger's approval on one issue: the status is settled first, then the label goes", () => {
+    const timeline = [labeledAt("status:todo", "alice", 0, 1), labeledAt(SOURCE, "mallory", 1, 2), labeledAt("status:approved", "mallory", 2, 3)];
+    expect(t.decide(labeled("status:approved", "mallory"), filed(["status:todo", SOURCE, "status:approved"], "alice"), options(timeline))).toEqual([
+      remove("status:approved"),
+      revert(3),
+      ...removed(2),
+    ]);
+  });
+
+  describe("runEvent", () => {
+    const env = { ISSUE_FLOW_OWNERS: "xtimor", ISSUE_FLOW_AGENTS: AGENT, ISSUE_FLOW_EVENT_DELAY_MS: "0" };
+
+    it("removes an outsider's label through the API with one comment, and keeps the status", async () => {
+      const fake = fakeGithub([{ number: 12, state: "open", labels: ["status:todo", SOURCE, "type:bug"], user: { login: BOT } }], {
+        events: { 12: [labeledAt("status:todo", BOT, 0, 1), labeledAt(SOURCE, "mallory", 5, 2)] },
+      });
+      const payload = { action: "labeled", label: { name: SOURCE }, sender: { login: "mallory" }, issue: { number: 12 } };
+      const result = await apply.runEvent({ github: fake.github, context: ctx("issues", payload), core: fakeCore(), env });
+      expect(result).toEqual([{ issue: 12, actions: removed(2) }]);
+      expect(fake.labelsOf(12)).toEqual(["status:todo", "type:bug"]);
+      expect(fake.calls).toEqual(["get 12", "events 12", `remove 12 ${SOURCE}`, "comments 12", "comment 12 Only this repository"]);
+      // A second run for the same event posts no second comment.
+      await apply.applyActions(fake.github, ctx("issues", payload), 12, [t.regressionComment(2)]);
+      expect(fake.comments(12)).toHaveLength(1);
+    });
+
+    it("reads the events again while the handled labeled event is missing, then judges by the payload's actor", async () => {
+      const fake = fakeGithub([{ number: 12, state: "open", labels: ["status:todo", SOURCE], user: { login: BOT } }], { events: { 12: [labeledAt("status:todo", BOT, 0, 1)] } });
+      const payload = { action: "labeled", label: { name: SOURCE }, sender: { login: "mallory" }, issue: { number: 12 } };
+      await apply.runEvent({ github: fake.github, context: ctx("issues", payload), core: fakeCore(), env });
+      expect(fake.calls.filter((call) => call === "events 12")).toHaveLength(4);
+      expect(fake.labelsOf(12)).toEqual(["status:todo"]);
+
+      const trusted = fakeGithub([{ number: 13, state: "open", labels: ["status:todo", SOURCE], user: { login: AGENT } }]);
+      const byAgent = { action: "labeled", label: { name: SOURCE }, sender: { login: AGENT }, issue: { number: 13 } };
+      expect(await apply.runEvent({ github: trusted.github, context: ctx("issues", byAgent), core: fakeCore(), env })).toEqual([]);
+      expect(trusted.labelsOf(13)).toEqual(["status:todo", SOURCE]);
+    });
+
+    it("a trusted regression issue the beta workflow filed is left in status:todo by a later person's event", async () => {
+      const fake = fakeGithub([{ number: 12, state: "open", labels: ["regression:beta", SOURCE, "type:bug", "status:todo"], user: { login: BOT } }], {
+        events: { 12: ["regression:beta", SOURCE, "type:bug", "status:todo"].map((label, i) => labeledAt(label, BOT, 0, i + 1)) },
+      });
+      const payload = { action: "labeled", label: { name: "priority:p1" }, sender: { login: "xtimor" }, issue: { number: 12 } };
+      expect(await apply.runEvent({ github: fake.github, context: ctx("issues", payload), core: fakeCore(), env })).toEqual([]);
+      expect(fake.calls).toEqual(["get 12", "events 12"]);
+    });
   });
 });

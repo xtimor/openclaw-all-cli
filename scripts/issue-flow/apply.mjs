@@ -1,7 +1,8 @@
 // Applies the decisions of transitions.mjs to GitHub. Entry points for .github/workflows/issue-flow.yml, which
 // calls them from actions/github-script (`github` is its octokit, `context` the event, `core` the logger).
-// No model, no text from an issue is evaluated; the owner list comes from the workflow's ISSUE_FLOW_OWNERS, the agent logins from ISSUE_FLOW_AGENTS.
-import { STALE_DAYS, STALE_STATUSES, decide, isBot, isStatusName, linkedIssues, needsTimeline, parseOwners, staleIssues, staleStatus, statusSince, canonicalStatus, issueHasLabel, latestEventIsLabeled, OWNER_ONLY_STATUSES, AGENT_MARKER_RE } from "./transitions.mjs";
+// No model, no text from an issue is evaluated; the owner list comes from the workflow's ISSUE_FLOW_OWNERS, the agent logins (also the
+// regression writers of `source:regression`, beside github-actions[bot]) from ISSUE_FLOW_AGENTS.
+import { STALE_DAYS, STALE_STATUSES, decide, isBot, isStatusName, linkedIssues, needsTimeline, parseOwners, staleIssues, staleStatus, statusSince, canonicalStatus, issueHasLabel, latestEventIsLabeled, OWNER_ONLY_STATUSES, AGENT_MARKER_RE, SOURCE_REGRESSION } from "./transitions.mjs";
 
 const EVENT_ATTEMPTS = 4; // the events list can lag a moment behind the event that started the run (as in scripts/upstream-post.mjs)
 const EVENT_DELAY_MS = 2000;
@@ -98,10 +99,12 @@ export async function runEvent({ github, context, core, env = process.env }) {
     let timeline = [];
     if (event.name === "issues" && needsTimeline(issue, event)) {
       timeline = await readTimeline(github, context, number);
-      // The handled status label's `labeled` event is not the latest event for it yet (not in the list, or only an older removal is): read
-      // again a few times, as scripts/upstream-post.mjs does. Without it the author and the app flag of this click are unknown.
+      // The handled status (or `source:regression`) label's `labeled` event is not the latest event for it yet (not in the list, or only an
+      // older removal is): read again a few times, as scripts/upstream-post.mjs does. Without it the author and the app flag of this click are unknown.
+      // A `source:regression` still missing afterwards is judged by the payload's actor as well (transitions.mjs), so it goes on below.
       const delay = String(env.ISSUE_FLOW_EVENT_DELAY_MS ?? "").trim() !== "" && Number.isFinite(Number(env.ISSUE_FLOW_EVENT_DELAY_MS)) ? Number(env.ISSUE_FLOW_EVENT_DELAY_MS) : EVENT_DELAY_MS;
-      const handled = event.action === "labeled" && isStatusName(event.label) && issueHasLabel(issue, event.label) ? event.label : null;
+      const tracked = isStatusName(event.label) || event.label === SOURCE_REGRESSION;
+      const handled = event.action === "labeled" && tracked && issueHasLabel(issue, event.label) ? event.label : null;
       for (let attempt = 1; attempt < EVENT_ATTEMPTS && handled !== null && !latestEventIsLabeled(timeline, handled); attempt += 1) {
         await new Promise((done) => setTimeout(done, delay));
         timeline = await readTimeline(github, context, number);

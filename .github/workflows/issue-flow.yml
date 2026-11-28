@@ -34,9 +34,11 @@ env:
   # Logins (comma separated) allowed to set status:approved or status:rework (the owner's own click). Anyone else's is removed again. Keep in sync with
   # ISSUE_FLOW_OWNERS in agent-write.yml (the logins allowed to dispatch the agents' write relay).
   ISSUE_FLOW_OWNERS: xtimor
-  # Logins (comma separated) of the issue agents' GitHub App, as `<app-slug>[bot]` (docs/agents/identity.md). Only effect: an
-  # agent's marker comment is never an author's reply (matters when the app opened the issue). The app's approval is reverted
-  # because it is not in ISSUE_FLOW_OWNERS. Empty: the agents act as the owner.
+  # Logins (comma separated) of the issue agents' GitHub App, as `<app-slug>[bot]` (docs/agents/identity.md). Effects: an
+  # agent's marker comment is never an author's reply (matters when the app opened the issue), and beside github-actions[bot]
+  # the app may set source:regression on an issue it opened (a regression run's finding: built with no triage and no approval,
+  # docs/agents/implement.md "Regression issues"; the Agent write relay refuses that label, so agent sessions cannot). Anyone
+  # else's source:regression is removed. The app's approval is reverted because it is not in ISSUE_FLOW_OWNERS. Empty: the agents act as the owner.
   ISSUE_FLOW_AGENTS: "openclaw-all-cli-agent[bot]"
 
 jobs:

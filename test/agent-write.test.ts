@@ -887,6 +887,25 @@ describe("agent-write", () => {
     expect(approved.stderr).toContain("status:approved is the owner's to set");
   });
 
+  it("SOURCE_REGRESSION: source:regression gives an issue the regression shortcut (no triage, no approval), so an agent never adds it; removing it is fine (epic-regression-gate ticket 11)", async () => {
+    for (const add of [["source:regression"], ["type:bug", "source:regression"], ["source:agent", "source:regression", "status:todo"]]) {
+      calls = [];
+      const result = await run([{ op: "comment", issue: 12, body: "hi" }, { op: "labels", issue: 12, add }]);
+      expect(result.code).toBe(1);
+      expect(result.summary).toContain("Refused, nothing applied");
+      expect(result.stderr).toContain("source:regression is set only by the regression workflows");
+      expect(calls).toEqual([]);
+    }
+    // Other spellings are refused by the label rule itself.
+    for (const name of ["Source:Regression", " source:regression ", "SOURCE:REGRESSION", "source:regression\n"]) {
+      calls = [];
+      expect((await run([{ op: "labels", issue: 12, add: [name] }])).code, name).toBe(1);
+      expect(calls).toEqual([]);
+    }
+    expect((await run([{ op: "labels", issue: 12, remove: ["source:regression"] }])).code).toBe(0);
+    expect((await run([{ op: "labels", issue: 12, add: ["source:agent"] }])).code).toBe(0);
+  });
+
   it("STATUS_NAMES: adding a status: name that is not a status of the label file (a typo, the retired status:new) is refused; removing one is fine (ticket 3.27)", async () => {
     for (const name of ["status:new", "status:made-up", "status:todos", "status:in-progres"]) {
       calls = [];

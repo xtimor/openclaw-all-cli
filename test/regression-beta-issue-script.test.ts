@@ -21,6 +21,8 @@ const REGRESSION = join(ROOT, "scripts", "regression.sh");
 const REPO = "owner/repo";
 const TOKEN = "ghs_STUB_TOKEN_0123456789";
 const LABEL = "regression:beta";
+// A regression finding goes straight to work (ticket 11): the trusted origin label, the bug type, and the issue flow's open status.
+const LABELS = [LABEL, "source:regression", "type:bug", "status:todo"];
 const RUN_ID = "4242";
 const RUN_URL = `https://github.com/${REPO}/actions/runs/${RUN_ID}`;
 
@@ -146,8 +148,9 @@ const openIssue = (number: number, body = "earlier report"): StubIssue => ({ num
 const writes = () => calls.filter((call) => call.method !== "GET");
 
 describe("report", () => {
-  it("uses a marker label that .github/labels.yml defines", () => {
-    expect(readFileSync(join(ROOT, ".github", "labels.yml"), "utf8")).toContain(`- name: "${LABEL}"`);
+  it("uses labels that .github/labels.yml defines", () => {
+    const file = readFileSync(join(ROOT, ".github", "labels.yml"), "utf8");
+    for (const name of LABELS) expect(file).toContain(`- name: "${name}"`);
     expect(readFileSync(SCRIPT, "utf8")).toContain(`const LABEL = "${LABEL}";`);
   });
 
@@ -159,15 +162,17 @@ describe("report", () => {
     const post = writes()[0]!;
     expect(post).toMatchObject({ method: "POST", path: `/repos/${REPO}/issues`, auth: `Bearer ${TOKEN}` });
     expect(post.body.title).toBe("OpenClaw beta 2026.12.1-beta.2: the Gateway regression tier is red");
-    // Not a confirmed plugin bug: the issue flow's waiting-for-triage status, no type label; triage decides.
-    expect(post.body.labels).toEqual([LABEL, "status:todo"]);
+    // Straight to work: source:regression (triage skips it, the implementation run builds it with no approval) and type:bug.
+    expect(post.body.labels).toEqual(LABELS);
     const body: string = post.body.body;
     expect(body.split("\n")[0]).toBe(`<!-- regression-beta run=${RUN_ID} -->`);
     expect(body).toContain(`| beta | 2026.12.1-beta.2 | failed | 10m 12s | \`${SHA}\` |`);
     expect(body).toContain("- `auth-setup.regression.test.ts > Connect provider shows the saved key at once (#39)`");
     expect(body).toContain("- `turn-process.regression.test.ts > one process per chat (#11)`");
     expect(body).toContain(`Run: ${RUN_URL}`);
-    expect(body).toContain("not a confirmed bug of the plugin");
+    expect(body).toContain("A regression finding is fixed at once: `source:regression` skips triage and the owner's approval");
+    expect(body).toContain("hands the issue to the owner (`status:blocked`)");
+    expect(body).not.toContain("Triage decides");
     expect(calls[0]?.path).toBe(`/repos/${REPO}/issues?state=open&labels=regression%3Abeta&per_page=100&page=1`);
   });
 
@@ -258,7 +263,8 @@ describe("report", () => {
       `GET /repos/${REPO}/issues?state=all&sort=created&direction=desc&per_page=100&page=1`,
       `POST /repos/${REPO}/issues/100/labels`,
     ]);
-    // Only the marker label comes back: the status belongs to the issue flow by now.
+    // Only the marker label comes back: the status belongs to the issue flow by now, and source:regression is never added to an issue
+    // found only by its marker (plain text anyone can write).
     expect(calls[2]?.body).toEqual({ labels: [LABEL] });
     expect(issues).toHaveLength(1);
     expect(issues[0]?.labels).toEqual([LABEL]);
@@ -299,7 +305,7 @@ describe("report", () => {
     const result = await report("failure", resultsFile(red));
     expect(result.code, result.stderr).toBe(0);
     expect(writes().map((call) => `${call.method} ${call.path}`)).toEqual([`POST /repos/${REPO}/issues`, `POST /repos/${REPO}/issues/100/labels`]);
-    expect(writes()[1]!.body).toEqual({ labels: [LABEL, "status:todo"] });
+    expect(writes()[1]!.body).toEqual({ labels: LABELS });
   });
 
   it("caps the failing list and keeps each name on one line in backticks", async () => {

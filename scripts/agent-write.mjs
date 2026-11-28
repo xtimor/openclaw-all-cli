@@ -11,8 +11,9 @@
 //   {op:"comment", issue, body}                            new comment on an issue or pull request
 //   {op:"edit_comment", comment_id, body}                  only a comment whose author is AGENT_LOGIN
 //   {op:"labels", issue, add?:[...], remove?:[...]}        names like status:x, type:x, priority:x, source:x only; add first, then remove
-//                                                          (a label that is not there is fine); never add `status:approved` or `status:rework` (the owner's, by their own click) or
-//                                                          `status:upstream` (the `Upstream post` workflow's); no `status:` name that is not in STATUS_LABELS (a typo, or a retired status name); no name in both lists
+//                                                          (a label that is not there is fine); never add `status:approved` or `status:rework` (the owner's, by their own click),
+//                                                          `status:upstream` (the `Upstream post` workflow's), or `source:regression` (the regression workflows', ticket 11 of
+//                                                          epic-regression-gate); no `status:` name that is not in STATUS_LABELS (a typo, or a retired status name); no name in both lists
 //   {op:"close", issue, reason}                            only a security report: reason not_planned, and SECURITY_CLOSE_COMMENT is posted on that issue by
 //                                                          an earlier `comment` of the same list (agents never close an issue otherwise, see closeGuard); an issue, never a pull request
 //   {op:"reopen", issue}                                   an issue, never a pull request
@@ -40,7 +41,7 @@
 // refused or failed; 2 a variable is missing or malformed.
 import { appendFileSync, realpathSync } from "node:fs";
 import { pathToFileURL } from "node:url";
-import { REWORK, STATUS_LABELS, linkedIssues, parseOwners } from "./issue-flow/transitions.mjs";
+import { REWORK, SOURCE_REGRESSION, STATUS_LABELS, linkedIssues, parseOwners } from "./issue-flow/transitions.mjs";
 import { planStatus } from "./plan-gate.mjs";
 
 const DEFAULT_API = "https://api.github.com";
@@ -190,6 +191,8 @@ export function validate(text) {
         for (const name of add) if (name.startsWith("status:") && !STATUS_LABELS.includes(name)) throw refuse(`${where}: ${name} is not a status of .github/labels.yml`);
         for (const owned of OWNER_ONLY_LABELS) if (add.includes(owned)) throw refuse(`${where}: ${owned} is the owner's to set`);
         if (add.includes(WORKFLOW_ONLY_LABEL)) throw refuse(`${where}: ${WORKFLOW_ONLY_LABEL} is set by the Upstream post workflow after it publishes a draft; an agent sets status:awaiting-post for a ready draft`);
+        // The relay acts as the app, a regression writer: an agent session that could add the label would give any issue the regression shortcut (no triage, no approval).
+        if (add.includes(SOURCE_REGRESSION)) throw refuse(`${where}: ${SOURCE_REGRESSION} is set only by the regression workflows on an issue they open; the owner approves any other issue`);
         if (add.some((name) => remove.includes(name))) throw refuse(`${where}: a label cannot be both added and removed`);
         return { op: "labels", issue: raw.issue, add, remove };
       }

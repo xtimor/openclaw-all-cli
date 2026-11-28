@@ -1,8 +1,9 @@
 name: Regression beta
 
 # The Gateway regression tier on OpenClaw `beta`, weekly (epic-regression-gate ticket 4), so a break in the next
-# OpenClaw shows before it is `latest`. Red: the `issue` job opens one issue labelled `regression:beta` (status:todo; triage
-# decides whether the plugin or OpenClaw is at fault), or comments on the open one; green changes nothing. All logic is in
+# OpenClaw shows before it is `latest`. Red: the `issue` job opens one issue labelled `regression:beta`, `source:regression`,
+# `type:bug`, and `status:todo` (no triage, no approval: the next implementation run builds it, or hands it to the owner when
+# OpenClaw is at fault; docs/agents/implement.md "Regression issues"), or comments on the open one; green changes nothing. All logic is in
 # scripts/regression-beta-issue.mjs. `force_red` (dispatch only) fails the run on purpose to exercise the issue path.
 # A scheduled or dispatched workflow runs only once this file is on the default branch.
 on:
