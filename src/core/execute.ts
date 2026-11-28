@@ -432,7 +432,7 @@ export function createExecute(adapter: CliAdapter, options: ExecuteOptions): Cli
     // The note goes once, on the first prompt of a fresh chat; it is not part of the host's transcript.
     // The shell sentence goes the same way: once per process, after the continuity note. The ask-mode tools sentence
     // (no `exec`) takes the shell sentence's place and goes with every prompt of the process (issue #102).
-    // The `structured_output` sentence follows them, once per process (Decision, ticket 24): a warm process
+    // The `structured_output` sentence ends the prompt, once per process (Decision, ticket 24; bug 40): a warm process
     // whose first prompt lacked it reads the tool list again until the tool shows up, then sends it once. A process
     // without `exec` whose list named no write tool, or could not be read, at open reads it again the same way.
     const wantsStructured = !active.structuredNote && !active.structuredSent;
@@ -446,7 +446,9 @@ export function createExecute(adapter: CliAdapter, options: ExecuteOptions): Cli
     }
     // The ask-mode sentence promises usable OpenClaw tools: not in a turn whose proxy has no target.
     const askNote = turnTarget.ok ? active.askToolsNote : undefined;
-    const note = [active.freshChat ? CONTINUITY_NOTE : undefined, active.shellNote, askNote, active.structuredNote].filter(Boolean).join("\n\n") || undefined;
+    const note = [active.freshChat ? CONTINUITY_NOTE : undefined, active.shellNote, askNote].filter(Boolean).join("\n\n") || undefined;
+    // Last in the prompt, after the host's appended context (bug 40).
+    const tail = active.structuredNote;
     active.freshChat = false;
     active.shellNote = undefined;
     if (active.structuredNote) active.structuredSent = true;
@@ -461,7 +463,7 @@ export function createExecute(adapter: CliAdapter, options: ExecuteOptions): Cli
       delivered,
     });
     const startedAt = Date.now();
-    const promptText = composePrompt(ctx, note, delivery.lead, deliversSystemPrompt, host?.text ?? ctx.prompt);
+    const promptText = composePrompt(ctx, note, delivery.lead, deliversSystemPrompt, host?.text ?? ctx.prompt, tail);
     ctx.abortSignal?.throwIfAborted();
     // The session sends the prompt when the loop below takes its first event.
     timings.markPromptSent();

@@ -7,6 +7,12 @@ import { ISOLATED_STATE_DIR, LIVE_TIMEOUT_MS, describeLive, openclaw, openclawAs
 const PORT = 18_980;
 /** The GPT model of issue #75 and of the owner's live check of it (2026-11-08: failed before the fix, Opus done). */
 const GPT_MODEL = "cursor-cli/gpt-5.5";
+/**
+ * Bug 40: a codex model followed the host's last line ("reply normally in your final assistant message") and skipped
+ * the tool while the sentence came before the user's text (2 of 2 runs on OpenClaw 2026.10.3, 2026-11-28).
+ */
+const CODEX_MODEL = "cursor-cli/gpt-5.3-codex";
+const MODELS = [GPT_MODEL, CODEX_MODEL];
 const SCHEMA = { type: "object", properties: { reply: { type: "string" } }, required: ["reply"] };
 const CONFIG_KEYS = ["agents.defaults.model.primary", "tools.swarm.enabled"] as const;
 
@@ -53,13 +59,14 @@ describeLive("structured output of a GPT model (#75)", () => {
       const rows = cursorCatalog(PORT);
       return "error" in rows ? [] : rows.cursor;
     };
-    const found = await waitFor(() => listed().includes(GPT_MODEL.slice("cursor-cli/".length)), 90_000, 3_000);
+    const ids = MODELS.map((model) => model.slice("cursor-cli/".length));
+    const found = await waitFor(() => ids.every((id) => listed().includes(id)), 90_000, 3_000);
     if (!found) {
       const rows = listed();
       if ((year > 2026 || (year === 2026 && month >= 11)) && rows.length === 0) {
-        catalogSkip = `OpenClaw ${year}.${month} lists no cursor-cli model here (its catalog comes from catalog.openclaw.ai), so no child can be spawned on ${GPT_MODEL}`;
+        catalogSkip = `OpenClaw ${year}.${month} lists no cursor-cli model here (its catalog comes from catalog.openclaw.ai), so no child can be spawned on ${MODELS.join(" or ")}`;
       } else {
-        expect.fail(`the Gateway's model catalog does not list ${GPT_MODEL}: ${rows.join(", ") || "no cursor-cli row"}`);
+        expect.fail(`the Gateway's model catalog does not list ${MODELS.join(" and ")}: ${rows.join(", ") || "no cursor-cli row"}`);
       }
     }
   }, LIVE_TIMEOUT_MS);
@@ -73,31 +80,40 @@ describeLive("structured output of a GPT model (#75)", () => {
     }
   }, 120_000);
 
+  /** One collector child on `model`, spawned by a cursor-cli/auto parent turn; the host's record is the evidence. */
+  const collectorChild = (model: string) => async (ctx: { skip: (note?: string) => never }) => {
+    if (catalogSkip) ctx.skip(catalogSkip);
+    const sessionId = `live-structured-${Date.now()}`;
+    const spawn = { task: "Reply with exactly the word: ok", model, collect: true, context: "isolated", outputSchema: SCHEMA };
+    const message = [
+      "Call the OpenClaw tool sessions_spawn exactly once with these arguments:",
+      JSON.stringify(spawn),
+      "Then call the OpenClaw tool agents_wait for that child and wait until it has finished.",
+      "Then reply with the child's status and its structured result, copied from the tool result.",
+    ].join("\n");
+    const run = await openclawAsync(["agent", "--session-id", sessionId, "--message", message, "--json", "--timeout", "240"], { env: gateway!.env, timeoutMs: 280_000 });
+    const raw = `${run.stdout}\n${run.stderr}`;
+    expect(raw, "OpenClaw's budget compaction failed the parent turn (not #75)").not.toMatch(/transcript compaction failed/);
+    expect(run.status, raw.slice(-2_000)).toBe(0);
+    const children = childRuns(sessionId);
+    expect(children.length, `the parent turn spawned no child: ${raw.slice(0, 1_500)}`).toBe(1);
+    const child = children[0]!;
+    const evidence = JSON.stringify({ model: child.model, collectorCompletion: child.collectorCompletion });
+    expect(child.model, evidence).toBe(model);
+    expect(child.collectorCompletion?.schemaError, evidence).toBeUndefined();
+    expect(child.collectorCompletion?.status, evidence).toBe("done");
+    expect(String(child.collectorCompletion?.structured?.reply ?? "").trim(), evidence).toMatch(/^ok\.?$/i);
+  };
+
   it(
     "#75: a collector child with an outputSchema on cursor-cli/gpt-5.5 answers through structured_output and ends done",
-    async (ctx) => {
-      if (catalogSkip) ctx.skip(catalogSkip);
-      const sessionId = `live-structured-${Date.now()}`;
-      const spawn = { task: "Reply with exactly the word: ok", model: GPT_MODEL, collect: true, context: "isolated", outputSchema: SCHEMA };
-      const message = [
-        "Call the OpenClaw tool sessions_spawn exactly once with these arguments:",
-        JSON.stringify(spawn),
-        "Then call the OpenClaw tool agents_wait for that child and wait until it has finished.",
-        "Then reply with the child's status and its structured result, copied from the tool result.",
-      ].join("\n");
-      const run = await openclawAsync(["agent", "--session-id", sessionId, "--message", message, "--json", "--timeout", "240"], { env: gateway!.env, timeoutMs: 280_000 });
-      const raw = `${run.stdout}\n${run.stderr}`;
-      expect(raw, "OpenClaw's budget compaction failed the parent turn (not #75)").not.toMatch(/transcript compaction failed/);
-      expect(run.status, raw.slice(-2_000)).toBe(0);
-      const children = childRuns(sessionId);
-      expect(children.length, `the parent turn spawned no child: ${raw.slice(0, 1_500)}`).toBe(1);
-      const child = children[0]!;
-      const evidence = JSON.stringify({ model: child.model, collectorCompletion: child.collectorCompletion });
-      expect(child.model, evidence).toBe(GPT_MODEL);
-      expect(child.collectorCompletion?.schemaError, evidence).toBeUndefined();
-      expect(child.collectorCompletion?.status, evidence).toBe("done");
-      expect(String(child.collectorCompletion?.structured?.reply ?? "").trim(), evidence).toMatch(/^ok\.?$/i);
-    },
+    collectorChild(GPT_MODEL),
+    LIVE_TIMEOUT_MS,
+  );
+
+  it(
+    "bug 40: a collector child with an outputSchema on cursor-cli/gpt-5.3-codex answers through structured_output and ends done",
+    collectorChild(CODEX_MODEL),
     LIVE_TIMEOUT_MS,
   );
 });

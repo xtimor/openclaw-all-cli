@@ -192,6 +192,8 @@ tests = [
   { file = "test/regression/gateway/turn-process.regression.test.ts", name = "#74: `sessions.reset` of a chat ends that chat's cursor-agent process and leaves another chat's running", tier = "gateway", reproduces = true },
 ]
 
+# Backlog bug 40 (no issue of its own, found by the live tier 2026-11-28): the #75 sentence came before the user's text,
+# and a codex model followed the host's closing "reply normally" line instead; the sentence now ends the prompt.
 [[bug]]
 issue = 75
 title = "GPT models under cursor-cli never call structured_output"
@@ -200,7 +202,9 @@ tier = "live"
 fixed = true
 tests = [
   { file = "test/structured-output-hint.test.ts", name = "tells the model to answer through structured_output when the host serves that tool", tier = "unit", reproduces = false },
+  { file = "test/structured-output-hint.test.ts", name = "ends the prompt with the sentence, after the host's appended reply guidance (bug 40)", tier = "unit", reproduces = false },
   { file = "test/live/structured-output.live.test.ts", name = "#75: a collector child with an outputSchema on cursor-cli/gpt-5.5 answers through structured_output and ends done", tier = "live", reproduces = true },
+  { file = "test/live/structured-output.live.test.ts", name = "bug 40: a collector child with an outputSchema on cursor-cli/gpt-5.3-codex answers through structured_output and ends done", tier = "live", reproduces = true },
 ]
 
 # Covered only Cursor's agent mode; the ask-mode half came back as #102 (same family).

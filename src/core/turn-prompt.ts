@@ -83,9 +83,14 @@ export const HOST_STRUCTURED_TOOL = "structured_output";
 /**
  * AD-2: names OpenClaw and its tool, never a CLI. A model that does not infer the need from the tool's
  * description answers in prose and the run fails, so the prompt says it (issue #75). No re-prompt follows.
+ * It ends the prompt (`composePrompt`'s `tail`): the host closes a collector child's prompt with "reply normally in
+ * your final assistant message", and a codex model obeyed that last line and skipped the tool (bug 40).
  */
 export function structuredOutputNote(): string {
-  return "[OpenClaw] Give your final answer by calling the OpenClaw `structured_output` tool. An answer in prose alone fails the run.";
+  return (
+    "[OpenClaw] Give your final answer by calling the OpenClaw `structured_output` tool. " +
+    "An answer in prose alone fails the run, also where the text above says to reply normally."
+  );
 }
 
 /**
@@ -110,10 +115,11 @@ export function modeOf(ctx: ExecuteContext): ExecutionMode {
 /**
  * `system` is the block, when this turn sends one. With a system prompt on, the rest of the turn's
  * text (user text and both contexts, which may carry channel messages or tool output) is stripped of
- * the block's header and tags, so it can never pass for a system block.
+ * the block's header and tags, so it can never pass for a system block. `tail` comes last, after the host's appended
+ * context.
  */
-export function composePrompt(ctx: ExecuteContext, note?: string, system?: string, guard = false, promptText = ctx.prompt): string {
+export function composePrompt(ctx: ExecuteContext, note?: string, system?: string, guard = false, promptText = ctx.prompt, tail?: string): string {
   const { prependContext, appendContext } = ctx.promptContext ?? {};
   const plain = (text: string | undefined) => (guard && text ? neutralizeBlockMarkers(text) : text);
-  return [system, note, plain(prependContext), plain(promptText), plain(appendContext)].filter((part): part is string => Boolean(part)).join("\n\n");
+  return [system, note, plain(prependContext), plain(promptText), plain(appendContext), tail].filter((part): part is string => Boolean(part)).join("\n\n");
 }
