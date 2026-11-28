@@ -3,7 +3,7 @@ title: 'A key saved through Connect provider stays Not configured until a restar
 type: 'bugfix'
 ticket: '32'
 created: '2026-11-28'
-status: 'in-review'
+status: 'done'
 baseline_revision: 'd467522ce1d83620ff67bfa8b7ac4b7b6128370a'
 route: 'full'
 route_source: 'pinned'
