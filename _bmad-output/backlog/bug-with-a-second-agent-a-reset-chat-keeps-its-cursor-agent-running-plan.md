@@ -1,9 +1,9 @@
 ---
 title: 'With a second agent configured, a reset chat keeps its cursor-agent running'
 type: 'bugfix'
-ticket: 'bug-with-a-second-agent-a-reset-chat-keeps-its-cursor-agent-running'
+ticket: '31'
 created: '2026-11-28'
-status: 'in-review'
+status: 'done'
 baseline_revision: 'd467522'
 route: 'full'
 route_source: 'pinned'
@@ -142,6 +142,6 @@ api.on?.("session_end", (event, ctx) => { ...; releaseConversationEverywhere(key
 
 ## Auto Run Result
 
-Status: in-review
+Status: done
 Blocking condition: none
 Review: self-review in the build's session, then review pass 1 (quick lens, triaged by the coordinator); its 6 findings are patched. The owner's review of the batch is next.
