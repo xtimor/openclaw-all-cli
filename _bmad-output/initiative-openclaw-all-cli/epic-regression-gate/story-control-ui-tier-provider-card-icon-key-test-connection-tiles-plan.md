@@ -3,14 +3,14 @@ title: 'Control UI tier: provider card, icon, key, Test connection, tiles in a b
 type: 'feature'
 ticket: '6'
 created: '2026-11-27'
-status: 'in-review'
+status: done
 baseline_revision: '2274a24f1e995ccdb05298f90176ae7f0543678d'
 route: 'full'
 route_source: 'auto'
 risk: 'medium'
 review: 'quick'
 review_source: 'auto'
-lenses_ran: []
+lenses_ran: ['quick']
 review_loop_iteration: 0
 followup_review_recommended: false
 context: []
@@ -115,6 +115,14 @@ Review (quick) of ff60783 plus CI run 46091784105: 6 patched, 1 deferred, 1 reje
 - Deferred to 4.10: a CLI-level check that `PROVIDER_LABEL` shows in `openclaw models auth login`; the reviewer confirmed the Control UI renders only the manifest `groupLabel`.
 - Rejected: changing #35 `fixed = false` in the ledger: that is the closing state of the issue, not the test's.
 - No change: the shared cache key warning (two jobs of one run saving the same OpenClaw cache key; the second save only warns).
+
+## Auto Run Result
+
+- **Summary:** `scripts/regression.sh ui` runs `test/regression/ui/` with Playwright 1.63.0 against the Control UI of a real Gateway with the packed plugin: icon (#35/#45, drawn pixels against the packaged asset), provider name (#36, the manifest `groupLabel` the UI renders), the card after Connect (#39) and with a refused key (#98), Test connection, Remove key, and the chat's context tile (#40/#97); screenshot and page text on every failure; `regression.yml` takes a `tier` input and `ci.yml` runs the UI tier on latest.
+- **Review:** 6 patched (medium 3, low 3), 1 deferred to ticket 4.10 (a CLI-level check that `PROVIDER_LABEL` shows in `openclaw models auth login`), 1 rejected (#35 `fixed = false` is the issue's closing state), 1 no change; plus two CI-only fixes of the icon check (in-browser decode error, then an empty captured body on CI's Chromium).
+- **Follow-up review recommended:** false (no high finding).
+- **Verification:** CI run 46097303388 on a80579e: `regression-ui / ui (latest = 2026.11.10)` green (5 passed, 3 stated skips); local 2026.10.3: 7 passed, #39 red (#106); mutations red per row with screenshots; `npm test` 2113 passed without a browser; typecheck and actionlint clean.
+- **Residual risks:** on pull requests the UI tier runs on latest only, where Test connection and the tile skip (no offline catalog), so those run at release (4.7); visible labels may change with a new OpenClaw UI.
 
 ## Verification
 
