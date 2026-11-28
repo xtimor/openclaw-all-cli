@@ -3,7 +3,7 @@ title: 'Live tier in GitHub Actions with the real cursor-agent'
 type: 'feature'
 ticket: '5'
 created: '2026-11-28'
-status: 'in-review'
+status: done
 baseline_revision: '5478be7'
 route: 'full'
 route_source: 'auto'
