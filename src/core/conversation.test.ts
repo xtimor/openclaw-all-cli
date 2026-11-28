@@ -72,6 +72,22 @@ describe("releaseConversationEverywhere (issue #105)", () => {
     }
   });
 
+  it("drops the entries of collected pools when a pool is shared, so frequent reloads do not grow the registry", () => {
+    const shared = (globalThis as unknown as Record<symbol, Set<{ deref(): unknown }> | undefined>)[Symbol.for("openclaw-all-cli.conversation-pools")];
+    // Shape of a WeakRef whose pool was garbage-collected (no GC is forced in a test).
+    const dead = { deref: () => undefined };
+    const keep = shareConversationPool(pool(0));
+    shared!.add(dead);
+    const stop = shareConversationPool(pool(1));
+    try {
+      expect(shared!.has(dead)).toBe(false);
+      expect(releaseConversationEverywhere("k")).toBe(1);
+    } finally {
+      stop();
+      keep();
+    }
+  });
+
   it("keeps the registry on globalThis under the plugin's symbol, so another module instance shares it", () => {
     const a = pool(1);
     const stop = shareConversationPool(a);

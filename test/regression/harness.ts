@@ -1,7 +1,7 @@
 import { spawnSync } from "node:child_process";
-import { chmodSync, existsSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, copyFileSync, cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { createServer } from "node:net";
-import { dirname, join, sep } from "node:path";
+import { basename, dirname, join, sep } from "node:path";
 import { describe } from "vitest";
 import { FAKE_CURSOR_AGENT } from "../fixtures/paths.ts";
 import { openclaw, openclawAsync, startGateway, waitFor, type OpenClawResult, type TestGateway } from "../live/harness.ts";
@@ -120,8 +120,13 @@ export function promptText(entry: FakeLogEntry): string {
 export type IsolatedState = {
   /** The file's `SPIKE_DIR` (state and config), under `.regression/`. */
   dir: string;
-  /** Points `SPIKE_DIR` back at the tier's shared state and removes `dir`. Call it after the file's Gateway stopped. */
-  restore(): void;
+  /**
+   * Keeps the file's host logs (`<dir>/state/logs`, where OpenClaw 2026.11+ writes them, and each existing file of
+   * `extraLogs`, such as the Gateway's console log) in the shared state's `state/logs/<basename of dir>/`, where CI's
+   * failure-log step collects them, then points `SPIKE_DIR` back at the shared state and removes `dir`. Call it after
+   * the file's Gateway stopped and before its temp dir is removed. Never throws for a log it cannot keep.
+   */
+  restore(extraLogs?: readonly string[]): void;
 };
 
 /**
@@ -136,7 +141,16 @@ export function isolatedState(name: string): IsolatedState {
   const shared = process.env.SPIKE_DIR ?? "";
   if (!shared.includes(`${sep}.regression${sep}`)) throw new Error(`isolatedState needs the tier's SPIKE_DIR under .regression/, got '${shared}'.`);
   const dir = mkdtempSync(join(dirname(shared), `scenario-${name}-`));
-  const restore = () => {
+  const restore = (extraLogs: readonly string[] = []) => {
+    try {
+      const kept = join(shared, "state", "logs", basename(dir));
+      mkdirSync(kept, { recursive: true });
+      const hostLogs = join(dir, "state", "logs");
+      if (existsSync(hostLogs)) cpSync(hostLogs, join(kept, "state-logs"), { recursive: true });
+      for (const file of extraLogs) if (existsSync(file)) copyFileSync(file, join(kept, basename(file)));
+    } catch (error) {
+      console.warn(`Could not keep the logs of ${dir}: ${String(error)}`);
+    }
     process.env.SPIKE_DIR = shared;
     rmSync(dir, { recursive: true, force: true });
   };

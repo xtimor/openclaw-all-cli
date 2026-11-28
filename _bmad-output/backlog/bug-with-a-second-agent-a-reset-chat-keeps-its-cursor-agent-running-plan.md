@@ -10,8 +10,8 @@ route_source: 'pinned'
 risk: 'medium'
 review: 'quick'
 review_source: 'auto'
-lenses_ran: [self-review]
-review_loop_iteration: 0
+lenses_ran: [self-review, quick]
+review_loop_iteration: 1
 followup_review_recommended: false
 context: []
 warnings: []
@@ -93,9 +93,22 @@ deferred: []
 - findings:
   - `[medium]` `[patch]` unit reproduction passed before the fix (chat-ID takeover without a store) — store added, red before, green after.
   - `[low]` `[defer]` caps and `livePools` per copy — out of the approved scope; recorded in Implementation Notes and MEMORY.
-  - `[low]` `[reject]` a copy dropped without unload keeps its pool in the registry — held by `WeakRef`, pruned at the next release.
+  - `[low]` `[reject]` a copy dropped without unload keeps its pool in the registry — held by `WeakRef`, pruned at the next release (and, since review pass 1, at the next share).
   - `[false]` double release when both copies' hooks run — `releaseConversation` of an already-released key finds nothing.
   - `[false]` turns in a worker thread would not see `globalThis` — the Gateway scenario is green on 2026.10.3, so the turn copy shares the main thread's `globalThis`.
+
+### 2026-11-28 — Review pass 1 (quick lens, triaged by the coordinator)
+- verdicts: 6 findings — high 0, medium 2, low 4, false 0, maybe-false 0; all routed `patch`, applied in one commit on top of 756860a
+- findings:
+
+| # | Severity | Verdict | Route | Finding | What changed |
+|---|----------|---------|-------|---------|--------------|
+| 1 | medium | valid | patch | A red multi-agent run on 2026.11+ uploads no host logs: the scenario's `<state>/logs` and the Gateway console log were deleted in `afterAll`. | `test/regression/harness.ts`: `restore(extraLogs)` first copies `<dir>/state/logs` (as `state-logs/`) and each existing extra file into the shared state's `state/logs/<scenario dir name>/`, which the CI "Collect the failure logs" step already copies; a copy failure only warns. `multi-agent.regression.test.ts`: `afterAll` stops the Gateway without removing its temp dir, restores with `gateway.log`, then removes the temp dir. Workflow unchanged. Checked on 2026.10.3: `state/logs/scenario-two-agents-*/gateway.log` kept (10.3 writes no `state/logs`). |
+| 2 | low | valid | patch | `expect(gatewayCopy.backend).not.toBe(turnCopy.backend)` proves nothing (a new backend per call). | `test/session-end-release.test.ts`: asserts the two dynamically imported copies and the static import have three distinct `registerAdapters` functions and three distinct `ADAPTERS` arrays. |
+| 3 | low | valid | patch | No test that a copy's unload takes its pools out of the shared registry. | New test "takes a copy's pools out of the shared registry when the copy unloads": one pool per adapter appears in the registry at registration and none is left after `stop`. Red with the `unshare` loop in `closeAll` removed (checked, then restored). |
+| 4 | low | valid | patch | Dead `WeakRef`s were pruned only on a release, so a Gateway that reloads often but rarely ends a conversation grows the set. | `src/core/conversation.ts`: `shareConversationPool` drops dead entries before adding; test "drops the entries of collected pools when a pool is shared" puts a dead-ref stand-in into the registry. |
+| 5 | medium | valid | patch | User docs did not say the caps and Remove key are per loaded copy on 2026.10.3 with several agents. | `docs/providers/cursor.md` "Caps": each loaded copy has its own caps, so the Gateway can run more turns and processes than the numbers say, and Remove key neither closes the idle processes of the turn copies nor refuses while one of their turns runs. |
+| 6 | low | valid | patch | `MEMORY.md` fact (3) put "fixed in backlog bug 31" on the 2026.11.10 clause. | Moved to the "NEW BUG, not fixed in ticket 3" clause; the `isolatedState` entry names the kept logs. |
 
 ## Design Notes
 
@@ -122,3 +135,13 @@ api.on?.("session_end", (event, ctx) => { ...; releaseConversationEverywhere(key
 - Fixed tier, 2026.10.3: 20 passed, 1 skipped, 1 failed (#39 only); #105 main 11.0 s, #105 second 6.0 s, #74 9.1 s (10 min 38 s).
 - Fixed tier, `--openclaw latest` (resolved 2026.11.11): 18 passed, 4 skipped (version-dependent), 0 failed; #105 23.2 s and 17.7 s (18 min 14 s). On 2026.11.x the scenario is green before and after (not a reproduction there).
 - Live Cursor check: not run.
+
+**Results after review pass 1 (2026-11-28):**
+- `npm run typecheck`: green. `npm test`: 72 files passed, 30 skipped; 2120 tests passed, 101 skipped.
+- Multi-agent scenario alone on OpenClaw 2026.10.3, with the patched build packed and installed into the tier's shared state as `scripts/regression.sh` does: 2 passed (1 min 55 s); the shared `openclaw.json` names no `second` afterwards, and `state/logs/scenario-two-agents-*/gateway.log` was kept. The whole tier was not re-run for this pass.
+
+## Auto Run Result
+
+Status: in-review
+Blocking condition: none
+Review: self-review in the build's session, then review pass 1 (quick lens, triaged by the coordinator); its 6 findings are patched. The owner's review of the batch is next.

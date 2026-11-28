@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { mkdirSync, mkdtempSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterAll, beforeAll, expect, it } from "vitest";
@@ -47,9 +47,14 @@ describeRegression("Gateway scenarios: a config with a second agent", () => {
 
   afterAll(async () => {
     try {
-      await finishRegression({ stop: stopGateway, fakes: [fake], root });
+      await finishRegression({ stop: stopGateway, fakes: [fake] });
     } finally {
-      state?.restore();
+      // The host logs and the Gateway's console log go to the shared state's logs/, where CI collects failure logs.
+      try {
+        state?.restore(root ? [join(root, "gateway.log")] : []);
+      } finally {
+        if (root) rmSync(root, { recursive: true, force: true });
+      }
     }
   }, 120_000);
 

@@ -38,8 +38,11 @@ function pools(): Set<WeakRef<ConversationPool>> {
 
 /** Lets every copy's conversation end reach `pool`. The returned function takes it out again (its copy's unload). */
 export function shareConversationPool(pool: ConversationPool): () => void {
+  const shared = pools();
+  // A Gateway that reloads the plugin often but rarely ends a conversation must not grow the set: drop dead entries here too.
+  for (const ref of [...shared]) if (!ref.deref()) shared.delete(ref);
   const ref = new WeakRef(pool);
-  pools().add(ref);
+  shared.add(ref);
   return () => void pools().delete(ref);
 }
 

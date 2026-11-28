@@ -252,10 +252,14 @@ describe("a conversation end reaches every loaded copy of the plugin (issue #105
   it("closes the idle process another copy started for the ended conversation, and only that one", async () => {
     // A chat store gives each chat its own Cursor ID, so the second chat does not take over the first one's process.
     const store = mkdtempSync(join(scratch, "store-"));
-    const gatewayCopy = host({ FAKE_CURSOR_STORE: store }, await loadCopy());
-    const turnCopy = host({ FAKE_CURSOR_STORE: store }, await loadCopy());
+    const gatewayModules = await loadCopy();
+    const turnModules = await loadCopy();
+    // Two module instances, as two captured builds are: neither shares the other's (or the static import's) module state.
+    expect(new Set([gatewayModules.registerAdapters, turnModules.registerAdapters, registerAdapters]).size).toBe(3);
+    expect(new Set([gatewayModules.adapters, turnModules.adapters, ADAPTERS]).size).toBe(3);
+    const gatewayCopy = host({ FAKE_CURSOR_STORE: store }, gatewayModules);
+    const turnCopy = host({ FAKE_CURSOR_STORE: store }, turnModules);
     try {
-      expect(gatewayCopy.backend).not.toBe(turnCopy.backend);
       await turnCopy.turn("agent:main:explicit:a");
       await turnCopy.turn("agent:main:explicit:b");
       const [a, b] = turnCopy.pids();
@@ -266,6 +270,24 @@ describe("a conversation end reaches every loaded copy of the plugin (issue #105
       expect(alive(b!)).toBe(true);
     } finally {
       await Promise.all([gatewayCopy.stop(), turnCopy.stop()]);
+    }
+  });
+
+  it("takes a copy's pools out of the shared registry when the copy unloads", async () => {
+    const shared = () =>
+      [...((globalThis as unknown as Record<symbol, Set<WeakRef<object>> | undefined>)[Symbol.for("openclaw-all-cli.conversation-pools")] ?? [])]
+        .map((ref) => ref.deref())
+        .filter((pool) => pool !== undefined);
+    const before = new Set(shared());
+    const copy = host({}, await loadCopy());
+    try {
+      const added = shared().filter((pool) => !before.has(pool));
+      // One pool per adapter of the copy.
+      expect(added).toHaveLength(ADAPTERS.length);
+      await copy.stop();
+      expect(shared().filter((pool) => added.includes(pool))).toEqual([]);
+    } finally {
+      await copy.stop();
     }
   });
 });
