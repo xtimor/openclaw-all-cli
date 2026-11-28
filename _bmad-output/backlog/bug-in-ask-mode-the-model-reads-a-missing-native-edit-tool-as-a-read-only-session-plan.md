@@ -3,7 +3,7 @@ title: 'In ask mode the model reads a missing native edit tool as a read-only se
 type: 'bugfix'
 ticket: '33'
 created: '2026-11-28'
-status: 'in-progress'
+status: 'in-review'
 baseline_revision: 'cd8a412cd3177daefc602f47154ca2118ebb0e13'
 route: 'full'
 route_source: 'pinned'
@@ -147,6 +147,14 @@ Decision: the Gateway scenario reaches `ask` mode through a per-session exec hos
 - `node scripts/changelog.mjs check`, `test/regression/ledger.test.ts`, `test/parity-suite.test.ts`: green.
 - #102 Gateway scenario alone (`-t "#102"`, fresh state with the patched build): green on 2026.11.11 and on 2026.10.3. Whole tiers not re-run.
 
+**Results of the follow-up after the live regression (2026-11-28, cursor-agent 2026.11.11-b912975):**
+- Unit, red before (baseline `src`) and green after: `test/ask-tools-hint.test.ts` "asks the adapter for it when ..." (`expected {...} to match object { hostShell: false, hostWrites: true }`) and "keeps it for every warm turn ...", `src/adapters/cursor/index.test.ts` "is exactly agent without exec when the host offers tools that change files" (`expected 'mode:ask' to be 'mode:agent'`); 3 failed before, 92 passed after. `test/live-tier.test.ts` meter tool log: the replay guard's test red without the guard, green with it.
+- Gateway, red before: the baseline build ran the default-profile route and the `workspaceOnly` route in `mode:ask` (the old scenario asserted `ask`; probe on 2026.11.11: restricted profile, `write`/`edit`/`apply_patch`/`file_write` named, `mode:ask`); the new scenarios assert `agent`.
+- Gateway tier 2026.11.11 (tarball 29534ac9, the fix without the final comment and manifest-text edits): 21 passed, 4 skipped, 0 failed; the three #102 scenarios green. Gateway tier 2026.10.3 (same tarball, run beside a live run): 22 passed, 2 skipped (the `workspaceOnly` scenario skips by version), 1 failed: the tracer's "exactly one final chat frame" (`expected [...] to have a length of 1 but got 2`, a second prompt in the fake log); green when re-run alone on the same state; not touched by this change (its turn has `exec`).
+- Live, scenario only (`LIVE_TESTS=test/live/ask-mode-write.live.test.ts`), final build da082d9c: 2026.11.11 passed on try 1 (`workspaceOnly` chat, one process, 2 turns, 175,806 Cursor tokens); 2026.10.3 passed on try 1 (two cron runs, one process each, `write` per run in the meter log, 2 turns, 152,240 tokens). An earlier 2026.10.3 run on tarball 29534ac9 also passed on try 1 (215,086 tokens; its meter still logged `session/load` replays, fixed since).
+- Cursor turns: exploration 8 (ask mode 3, agent mode 3, native-tools safety 2), verification 6; tokens of the exploration's agent-mode run 382,380.
+- `npm run typecheck` green; `npm test` 74 files passed, 33 skipped, 2190 tests passed, 109 skipped (one earlier run under load failed `test/turn-timings.test.ts` on a timing margin, green alone and on the re-run); `node scripts/changelog.mjs check`, `test/regression/ledger.test.ts`, `test/parity-suite.test.ts` green.
+
 ## Auto Run Result
 
 Status: done
@@ -157,3 +165,10 @@ Status: done
 - Follow-up review recommended: false.
 - Verification: unit and Gateway reproductions red before, green after; tiers latest green and min green except #39 (#106) before the review patches; after them typecheck, `npm test` and the #102 scenario on latest and min green.
 - Residual risks: whether a real model follows the sentence is unverified (live scenario planned in ticket 4.5); the write-tool list is fixed; about 60 tokens per ask-mode prompt; a no-`exec` process without a write tool reads the tool list once per warm turn.
+
+Follow-up after the live regression (2026-11-28): status in-review.
+
+- Summary: the sentence alone did not make the model write (live: 0 of 12 in `ask` mode, it names Ask mode as the reason). A turn without `exec` whose list holds an OpenClaw tool that changes files now opens its process with `hostWrites`, and the Cursor adapter picks `agent` mode for it; native shell and write stay denied by the permission profile (checked live). Side questions and unreadable lists stay `ask`. The live #102 scenario now runs in the reporter's conditions (restricted profile, OpenClaw `write`/`edit`).
+- Files: `src/core/turn-prompt.ts`, `src/core/live-entry.ts`, `src/core/execute.ts`, `src/core/ports.ts`, `src/core/attach-session.ts`, `src/adapters/cursor/index.ts`, `src/adapters/cursor/manifest.ts`, `src/adapters/cursor/index.test.ts`, `test/ask-tools-hint.test.ts`, `test/live/turn-meter.mjs`, `test/live-tier.test.ts`, `test/live/ask-mode-write.live.test.ts`, `test/regression/gateway/reply-prompt.regression.test.ts`, `test/regression/ledger.toml`, `docs/providers/cursor.md`, the parity matrix, `CHANGELOG.md`, `MEMORY.md`.
+- Verification: see "Results of the follow-up after the live regression" above.
+- Residual risks: `agent` mode costs about 3 times the tokens of an `ask` refusal per turn; on 2026.10.3 each cron run has its own process, so the one-process check runs only on 2026.10.9+; a warm process keeps the mode it opened with; `file_write` and the Workboard and wiki writers also open `agent` mode.
