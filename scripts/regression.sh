@@ -1,12 +1,14 @@
 #!/usr/bin/env bash
 # Pre-release regression tiers (epic-regression-gate). One entry point for CI and the release.
 #
-#   scripts/regression.sh gateway [--openclaw <min|latest|extended-stable|beta|X.Y.Z>] [--tgz <file>] [--result <file>]
+#   scripts/regression.sh gateway|ui [--openclaw <min|latest|extended-stable|beta|X.Y.Z>] [--tgz <file>] [--result <file>]
 #   scripts/regression.sh resolve <min|latest|extended-stable|beta|X.Y.Z>...
 #
 # gateway: packs this plugin, installs the .tgz into a fresh state of an isolated OpenClaw of the chosen
 # version (default `min`, package.json openclaw.compat.minGatewayVersion; a tag resolves through npm), and
-# runs test/regression/gateway (real Gateway, fake cursor-agent). No secret and no network beyond
+# runs test/regression/gateway (real Gateway, fake cursor-agent). ui: the same setup, then test/regression/ui
+# (the Control UI of such a Gateway in Playwright's headless Chromium; failure screenshots in
+# .regression/ui-screenshots/<version>, or OPENCLAW_ALL_CLI_UI_ARTIFACTS). No secret and no network beyond
 # installing Node and OpenClaw. Everything lives under .regression/ (gitignored); .spike/ and
 # ~/.openclaw are never read or written. --tgz installs that packed plugin instead of building and packing;
 # --result writes a JSON summary (version, sha256, passed|failed|error, seconds, failing tests) for CI.
@@ -22,7 +24,7 @@ cd "$ROOT"
 unset CURSOR_API_KEY CURSOR_AUTH_TOKEN
 
 usage() {
-  sed -n '2,14p' "${BASH_SOURCE[0]}" >&2
+  sed -n '2,16p' "${BASH_SOURCE[0]}" >&2
   exit 2
 }
 
@@ -36,7 +38,7 @@ absolute() {
 tier="${1:-}"
 shift || true
 case "$tier" in
-  gateway | resolve) ;;
+  gateway | ui | resolve) ;;
   *) usage ;;
 esac
 
@@ -124,7 +126,7 @@ if [ "$tier" = resolve ]; then
   exit 0
 fi
 
-# --result: a JSON summary written on every exit of a gateway run, so CI can show and report a run that stopped early
+# --result: a JSON summary written on every exit of a gateway or ui run, so CI can show and report a run that stopped early
 # too. `result` is passed or failed once the tier ran, error when the run stopped before the tier finished.
 VERSION=""
 SHA=""
@@ -158,7 +160,8 @@ step "Set up isolated Node and OpenClaw $VERSION ($SPIKE_DIR)"
 # Every npm and vitest command below runs on the isolated Node.
 export PATH="$SPIKE_DIR/node/bin:$PATH"
 
-if [ ! -x "$ROOT/node_modules/.bin/vitest" ] || [ ! -x "$ROOT/node_modules/.bin/tsc" ]; then
+# The ui tier also needs the pinned Playwright (its browser comes from `npx playwright install chromium`).
+if [ ! -x "$ROOT/node_modules/.bin/vitest" ] || [ ! -x "$ROOT/node_modules/.bin/tsc" ] || { [ "$tier" = ui ] && [ ! -d "$ROOT/node_modules/playwright" ]; }; then
   step "Install dependencies (npm ci)"
   npm ci --no-audit --no-fund
 fi
@@ -198,7 +201,17 @@ rm -rf "$SPIKE_DIR/state" "$SPIKE_DIR/openclaw.json"
 "$DEV" run config set gateway.auth.mode none >/dev/null
 "$DEV" run plugins install --force --accept-capabilities "$TARBALL"
 
-step "Gateway tier (OpenClaw $VERSION)"
+if [ "$tier" = ui ]; then
+  TIER_TITLE="Control UI"
+  # Failure screenshots and page texts (test/regression/ui/browser.ts); CI uploads this folder when the tier fails.
+  export OPENCLAW_ALL_CLI_UI_ARTIFACTS="${OPENCLAW_ALL_CLI_UI_ARTIFACTS:-$ROOT/.regression/ui-screenshots/$VERSION}"
+  rm -rf "$OPENCLAW_ALL_CLI_UI_ARTIFACTS"
+  mkdir -p "$OPENCLAW_ALL_CLI_UI_ARTIFACTS"
+else
+  TIER_TITLE="Gateway"
+fi
+
+step "$TIER_TITLE tier (OpenClaw $VERSION)"
 status=0
 reporters=(--reporter=verbose)
 if [ -n "$RESULT_FILE" ]; then
@@ -207,8 +220,8 @@ if [ -n "$RESULT_FILE" ]; then
   rm -f "$REPORT"
   reporters+=(--reporter=json "--outputFile.json=$REPORT")
 fi
-OPENCLAW_ALL_CLI_REGRESSION=1 npx vitest run "${reporters[@]}" test/regression/gateway || status=$?
+OPENCLAW_ALL_CLI_REGRESSION=1 npx vitest run "${reporters[@]}" "test/regression/$tier" || status=$?
 TIER_STATUS="$status"
 
-printf '\nOpenClaw %s, plugin sha256 %s: %s\n' "$VERSION" "$SHA" "$([ "$status" -eq 0 ] && echo passed || echo FAILED)"
+printf '\n%s tier, OpenClaw %s, plugin sha256 %s: %s\n' "$TIER_TITLE" "$VERSION" "$SHA" "$([ "$status" -eq 0 ] && echo passed || echo FAILED)"
 exit "$status"

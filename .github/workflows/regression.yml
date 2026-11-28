@@ -1,12 +1,15 @@
 name: Regression
 
-# The Gateway regression tier (`scripts/regression.sh gateway`: a real Gateway with the packed plugin and the fake
-# cursor-agent) on one or more OpenClaw versions (epic-regression-gate ticket 4). `resolve` turns the requests into
-# versions with the script's own rules (min from package.json, tags through npm) and one matrix entry per distinct
-# version; `gateway` runs the tier once per version, named `gateway (<requests> = <version>)`; `summary` writes the
-# table of results to the job summary and the `results` output. Callers: ci.yml (min and latest), regression-beta.yml
-# (beta, weekly), and release.yml from ticket 4.7 (with its packed `.tgz` through `tgz_artifact`).
-# No secret anywhere: the tier runs on the fake cursor-agent and the script unsets any Cursor key.
+# A regression tier on one or more OpenClaw versions (epic-regression-gate ticket 4): `gateway` (the default,
+# `scripts/regression.sh gateway`: a real Gateway with the packed plugin and the fake cursor-agent) or `ui` (ticket 4.6,
+# `scripts/regression.sh ui`: the Control UI of such a Gateway in Playwright's headless Chromium). `resolve` turns the
+# requests into versions with the script's own rules (min from package.json, tags through npm) and one matrix entry per
+# distinct version; `tier` runs the tier once per version, named `<tier> (<requests> = <version>)`; `summary` writes the
+# table of results to the job summary and the `results` output. Callers: ci.yml (gateway on min and latest, ui on
+# latest), regression-beta.yml (beta, weekly), and release.yml from ticket 4.7 (with its packed `.tgz` through
+# `tgz_artifact`). Artifacts are named per tier (`regression-…` for gateway, `regression-ui-…` for ui), so both tiers
+# can run in one workflow run. No secret anywhere: the tier runs on the fake cursor-agent and the script unsets any
+# Cursor key.
 on:
   workflow_call:
     inputs:
@@ -14,6 +17,10 @@ on:
         description: "OpenClaw versions to test, space or comma separated: min, latest, extended-stable, beta, or X.Y.Z"
         type: string
         default: min latest
+      tier:
+        description: "The tier to run: gateway or ui"
+        type: string
+        default: gateway
       tgz_artifact:
         description: "Name of an artifact of this run holding exactly one packed openclaw-all-cli .tgz to test instead of packing"
         type: string
@@ -32,6 +39,11 @@ on:
         description: "OpenClaw versions to test, space or comma separated: min, latest, extended-stable, beta, or X.Y.Z"
         type: string
         default: min latest
+      tier:
+        description: "The tier to run"
+        type: choice
+        options: [gateway, ui]
+        default: gateway
       force_red:
         description: "Fail every version on purpose after its tier ran"
         type: boolean
@@ -43,6 +55,9 @@ permissions:
 env:
   # Same default as ci.yml and scripts/dev-openclaw.sh (the isolated Node the tier runs on).
   NODE_VERSION: 24.22.0
+  # The prefix of this run's artifact names, and the tier's title in step names and the summary.
+  ARTIFACTS: ${{ inputs.tier == 'ui' && 'regression-ui' || 'regression' }}
+  TIER_TITLE: ${{ inputs.tier == 'ui' && 'Control UI' || 'Gateway' }}
 
 # An explicit bash runs every step with `-eo pipefail` (the implicit default is `bash -e`, without pipefail), so the
 # tier's exit code survives `| tee`.
@@ -71,8 +86,13 @@ jobs:
         name: Resolve the OpenClaw versions
         env:
           VERSIONS: ${{ inputs.versions }}
+          TIER: ${{ inputs.tier }}
         run: |
           set -f # the requests are words, never globs
+          if [ "$TIER" != gateway ] && [ "$TIER" != ui ]; then
+            echo "::error title=Regression tier::unknown tier '$TIER' (gateway or ui)"
+            exit 1
+          fi
           read -r -a requests <<<"${VERSIONS//,/ }"
           if ! versions="$(scripts/regression.sh resolve "${requests[@]}" 2>"$RUNNER_TEMP/resolve.err")"; then
             cat "$RUNNER_TEMP/resolve.err" >&2
@@ -91,11 +111,11 @@ jobs:
             jq -r '.[] | "| \(.requests | join(", ")) | \(.version) |"' <<<"$versions"
           } >>"$GITHUB_STEP_SUMMARY"
 
-  gateway:
+  tier:
     needs: resolve
-    name: gateway (${{ matrix.label }})
+    name: ${{ inputs.tier }} (${{ matrix.label }})
     runs-on: ubuntu-latest
-    # About 10 minutes of tier, plus Node, OpenClaw, npm ci, and the build on a cold cache.
+    # About 10 minutes of tier, plus Node, OpenClaw, npm ci, the build, and (ui) Chromium on a cold cache.
     timeout-minutes: 35
     permissions:
       contents: read
@@ -141,15 +161,38 @@ jobs:
         with:
           name: ${{ inputs.tgz_artifact }}
           path: ${{ runner.temp }}/regression-tgz
+      # ui: the pinned Playwright (package-lock.json) and its Chromium. The browser download is cached per Playwright
+      # version; `--with-deps` installs the system libraries Chromium needs either way (they are not cached).
+      - id: playwright
+        if: inputs.tier == 'ui'
+        name: Playwright version
+        run: |
+          npm ci --no-audit --no-fund
+          echo "version=$(node -p 'require("playwright/package.json").version')" >>"$GITHUB_OUTPUT"
+      - id: cache-browsers
+        if: inputs.tier == 'ui'
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ~/.cache/ms-playwright
+          key: playwright-${{ runner.os }}-${{ steps.playwright.outputs.version }}-chromium
+      - if: inputs.tier == 'ui'
+        name: Chromium for Playwright
+        run: npx playwright install --with-deps chromium
+      - if: inputs.tier == 'ui' && steps.cache-browsers.outputs.cache-hit != 'true'
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ~/.cache/ms-playwright
+          key: ${{ steps.cache-browsers.outputs.cache-primary-key }}
       - id: tier
-        name: Gateway tier (OpenClaw ${{ matrix.version }})
+        name: ${{ env.TIER_TITLE }} tier (OpenClaw ${{ matrix.version }})
         env:
           REQUESTS: ${{ matrix.requests }}
+          TIER: ${{ inputs.tier }}
           TGZ_DIR: ${{ inputs.tgz_artifact && format('{0}/regression-tgz', runner.temp) || '' }}
           FORCE_RED: ${{ inputs.force_red }}
         run: |
           mkdir -p .regression/logs
-          args=(gateway --openclaw "$OPENCLAW" --result "$RESULT")
+          args=("$TIER" --openclaw "$OPENCLAW" --result "$RESULT")
           if [ -n "$TGZ_DIR" ]; then
             shopt -s nullglob
             tgz=("$TGZ_DIR"/*.tgz)
@@ -197,7 +240,7 @@ jobs:
       - if: always()
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
-          name: regression-result-${{ matrix.version }}
+          name: ${{ env.ARTIFACTS }}-result-${{ matrix.version }}
           path: ${{ env.RESULT }}
           if-no-files-found: ignore
           retention-days: 7
@@ -212,13 +255,21 @@ jobs:
       - if: failure()
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
-          name: regression-logs-${{ matrix.version }}
+          name: ${{ env.ARTIFACTS }}-logs-${{ matrix.version }}
           path: .regression/logs
+          if-no-files-found: ignore
+          retention-days: 7
+      # ui: the screenshot and page text of every failing check (test/regression/ui/browser.ts), named in its message.
+      - if: failure() && inputs.tier == 'ui'
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: regression-ui-screenshots-${{ matrix.version }}
+          path: .regression/ui-screenshots/${{ matrix.version }}
           if-no-files-found: ignore
           retention-days: 7
 
   summary:
-    needs: [resolve, gateway]
+    needs: [resolve, tier]
     if: ${{ !cancelled() && needs.resolve.result == 'success' }}
     runs-on: ubuntu-latest
     timeout-minutes: 5
@@ -229,7 +280,7 @@ jobs:
     steps:
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
-          pattern: regression-result-*
+          pattern: ${{ env.ARTIFACTS }}-result-*
           path: results
           merge-multiple: true
       - id: summary
@@ -243,7 +294,7 @@ jobs:
           results="$(jq -c -s --argjson versions "$VERSIONS" '. as $rows | $versions | map(. as $v | (($rows | map(select(.version == $v.version)) | first) // {version: $v.version, result: "no result", failed: []}) + {requests: $v.requests})' /dev/null "${files[@]}")"
           echo "results=$results" >>"$GITHUB_OUTPUT"
           {
-            echo "### Gateway regression tier"
+            echo "### $TIER_TITLE regression tier"
             echo
             echo "| Requested | OpenClaw | Result | Time | Plugin sha256 |"
             echo "| --- | --- | --- | --- | --- |"

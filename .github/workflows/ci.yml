@@ -110,3 +110,15 @@ jobs:
     uses: ./.github/workflows/regression.yml
     with:
       versions: min latest
+
+  # The Control UI regression tier (epic-regression-gate ticket 4.6) on npm `latest` (`regression-ui / ui (latest = X.Y.Z)`):
+  # the provider's icon, name, card, key, Test connection, Remove key, and the chat's context tile in Playwright's
+  # headless Chromium against a real Gateway. A failing check uploads its screenshot and page text
+  # (`regression-ui-screenshots-<version>`). Ticket 4.7 runs it on every version of a release. No secret.
+  regression-ui:
+    permissions:
+      contents: read
+    uses: ./.github/workflows/regression.yml
+    with:
+      versions: latest
+      tier: ui

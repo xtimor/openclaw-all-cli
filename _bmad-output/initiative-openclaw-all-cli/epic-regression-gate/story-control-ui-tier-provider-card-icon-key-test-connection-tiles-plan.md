@@ -3,13 +3,13 @@ title: 'Control UI tier: provider card, icon, key, Test connection, tiles in a b
 type: 'feature'
 ticket: '6'
 created: '2026-11-27'
-status: 'in-progress'
+status: 'in-review'
 baseline_revision: '2274a24f1e995ccdb05298f90176ae7f0543678d'
 route: 'full'
 route_source: 'auto'
 risk: 'medium'
-review: ''
-review_source: ''
+review: 'quick'
+review_source: 'auto'
 lenses_ran: []
 review_loop_iteration: 0
 followup_review_recommended: false
@@ -60,13 +60,13 @@ deferred: []
 ## Tasks & Acceptance
 
 **Execution:**
-- [ ] `test/regression/ui/*.regression.test.ts` and a browser helper -- every matrix row
-- [ ] `scripts/regression.sh` -- `ui` tier
-- [ ] `package.json` / `package-lock.json` -- `playwright` pinned devDependency
-- [ ] `.github/workflows/regression.yml`, `ci.yml` -- UI tier on latest for pull requests, failure screenshots as an artifact
-- [ ] `test/regression/ledger.toml` -- the entries above
-- [ ] `docs/release.md` (the tier section), `MEMORY.md` -- a few lines
-- [ ] this plan's Implementation Notes -- per row: conditions, mutation, red/green per version
+- [x] `test/regression/ui/*.regression.test.ts` and a browser helper -- every matrix row
+- [x] `scripts/regression.sh` -- `ui` tier
+- [x] `package.json` / `package-lock.json` -- `playwright` pinned devDependency
+- [x] `.github/workflows/regression.yml`, `ci.yml` -- UI tier on latest for pull requests, failure screenshots as an artifact
+- [x] `test/regression/ledger.toml` -- the entries above
+- [x] `docs/release.md` (the tier section), `MEMORY.md` -- a few lines
+- [x] this plan's Implementation Notes -- per row: conditions, mutation, red/green per version
 
 **Acceptance Criteria:**
 - Given main, when `scripts/regression.sh ui --openclaw latest` runs, then every check passes or skips with a stated reason, under about 10 minutes; on 2026.10.3 only the #39 card check is red (#106).
@@ -77,7 +77,29 @@ deferred: []
 
 ## Implementation Notes
 
+- Files: `test/regression/ui/browser.ts` (helpers), `provider-card.regression.test.ts` (#35/#45, #36, #39, #98), `key-actions.regression.test.ts` (Test connection, Remove key), `context-tile.regression.test.ts` (#40, #97); one Gateway per file through the gateway harness (`startRegressionGateway`, `configure`, `fakeCommand`, `gatewayCall`, `readFakeLog`, `runsOfflineCatalog`, `finishRegression`). Harness change: `startRegressionGateway({ waitForCatalog: false })` returns `catalog: "skipped"` for a Gateway whose config does not load the plugin at start. `playwright` 1.63.0 is imported dynamically in `launchBrowser()` only (types are `import type`), so `npm test` collects the skipped files without loading it; `OPENCLAW_ALL_CLI_CHROMIUM` is the local executable fallback (not needed here: the pinned Playwright found `/opt/pw-browsers`).
+- Browser isolation (`withUiPage`): a fresh context per check (1400x1000, deviceScaleFactor 1, service workers blocked); every request not to `http://127.0.0.1:<port>` is aborted and listed in the evidence; requests to the Gateway's catalog-icon proxy (`/__openclaw__/catalog-icon/<url>`, which would make the Gateway fetch the URL) are aborted and recorded by URL. On a failure the page's full screenshot and text go to `<OPENCLAW_ALL_CLI_UI_ARTIFACTS>/<check>.png|.txt` and every assertion message names them, with the URL and the text of the element checked. No run left a browser, Gateway, or fake process (`pgrep` after every run).
+- Selectors: visible text and roles (`Connect provider`/`Add account`, `Submit`, `Continue`, `Test connection`/`Test access`, `Remove key`/`Sign out of <account>?`, textbox named by the manifest `choiceLabel`, `Chat composer`), OpenClaw's `data-provider-id`/`data-plugin-id` attributes to scope a card or a plugin row, the context tile by its accessible name (`aria-label` "Session context usage: ..."). 2026.10.x dialogs are a `<dialog role="dialog">` in a shadow root with slotted content (its own innerText is empty), so `modalText` reads what the slots show.
+- Rows (main, red/green per version; mutations in a scratch worktree, packed there and run with these unchanged checks through `--tgz`-style installs; every red run saved its screenshot):
+  - #35/#45 icon. Conditions: plugin installed, cursor-cli the model. Checks: the Plugins page row "OpenClaw All CLI" draws an image whose source the Gateway served 200 `image/png` from `/__openclaw__/plugin-icon/openclaw-all-cli`, with the same decoded pixels as `assets/icon.png` (the host re-encodes: 2232 vs 2230 bytes, so bytes are not compared); the model setup page (`/settings/model-setup?firstRun=1`) provider picker lists "OAC / Cursor-CLI, Cursor CLI API key (CURSOR_API_KEY)" and asks the catalog-icon proxy for the manifest icon URL, which is built from package.json `repository` (raw.githubusercontent.com, never loaded). Main: green on 2026.10.3 (4.8 s) and 2026.11.10. Mutation #35 (drop `assets/icon.png` from `files`): red on both ("the row draws no icon image"; the host draws an "OA" letter avatar). Mutation #45 (delete the manifest `icon`): red on both ("the setup page never asked for the API key choice's manifest icon").
+  - #36 name. Conditions: the page's Connect provider (2026.11.x: Add account) dialog. Checks: no line reads a bare "Cursor CLI"/"Cursor-CLI", it lists "OAC / Cursor-CLI", and choosing it shows the method "Cursor CLI API key (CURSOR_API_KEY)". Main: green on both (1.5 s). Mutation `PROVIDER_LABEL` = "Cursor CLI": stays green on 2026.10.3, because no checked surface renders it (the dialog shows the manifest `groupLabel`, the card title is the host's rendering of the ID: "Cursor Cli", or "cursor-cli" once the card lists profiles). Mutation manifest `groupLabel` = "Cursor CLI" (the label the UI renders): red on both ("lists the provider under a bare name").
+  - #39 card. Conditions: cursor-cli the model at Gateway start (the owner's setup), logged-in fake, a dummy key saved in the browser (Submit, then Continue on the method's note: the profile is saved only then). Checks: the store has `cursor-cli:default` (`models.probe` targets), and within 30 s the card is drawn, does not read "Not configured", and offers Remove key/Sign out. Main: green on 2026.11.10 (12 s); red on 2026.10.3 (47 s) with #106 in the message and evidence (store has the profile, card "Credentials for main / Not configured"). It runs before #98 because #98's plugin hot reload (`config set` of the plugin entry) makes the saved profile show on 2026.10.3. Mutation #39 (`profiles: []`): red on both ("the saved key is not in the auth store"; the dialog still says the key was accepted).
+  - #98 refused key. Conditions: a shim with `FAKE_CURSOR_ABOUT=invalid`. Checks: (a) the dialog says "Cursor CLI says the key is invalid. It was not saved" (2026.10.x behind "Could not finish" > Details), not "accepted", after at least one keyed `about`; the card then offers no Remove key (2026.10.x also reads "Not configured"); the store is empty. (b) 2026.10.x only (catalog runs offline): the same refused key in the plugin config: after the keyed `about` and an empty cursor-cli catalog, the card shows no "N models". Main: green on both (53 s on 2026.10.3, 25 s on 2026.11.10). Mutation `probeAuth` accepts any non-empty key: red on 2026.10.3 by (b) ("the card lists cursor-cli models on a key cursor-agent refused"); on 2026.11.10 it is not reachable (no catalog, and the save path checks with `checkKey`). Extra mutation `checkKey` returns valid: red on both by (a).
+  - Test connection. Conditions: no default model at Gateway start (`waitForCatalog: false`; the plugin not loaded at start, so the saved key shows at once on 2026.10.3, outside #106); key saved in the browser; then cursor-cli set as the model (the probe picks the agent's model for the provider, else a prepared-catalog row, and without it answers "No models available. Configure a model, then retry."). Checks: the card's `role=status` says "Connected" and names `cursor-cli:default`, and the fake logged exactly one `session/prompt` since the click. Main: green on 2026.10.3 (32 s); skipped on 2026.11.x (models.probe answers `format` offline without the CLI). Mutation stream hook not registered (`register.ts`): red on 2026.10.3 ("Timed out ... The connection timed out", 0 prompts).
+  - Remove key. Same Gateway. Click Remove key (2026.11.x: Sign out of API key? then Sign out). Checks: the store is empty and the card lists no key (no Remove key/Sign out, no "Credentials configured"/"Provider profiles"). Main: green on both (14 s, 19 s). No mutation (the plan's row has none).
+  - #40/#97 context tile. Conditions: listing with Auto and `grok-4.7[context=256k,...]`, cursor-cli/grok-4.7 the model, turns typed into the chat composer of a fresh `/chat?session=agent:main:explicit:regression-ui-...` with `[[usage:<json>]] say:<marker>` (the Gateway tier's #40/#97 usages, readings up to about 100k). After each reply the tile is read once it agrees with the session row (within its rounding) or after 30 s. Checks: a reading after the first plain turn, window 256k, never above it, never below an earlier reading (a missing tile is no reading: the plugin withholds the doubtful one). Main on 2026.10.3: #40 15.3k, none, 15.6k (14 s); #97 15.3k, 100k, none (10 s); skipped on 2026.11.x (no offline catalog: no window, no tile; the file starts no Gateway there). Mutation #40 (ceiling check always passes): red ("turn 2: the tile reads above the 256000 window", tile "5.5M of 256k (100%)"). Mutation #97 (`fellBelowAcceptedHigh` false): red ("turn 3: the tile reads lower", 100k then 15.8k).
+- `scripts/regression.sh ui`: same setup as `gateway`, then `test/regression/ui`; `npm ci` also runs when `node_modules/playwright` is missing; `OPENCLAW_ALL_CLI_UI_ARTIFACTS` defaults to `.regression/ui-screenshots/<version>` (wiped per run); `--tgz`/`--result` work the same. `npm run test:regression:ui`.
+- CI: `regression.yml` gained input `tier` (`gateway` default, `ui`; dispatch: a choice); the per-version job id is now `tier`, named `<tier> (<label>)`, so the gateway check names are unchanged (`regression / gateway (min = ...)`). The ui job runs `npm ci`, restores `~/.cache/ms-playwright` (key: Playwright version from the installed package), `npx playwright install --with-deps chromium`, saves the cache on a miss. Artifact names carry the tier (`regression-…` for gateway, `regression-ui-…` for ui) so both tiers run in one workflow run without a name clash; a failed ui job also uploads `regression-ui-screenshots-<version>`. `ci.yml` job `regression-ui` calls it with `versions: latest`, `tier: ui` (`contents: read`).
+- Ledger: #35, #36, #39, #40, #45, #97, #98 have their ui tests (`tier = "ui"`, `reproduces = true`); `planned = "4.6"` removed from each (none had another ticket).
+- Docs: `docs/release.md` (the tier input, the ui job and its artifacts, `regression-ui` on pull requests), `docs/setup.md` (the command), `MEMORY.md` (one entry with the UI facts).
+- Observations, not changed: (1) the plugin's quota reader sends a saved dummy key to api2.cursor.sh (Gateway log "Cursor quota: the API key was rejected (... HTTP 401)") in this tier as in the Gateway tier's key cases: Gateway-side network with a dummy key, not the browser, and no secret. (2) The provider card's title is the host's rendering of the provider ID ("Cursor Cli"), not the plugin's label: not checked, not a plugin bug. No new bug: every check is green on main except the known #39 card check on 2026.10.3 (#106).
+
 ## Plan Change Log
+
+- #98: the plan's mutation (`probeAuth` accepts any non-empty key) does not reach the Connect provider dialog: a key typed there is checked with `checkKey` (`cursor-agent about`) before it is saved. Added part (b), the same refused key in the plugin config on 2026.10.x (where the catalog's login probe uses `probeAuth`), which that mutation turns red; recorded an extra `checkKey` mutation for part (a).
+- #36: `PROVIDER_LABEL` is rendered on no checked Control UI surface; the mutation that proves the row is the manifest `groupLabel` ("the manifest label the UI actually renders", as the plan allows).
+- Test connection and Remove key run on a Gateway that starts with no default model, so the saved key shows on the card on 2026.10.3 (with cursor-cli as the model at start it does not: #106, which stays the #39 check's job); cursor-cli becomes the model after the save, because `models.probe` needs a model for the provider.
+- #40/#97: 2026.11.x draws no context tile offline (no catalog, no window); the checks skip there by version with that reason and the file starts no Gateway.
 
 ## Review Triage Log
 
@@ -87,3 +109,11 @@ deferred: []
 - `scripts/regression.sh ui --openclaw latest` -- expected: pass (stated skips allowed)
 - `scripts/regression.sh ui` -- expected: pass except the #39 card check (#106)
 - `npm test`, `npm run typecheck` -- expected: green
+
+**Results (2026-11-28, this environment):**
+- `scripts/regression.sh ui --openclaw latest` (2026.11.10): passed, 5 passed, 3 skipped (Test connection; #40, #97), 166 s in all (tier 142 s).
+- `scripts/regression.sh ui` (min, 2026.10.3): 7 passed, 1 failed (#39 card, #106, screenshot `.regression/ui-screenshots/2026.10.3/39-card.png`), 285 s in all (tier 268 s). Checks: #35/#45 4.8 s, #36 1.5 s, #39 47 s, #98 53 s, Test connection 32 s, Remove key 14 s, #40 14 s, #97 10 s.
+- Mutations (scratch worktree, removed): m35 red on both, m45 red on both, `PROVIDER_LABEL` green (not rendered), `groupLabel` red on both, m39 red on both, `probeAuth` red on 2026.10.3, `checkKey` red on both, stream hook red on 2026.10.3, #40 and #97 red on 2026.10.3; an unmutated pack built the same way: green.
+- `npm test`: 72 files passed, 29 skipped, 2113 tests passed, 80 s; no browser process seen during the run. `npm run typecheck`: green. actionlint 1.7.9 on `.github/workflows/*.yml`: clean (no shellcheck installed here).
+- No Gateway, fake, or browser process left after the runs.
+- CI only: the `regression-ui / ui (latest = …)` job itself (Playwright's Chromium download and `--with-deps` on ubuntu-latest, the browser cache, the screenshot artifact upload on a red run).

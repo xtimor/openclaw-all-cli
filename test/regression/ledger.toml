@@ -77,10 +77,10 @@ tier = "ui"
 fixed = false
 tests = [
   { file = "test/package-contents.test.ts", name = "ships a small square PNG icon", tier = "unit", reproduces = false },
+  { file = "test/regression/ui/provider-card.regression.test.ts", name = "#35/#45: the Plugins page draws the packaged icon, and the model setup page asks for the manifest icon of the API key choice", tier = "ui", reproduces = true },
 ]
-planned = "4.6"
 
-# The Control UI check of the provider card (4.6) reads the name it shows.
+# The Control UI tier (4.6) reads the name the Connect provider dialog shows.
 [[bug]]
 issue = 36
 title = "Provider shows as Cursor-CLI, the same name as another plugin"
@@ -90,8 +90,8 @@ fixed = true
 tests = [
   { file = "test/provider-auth.test.ts", name = "shows the provider as OAC / Cursor-CLI in the group label and the settings hint", tier = "unit", reproduces = false },
   { file = "test/backend.test.ts", name = "labels the provider OAC / Cursor-CLI and keeps its ID", tier = "unit", reproduces = false },
+  { file = "test/regression/ui/provider-card.regression.test.ts", name = "#36: the Connect provider dialog names the provider OAC / Cursor-CLI, never a bare Cursor CLI", tier = "ui", reproduces = true },
 ]
-planned = "4.6"
 
 # Investigation only (decision: no warm start per agent); the latency it measured belongs to the #11 and #44 checks.
 [[bug]]
@@ -117,8 +117,8 @@ tests = [
   { file = "test/provider-card-limit.test.ts", name = "derives the credential summary from config keys, env keys, and profiles", tier = "unit", reproduces = false },
   { file = "test/provider-card-limit.test.ts", name = "is in docs/setup.md and CHANGELOG.md with the upstream issue", tier = "unit", reproduces = false },
   { file = "test/regression/gateway/auth-setup.regression.test.ts", name = "#39: a working cursor-agent login with no key is usable, and a key saved with the API key method is a cursor-cli api_key profile", tier = "gateway", reproduces = true },
+  { file = "test/regression/ui/provider-card.regression.test.ts", name = "#39: a key saved through Connect provider in the browser shows on the provider card with Remove key, not Not configured", tier = "ui", reproduces = true },
 ]
-planned = "4.6"
 
 [[bug]]
 issue = 40
@@ -131,8 +131,8 @@ tests = [
   { file = "src/core/execute.test.ts", name = "against the session's context ceiling (issue #40)", tier = "unit", reproduces = false },
   { file = "test/host-contract.test.ts", name = "reads the prompt buckets as the context size, and none from usage marked unavailable", tier = "unit", reproduces = false },
   { file = "test/regression/gateway/context-usage.regression.test.ts", name = "#40: a tool-heavy turn's summed usage never reads as a context above the model's window", tier = "gateway", reproduces = true },
+  { file = "test/regression/ui/context-tile.regression.test.ts", name = "#40: the context tile never shows more than the model's window after a tool-heavy turn", tier = "ui", reproduces = true },
 ]
-planned = "4.6"
 
 [[bug]]
 issue = 44
@@ -154,8 +154,8 @@ tier = "ui"
 fixed = true
 tests = [
   { file = "test/provider-auth.test.ts", name = "sets the setup page icon: an HTTPS URL that ends in the path of the packaged assets/icon.png", tier = "unit", reproduces = false },
+  { file = "test/regression/ui/provider-card.regression.test.ts", name = "#35/#45: the Plugins page draws the packaged icon, and the model setup page asks for the manifest icon of the API key choice", tier = "ui", reproduces = true },
 ]
-planned = "4.6"
 
 [[bug]]
 issue = 46
@@ -240,8 +240,8 @@ tests = [
   { file = "src/core/usage.test.ts", name = "withholds a plausible total whose own contextReading is lower than the previous high", tier = "unit", reproduces = false },
   { file = "src/core/execute.test.ts", name = "keeps a plain follow-up turn's lower total from reading as a drop after a tool-heavy turn", tier = "unit", reproduces = false },
   { file = "test/regression/gateway/context-usage.regression.test.ts", name = "#97: the context reading does not go down when a plain turn follows a tool-heavy one", tier = "gateway", reproduces = true },
+  { file = "test/regression/ui/context-tile.regression.test.ts", name = "#97: the context tile does not go down when a plain turn follows a tool-heavy one", tier = "ui", reproduces = true },
 ]
-planned = "4.6"
 
 [[bug]]
 issue = 98
@@ -255,8 +255,8 @@ tests = [
   { file = "src/adapters/cursor/auth-probe-cache.test.ts", name = "createCursorKeyCheckCache (issue #98)", tier = "unit", reproduces = false },
   { file = "test/regression/gateway/auth-setup.regression.test.ts", name = "#98: a CURSOR_API_KEY that cursor-agent refuses is no login on any Gateway surface", tier = "gateway", reproduces = true },
   { file = "test/regression/gateway/auth-setup.regression.test.ts", name = "#98: a degraded `status` (Logged in, unable to fetch user details) with no key is no login on any Gateway surface", tier = "gateway", reproduces = true },
+  { file = "test/regression/ui/provider-card.regression.test.ts", name = "#98: a key cursor-agent refuses is reported invalid in Connect provider and not saved, and the card does not show the provider as signed in", tier = "ui", reproduces = true },
 ]
-planned = "4.6"
 
 [[bug]]
 issue = 99

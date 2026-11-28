@@ -202,9 +202,10 @@ export function chatMessageText(message: any): string {
 export type RegressionGateway = TestGateway & {
   /**
    * What the readiness wait saw: `cursor-cli` (the catalog listed a cursor-cli model) or `empty` (this
-   * OpenClaw listed no model at all, so the catalog could not show readiness; see `startRegressionGateway`).
+   * OpenClaw listed no model at all, so the catalog could not show readiness; see `startRegressionGateway`), or
+   * `skipped` (the caller asked for no readiness wait: a Gateway that does not load the plugin at start).
    */
-  catalog: "cursor-cli" | "empty";
+  catalog: "cursor-cli" | "empty" | "skipped";
   /** The file that holds the Gateway's console log (stdout and stderr), when one was asked for; see `gatewayLog`. */
   log?: string;
   /** Stops the Gateway's process group, then SIGKILLs every process of its tree that is still there. */
@@ -256,11 +257,12 @@ export function cursorCatalog(port: number): { cursor: string[]; all: number } |
  *
  * Budget: the health wait and the readiness wait take at most `timeoutMs` each, plus one call and a stop, so
  * the whole start stays well under a 300 s hook. `onStarted` gets the stop function as soon as the Gateway
- * answers, so a caller's `afterAll` can stop it even when the readiness wait is cut short.
+ * answers, so a caller's `afterAll` can stop it even when the readiness wait is cut short. `waitForCatalog: false`
+ * skips the readiness wait (`catalog: "skipped"`), for a Gateway whose config does not make it load the plugin at start.
  */
 export async function startRegressionGateway(
   port: number,
-  options: { timeoutMs?: number; emptyMs?: number; logFile?: string; onStarted?: (stop: () => Promise<void>) => void } = {},
+  options: { timeoutMs?: number; emptyMs?: number; logFile?: string; waitForCatalog?: boolean; onStarted?: (stop: () => Promise<void>) => void } = {},
 ): Promise<RegressionGateway> {
   const { timeoutMs = 90_000, emptyMs = 30_000, logFile } = options;
   // No secret reaches the tier: the fake CLI needs no key, and a real one must not leak into a fresh state.
@@ -280,6 +282,7 @@ export async function startRegressionGateway(
       for (const row of before) if (now.get(row.pid)?.args === row.args) killPid(row.pid);
     })());
   options.onStarted?.(stop);
+  if (options.waitForCatalog === false) return { ...gateway, catalog: "skipped", stop, ...(logFile === undefined ? {} : { log: logFile }) };
   try {
     const started = Date.now();
     let sawModels = false;
