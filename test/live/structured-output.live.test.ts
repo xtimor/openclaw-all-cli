@@ -12,7 +12,6 @@ const GPT_MODEL = "cursor-cli/gpt-5.5";
  * the tool while the sentence came before the user's text (2 of 2 runs on OpenClaw 2026.10.3, 2026-11-28).
  */
 const CODEX_MODEL = "cursor-cli/gpt-5.3-codex";
-const MODELS = [GPT_MODEL, CODEX_MODEL];
 const SCHEMA = { type: "object", properties: { reply: { type: "string" } }, required: ["reply"] };
 const CONFIG_KEYS = ["agents.defaults.model.primary", "tools.swarm.enabled"] as const;
 
@@ -43,6 +42,8 @@ describeLive("structured output of a GPT model (#75)", () => {
   let gateway: TestGateway | undefined;
   const prior = new Map<string, string | undefined>();
   let catalogSkip: string | undefined;
+  /** Why a case's model cannot be spawned here, when the catalog loaded but lists no row for it. */
+  const modelSkip = new Map<string, string>();
 
   const readConfig = (key: string) => {
     const result = openclaw(["config", "get", key, "--json"]);
@@ -59,15 +60,19 @@ describeLive("structured output of a GPT model (#75)", () => {
       const rows = cursorCatalog(PORT);
       return "error" in rows ? [] : rows.cursor;
     };
-    const ids = MODELS.map((model) => model.slice("cursor-cli/".length));
-    const found = await waitFor(() => ids.every((id) => listed().includes(id)), 90_000, 3_000);
+    const id = (model: string) => model.slice("cursor-cli/".length);
+    // The #75 case needs only its own row; the codex case skips, with the reason, when its row is absent.
+    const found = await waitFor(() => listed().includes(id(GPT_MODEL)), 90_000, 3_000);
     if (!found) {
       const rows = listed();
       if ((year > 2026 || (year === 2026 && month >= 11)) && rows.length === 0) {
-        catalogSkip = `OpenClaw ${year}.${month} lists no cursor-cli model here (its catalog comes from catalog.openclaw.ai), so no child can be spawned on ${MODELS.join(" or ")}`;
+        catalogSkip = `OpenClaw ${year}.${month} lists no cursor-cli model here (its catalog comes from catalog.openclaw.ai), so no child can be spawned`;
       } else {
-        expect.fail(`the Gateway's model catalog does not list ${MODELS.join(" and ")}: ${rows.join(", ") || "no cursor-cli row"}`);
+        expect.fail(`the Gateway's model catalog does not list ${GPT_MODEL}: ${rows.join(", ") || "no cursor-cli row"}`);
       }
+    }
+    if (!catalogSkip && !(await waitFor(() => listed().includes(id(CODEX_MODEL)), 15_000, 3_000))) {
+      modelSkip.set(CODEX_MODEL, `the Gateway's model catalog lists no ${CODEX_MODEL} for this account: ${listed().join(", ")}`);
     }
   }, LIVE_TIMEOUT_MS);
 
@@ -82,7 +87,8 @@ describeLive("structured output of a GPT model (#75)", () => {
 
   /** One collector child on `model`, spawned by a cursor-cli/auto parent turn; the host's record is the evidence. */
   const collectorChild = (model: string) => async (ctx: { skip: (note?: string) => never }) => {
-    if (catalogSkip) ctx.skip(catalogSkip);
+    const skip = catalogSkip ?? modelSkip.get(model);
+    if (skip) ctx.skip(skip);
     const sessionId = `live-structured-${Date.now()}`;
     const spawn = { task: "Reply with exactly the word: ok", model, collect: true, context: "isolated", outputSchema: SCHEMA };
     const message = [

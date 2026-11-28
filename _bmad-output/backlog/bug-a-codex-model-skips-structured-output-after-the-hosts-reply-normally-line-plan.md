@@ -10,8 +10,8 @@ route_source: 'auto'
 risk: 'low'
 review: 'quick'
 review_source: 'auto'
-lenses_ran: [self-review]
-review_loop_iteration: 0
+lenses_ran: [self-review, quick]
+review_loop_iteration: 1
 followup_review_recommended: false
 context: []
 warnings: []
@@ -54,6 +54,16 @@ Oneshot: one argument of `composePrompt`, one sentence, the order of one array i
 - verdicts: 0 findings beyond what is recorded here.
 - checked: the tail is plugin text, so it is not passed through `neutralizeBlockMarkers` (the user's text and the host's contexts still are); a warm turn that re-reads the list and finds `structured_output` sends it as tail the same way; a side question sends no sentence (no MCP target, unchanged).
 
+### 2026-11-28 — Quick review (coordinator), patch round 1
+- verdicts: 6 findings — high 0, medium 5, low 1, false 0, maybe-false 0; 3 of them (1, 3, 4) concern the live-test fixes of findings A and B and are triaged in backlog 41's plan
+- findings:
+  - `[medium]` `[patch]` (1) permission-routing fallback test scripted the fallback — moved to backlog 41 and patched there.
+  - `[medium]` `[patch]` (2) the live-test fixes had no ticket or verification record of their own — backlog 41 (ticket and plan with the green runs); its files are out of this plan's scope.
+  - `[medium]` `[patch]` (3) history-continuity (c) could leave retries without a Gateway — backlog 41.
+  - `[medium]` `[patch]` (4) history-continuity (c) did not check that the Gateway and cursor-agent exited — backlog 41.
+  - `[medium]` `[patch]` (5) the #75 gpt-5.5 case waited for the codex catalog row too — `beforeAll` waits for the gpt-5.5 row alone (fails without it, as before), then up to 15 s for the codex row; without it the codex case skips with the reason (`ctx.skip`), and a catalog-less 2026.11.x skips both as before.
+  - `[low]` `[patch]` (6) the bug 40 unit test did not show the other sentences stay before the user's text — it now also asserts the continuity note (fresh chat, `continuity` option of `turnWithHostTools`) and the shell sentence before the user's text, and in a no-`exec` turn with an OpenClaw writer the ask-mode sentence before the user's text, the `structured_output` sentence last in both.
+
 ## Verification
 
 **Commands:**
@@ -68,10 +78,16 @@ Oneshot: one argument of `composePrompt`, one sentence, the order of one array i
 - `npm run typecheck`: green. `npm test`: 74 files passed, 33 skipped; 2189 tests passed, 108 skipped (a first run under load beside a live run had 2 timing failures, `test/backend.test.ts` maxConcurrentTurns and `test/turn-timings.test.ts`, both green alone and in the re-run). `node scripts/changelog.mjs check`, `test/regression/ledger.test.ts`, `test/parity-suite.test.ts`: green.
 - Not run: OpenClaw 2026.11.x live (this container cannot reach catalog.openclaw.ai, so no cursor-cli child can be spawned there; the file skips with that reason).
 
+**Results after review patch round 1 (2026-11-28, on 61b5433's merged base):**
+- `test/structured-output-hint.test.ts`, `test/ask-tools-hint.test.ts`, `test/shell-hint.test.ts`: 34 passed.
+- Live, `test/live/structured-output.live.test.ts` (per-model catalog wait), OpenClaw 2026.10.3: 2 passed, first try each, none skipped (about 4 turns).
+- `npm run typecheck`, `npm test`: green (counts in the Auto Run Result).
+
 ## Auto Run Result
 
 Status: in-review
 
 - Summary: the `structured_output` sentence now ends the prompt, after the host's appended reply guidance, and says prose fails also where the text above says to reply normally; a codex collector child answers through the tool.
-- Review: self-review in the build session; the quick review is the coordinator's.
+- Review: self-review, then the coordinator's quick review: 6 findings, all patched (1-4 in backlog 41, 5-6 here), one commit.
+- Checks after the patches: `npm run typecheck` green; `npm test` 74 files passed, 33 skipped, 2194 tests passed, 110 skipped; `node scripts/changelog.mjs check` green.
 - Residual risks: another model may still skip the tool (no re-prompt, by design); the sentence's place now differs from the other notes (it follows the host's text), so a host that appends a stronger contrary line would need the same look again.

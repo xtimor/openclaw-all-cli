@@ -1,7 +1,7 @@
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
-import { structuredOutputNote } from "../src/core/turn-prompt.ts";
+import { CONTINUITY_NOTE, structuredOutputNote } from "../src/core/turn-prompt.ts";
 import { turnWithHostTools } from "./fixtures/host-tools-turn.ts";
 
 // Issue #75 (ticket 24): a run with an outputSchema succeeds only if the model calls the host's
@@ -43,12 +43,22 @@ describe("structured_output hint", () => {
     // A collector child's prompt ends with the host's "reply normally in your final assistant message"; a codex
     // model obeyed that last instruction and never called the tool (live, 2026-11-28).
     const guidance = "For the current source conversation, reply normally in your final assistant message.";
-    const { prompts } = await turnWithHostTools(["exec", "structured_output"], { ctx: { promptContext: { appendContext: guidance } } });
-    expect(prompts).toHaveLength(1);
-    const prompt = prompts[0]!;
+    const ctx = { promptContext: { appendContext: guidance } };
+    // With exec: the continuity and shell sentences stay before the user's text.
+    const shellTurn = await turnWithHostTools(["exec", "structured_output"], { ctx, continuity: true });
+    expect(shellTurn.prompts).toHaveLength(1);
+    const prompt = shellTurn.prompts[0]!;
     expect(prompt.indexOf("do it 0")).toBeLessThan(prompt.indexOf(guidance));
     expect(prompt.endsWith(structuredOutputNote())).toBe(true);
+    expect(prompt.indexOf(CONTINUITY_NOTE)).toBeGreaterThanOrEqual(0);
+    expect(prompt.indexOf(CONTINUITY_NOTE)).toBeLessThan(prompt.indexOf("do it 0"));
     expect(prompt.indexOf("native shell")).toBeLessThan(prompt.indexOf("do it 0"));
+    // Without exec, with an OpenClaw writer: the ask-mode sentence stays before the user's text too.
+    const askTurn = await turnWithHostTools(["write", "structured_output"], { ctx, marker: false });
+    const askPrompt = askTurn.prompts[0]!;
+    expect(askPrompt.endsWith(structuredOutputNote())).toBe(true);
+    expect(askPrompt.indexOf("does not make this chat")).toBeGreaterThanOrEqual(0);
+    expect(askPrompt.indexOf("does not make this chat")).toBeLessThan(askPrompt.indexOf("do it 0"));
   });
 
   it("tells the model a prose final answer fails even where the text before says to reply normally", () => {
