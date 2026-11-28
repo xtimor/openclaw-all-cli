@@ -50,9 +50,8 @@ describe("the ask-mode tools hint", () => {
     }
   });
 
-  it("sends the sentence from the next warm turn on when the tool list could not be read at open", async () => {
-    const { prompts, opens } = await turnWithHostTools((turn) => (turn === 0 ? null : ["write", "edit"]), { marker: false, turns: 3 });
-    expect(opens).toHaveLength(1);
+  it("sends the sentence from the next turn on when the tool list could not be read at open", async () => {
+    const { prompts } = await turnWithHostTools((turn) => (turn === 0 ? null : ["write", "edit"]), { marker: false, turns: 3 });
     expect(prompts[0]).toBe("do it 0");
     expect(prompts[1]).toMatch(NOT_READ_ONLY);
     expect(prompts[1]).toMatch(/`write` and `edit`/);
@@ -94,6 +93,33 @@ describe("the acting mode for a run without exec that is offered tools that chan
     expect(opens).toHaveLength(1);
     expect(opens[0]).toMatchObject({ hostWrites: true });
     expect(prompts).toHaveLength(2);
+  });
+
+  // Review pass 1 of the follow-up: a process opened in the read-only mode must not carry the sentence on warm turns.
+  it("opens a new process in it on the next turn when the list could not be read at open", async () => {
+    const { opens, prompts } = await turnWithHostTools((turn) => (turn === 0 ? null : ["write", "edit"]), { marker: false, turns: 3 });
+    expect(opens).toHaveLength(2);
+    expect(opens[0]?.hostWrites).toBeUndefined();
+    expect(opens[1]).toMatchObject({ hostShell: false, hostWrites: true });
+    expect(prompts[0]).toBe("do it 0");
+    expect(prompts[1]).toMatch(NOT_READ_ONLY);
+    expect(prompts[2]).toMatch(NOT_READ_ONLY);
+  });
+
+  it("opens a new process in it after the warm turn whose list first names a tool that changes files", async () => {
+    const { opens, prompts } = await turnWithHostTools((turn) => (turn === 0 ? ["read"] : ["read", "write"]), { marker: false, turns: 3 });
+    expect(opens).toHaveLength(2);
+    expect(opens[0]?.hostWrites).toBeUndefined();
+    expect(opens[1]).toMatchObject({ hostShell: false, hostWrites: true });
+    expect(prompts[0]).toBe("do it 0");
+    expect(prompts[1]).toMatch(NOT_READ_ONLY);
+    expect(prompts[2]).toMatch(NOT_READ_ONLY);
+  });
+
+  it("keeps a no-exec process whose list names nothing that changes files (one open)", async () => {
+    const { opens, prompts } = await turnWithHostTools(["read", "sessions_history"], { marker: false, turns: 3 });
+    expect(opens).toHaveLength(1);
+    expect(prompts).toEqual(["do it 0", "do it 1", "do it 2"]);
   });
 
   it("does not ask for it when nothing listed changes files, the list cannot be read, exec is served, or for a side question", async () => {

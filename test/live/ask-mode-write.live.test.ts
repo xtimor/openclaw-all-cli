@@ -3,8 +3,7 @@ import { existsSync, mkdirSync, readFileSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { afterAll, beforeAll, expect, it } from "vitest";
 import { MUTATING_HOST_TOOLS } from "../../src/core/turn-prompt.ts";
-import { openclawVersion } from "../regression/harness.ts";
-import { ISOLATED_STATE_DIR, LIVE_TIMEOUT_MS, describeLive, openclaw, openclawAsync, startGateway, type TestGateway } from "./harness.ts";
+import { ISOLATED_STATE_DIR, LIVE_TIMEOUT_MS, describeLive, openclaw, openclawAsync, openclawVersion, startGateway, type TestGateway } from "./harness.ts";
 
 const PORT = 18_982;
 /** The OpenClaw tools that change files and records, as the MCP proxy names them in `toolSummary`. */
@@ -31,8 +30,8 @@ describeLive("a no-exec chat offered OpenClaw's file tools writes files (#102)",
   let gateway: TestGateway | undefined;
   let priorWorkspaceOnly: string | undefined;
   const dir = join(ISOLATED_STATE_DIR, "workspace", "live-ask-mode");
-  const [year, month, patch] = openclawVersion();
-  const workspaceOnlyServed = year * 10_000 + month * 100 + patch >= 20_261_009;
+  /** Set in `beforeAll`: the version is read only when the tier runs, never while a plain `npm test` collects the file. */
+  let workspaceOnlyServed = false;
 
   const readConfig = (key: string) => {
     const result = openclaw(["config", "get", key, "--json"]);
@@ -41,6 +40,12 @@ describeLive("a no-exec chat offered OpenClaw's file tools writes files (#102)",
   const priorPrimary = { value: undefined as string | undefined };
 
   beforeAll(async () => {
+    const [year, month, patch] = openclawVersion();
+    workspaceOnlyServed = year * 10_000 + month * 100 + patch >= 20_261_009;
+    // The cron route has no other record of the tools a run called: it needs the turn meter's log.
+    if (!workspaceOnlyServed && !process.env.OAC_LIVE_TURN_LOG) {
+      throw new Error(`on OpenClaw ${year}.${month}.${patch} this scenario needs the turn meter (OAC_LIVE_TURN_LOG): run it through scripts/regression.sh live`);
+    }
     priorPrimary.value = readConfig("agents.defaults.model.primary");
     priorWorkspaceOnly = readConfig("tools.fs.workspaceOnly");
     expect(openclaw(["config", "set", "agents.defaults.model.primary", "cursor-cli/auto"]).status).toBe(0);

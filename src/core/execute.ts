@@ -293,9 +293,10 @@ export function createExecute(adapter: CliAdapter, options: ExecuteOptions): Cli
         }
       }
       if (listed?.includes(HOST_STRUCTURED_TOOL)) fresh.structuredNote = structuredOutputNote();
-      // The host may serve exec but the list could not be read (an error, a cold cache): this
-      // process opened in the restrictive mode. Never reuse it, so the next turn reads the list again.
-      if (marked && listed === undefined) fresh.degraded = true;
+      // The list could not be read (an error, a cold cache): this process opened in the restrictive mode, without the
+      // exec it may be served or the acting mode a writer in the list asks for (#102). Never reuse it, so the next turn
+      // reads the list again and opens in the right mode.
+      if (turnTarget.ok && listed === undefined) fresh.degraded = true;
       ctx.abortSignal?.throwIfAborted();
       const opening = attachSession(attachDeps, fresh, ctx, hostShell, shell.args, (phase, ms) => timings.recordOpen(phase, ms));
       fresh.opening = opening;
@@ -434,14 +435,19 @@ export function createExecute(adapter: CliAdapter, options: ExecuteOptions): Cli
     // (no `exec`) takes the shell sentence's place and goes with every prompt of the process (issue #102).
     // The `structured_output` sentence ends the prompt, once per process (Decision, ticket 24; bug 40): a warm process
     // whose first prompt lacked it reads the tool list again until the tool shows up, then sends it once. A process
-    // without `exec` whose list named no write tool, or could not be read, at open reads it again the same way.
+    // without `exec` whose list named no write tool at open reads it again the same way; once a write tool shows up it
+    // gets the sentence and is not reused, since it opened in the CLI's read-only mode (#102: the next turn opens in
+    // the acting mode). A list unreadable at open never gets here: that process is not reused.
     const wantsStructured = !active.structuredNote && !active.structuredSent;
     const wantsAskTools = active.withoutHostShell === true && active.askToolsNote === undefined;
     if (!opened && (wantsStructured || wantsAskTools) && turnTarget.ok) {
       const target = active.target ?? turnTarget.target;
       const listed = await listToolNames(target, ctx.abortSignal);
       if (wantsStructured && listed?.includes(HOST_STRUCTURED_TOOL)) active.structuredNote = structuredOutputNote();
-      if (wantsAskTools && listed) active.askToolsNote = askToolsNote(listed);
+      if (wantsAskTools && listed) {
+        active.askToolsNote = askToolsNote(listed);
+        if (offersHostWrites(listed) && !active.hostWrites) active.degraded = true;
+      }
       ctx.abortSignal?.throwIfAborted();
     }
     // The ask-mode sentence promises usable OpenClaw tools: not in a turn whose proxy has no target.

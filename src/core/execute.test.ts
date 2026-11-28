@@ -13,6 +13,7 @@ import type { McpProxy } from "./mcp-proxy.ts";
 import { parseJsonlEvent } from "./events.ts";
 import { MCP_CONFIG_FLAG } from "./mcp-target.ts";
 import { MCP_CONFIG_TEST_KEY, withHostMcp } from "../../test/fixtures/host-mcp.ts";
+import { startEmptyToolList } from "../../test/fixtures/empty-tool-list.ts";
 import {
   CliError,
   type CheckVersionParams,
@@ -185,12 +186,19 @@ const parsed = (records: Record<string, unknown>[]) =>
     return result === null ? [] : Array.isArray(result) ? result : [result];
   });
 
-/** A settings env whose target is never called: enough for the core to treat the turn as having tools. */
-const usableEnv = (() => {
+/**
+ * A settings env whose target answers only the core's own `tools/list`, with no tool: enough for the core to treat the
+ * turn as having tools. A list that cannot be read makes a no-exec process single-use (#102), so it must be readable.
+ */
+const usableEnv = await (async () => {
+  const target = await startEmptyToolList();
   const dir = mkdtempSync(join(tmpdir(), "oac-execute-usable-"));
   const file = join(dir, "settings.json");
-  writeFileSync(file, JSON.stringify({ mcpServers: { openclaw: { url: "http://127.0.0.1:1/mcp", headers: {} } } }));
-  afterAll(() => rmSync(dir, { recursive: true, force: true }));
+  writeFileSync(file, JSON.stringify({ mcpServers: { openclaw: { url: target.url, headers: {} } } }));
+  afterAll(() => {
+    target.close();
+    rmSync(dir, { recursive: true, force: true });
+  });
   return { PATH: "/bin", [MCP_CONFIG_TEST_KEY]: file };
 })();
 
@@ -337,7 +345,8 @@ describe("createExecute", () => {
   });
 
   it("closes an idle process after the idle time", async () => {
-    vi.useFakeTimers();
+    // Only the timers: the turn reads the tool list over a real socket.
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
     try {
       const { adapter, sessions } = makeAdapter();
       const { live, calls } = makeLive();
@@ -697,7 +706,8 @@ describe("createExecute MCP proxy (AD-12)", () => {
             body,
           });
         res.writeHead(200, { "Content-Type": "application/json" });
-        res.end(JSON.stringify({ jsonrpc: "2.0", id: 1, result: {} }));
+        // A readable, empty tool list: a no-exec process whose list cannot be read is not reused (#102).
+        res.end(JSON.stringify({ jsonrpc: "2.0", id: 1, result: body.includes('"method":"tools/list"') ? { tools: [] } : {} }));
       });
     });
     await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));

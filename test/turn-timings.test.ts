@@ -10,6 +10,7 @@ import type { LiveSessionCapability, LiveSessionHandle } from "../src/core/sdk-t
 import { parseJsonlEvent } from "../src/core/events.ts";
 import { FAKE_CURSOR_AGENT, fakeEnv } from "./fixtures/paths.ts";
 import { MCP_CONFIG_TEST_KEY, withHostMcp } from "./fixtures/host-mcp.ts";
+import { startEmptyToolList } from "./fixtures/empty-tool-list.ts";
 
 /** Issue #44: one debug line per turn with the phases of the first-reply wait. */
 
@@ -177,9 +178,10 @@ describe("turn timing line on the fake cursor-agent", () => {
         if (current === handle) current = undefined;
       },
     };
-    // A usable MCP config keeps the process healthy enough to reuse.
+    // A usable MCP config, with a readable tool list (#102), keeps the process healthy enough to reuse.
+    const target = await startEmptyToolList();
     const settings = join(scratch, "reuse-settings.json");
-    writeFileSync(settings, JSON.stringify({ mcpServers: { openclaw: { url: "http://127.0.0.1:1/mcp", headers: {} } } }));
+    writeFileSync(settings, JSON.stringify({ mcpServers: { openclaw: { url: target.url, headers: {} } } }));
     const env = { FAKE_CURSOR_STORE: join(scratch, "reuse-store"), [MCP_CONFIG_TEST_KEY]: settings };
     mkdirSync(env.FAKE_CURSOR_STORE);
     const first = await turn({ env, live });
@@ -191,6 +193,7 @@ describe("turn timing line on the fake cursor-agent", () => {
     expect(second.line).not.toMatch(/spawn=|initialize=|login=|new_session=|load_session=|set_mode=|set_model=/);
     expect(ms(second.line, "first_text")).toBeGreaterThanOrEqual(1);
     current?.close("abort");
+    target.close();
   });
 
   it("still logs a line for a turn that fails after the prompt went out", async () => {

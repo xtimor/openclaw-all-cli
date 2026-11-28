@@ -32,6 +32,8 @@ deferred: []
 
 **Never:** Change `modeFor`, the permission profiles, the `exec`/`process` serving, the #76 sentence, the continuity or `structured_output` notes. Touch `.github/`, `scripts/`, `_bmad/`, `.claude/`, `docs/agents/`, `AGENTS.md`, protected `package.json` fields.
 
+**Amended 2026-11-28** under the owner's rule that regression findings are fixed at once; owner informed in the project thread: a no-exec turn offered an OpenClaw writer runs in agent mode, native shell/write stay denied by the profile. This replaces "Change `modeFor`" under Never and "`ask` mode stays" under Approach for such turns.
+
 ## I/O & Edge-Case Matrix
 
 | Scenario | Input / State | Expected Output / Behavior | Error Handling |
@@ -102,6 +104,9 @@ Decision: the trigger is the same fixed list the sentence names, `file_write` an
 Decision: the mode is set at open (`LiveEntry.hostWrites`); a warm process that re-reads its list keeps its mode (as for `exec`); an unreadable list stays `ask` (fail safe). Side questions stay `ask`.
 Decision: the live scenario runs in the reporter's conditions: `tools.fs.workspaceOnly` (one chat, two turns, one process) on OpenClaw 2026.10.9+, and on older hosts (2026.10.3) two `cron --tools` runs of one cron session, since that host offers no other route and gives each run its own process; the one-process check runs where the host can give one. It still asserts the file, its content, an OpenClaw writer called and no `exec`, on turn 1 and turn 2.
 Decision: the turn meter logs each ended OpenClaw MCP call by tool name (`{kind:"tool"}`), the only tool evidence a cron run leaves; no input, output or prompt text.
+Decision (review pass 1 of the follow-up): a no-`exec` process that opened in `ask` mode but may be owed `agent` mode is never reused: its list could not be read at open (`degraded`, like the `exec` path), or a warm re-read first finds a writer (that turn gets the sentence, the process closes after it). This amends "an unreadable list stays `ask`" above: it stays `ask` for that one turn only.
+
+**Reach in practice:** the file-transfer plugin's `file_write` is on by default, so a default-profile turn without `exec` (exec host `node`, `exec` denied, a rooted run) opens in `agent` mode; restricted runs (a tool cap, `tools.fs.workspaceOnly` on 2026.10.9+) get `write`, `edit`, `apply_patch`. Only a side question, a list with no writer (all of them denied or disabled) and an unreadable list stay `ask`. Cost: about 127k Cursor tokens per `agent`-mode writing turn against about 37k per `ask`-mode refusal (live, above).
 
 **Changes:** `src/core/turn-prompt.ts` (`offersHostWrites`), `src/core/live-entry.ts` (`hostWrites`), `src/core/execute.ts` (set at open), `src/core/attach-session.ts` and `src/core/ports.ts` (`OpenParams.hostWrites`), `src/adapters/cursor/index.ts` (`modeFor`), unit tests in `test/ask-tools-hint.test.ts` and `src/adapters/cursor/index.test.ts`, `test/live/turn-meter.mjs` + `test/live-tier.test.ts`, the Gateway #102 scenarios (`agent` mode on the `node` route; new: `tools.fs.workspaceOnly` route, 2026.10.9+; no writer stays `ask`), the live scenario, ledger #102, docs, manifest P8, parity matrix P8, CHANGELOG, MEMORY.
 
@@ -116,6 +121,17 @@ Decision: the turn meter logs each ended OpenClaw MCP call by tool name (`{kind:
   - `[medium]` `[patch]` `docs/providers/cursor.md` did not say which ask-mode turns get the sentence — the mode paragraph, the "No `exec`" limit, Shell commands and the P10 row now name the conditions (list read, one of the named tools, usable OpenClaw tools) and the exceptions (side question, unreadable list, no such tool, unavailable tools; a warm process re-reads).
   - `[low]` `[patch]` the CHANGELOG examples (`write`, `edit`, `workboard_comment`) do not appear on a default-profile run — reworded: `file_write`, or `write` and `edit` when Cursor's native file readers are off.
   - `[medium]` `[patch]` the ledger called a fake-Cursor scenario a reproduction of model behavior — #102 is `tier = "live"` like #76, the Gateway scenario `reproduces = false`, `planned = "4.5"` (the ledger test accepts a bug without a reproducing test at its tier when `planned` is set).
+
+### 2026-11-28 — Review pass 1 (follow-up) (quick lens, triaged by the orchestrator; patches in one commit)
+- verdicts: 5 findings — high 1, medium 2, verification 1, process 1; 4 patched, 1 noted
+
+| # | Finding | Verdict | Route | What changed |
+|---|---------|---------|-------|--------------|
+| 1 | `[high]` a no-`exec` process that opened with an unreadable tool list kept `ask` mode on every warm turn (`hostWrites` is set only at open) while the warm re-read added the not-read-only sentence: the known-bad state (0 of 12 live) | real | patch | `openFresh`: a turn with a usable target whose list could not be read marks the process `degraded` (was: only with the `exec` marker), so it is not reused and the next turn reads the list and opens in `agent` mode. The same hole for a list read at open without a writer, where a later warm re-read first finds one: that turn gets the sentence and the process is `degraded`. Unit tests in `test/ask-tools-hint.test.ts`: list unreadable on turn 1, then `write`/`edit`: 2 opens, the second `hostWrites`; list `read` then `read`/`write`: same; a list with no writer keeps one process (both new tests red before: 1 open, not 2). Test hosts that answered no `tools/list` now answer an empty list (`test/fixtures/empty-tool-list.ts`, in `src/core/execute.test.ts`, `test/session-end-release.test.ts`, `test/turn-timings.test.ts`; `startHost` in `execute.test.ts`), since they are meant to model a healthy target; the idle test fakes only `setTimeout`/`clearTimeout`. |
+| 2 | `[medium]` `test/live/ask-mode-write.live.test.ts` called the throwing `openclawVersion()` of `test/regression/harness.ts` while the file is collected, so a plain `npm test` without `OPENCLAW_VERSION`/`.spike` failed to collect it | real | patch | Uses the cached helper of `test/live/harness.ts` and reads the version in `beforeAll` (`workspaceOnlyServed` is set there). Checked: with no `OPENCLAW_VERSION` and an empty `SPIKE_DIR` the file collects and skips. |
+| 3 | `[medium]` the cron route (2026.10.3) takes its tool evidence only from the turn meter; without `OAC_LIVE_TURN_LOG` it failed with a misleading "no OpenClaw tool that changes files was called" | real | patch | Fails up front in `beforeAll`: "on OpenClaw <v> this scenario needs the turn meter (OAC_LIVE_TURN_LOG): run it through scripts/regression.sh live". No other source was used: the cron run result the test reads names no tools. Live behaviour with the meter is unchanged. |
+| 4 | `[verification]` the full Gateway tiers ran on an earlier tarball (29534ac9), with one min-tier tracer failure beside a live run | noted | none | No change asked. CI on the pushed head runs gateway min and latest; the orchestrator reads it. This pass also re-ran both Gateway tiers on this commit's tree (see Verification). |
+| 5 | `[process]` the intent contract still said "Never: change `modeFor`" and "`ask` mode stays", contradicting the code | real | patch | A dated amendment line inside the contract. The follow-up section and `docs/providers/cursor.md` state the reach in practice (`file_write` is on by default, so a default-profile turn without `exec` opens in `agent` mode; restricted runs get `write`/`edit`/`apply_patch`) and the cost (about 127k Cursor tokens per `agent`-mode writing turn against about 37k per `ask` refusal). A Decision line records that an unreadable list stays `ask` for one turn only. |
 
 ## Design Notes
 
@@ -155,6 +171,12 @@ Decision: the Gateway scenario reaches `ask` mode through a per-session exec hos
 - Cursor turns: exploration 8 (ask mode 3, agent mode 3, native-tools safety 2), verification 6; tokens of the exploration's agent-mode run 382,380.
 - `npm run typecheck` green; `npm test` 74 files passed, 33 skipped, 2190 tests passed, 109 skipped (one earlier run under load failed `test/turn-timings.test.ts` on a timing margin, green alone and on the re-run); `node scripts/changelog.mjs check`, `test/regression/ledger.test.ts`, `test/parity-suite.test.ts` green.
 
+**Results of review pass 1 (follow-up), 2026-11-28:**
+- Unit, red before (unpatched `src/core/execute.ts`): the two new `test/ask-tools-hint.test.ts` tests ("opens a new process in it on the next turn when the list could not be read at open", "... after the warm turn whose list first names a tool that changes files": `expected [...] to have a length of 2 but got 1`); green after.
+- `npm run typecheck` green; `npm test` 74 files passed, 33 skipped, 2194 tests passed, 110 skipped; `node scripts/changelog.mjs check`, `test/regression/ledger.test.ts`, `test/parity-suite.test.ts` green.
+- Gateway tiers on this tree (whole tiers, run one after the other, nothing beside them): 2026.11.11 21 passed, 4 skipped, 0 failed; 2026.10.3 23 passed, 2 skipped, 0 failed (the `workspaceOnly` scenario skips by version). The three #102 scenarios green on 2026.11.11; on 2026.10.3 the two that apply green.
+- Live #102 not re-run (no Cursor turns in this pass): its list is readable and names `write` at open, a path the patches leave as it was.
+
 ## Auto Run Result
 
 Status: done
@@ -172,3 +194,5 @@ Follow-up after the live regression (2026-11-28): status in-review.
 - Files: `src/core/turn-prompt.ts`, `src/core/live-entry.ts`, `src/core/execute.ts`, `src/core/ports.ts`, `src/core/attach-session.ts`, `src/adapters/cursor/index.ts`, `src/adapters/cursor/manifest.ts`, `src/adapters/cursor/index.test.ts`, `test/ask-tools-hint.test.ts`, `test/live/turn-meter.mjs`, `test/live-tier.test.ts`, `test/live/ask-mode-write.live.test.ts`, `test/regression/gateway/reply-prompt.regression.test.ts`, `test/regression/ledger.toml`, `docs/providers/cursor.md`, the parity matrix, `CHANGELOG.md`, `MEMORY.md`.
 - Verification: see "Results of the follow-up after the live regression" above.
 - Residual risks: `agent` mode costs about 3 times the tokens of an `ask` refusal per turn; on 2026.10.3 each cron run has its own process, so the one-process check runs only on 2026.10.9+; a warm process keeps the mode it opened with; `file_write` and the Workboard and wiki writers also open `agent` mode.
+- Review pass 1 (follow-up), 2026-11-28: 5 findings, 4 patched in one commit, 1 noted (see Review Triage Log). A no-`exec` process that opened in `ask` mode but may be owed `agent` (list unreadable at open, or a writer first seen on a warm turn) is no longer reused; the live #102 file collects without a version and fails up front on the cron route without the turn meter; the contract carries a dated amendment; the plan and the Cursor doc state the reach (`file_write` on by default) and the cost. Status stays in-review.
+- Residual risks after pass 1: a host whose `tools/list` keeps failing gets a new Cursor process on every no-`exec` turn (as the `exec` path already did); the writer-first-seen warm turn still runs in `ask` mode once, with the sentence. Live #102 not re-run: the patches do not change what that scenario exercises (its list is readable and names `write` at open).

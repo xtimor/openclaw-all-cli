@@ -6,6 +6,7 @@ import { afterAll, describe, expect, it, vi } from "vitest";
 import type { CliBackendPlugin, LiveSessionCapability, LiveSessionHandle } from "../src/core/sdk-types.ts";
 import { FAKE_CURSOR_AGENT, fakeEnv } from "./fixtures/paths.ts";
 import { MCP_CONFIG_TEST_KEY, withHostMcp } from "./fixtures/host-mcp.ts";
+import { startEmptyToolList } from "./fixtures/empty-tool-list.ts";
 import { registerAdapters } from "../src/core/register.ts";
 import { ADAPTERS } from "../src/registry.ts";
 
@@ -27,9 +28,14 @@ it("registers a session_end hook, so a finished conversation releases its proces
 // Ticket 22 (issue #74): each criterion against the real adapter and the ACP stand-in, through the registered backend and hook.
 
 const scratch = mkdtempSync(join(tmpdir(), "oac-session-end-"));
-afterAll(() => rmSync(scratch, { recursive: true, force: true }));
+// A readable, empty tool list: a no-exec process whose list cannot be read is not reused (#102).
+const target = await startEmptyToolList();
+afterAll(() => {
+  target.close();
+  rmSync(scratch, { recursive: true, force: true });
+});
 const mcpFile = join(scratch, "mcp.json");
-writeFileSync(mcpFile, JSON.stringify({ mcpServers: { openclaw: { url: "http://127.0.0.1:1/mcp", headers: {} } } }));
+writeFileSync(mcpFile, JSON.stringify({ mcpServers: { openclaw: { url: target.url, headers: {} } } }));
 
 type EndEvent = { sessionId: string; sessionKey?: string; reason?: string };
 type Host = {
