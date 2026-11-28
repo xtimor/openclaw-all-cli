@@ -3,14 +3,14 @@ title: 'With a second agent configured, a reset chat keeps its cursor-agent runn
 type: 'bugfix'
 ticket: 'bug-with-a-second-agent-a-reset-chat-keeps-its-cursor-agent-running'
 created: '2026-11-28'
-status: 'in-progress'
+status: 'in-review'
 baseline_revision: 'd467522'
 route: 'full'
 route_source: 'pinned'
 risk: 'medium'
-review: ''
-review_source: ''
-lenses_ran: []
+review: 'quick'
+review_source: 'auto'
+lenses_ran: [self-review]
 review_loop_iteration: 0
 followup_review_recommended: false
 context: []
@@ -76,9 +76,26 @@ deferred: []
 
 ## Implementation Notes
 
+- Root cause, read in the 2026.10.3 sources and probed with a temporary log line in the isolated host's `loadPreparedInboundPluginRegistry` (restored, file byte-identical after): with `main` only, the turn's prepared registry is lent and reused (`ownerWorkspace` = `turnWorkspace` = `<state>/workspace`, `lending: true, reusable: true`); with `agents.entries.second = {}`, the Gateway's registry has no `workspaceDir` (`resolvePluginControlPlaneWorkspace`: "workspace-scope-omitted", several explicit agents, no `agents.defaults.systemAgent.agentId`), `lending: false`, and the turns of `main` and of `second` each load a separate registry (registration mode `discovery`, its own captured build, its own pools). `adoptAgentRuntimeRegistrations` adopts no CLI backend, and `session_end` runs through the global hook runner over the Gateway's registry, whose pool is empty. Setting `agents.defaults.systemAgent.agentId: main` did not turn the main case green (not followed up; no workaround is claimed).
+- Decision: share the release across copies, not one pool (Design Notes). Pools are shared in every registration mode, since the copy that serves turns is a `discovery` load.
+- Decision: the one `globalThis` write moves to `src/core/process-global.ts`; `listings.ts` uses it with its old key, so a copy of an older version still shares the listings holder. On 2026.11.11 install the plugin's `globalThis.*` finding count stays one (`process-global.js:12`, was `listings.js`); the existing `managed-install.js` `host-patch` findings show the repo already ships such warnings (they never block install).
+- Decision: the scenario isolates the state (`isolatedState` in the harness: own `SPIKE_DIR` beside the shared one under `.regression/`, Node and OpenClaw symlinked, the installed plugin re-packed with `npm pack --ignore-scripts` and installed, about 15 s) instead of restoring the config in `afterAll`, so a crash mid-file cannot leave a second agent in the shared config and no state the agent created reaches later files. `scripts/regression.sh` (protected) is unchanged. Checked after each run: the shared `openclaw.json` names no `second`, and the scenario dir is gone.
+- Unit reproduction: two module copies (`vi.resetModules()` + dynamic import of `register.ts` and `registry.ts`). The first version without `FAKE_CURSOR_STORE` passed before the fix for the wrong reason (both fake processes name their chat `fake-session-1`, and the second takes over the first's chat and closes it); with a store it is red before the fix and green after.
+- Files: `src/core/process-global.ts` (new), `src/core/conversation.ts`, `src/core/register.ts`, `src/core/listings.ts`, `src/core/conversation.test.ts`, `test/session-end-release.test.ts`, `test/regression/harness.ts` (`isolatedState`, `gatewayAgentTurn(..., agent)`), `test/regression/gateway/multi-agent.regression.test.ts` (new), `test/regression/ledger.toml`, `CHANGELOG.md`, `docs/providers/cursor.md`, AD-14, `MEMORY.md`.
+- Not changed (follow-ups for the owner): the caps (`maxProcesses`, `maxConcurrentTurns`) and the remove method's `livePools` stay per copy, so on 2026.10.3 with several agents the caps hold per loaded copy, and Remove key does not see the turn copies' processes. A live Cursor check was not run (no `CURSOR_API_KEY` used in this session).
+
 ## Plan Change Log
 
 ## Review Triage Log
+
+### 2026-11-28 — Review pass (self-review in the build's own session, no reviewer subagents)
+- verdicts: 5 findings — high 0, medium 1, low 2, false 2, maybe-false 0
+- findings:
+  - `[medium]` `[patch]` unit reproduction passed before the fix (chat-ID takeover without a store) — store added, red before, green after.
+  - `[low]` `[defer]` caps and `livePools` per copy — out of the approved scope; recorded in Implementation Notes and MEMORY.
+  - `[low]` `[reject]` a copy dropped without unload keeps its pool in the registry — held by `WeakRef`, pruned at the next release.
+  - `[false]` double release when both copies' hooks run — `releaseConversation` of an already-released key finds nothing.
+  - `[false]` turns in a worker thread would not see `globalThis` — the Gateway scenario is green on 2026.10.3, so the turn copy shares the main thread's `globalThis`.
 
 ## Design Notes
 
@@ -96,3 +113,12 @@ api.on?.("session_end", (event, ctx) => { ...; releaseConversationEverywhere(key
 - `npm test`, `npm run typecheck` -- green
 - `scripts/regression.sh gateway` (2026.10.3) -- green except `#39` (#106)
 - `scripts/regression.sh gateway --openclaw latest` -- green
+
+**Results (2026-11-28):**
+- `npm run typecheck`: green. `npm test`: 72 files passed, 30 skipped; 2118 tests passed, 101 skipped (2 min 53 s).
+- Unit reproduction (`test/session-end-release.test.ts`, issue #105): red before the fix (`expected false to be true` at `gone(a)`), green after.
+- Baseline tier on d467522 code, OpenClaw 2026.10.3: 18 passed, 1 skipped, 1 failed (#39, #106), 9 min 55 s.
+- New scenario alone on the unfixed build, 2026.10.3: both tests red, "ended chat pids 4130 alive=true; kept chat pids 4871 alive=true (20 s after sessions.reset)" and "second chat pids 7740 alive=true" (1 min 48 s).
+- Fixed tier, 2026.10.3: 20 passed, 1 skipped, 1 failed (#39 only); #105 main 11.0 s, #105 second 6.0 s, #74 9.1 s (10 min 38 s).
+- Fixed tier, `--openclaw latest` (resolved 2026.11.11): 18 passed, 4 skipped (version-dependent), 0 failed; #105 23.2 s and 17.7 s (18 min 14 s). On 2026.11.x the scenario is green before and after (not a reproduction there).
+- Live Cursor check: not run.
