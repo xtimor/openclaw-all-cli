@@ -11,7 +11,8 @@
 // request is one turn: it appends `{kind: "prompt", at, pid, sessionId}` to the log (JSON lines, shared by every
 // process of the run) and its answer `{kind: "done", at, sessionId, stopReason | error}`. Once the log holds the cap's
 // number of turns, a further prompt is not sent: it is answered with the JSON-RPC error "turn cap <n> reached" and
-// logged as `{kind: "refused"}`. Nothing in the log is secret: no prompt text, no key.
+// logged as `{kind: "refused"}`. An OpenClaw tool call (Cursor's title `openclaw: <tool>`) that ends is logged as
+// `{kind: "tool", sessionId, tool, status}`. Nothing in the log is secret: no prompt text, no tool input, no key.
 import { spawn } from "node:child_process";
 import { appendFileSync, readFileSync } from "node:fs";
 
@@ -116,8 +117,28 @@ if (proxy) {
     child.stdin.end();
   });
 
+  /** OpenClaw tool calls seen, by ACP tool call id: the tool's name, once Cursor's update names it. */
+  const openclawCalls = new Map();
+  /** Logs `{kind: "tool", sessionId, tool, status}` when an OpenClaw tool call ends (#102: which tool did the work). */
+  const watchToolCall = (line) => {
+    const message = parse(line);
+    const update = message?.params?.update;
+    if (message?.method !== "session/update" || typeof update?.toolCallId !== "string") return;
+    // Only during a prompt: `session/load` replays an earlier turn's tool calls as updates too.
+    if (![...pending.values()].includes(message.params.sessionId)) return;
+    // Cursor titles an MCP call `<server>: <tool>`; only the plugin's server name and a plain tool name are logged.
+    const named = typeof update.title === "string" ? /^openclaw: ([a-z_]+)$/.exec(update.title)?.[1] : undefined;
+    if (named) openclawCalls.set(update.toolCallId, named);
+    const tool = openclawCalls.get(update.toolCallId);
+    if (tool && (update.status === "completed" || update.status === "failed")) {
+      openclawCalls.delete(update.toolCallId);
+      log({ kind: "tool", sessionId: message.params.sessionId, tool, status: update.status });
+    }
+  };
+
   const fromAgent = splitLines((line) => {
     process.stdout.write(line);
+    if (line.includes('"session/update"') && line.includes('"toolCallId"')) watchToolCall(line);
     if (pending.size === 0 || line.includes('"method"')) return;
     const message = parse(line);
     const key = message && message.id !== undefined ? JSON.stringify(message.id) : undefined;

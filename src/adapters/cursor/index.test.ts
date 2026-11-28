@@ -431,7 +431,7 @@ describe("cursor adapter", () => {
   });
 
   describe("the mode follows whether the host serves exec", () => {
-    const modeOf = async (params: { hostShell?: boolean; executionMode?: "agent" | "side-question"; start?: string; env?: Record<string, string> }) => {
+    const modeOf = async (params: { hostShell?: boolean; hostWrites?: boolean; executionMode?: "agent" | "side-question"; start?: string; env?: Record<string, string> }) => {
       const session = await cursorAdapter.open({
         command: FAKE_CURSOR_AGENT,
         args: cursorAdapter.launchArgs,
@@ -440,6 +440,7 @@ describe("cursor adapter", () => {
         env: fakeEnv({ FAKE_CURSOR_START_MODE: params.start ?? "plan", ...params.env }),
         modelId: "auto",
         ...(params.hostShell === undefined ? {} : { hostShell: params.hostShell }),
+        ...(params.hostWrites === undefined ? {} : { hostWrites: params.hostWrites }),
         ...(params.executionMode ? { executionMode: params.executionMode } : {}),
         onPermissionRequest: async () => "reject_once",
       });
@@ -460,8 +461,15 @@ describe("cursor adapter", () => {
       expect(await modeOf({ hostShell: false, start: "agent" })).toBe("mode:ask");
     });
 
+    it("is exactly agent without exec when the host offers tools that change files (#102: ask mode refused every write)", async () => {
+      expect(await modeOf({ hostShell: false, hostWrites: true })).toBe("mode:agent");
+      expect(await modeOf({ hostWrites: true, start: "ask" })).toBe("mode:agent");
+      expect(await modeOf({ hostShell: false, hostWrites: false, start: "agent" })).toBe("mode:ask");
+    });
+
     it("is exactly ask for a side question, whatever the host serves", async () => {
       expect(await modeOf({ hostShell: true, executionMode: "side-question" })).toBe("mode:ask");
+      expect(await modeOf({ hostWrites: true, executionMode: "side-question" })).toBe("mode:ask");
     });
   });
 

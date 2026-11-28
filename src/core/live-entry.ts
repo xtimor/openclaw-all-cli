@@ -58,6 +58,11 @@ export type LiveEntry = {
    */
   withoutHostShell?: boolean;
   /**
+   * The process opened for a turn without the host's `exec` whose tool list held an OpenClaw tool that changes files
+   * or records (`offersHostWrites`): the adapter opened it in the CLI's mode that acts (`OpenParams.hostWrites`).
+   */
+  hostWrites?: boolean;
+  /**
    * The sentence that says the final answer goes through `structured_output`, until a prompt sends
    * it. Pending only when the host's tool list held the tool at open.
    */

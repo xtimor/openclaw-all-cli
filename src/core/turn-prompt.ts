@@ -45,6 +45,15 @@ export function shellNote(hasProcess: boolean): string {
  */
 export const MUTATING_HOST_TOOLS: readonly string[] = ["write", "edit", "apply_patch", "file_write", "workboard_create", "workboard_comment", "wiki_apply"];
 
+/**
+ * Whether the host's tool list for a turn holds an OpenClaw tool that changes files or records. A turn without `exec`
+ * that has one needs the CLI's mode that acts on a request: in a read-only mode the model refused every write the
+ * OpenClaw tools allow, whatever the prompt said (issue #102, live).
+ */
+export function offersHostWrites(listed: readonly string[]): boolean {
+  return MUTATING_HOST_TOOLS.some((name) => listed.includes(name));
+}
+
 /** `a`, `a and b`, `a, b and c`, each in backticks. */
 function namesInProse(names: readonly string[]): string {
   const quoted = names.map((name) => `\`${name}\``);

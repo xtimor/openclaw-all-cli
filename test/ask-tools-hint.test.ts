@@ -75,6 +75,40 @@ describe("the ask-mode tools hint", () => {
   });
 });
 
+// The live follow-up of #102 (2026-11-28): in the CLI's read-only mode the model refused every write the sentence named,
+// so a no-exec turn whose list holds such a tool opens in the CLI's acting mode (`OpenParams.hostWrites`).
+describe("the acting mode for a run without exec that is offered tools that change files", () => {
+  it("asks the adapter for it when the list has no exec but a tool that changes files or records", async () => {
+    for (const names of [["read", "write", "edit", "sessions_history"], ["file_write"], ["workboard_comment"]]) {
+      const { opens, prompts } = await turnWithHostTools(names, { marker: false });
+      expect(opens[0], names.join(",")).toMatchObject({ hostShell: false, hostWrites: true });
+      expect(prompts[0]).toMatch(NOT_READ_ONLY);
+    }
+    // The host flagged a shell that its tool list then left out: still a turn without exec.
+    const flagged = await turnWithHostTools(["write"], { marker: true });
+    expect(flagged.opens[0]).toMatchObject({ hostShell: false, hostWrites: true });
+  });
+
+  it("keeps it for every warm turn of that process (one open)", async () => {
+    const { opens, prompts } = await turnWithHostTools(["write", "edit"], { marker: false, turns: 2 });
+    expect(opens).toHaveLength(1);
+    expect(opens[0]).toMatchObject({ hostWrites: true });
+    expect(prompts).toHaveLength(2);
+  });
+
+  it("does not ask for it when nothing listed changes files, the list cannot be read, exec is served, or for a side question", async () => {
+    for (const names of [["read", "sessions_history", "process"], [], null]) {
+      const { opens } = await turnWithHostTools(names, { marker: false });
+      expect(opens[0]?.hostWrites, JSON.stringify(names)).toBeUndefined();
+    }
+    const withExec = await turnWithHostTools(["exec", "process", "write"]);
+    expect(withExec.opens[0]).toMatchObject({ hostShell: true });
+    expect(withExec.opens[0]?.hostWrites).toBeUndefined();
+    const side = await turnWithHostTools(["write", "edit"], { ctx: { executionMode: "side-question" } });
+    expect(side.opens[0]?.hostWrites).toBeUndefined();
+  });
+});
+
 describe("the docs say what ships for a run without exec", () => {
   const files = [
     "src/adapters/cursor/manifest.ts",

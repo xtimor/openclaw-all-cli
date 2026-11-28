@@ -312,7 +312,14 @@ fixed = false
 tests = [
   { file = "test/ask-tools-hint.test.ts", name = "tells the model the chat is not read-only and names the OpenClaw tools that change things, when the host serves no exec", tier = "unit", reproduces = false },
   { file = "test/ask-tools-hint.test.ts", name = "sends the sentence on every prompt of the process, not only the first", tier = "unit", reproduces = false },
-  { file = "test/regression/gateway/reply-prompt.regression.test.ts", name = "#102: an ask-mode turn where the host serves no `exec` sends the not-read-only note on turn 1 and turn 2 of one process, and the mode stays `ask`", tier = "gateway", reproduces = false },
-  { file = "test/live/ask-mode-write.live.test.ts", name = "#102: in ask mode a file asked for without naming a tool is written through an OpenClaw tool, on turn 1 and turn 2 of one process", tier = "live", reproduces = true },
+  { file = "test/ask-tools-hint.test.ts", name = "asks the adapter for it when the list has no exec but a tool that changes files or records", tier = "unit", reproduces = false },
+  { file = "src/adapters/cursor/index.test.ts", name = "is exactly agent without exec when the host offers tools that change files", tier = "unit", reproduces = false },
+  { file = "test/regression/gateway/reply-prompt.regression.test.ts", name = "#102: a turn where the host serves no `exec` but a tool that changes files sends the not-read-only note on turn 1 and turn 2 of one process, in mode `agent`", tier = "gateway", reproduces = false },
+  { file = "test/regression/gateway/reply-prompt.regression.test.ts", name = "#102: with `tools.fs.workspaceOnly` (restricted profile, OpenClaw `write` and `edit`, no `exec`) both turns of one process name `write` and `edit` and run in mode `agent`", tier = "gateway", reproduces = false },
+  { file = "test/regression/gateway/reply-prompt.regression.test.ts", name = "#102: a turn without `exec` and without any tool that changes files gets no note and stays in mode `ask`", tier = "gateway", reproduces = false },
+  { file = "test/live/ask-mode-write.live.test.ts", name = "#102: a file asked for without naming a tool is written through an OpenClaw tool, on turn 1 and turn 2 of one process", tier = "live", reproduces = true },
 ]
-# Model behavior: the Gateway scenario (fake Cursor) only shows the sentence is sent; the live scenario shows the model acts on it.
+# Model behavior: the Gateway scenarios (fake Cursor) show the sentence and the mode; the live scenario shows the model
+# writes. Follow-up (2026-11-28): the sentence alone did not move the model in Cursor's ask mode (0 of 12 live tries),
+# so a no-exec turn offered such a tool runs in agent mode; the live scenario runs in the reporter's conditions
+# (restricted profile, OpenClaw `write` and `edit`): `tools.fs.workspaceOnly` on 2026.10.9+, a cron tool cap on 2026.10.3.

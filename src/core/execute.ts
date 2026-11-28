@@ -11,7 +11,19 @@ import { requiredCapabilities } from "./manifest.ts";
 import { boundTurnUsage, contextReading, readTurnUsage } from "./usage.ts";
 import { DeliveredPrompts, deliveredFileFor, planDelivery } from "./system-prompt.ts";
 import { ProcessPool, type TurnSlot } from "./pool.ts";
-import { CONTINUITY_NOTE, HOST_PROCESS_TOOL, HOST_SHELL_TOOL, HOST_STRUCTURED_TOOL, askToolsNote, composePrompt, modeOf, shellNote, splitHostShell, structuredOutputNote } from "./turn-prompt.ts";
+import {
+  CONTINUITY_NOTE,
+  HOST_PROCESS_TOOL,
+  HOST_SHELL_TOOL,
+  HOST_STRUCTURED_TOOL,
+  askToolsNote,
+  composePrompt,
+  modeOf,
+  offersHostWrites,
+  shellNote,
+  splitHostShell,
+  structuredOutputNote,
+} from "./turn-prompt.ts";
 import { ToolLedger } from "./tool-ledger.ts";
 import { CliError, type CliAdapter, type NormalizedEvent } from "./ports.ts";
 import type { CliBackendExecute, ExecuteContext, LiveSessionCapability } from "./sdk-types.ts";
@@ -274,7 +286,11 @@ export function createExecute(adapter: CliAdapter, options: ExecuteOptions): Cli
       if (hostShell) fresh.shellNote = shellNote(listed?.includes(HOST_PROCESS_TOOL) === true);
       else {
         fresh.withoutHostShell = true;
-        if (listed) fresh.askToolsNote = askToolsNote(listed);
+        if (listed) {
+          fresh.askToolsNote = askToolsNote(listed);
+          // A no-exec turn offered OpenClaw tools that change files opens in the CLI's acting mode (issue #102).
+          if (offersHostWrites(listed)) fresh.hostWrites = true;
+        }
       }
       if (listed?.includes(HOST_STRUCTURED_TOOL)) fresh.structuredNote = structuredOutputNote();
       // The host may serve exec but the list could not be read (an error, a cold cache): this

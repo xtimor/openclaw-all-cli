@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterAll, beforeAll, expect, it } from "vitest";
 import { MUTATING_HOST_TOOLS, shellNote } from "../../../src/core/turn-prompt.ts";
-import { replyLines } from "../../live/harness.ts";
+import { openclaw, replyLines } from "../../live/harness.ts";
 import {
   CURSOR_COMMAND_KEY,
   REGRESSION_TIMEOUT_MS,
@@ -19,6 +19,7 @@ import {
   gatewayAgentTurn,
   gatewayCall,
   linesOf,
+  openclawVersion,
   promptText,
   readFakeLog,
   startRegressionGateway,
@@ -111,53 +112,113 @@ describeRegression("Gateway scenarios: replies, prompts, and errors of a turn", 
     REGRESSION_TIMEOUT_MS,
   );
 
-  // #102: without OpenClaw's `exec` (here a session whose exec host is `node`, one of the reasons the host serves no
-  // `exec`) the turn runs in Cursor's `ask` mode, which has no edit tool, and the model took that for a read-only
-  // session and refused writes the OpenClaw tools allow, on consecutive turns of one process. Every prompt of such a
-  // process now says the chat is not read-only and names the OpenClaw tools that change files and records.
+  // #102: without OpenClaw's `exec` the turn ran in Cursor's `ask` mode, which tells the model it is read-only, and the
+  // model refused writes the OpenClaw tools allow, on consecutive turns of one process. Every prompt of such a process
+  // says the chat is not read-only and names the OpenClaw tools that change files and records; and since the sentence
+  // alone did not move a real model in `ask` mode (live follow-up, 2026-11-28), the process opens in `agent` mode when
+  // the list holds such a tool. Two routes to a turn without `exec`: a session whose exec host is `node` (default
+  // profile: native readers on, so the loopback has no `write` or `edit`, but the file-transfer plugin's `file_write`),
+  // and `tools.fs.workspaceOnly` (the reporter's conditions: restricted profile, OpenClaw's own `write` and `edit`).
+  /** Two `chat.send` turns of one session; the fake answers `[[mode]]` with the session's current Cursor mode. */
+  async function twoTurnsWithoutExec(key: string, id: string) {
+    const logFrom = readFakeLog(fake!.log).length;
+    const first = await chatSend(gateway!.port, key, `say:ask${id}`);
+    const second = await chatSend(gateway!.port, key, `[[mode]] ask${id}-2`);
+    const replies = [first, second].map((sent) => {
+      const finals = sent.frames.filter((frame) => frame.payload?.state === "final");
+      return finals.length === 1 ? chatMessageText(finals[0]!.payload?.message) : `no single final: ${JSON.stringify(sent.frames).slice(0, 2_000)}`;
+    });
+    const all = readFakeLog(fake!.log).slice(logFrom);
+    const methods = all.map((line) => `${line.method}${line.method === "session/set_mode" ? ` ${line.params?.modeId}` : ""} pid=${line.pid}`).join("\n");
+    const chats = chatPids(all, `ask${id}`);
+    expect(chats, methods).toHaveLength(1);
+    const lines = linesOf(all, chats[0]!);
+    const prompts = lines.filter((line) => line.method === "session/prompt").map((line) => promptText(line));
+    expect(prompts, methods).toHaveLength(2);
+    const named: string[][] = [];
+    for (const [turn, text] of prompts.entries()) {
+      // The system block mentions "read-only" too: show the note, or the text before the user's message without it.
+      const at = text.indexOf("does not make this chat");
+      const user = text.indexOf(`ask${id}`);
+      const around = JSON.stringify(at < 0 ? text.slice(Math.max(0, user - 1_500), user + 100) : text.slice(Math.max(0, at - 200), at + 400));
+      expect(text, `turn ${turn + 1} prompt (note ${at < 0 ? "absent" : "found"}): ${around}`).toMatch(/\[OpenClaw\] [^\n]*does not make this chat or this session read-only/);
+      // It names the turn's tools that change files and records.
+      const listed = /stays usable, and ([^\n]*?) changes? files and records/.exec(text)?.[1] ?? "";
+      const names = [...listed.matchAll(/`([a-z_]+)`/g)].map((match) => match[1]!);
+      expect(names.length, `turn ${turn + 1} prompt: ${around}`).toBeGreaterThan(0);
+      expect(MUTATING_HOST_TOOLS, `turn ${turn + 1} names ${names.join(", ")}`).toEqual(expect.arrayContaining(names));
+      named.push(names);
+      expect(text, `turn ${turn + 1}`).not.toContain("native shell is disabled");
+    }
+    // One process, one tool list: both turns name the same tools.
+    expect(named[1]!.join(","), named.map((names) => names.join(",")).join(" | ")).toBe(named[0]!.join(","));
+    const modes = lines.filter((line) => line.method === "session/set_mode").map((line) => line.params?.modeId);
+    const init = lines.find((line) => line.method === "initialize");
+    const configDir = (init?.env as { CURSOR_CONFIG_DIR?: string } | undefined)?.CURSOR_CONFIG_DIR ?? "";
+    return { replies, named: named[0]!, modes, methods, configDir };
+  }
+
   it(
-    "#102: an ask-mode turn where the host serves no `exec` sends the not-read-only note on turn 1 and turn 2 of one process, and the mode stays `ask`",
+    "#102: a turn where the host serves no `exec` but a tool that changes files sends the not-read-only note on turn 1 and turn 2 of one process, in mode `agent`",
     async () => {
       const id = nonce();
       const key = sessionKey(`regression-ask-${id}`);
-      const logFrom = readFakeLog(fake!.log).length;
       const patched = gatewayCall(gateway!.port, "sessions.patch", { key, execHost: "node" });
       expect(patched?.entry?.execHost, JSON.stringify(patched)).toBe("node");
-      const first = await chatSend(gateway!.port, key, `say:ask${id}`);
-      const second = await chatSend(gateway!.port, key, `[[mode]] ask${id}-2`);
-      const replies = [first, second].map((sent) => {
-        const finals = sent.frames.filter((frame) => frame.payload?.state === "final");
-        return finals.length === 1 ? chatMessageText(finals[0]!.payload?.message) : `no single final: ${JSON.stringify(sent.frames).slice(0, 2_000)}`;
-      });
-      // The fake answers `[[mode]]` with the session's current Cursor mode.
-      expect(replies).toEqual([`ask${id}`, "mode:ask"]);
-      const all = readFakeLog(fake!.log).slice(logFrom);
-      const methods = all.map((line) => `${line.method}${line.method === "session/set_mode" ? ` ${line.params?.modeId}` : ""} pid=${line.pid}`).join("\n");
-      const chats = chatPids(all, `ask${id}`);
-      expect(chats, methods).toHaveLength(1);
-      const lines = linesOf(all, chats[0]!);
-      const prompts = lines.filter((line) => line.method === "session/prompt").map((line) => promptText(line));
-      expect(prompts, methods).toHaveLength(2);
-      const named: string[] = [];
-      for (const [turn, text] of prompts.entries()) {
-        // The system block mentions "read-only" too: show the note, or the text before the user's message without it.
-        const at = text.indexOf("does not make this chat");
-        const user = text.indexOf(`ask${id}`);
-        const around = JSON.stringify(at < 0 ? text.slice(Math.max(0, user - 1_500), user + 100) : text.slice(Math.max(0, at - 200), at + 400));
-        expect(text, `turn ${turn + 1} prompt (note ${at < 0 ? "absent" : "found"}): ${around}`).toMatch(/\[OpenClaw\] [^\n]*does not make this chat or this session read-only/);
-        // It names the turn's tools that change files and records. On a default run (native readers on, no `exec`) the
-        // loopback has no `write` or `edit`, but the file-transfer plugin's `file_write`, which OpenClaw enables by default.
-        const listed = /stays usable, and ([^\n]*?) changes? files and records/.exec(text)?.[1] ?? "";
-        const names = [...listed.matchAll(/`([a-z_]+)`/g)].map((match) => match[1]!);
-        expect(names.length, `turn ${turn + 1} prompt: ${around}`).toBeGreaterThan(0);
-        expect(MUTATING_HOST_TOOLS, `turn ${turn + 1} names ${names.join(", ")}`).toEqual(expect.arrayContaining(names));
-        named.push(names.join(","));
-        expect(text, `turn ${turn + 1}`).not.toContain("native shell is disabled");
+      const { replies, modes, methods } = await twoTurnsWithoutExec(key, id);
+      // Turn 2 reports the mode the process kept from its open.
+      expect(replies).toEqual([`ask${id}`, "mode:agent"]);
+      expect(modes, methods).toEqual(["agent"]);
+    },
+    REGRESSION_TIMEOUT_MS,
+  );
+
+  it(
+    "#102: with `tools.fs.workspaceOnly` (restricted profile, OpenClaw `write` and `edit`, no `exec`) both turns of one process name `write` and `edit` and run in mode `agent`",
+    async (ctx) => {
+      // OpenClaw 2026.10.3 does not narrow the tool selection for this setting (docs/providers/cursor.md): it serves exec.
+      const [year, month, patch] = openclawVersion();
+      if (year * 10_000 + month * 100 + patch < 20_261_009) return ctx.skip();
+      const id = nonce();
+      configure({ "tools.fs.workspaceOnly": true });
+      try {
+        const { replies, named, modes, methods, configDir } = await twoTurnsWithoutExec(sessionKey(`regression-wso-${id}`), id);
+        expect(replies).toEqual([`ask${id}`, "mode:agent"]);
+        expect(named, named.join(",")).toEqual(expect.arrayContaining(["write", "edit"]));
+        expect(modes, methods).toEqual(["agent"]);
+        const home = join(process.env.SPIKE_DIR!, "state", "agents", "main", "agent", "openclaw-all-cli", "cursor-cli");
+        expect(configDir, methods).toBe(join(home, "profiles", "restricted"));
+      } finally {
+        openclaw(["config", "unset", "tools.fs.workspaceOnly"]);
       }
-      // One process, one tool list: both turns name the same tools.
-      expect(named[1], named.join(" | ")).toBe(named[0]);
-      const modes = lines.filter((line) => line.method === "session/set_mode").map((line) => line.params?.modeId);
-      expect(modes.filter((mode) => mode !== "ask"), methods).toEqual([]);
+    },
+    REGRESSION_TIMEOUT_MS,
+  );
+
+  it(
+    "#102: a turn without `exec` and without any tool that changes files gets no note and stays in mode `ask`",
+    async () => {
+      const id = nonce();
+      const key = sessionKey(`regression-readonly-${id}`);
+      const patched = gatewayCall(gateway!.port, "sessions.patch", { key, execHost: "node" });
+      expect(patched?.entry?.execHost, JSON.stringify(patched)).toBe("node");
+      configure({ "tools.deny": [...MUTATING_HOST_TOOLS] });
+      try {
+        const logFrom = readFakeLog(fake!.log).length;
+        const sent = await chatSend(gateway!.port, key, `[[mode]] ro${id}`);
+        const finals = sent.frames.filter((frame) => frame.payload?.state === "final");
+        expect(
+          finals.map((frame) => chatMessageText(frame.payload?.message)),
+          JSON.stringify(sent.frames).slice(0, 2_000),
+        ).toEqual(["mode:ask"]);
+        const all = readFakeLog(fake!.log).slice(logFrom);
+        const chats = chatPids(all, `ro${id}`);
+        expect(chats).toHaveLength(1);
+        const prompt = linesOf(all, chats[0]!).find((line) => line.method === "session/prompt");
+        expect(prompt && promptText(prompt)).not.toMatch(/does not make this chat or this session read-only/);
+      } finally {
+        openclaw(["config", "unset", "tools.deny"]);
+      }
     },
     REGRESSION_TIMEOUT_MS,
   );

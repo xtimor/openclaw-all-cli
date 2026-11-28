@@ -173,6 +173,62 @@ describe("test/live/turn-meter.mjs (every live turn counted, none past the cap)"
     expect(readFileSync(log, "utf8")).not.toContain("secret words");
   });
 
+  it("logs each OpenClaw tool call that ends, by tool name only, and no native one (#102)", async () => {
+    const dir = tempDir();
+    const agent = join(dir, "tools-agent.mjs");
+    const update = (sessionId: string, body: object) => JSON.stringify({ jsonrpc: "2.0", method: "session/update", params: { sessionId, update: body } });
+    const updates = (sessionId: string) => [
+      // As Cursor sends an MCP call: a generic title first, the real one next, then the end.
+      update(sessionId, { sessionUpdate: "tool_call", toolCallId: "c1\n", title: "MCP: tool", kind: "other", status: "pending", rawInput: {} }),
+      update(sessionId, { sessionUpdate: "tool_call_update", toolCallId: "c1\n", title: "openclaw: write", rawInput: { path: "secret-path" } }),
+      update(sessionId, { sessionUpdate: "tool_call_update", toolCallId: "c1\n", status: "completed", rawOutput: { content: "secret-output" } }),
+      update(sessionId, { sessionUpdate: "tool_call", toolCallId: "c2", title: "Write secret.txt", kind: "edit", status: "pending" }),
+      update(sessionId, { sessionUpdate: "tool_call_update", toolCallId: "c2", status: "failed" }),
+      update(sessionId, { sessionUpdate: "tool_call", toolCallId: "c3", title: "openclaw: edit", kind: "other", status: "pending" }),
+      update(sessionId, { sessionUpdate: "tool_call_update", toolCallId: "c3", status: "failed" }),
+    ];
+    const replayed = (sessionId: string) => [
+      update(sessionId, { sessionUpdate: "tool_call", toolCallId: "r1", title: "openclaw: apply_patch", kind: "other", status: "pending" }),
+      update(sessionId, { sessionUpdate: "tool_call_update", toolCallId: "r1", status: "completed" }),
+    ];
+    writeFileSync(
+      agent,
+      [
+        "#!/usr/bin/env node",
+        'let buf = "";',
+        'process.stdin.on("data", (chunk) => {',
+        "  buf += chunk;",
+        "  let end;",
+        '  while ((end = buf.indexOf("\\n")) >= 0) {',
+        "    const message = JSON.parse(buf.slice(0, end));",
+        "    buf = buf.slice(end + 1);",
+        `    if (message.method === "session/prompt") for (const line of ${JSON.stringify(updates("s-1"))}) process.stdout.write(line + "\\n");`,
+        // `session/load` replays an earlier turn's calls: not this turn's work.
+        `    if (message.method === "session/load") for (const line of ${JSON.stringify(replayed("s-1"))}) process.stdout.write(line + "\\n");`,
+        '    if (message.id !== undefined) process.stdout.write(JSON.stringify({ jsonrpc: "2.0", id: message.id, result: { stopReason: "end_turn" } }) + "\\n");',
+        "  }",
+        "});",
+        "",
+      ].join("\n"),
+    );
+    chmodSync(agent, 0o755);
+    const log = join(dir, "turns.jsonl");
+    const env = { OAC_LIVE_REAL_AGENT: agent, OAC_LIVE_TURN_LOG: log, OAC_LIVE_TURN_CAP: "5" };
+    // A process that loads the chat (its answer comes before the client prompts), then one that prompts.
+    const loaded = await acpRun(env, [{ jsonrpc: "2.0", id: 1, method: "session/load", params: { sessionId: "s-1" } }]);
+    expect(loaded.out.filter((line) => line.method === "session/update")).toHaveLength(2);
+    const run = await acpRun(env, [{ jsonrpc: "2.0", id: 1, method: "session/prompt", params: { sessionId: "s-1", prompt: [] } }]);
+    expect(run.code).toBe(0);
+    // The agent's lines pass through unchanged.
+    expect(run.out.filter((line) => line.method === "session/update")).toHaveLength(7);
+    const tools = readFileSync(log, "utf8").split("\n").filter(Boolean).map((line) => JSON.parse(line)).filter((entry) => entry.kind === "tool");
+    expect(tools.map(({ sessionId, tool, status }) => ({ sessionId, tool, status }))).toEqual([
+      { sessionId: "s-1", tool: "write", status: "completed" },
+      { sessionId: "s-1", tool: "edit", status: "failed" },
+    ]);
+    expect(readFileSync(log, "utf8")).not.toMatch(/secret/);
+  });
+
   it("runs anything but `acp` as the real launcher, unmetered", async () => {
     const dir = tempDir();
     const log = join(dir, "turns.jsonl");

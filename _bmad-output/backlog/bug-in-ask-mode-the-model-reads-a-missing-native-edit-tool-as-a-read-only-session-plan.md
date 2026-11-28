@@ -3,7 +3,7 @@ title: 'In ask mode the model reads a missing native edit tool as a read-only se
 type: 'bugfix'
 ticket: '33'
 created: '2026-11-28'
-status: 'done'
+status: 'in-progress'
 baseline_revision: 'cd8a412cd3177daefc602f47154ca2118ebb0e13'
 route: 'full'
 route_source: 'pinned'
@@ -80,6 +80,30 @@ deferred: []
 - Live Cursor check not run (optional per the orchestrator; no login used): whether a real model follows the sentence is unverified.
 
 ## Plan Change Log
+
+### 2026-11-28 — Reopened after the live regression (ticket 4.5)
+- Trigger: the live #102 scenario (`test/live/ask-mode-write.live.test.ts`) was red on OpenClaw 2026.11.11 and 2026.10.3, 3 tries each, on the shipped sentence: the model called no tool and said Ask mode blocks writes, "even though the OpenClaw instructions mention `file_write`". A variant with `tools.deny: ["exec","process"]` refused the same way.
+- Amended: the intent contract's "Never: change `modeFor`" and "`ask` mode stays" are superseded by evidence (owner rule 2026-11-28: a regression finding is fixed at once, no approval; the contract block itself is left as written). A turn without `exec` whose list holds an OpenClaw tool that changes files or records now opens in Cursor's `agent` mode (`OpenParams.hostWrites`). The sentence stays. The live scenario moves to the reporter's conditions. See "Follow-up after live regression".
+- Known-bad state avoided: a no-exec chat offered OpenClaw's `write`/`edit` that refuses every write (0 of 12 live), and a live scenario whose only writer (`file_write`, default profile) cannot write a local file at all.
+- KEEP: `askToolsNote` on every prompt, `MUTATING_HOST_TOOLS`, side questions always `ask`, the fail-safe `ask` for an unreadable list, the static profiles unchanged.
+
+## Follow-up after live regression
+
+**Findings** (live turns used for exploration: 8, budget 60; key: the owner's, never printed):
+- (c) The scenario was wrong. With exec host `node` on the default profile the loopback offers no `write`/`edit`, only the file-transfer plugin's `file_write`, which writes on a paired node by absolute path ("Requires operator opt-in: `gateway.nodes.commands.allow` must include `file.write`, and file-transfer policy must authorize the path ... Without policy configured, every call is denied", host descriptor, 2026.11.11). No tool in that turn can write a file on the Gateway host, whatever the mode or the wording.
+- Routes to the reporter's conditions (restricted profile, OpenClaw `write`/`edit`, no `exec`), probed with the fake Cursor through a real Gateway (0 Cursor turns): `tools.fs.workspaceOnly: true` on 2026.11.11 gives the restricted profile, `write`, `edit`, `apply_patch`, `file_write` in the list, no `exec`, one process for two turns; on 2026.10.3 the setting is unenforced (default profile, `exec` served, agent mode). `cron add --tools read,write,edit,...` gives the restricted profile with `write`, `edit`, `apply_patch` on both versions, one process per run. A fixture plugin whose `before_prompt_build` hook returns `toolsAllow` gives a restricted chat on one process, but its list has no file writer (the hook only narrows the default projected surface); dropped.
+- (a) Reporter's conditions, `ask` mode, current sentence (2026.11.11, `tools.fs.workspaceOnly`, baseline build): 0 of 3 written, no tool called; replies: "Ask mode is active in this session, which blocks file edits ... switch to Agent mode". With the default-profile runs (6 + 3 with `tools.deny`), 0 of 12.
+- (b) Cursor's `ask` mode itself makes the model refuse: every refusal names Ask mode, one says it "overrides the OpenClaw note". Same conditions in `agent` mode (fix build): 3 of 3 written through `mcp__openclaw__write`.
+- Safety: restricted profile in `agent` mode, asked to use only its own tools (2 turns): native Write blocked (`Read permission denied`), native Shell blocked (`Command blocked by permissions configuration`), no file. The default profile's `agent`-mode lock was checked live on 2026-10-19 (MEMORY, entry 19); its deny list is the restricted one's minus `Read(*)`.
+- Cost: an `agent`-mode writing turn about 127k Cursor tokens (3 turns, 382,380: cache read 309,342, cache write 70,600, output 2,410), an `ask`-mode refusal about 37k (3 turns, 110,081, the regression's explore run). Every ordinary chat with `exec` already runs in `agent` mode; this adds only no-exec turns that are offered a writer.
+
+Decision: a turn without `exec` opens in Cursor's `agent` mode when its tool list holds any `MUTATING_HOST_TOOLS` name (`offersHostWrites`); wording alone was tried and failed 0 of 12, and the refusals cite the mode, not the tools.
+Decision: the trigger is the same fixed list the sentence names, `file_write` and the Workboard and wiki writers included: with exec host `node` the user's files live on the node, where `file_write` is the writer, and `ask` mode refuses it like any other change.
+Decision: the mode is set at open (`LiveEntry.hostWrites`); a warm process that re-reads its list keeps its mode (as for `exec`); an unreadable list stays `ask` (fail safe). Side questions stay `ask`.
+Decision: the live scenario runs in the reporter's conditions: `tools.fs.workspaceOnly` (one chat, two turns, one process) on OpenClaw 2026.10.9+, and on older hosts (2026.10.3) two `cron --tools` runs of one cron session, since that host offers no other route and gives each run its own process; the one-process check runs where the host can give one. It still asserts the file, its content, an OpenClaw writer called and no `exec`, on turn 1 and turn 2.
+Decision: the turn meter logs each ended OpenClaw MCP call by tool name (`{kind:"tool"}`), the only tool evidence a cron run leaves; no input, output or prompt text.
+
+**Changes:** `src/core/turn-prompt.ts` (`offersHostWrites`), `src/core/live-entry.ts` (`hostWrites`), `src/core/execute.ts` (set at open), `src/core/attach-session.ts` and `src/core/ports.ts` (`OpenParams.hostWrites`), `src/adapters/cursor/index.ts` (`modeFor`), unit tests in `test/ask-tools-hint.test.ts` and `src/adapters/cursor/index.test.ts`, `test/live/turn-meter.mjs` + `test/live-tier.test.ts`, the Gateway #102 scenarios (`agent` mode on the `node` route; new: `tools.fs.workspaceOnly` route, 2026.10.9+; no writer stays `ask`), the live scenario, ledger #102, docs, manifest P8, parity matrix P8, CHANGELOG, MEMORY.
 
 ## Review Triage Log
 
