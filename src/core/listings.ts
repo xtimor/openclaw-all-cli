@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { BroadcastChannel, threadId } from "node:worker_threads";
+import { processGlobal } from "./process-global.ts";
 
 /**
  * The model listings in flight in this Node process (AD-14), so the plugin's unload can stop them.
@@ -27,8 +28,7 @@ const ANSWER_WINDOW_MS = 150;
 const POLL_MS = 20;
 
 function holder(): Holder {
-  const place = globalThis as unknown as Record<symbol, Holder | undefined>;
-  return (place[HOLDER_KEY] ??= { listings: new Set<Listing>(), replies: 0 });
+  return processGlobal<Holder>(HOLDER_KEY, () => ({ listings: new Set<Listing>(), replies: 0 }));
 }
 
 function abortAll(all: readonly Listing[]): void {

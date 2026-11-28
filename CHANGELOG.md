@@ -4,6 +4,10 @@ What changed for people who use the plugin, newest first. Format: [Keep a Change
 
 ## Unreleased
 
+### Fixed
+
+- On OpenClaw 2026.10.3 with more than one agent in the config, ending a chat (`/new`, a reset, a deletion, or an idle or daily rollover) now closes its `cursor-agent` process again, instead of leaving it running until the 15-minute idle close ([#105](https://github.com/xtimor/openclaw-all-cli/issues/105)).
+
 ## 0.1.11 - 2026-11-20
 
 ### Fixed

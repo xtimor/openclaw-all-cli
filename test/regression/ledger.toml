@@ -269,3 +269,16 @@ tests = [
   { file = "test/host-contract.test.ts", name = "no longer reads the transient throttle message as a long window", tier = "unit", reproduces = false },
   { file = "test/regression/gateway/reply-prompt.regression.test.ts", name = "#99: a Cursor `resource_exhausted` throttle reaches `chat.send` as a temporary rate limit, not a spent plan quota", tier = "gateway", reproduces = true },
 ]
+
+[[bug]]
+issue = 105
+title = "With a second agent configured on OpenClaw 2026.10.3, a reset chat keeps its cursor-agent running (#74 fix ineffective)"
+family = "process-lifecycle"
+tier = "gateway"
+fixed = true
+tests = [
+  { file = "test/session-end-release.test.ts", name = "closes the idle process another copy started for the ended conversation, and only that one", tier = "unit", reproduces = false },
+  { file = "src/core/conversation.test.ts", name = "releaseConversationEverywhere (issue #105)", tier = "unit", reproduces = false },
+  { file = "test/regression/gateway/multi-agent.regression.test.ts", name = "#105: with a second agent in the config, `sessions.reset` of a chat ends that chat's cursor-agent process and leaves another chat's running", tier = "gateway", reproduces = true },
+  { file = "test/regression/gateway/multi-agent.regression.test.ts", name = "#105: `sessions.reset` of the second agent's chat ends that chat's cursor-agent process", tier = "gateway", reproduces = true },
+]

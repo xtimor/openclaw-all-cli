@@ -5,7 +5,7 @@ import { API_KEY_METHOD_ID } from "./auth-ids.ts";
 import { findAnyStoredKey, type FindAnyStoredKey } from "./auth-store.ts";
 import { backendIdFor, buildCliBackend } from "./backend.ts";
 import { closeListings } from "./catalog.ts";
-import { RELEASING_REASONS } from "./conversation.ts";
+import { RELEASING_REASONS, releaseConversationEverywhere, shareConversationPool } from "./conversation.ts";
 import { buildConfigSchema, capsOf, readBackendConfig, type BackendConfig } from "./config.ts";
 import { withoutKeys } from "./env.ts";
 import { homeDirFor } from "./home.ts";
@@ -275,7 +275,11 @@ export function registerAdapters(api: OpenClawPluginApi, adapters: readonly CliA
       void dropStaleKeyCaches(adapter, { settings, homes });
     }
   }
+  // Every loaded copy's conversation end reaches these pools (issue #105): the host may run this copy's turns while
+  // its `session_end` runs in another copy. Any registration mode: a turn can run in a copy the host did not activate.
+  const unshare = pools.map((pool) => shareConversationPool(pool));
   const closeAll = async () => {
+    for (const stop of unshare) stop();
     for (const [id, pool] of livePools) if (pools.includes(pool as ProcessPool)) livePools.delete(id);
     // The model listings live outside the pools: abort them too, or their processes outlive the unload.
     await Promise.all([...pools.map((pool) => pool.closeAll()), closeListings()]);
@@ -284,12 +288,12 @@ export function registerAdapters(api: OpenClawPluginApi, adapters: readonly CliA
   // `lifecycle.onDispose`; `registerRuntimeLifecycle.dispose` does not run. `closeAll` is
   // idempotent, so a host version that runs both is fine.
   api.lifecycle?.onDispose?.(closeAll);
-  // A finished conversation releases its process (AD-14). `session_end` is a metadata hook: it needs
-  // no conversation access. A host without hooks keeps the idle close.
+  // A finished conversation releases its process (AD-14), in whichever loaded copy of the plugin holds it.
+  // `session_end` is a metadata hook: it needs no conversation access. A host without hooks keeps the idle close.
   api.on?.("session_end", (event, ctx) => {
     const key = event.sessionKey || ctx.sessionKey;
     if (!key || !event.reason || !RELEASING_REASONS.has(event.reason)) return;
-    for (const pool of pools) pool.releaseConversation(key);
+    releaseConversationEverywhere(key);
   });
   api.registerService?.({ id: "openclaw-all-cli-processes", start: () => {}, stop: closeAll });
 }
