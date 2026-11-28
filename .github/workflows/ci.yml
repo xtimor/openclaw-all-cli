@@ -25,6 +25,9 @@ jobs:
   check:
     runs-on: ubuntu-latest
     timeout-minutes: 30
+    permissions:
+      contents: read
+      issues: read # the regression ledger step lists the closed type:bug issues
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -40,6 +43,13 @@ jobs:
             .spike/openclaw
           key: spike-${{ runner.os }}-node${{ env.NODE_VERSION }}-openclaw${{ env.OPENCLAW_VERSION }}
       - run: scripts/ci-check.sh
+      # Every closed type:bug issue has an entry in test/regression/ledger.toml (epic-regression-gate ticket 1); the
+      # offline half (named tests exist) ran in npm test above.
+      - name: Regression ledger covers every closed bug
+        run: node scripts/regression-ledger.mjs check-issues
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
 
   # ClawHub's own checks on the packed plugin (ticket 3.30), with the `clawhub` CLI pinned to an exact version and run
   # under Node: Plugin Inspector (`clawhub package validate`) on the unpacked tarball, then
@@ -90,3 +100,25 @@ jobs:
           path: ${{ runner.temp }}/clawhub-reports
           if-no-files-found: ignore
           retention-days: 7
+
+  # The Gateway regression tier (epic-regression-gate ticket 4) on the oldest supported OpenClaw (`min`, package.json
+  # openclaw.compat.minGatewayVersion) and npm `latest`, one job per version (`regression / gateway (min = X.Y.Z)`), the
+  # resolved versions and results in the summary. A red version is red only in its own job. No secret.
+  regression:
+    permissions:
+      contents: read
+    uses: ./.github/workflows/regression.yml
+    with:
+      versions: min latest
+
+  # The Control UI regression tier (epic-regression-gate ticket 4.6) on npm `latest` (`regression-ui / ui (latest = X.Y.Z)`):
+  # the provider's icon, name, card, key, Test connection, Remove key, and the chat's context tile in Playwright's
+  # headless Chromium against a real Gateway. A failing check uploads its screenshot and page text
+  # (`regression-ui-screenshots-<version>`). Ticket 4.7 runs it on every version of a release. No secret.
+  regression-ui:
+    permissions:
+      contents: read
+    uses: ./.github/workflows/regression.yml
+    with:
+      versions: latest
+      tier: ui

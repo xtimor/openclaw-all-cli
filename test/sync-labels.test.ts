@@ -187,14 +187,16 @@ const TODO = "status:todo";
 const OLD = "status:new";
 
 describe("labels file", () => {
-  it("has exactly the labels issue-flow.md names plus the owner's upstream:post, each with a color and a description", () => {
+  it("has exactly the labels issue-flow.md names plus the owner's upstream:post and the beta run's regression:beta, each with a color and a description", () => {
     const flow = readFileSync(ISSUE_FLOW, "utf8");
     const named = [...new Set([...flow.matchAll(/`((?:status|type|priority|source):[a-z0-9-]+)`/g)].map((match) => match[1] as string))].sort();
     const entries = fileLabels();
     // `upstream:post` (ticket 3.25) is the owner's approval to publish an agent's upstream draft; it is not part of the issue-flow design.
-    expect(entries.map((entry) => entry.name).sort()).toEqual([...named, "upstream:post"].sort());
-    // The design lists 12 states, 2 types, 4 priorities, and the agent source.
-    expect(named).toHaveLength(19);
+    // `regression:beta` (epic-regression-gate ticket 4) marks the weekly beta run's issue (scripts/regression-beta-issue.mjs).
+    expect(entries.map((entry) => entry.name).sort()).toEqual([...named, "upstream:post", "regression:beta"].sort());
+    // The design lists 12 states, 2 types, 4 priorities, and the agent and regression sources (ticket 11 of epic-regression-gate).
+    expect(named).toHaveLength(20);
+    expect(named).toContain("source:regression");
     for (const entry of entries) {
       expect(entry.color).toMatch(/^[0-9a-f]{6}$/);
       expect(entry.description.length).toBeGreaterThan(0);
@@ -216,7 +218,7 @@ describe("labels file", () => {
   it("passes the script's own validation (dry run)", async () => {
     const result = await run(["--dry-run"]);
     expect(result.code).toBe(0);
-    expect(result.stdout).toContain("20 to create");
+    expect(result.stdout).toContain("22 to create");
   });
 });
 
@@ -270,7 +272,7 @@ describe("sync-labels.mjs", () => {
     const second = await run();
     expect(second.code, second.stderr).toBe(0);
     expect(writes()).toEqual([]);
-    expect(second.stdout).toContain("0 to create, 0 to update, 20 unchanged");
+    expect(second.stdout).toContain("0 to create, 0 to update, 22 unchanged");
   });
 
   it("SECOND_SYNC: a label GitHub reports with an upper-case color is still equal", async () => {
@@ -504,6 +506,9 @@ describe("sync-labels.mjs", () => {
       ["an unknown key", '- name: "type:bug"\n  color: "d73a4a"\n  description: "d"\n  emoji: "x"\n', /unknown key "emoji"/],
       ["no entries", "# only a comment\n", /no entries/],
       ["an empty renamed_from", '- name: "type:bug"\n  color: "d73a4a"\n  description: "d"\n  renamed_from: " "\n', /type:bug.*empty renamed_from/],
+      ...["source:regression", "Source:Regression", "source:agent", "status:approved", "status:rework", "status:upstream", "upstream:post"].map(
+        (name) => [`a renamed_from on ${name}`, `- name: "${name}"\n  color: "d73a4a"\n  description: "d"\n  renamed_from: "old-label"\n`, /renamed_from is not allowed on a source:, owner-only, or workflow-only label/] as [string, string, RegExp],
+      ),
       ["a renamed_from equal to the name", '- name: "type:bug"\n  color: "d73a4a"\n  description: "d"\n  renamed_from: "type:bug"\n', /type:bug.*renamed_from is the label's own name/],
       ["a renamed_from equal to the name in another case", '- name: "type:bug"\n  color: "d73a4a"\n  description: "d"\n  renamed_from: "Type:Bug"\n', /renamed_from is the label's own name/],
       [

@@ -1,4 +1,4 @@
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterAll, expect, it } from "vitest";
@@ -8,7 +8,7 @@ import { createExecute } from "../../src/core/execute.ts";
 import type { NormalizedEvent } from "../../src/core/ports.ts";
 import type { ExecuteContext } from "../../src/core/sdk-types.ts";
 import { STUB_TOOL, startStubMcpHost } from "../fixtures/stub-mcp-host.ts";
-import { LIVE_TIMEOUT_MS, describeLive, hostMcpArgs, liveHostEnv, makeLiveSession, openclaw, writeSettingsFile } from "./harness.ts";
+import { LIVE_TIMEOUT_MS, describeLive, freshDir, hostMcpArgs, liveHostEnv, makeLiveSession, openclaw, writeSettingsFile } from "./harness.ts";
 
 // Parity row P3 (streaming text, thinking, and tool progress). Real cursor-agent through the core's
 // `createExecute`, with a stub host standing in for OpenClaw's MCP endpoint, and then through the
@@ -21,7 +21,7 @@ describeLive("text, thinking, and tool progress stream as deltas (P3)", () => {
     "delivers deltas over time before the result, and shows each tool call once",
     async () => {
       const workspace = join(root, "workspace");
-      mkdirSync(workspace);
+      freshDir(workspace);
       writeFileSync(join(workspace, "notes.txt"), "The harbour opens at six.\n");
       const homeDir = homeDirFor(join(root, "agent"), "cursor-cli");
       const home = { dir: homeDir, env: await cursorAdapter.prepareHome(homeDir) };

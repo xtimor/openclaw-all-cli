@@ -11,7 +11,19 @@ import { requiredCapabilities } from "./manifest.ts";
 import { boundTurnUsage, contextReading, readTurnUsage } from "./usage.ts";
 import { DeliveredPrompts, deliveredFileFor, planDelivery } from "./system-prompt.ts";
 import { ProcessPool, type TurnSlot } from "./pool.ts";
-import { CONTINUITY_NOTE, HOST_PROCESS_TOOL, HOST_SHELL_TOOL, HOST_STRUCTURED_TOOL, composePrompt, modeOf, shellNote, splitHostShell, structuredOutputNote } from "./turn-prompt.ts";
+import {
+  CONTINUITY_NOTE,
+  HOST_PROCESS_TOOL,
+  HOST_SHELL_TOOL,
+  HOST_STRUCTURED_TOOL,
+  askToolsNote,
+  composePrompt,
+  modeOf,
+  offersHostWrites,
+  shellNote,
+  splitHostShell,
+  structuredOutputNote,
+} from "./turn-prompt.ts";
 import { ToolLedger } from "./tool-ledger.ts";
 import { CliError, type CliAdapter, type NormalizedEvent } from "./ports.ts";
 import type { CliBackendExecute, ExecuteContext, LiveSessionCapability } from "./sdk-types.ts";
@@ -272,10 +284,19 @@ export function createExecute(adapter: CliAdapter, options: ExecuteOptions): Cli
       const listed = turnTarget.ok ? await listToolNames(turnTarget.target, ctx.abortSignal) : undefined;
       const hostShell = marked && listed?.includes(HOST_SHELL_TOOL) === true;
       if (hostShell) fresh.shellNote = shellNote(listed?.includes(HOST_PROCESS_TOOL) === true);
+      else {
+        fresh.withoutHostShell = true;
+        if (listed) {
+          fresh.askToolsNote = askToolsNote(listed);
+          // A no-exec turn offered OpenClaw tools that change files opens in the CLI's acting mode (issue #102).
+          if (offersHostWrites(listed)) fresh.hostWrites = true;
+        }
+      }
       if (listed?.includes(HOST_STRUCTURED_TOOL)) fresh.structuredNote = structuredOutputNote();
-      // The host may serve exec but the list could not be read (an error, a cold cache): this
-      // process opened in the restrictive mode. Never reuse it, so the next turn reads the list again.
-      if (marked && listed === undefined) fresh.degraded = true;
+      // The list could not be read (an error, a cold cache): this process opened in the restrictive mode, without the
+      // exec it may be served or the acting mode a writer in the list asks for (#102). Never reuse it, so the next turn
+      // reads the list again and opens in the right mode.
+      if (turnTarget.ok && listed === undefined) fresh.degraded = true;
       ctx.abortSignal?.throwIfAborted();
       const opening = attachSession(attachDeps, fresh, ctx, hostShell, shell.args, (phase, ms) => timings.recordOpen(phase, ms));
       fresh.opening = opening;
@@ -410,15 +431,30 @@ export function createExecute(adapter: CliAdapter, options: ExecuteOptions): Cli
     let closed = false;
     // Each event goes to the host as it arrives; nothing waits for the turn to end.
     // The note goes once, on the first prompt of a fresh chat; it is not part of the host's transcript.
-    // The shell sentence goes the same way: once per process, after the continuity note.
-    // The `structured_output` sentence follows them, once per process (Decision, ticket 24): a warm process
-    // whose first prompt lacked it reads the tool list again until the tool shows up, then sends it once.
-    if (!opened && !active.structuredNote && !active.structuredSent && turnTarget.ok) {
+    // The shell sentence goes the same way: once per process, after the continuity note. The ask-mode tools sentence
+    // (no `exec`) takes the shell sentence's place and goes with every prompt of the process (issue #102).
+    // The `structured_output` sentence ends the prompt, once per process (Decision, ticket 24; bug 40): a warm process
+    // whose first prompt lacked it reads the tool list again until the tool shows up, then sends it once. A process
+    // without `exec` whose list named no write tool at open reads it again the same way; once a write tool shows up it
+    // gets the sentence and is not reused, since it opened in the CLI's read-only mode (#102: the next turn opens in
+    // the acting mode). A list unreadable at open never gets here: that process is not reused.
+    const wantsStructured = !active.structuredNote && !active.structuredSent;
+    const wantsAskTools = active.withoutHostShell === true && active.askToolsNote === undefined;
+    if (!opened && (wantsStructured || wantsAskTools) && turnTarget.ok) {
       const target = active.target ?? turnTarget.target;
-      if ((await listToolNames(target, ctx.abortSignal))?.includes(HOST_STRUCTURED_TOOL)) active.structuredNote = structuredOutputNote();
+      const listed = await listToolNames(target, ctx.abortSignal);
+      if (wantsStructured && listed?.includes(HOST_STRUCTURED_TOOL)) active.structuredNote = structuredOutputNote();
+      if (wantsAskTools && listed) {
+        active.askToolsNote = askToolsNote(listed);
+        if (offersHostWrites(listed) && !active.hostWrites) active.degraded = true;
+      }
       ctx.abortSignal?.throwIfAborted();
     }
-    const note = [active.freshChat ? CONTINUITY_NOTE : undefined, active.shellNote, active.structuredNote].filter(Boolean).join("\n\n") || undefined;
+    // The ask-mode sentence promises usable OpenClaw tools: not in a turn whose proxy has no target.
+    const askNote = turnTarget.ok ? active.askToolsNote : undefined;
+    const note = [active.freshChat ? CONTINUITY_NOTE : undefined, active.shellNote, askNote].filter(Boolean).join("\n\n") || undefined;
+    // Last in the prompt, after the host's appended context (bug 40).
+    const tail = active.structuredNote;
     active.freshChat = false;
     active.shellNote = undefined;
     if (active.structuredNote) active.structuredSent = true;
@@ -433,7 +469,7 @@ export function createExecute(adapter: CliAdapter, options: ExecuteOptions): Cli
       delivered,
     });
     const startedAt = Date.now();
-    const promptText = composePrompt(ctx, note, delivery.lead, deliversSystemPrompt, host?.text ?? ctx.prompt);
+    const promptText = composePrompt(ctx, note, delivery.lead, deliversSystemPrompt, host?.text ?? ctx.prompt, tail);
     ctx.abortSignal?.throwIfAborted();
     // The session sends the prompt when the loop below takes its first event.
     timings.markPromptSent();

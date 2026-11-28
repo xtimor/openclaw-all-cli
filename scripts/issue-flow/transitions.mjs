@@ -2,8 +2,9 @@
 // Pure and dependency-free: an event and the issue's state go in, a list of actions comes out. No network, no model.
 // apply.mjs runs the actions against GitHub from .github/workflows/issue-flow.yml.
 //
-// Issue and PR text is data. Only two things are read from it: the link keywords (`linkedIssues`) and, from the
-// payload, the author login. Nothing is evaluated, and no text is copied into a comment.
+// Issue and PR text is data. Only three things are read from it: the link keywords (`linkedIssues`), from the payload the
+// author login, and a regression issue's exact first-line run marker (`regressionRunRef`). Nothing is evaluated, and no text is
+// copied into a comment.
 
 /** The 12 states of .github/labels.yml, in lifecycle order. Exactly one is set on an open issue. */
 export const STATUS_LABELS = Object.freeze([
@@ -61,6 +62,29 @@ export const STALE_DAYS = 30;
 /** The actor whose events the workflow itself causes; never handled again (no loops). */
 export const BOT_LOGIN = "github-actions[bot]";
 
+/**
+ * Marks an issue a regression run filed (epic-regression-gate ticket 11, owner decision 2026-11-28: a regression finding is fixed at once).
+ * A trusted one in `status:todo` is skipped by triage and built by the next implementation run with no owner approval
+ * (docs/agents/implement.md, "Regression issues"). Trusted only when all hold: `github-actions[bot]` opened the issue and made the latest
+ * `labeled` event of the label; the issue's first line names a run of an allowed workflow (`REGRESSION_WORKFLOWS`) that ran on `main` of
+ * this repository, from `schedule` or `workflow_dispatch`, at a commit of `main`, while the issue was opened (`regressionRunVerdict`); and
+ * no `status:blocked`, `status:declined`, or close came after the label (`regressionShortcutEnded`: the shortcut ends for good). The
+ * automation removes the label from any other open issue (one comment per event).
+ */
+export const SOURCE_REGRESSION = "source:regression";
+
+/**
+ * The workflows whose runs may open a trusted regression issue, each with the exact first line of the issue it opens (the run id in it).
+ * A run with `force_red` writes `<!-- regression-beta run=<id> forced -->` instead, which matches no entry, so it is never trusted.
+ * Ticket 8 adds the release workflow here.
+ */
+export const REGRESSION_WORKFLOWS = Object.freeze([Object.freeze({ path: ".github/workflows/regression-beta.yml", marker: /^<!-- regression-beta run=(\d{1,20}) -->$/ })]);
+/** The run events that may open one (never `pull_request`, `push`, or anything a branch other than `main` can start). */
+export const REGRESSION_RUN_EVENTS = Object.freeze(["schedule", "workflow_dispatch"]);
+export const REGRESSION_RUN_BRANCH = "main";
+/** Statuses after which the shortcut is over for good: the owner (or an agent) stopped the issue; it then needs the owner's approval. */
+export const REGRESSION_ENDING_STATUSES = Object.freeze([BLOCKED, DECLINED]);
+
 const DAY_MS = 24 * 60 * 60 * 1000;
 // Marks the automation's own comments; fixed text, no issue data inside.
 const MARKER = "<!-- issue-flow -->";
@@ -78,6 +102,22 @@ export function approvalComment(eventId) {
 export function reworkComment(eventId) {
   const key = `<!-- issue-flow:rework:${eventId} -->`;
   return { op: "comment", body: `${NON_OWNER_REWORK_COMMENT}\n${key}`, once: key };
+}
+
+export const UNTRUSTED_REGRESSION_COMMENT = `${MARKER}\nOnly this repository's regression workflow, run from \`main\` on its schedule or by dispatch, marks an issue \`${SOURCE_REGRESSION}\`, and only an issue that run opened: it lets the next implementation run build the issue without triage or the owner's approval. The label was removed because that could not be confirmed (someone else set it, someone else opened the issue, or the run named in its first line is not such a run or could not be read). The issue takes the normal path: triage, then the owner's approval.`;
+
+/** The comment for a removed untrusted `source:regression`; its own hidden key, so one label event gets one comment. */
+export function regressionComment(eventId) {
+  const key = `<!-- issue-flow:regression:${eventId} -->`;
+  return { op: "comment", body: `${UNTRUSTED_REGRESSION_COMMENT}\n${key}`, once: key };
+}
+
+export const ENDED_REGRESSION_COMMENT = `${MARKER}\nThis regression issue was blocked, declined, or closed after it was marked \`${SOURCE_REGRESSION}\`, so its shortcut (no triage, no approval) is over for good. The label was removed; the issue now needs the owner's approval like any other.`;
+
+/** The comment for a `source:regression` removed because the shortcut ended; its own hidden key. */
+export function regressionEndedComment(eventId) {
+  const key = `<!-- issue-flow:regression-ended:${eventId} -->`;
+  return { op: "comment", body: `${ENDED_REGRESSION_COMMENT}\n${key}`, once: key };
 }
 
 // GitHub logins: letters, digits, hyphens (and `_` of managed users). A bot login (`name[bot]`) or anything else gets no mention.
@@ -134,8 +174,69 @@ function isOwner(login, owners) {
 }
 
 /**
+ * Whether `login` may set `source:regression`: only `github-actions[bot]`, whose GITHUB_TOKEN the regression workflows use. That login is
+ * shared by every workflow of the repository, so it is never enough alone: `regressionRunVerdict` binds the issue to an allowed run.
+ * Never an owner, a person, or the issue agents' app (its token is also held by other workflows; ticket 8 may add it back with its own run check).
+ */
+export function isRegressionWriter(login) {
+  return isBot(login);
+}
+
+/** `{runId, path}` from the exact first line of a regression issue's body (`REGRESSION_WORKFLOWS`), or null. Nothing else of the body is read. */
+export function regressionRunRef(body) {
+  if (typeof body !== "string") return null;
+  const first = body.split("\n", 1)[0].replace(/\r$/, "");
+  for (const { path, marker } of REGRESSION_WORKFLOWS) {
+    const match = marker.exec(first);
+    if (match) return { runId: match[1], path };
+  }
+  return null;
+}
+
+const timeOf = (value) => {
+  const time = typeof value === "number" ? value : Date.parse(value ?? "");
+  return Number.isFinite(time) ? time : Number.NaN;
+};
+
+/**
+ * Whether the run named in the issue's first line opened it. `regression` is `{run, onMain}` as apply.mjs reads it: `run` the REST workflow
+ * run (`GET /repos/{o}/{r}/actions/runs/{id}`, null when it could not be read), `onMain` true when its `head_sha` is `main` or an ancestor
+ * of it. `repo` is `owner/repo`; `labeledAt` the time of the label's latest `labeled` event. Returns `"trusted"`; `"pending"` when every
+ * other check passed but the run is not completed yet (its time window is still open; nothing is decided); else `"untrusted"`: no or a
+ * forced marker, an unreadable run, another id, workflow, branch, event, or repository, a commit not on `main`, or an issue or label
+ * outside `run_started_at`..`updated_at`.
+ */
+export function regressionRunVerdict(rawIssue, regression, { repo = "", labeledAt } = {}) {
+  const issue = normalizeIssue(rawIssue);
+  const ref = regressionRunRef(issue.body);
+  const run = regression?.run;
+  if (ref === null || run === null || typeof run !== "object") return "untrusted";
+  const here = lower(repo);
+  if (String(run.id ?? "") !== ref.runId || run.path !== ref.path || run.head_branch !== REGRESSION_RUN_BRANCH || !REGRESSION_RUN_EVENTS.includes(run.event)) return "untrusted";
+  if (here === "" || lower(run.repository?.full_name) !== here || lower(run.head_repository?.full_name) !== here || regression.onMain !== true) return "untrusted";
+  const started = timeOf(run.run_started_at);
+  const created = timeOf(issue.createdAt);
+  const label = labeledAt === undefined || labeledAt === null ? created : timeOf(labeledAt);
+  if (!Number.isFinite(started) || !Number.isFinite(created) || !Number.isFinite(label) || created < started || label < started) return "untrusted";
+  if (run.status !== "completed") return "pending";
+  const updated = timeOf(run.updated_at);
+  return Number.isFinite(updated) && created <= updated && label <= updated ? "trusted" : "untrusted";
+}
+
+/**
+ * Whether the regression shortcut ended after `since` (the label's latest `labeled` time): a `labeled status:blocked` or `status:declined`
+ * event, or a `closed` event, comes after it in the timeline (REST or normalized), or the handled event labels one of those statuses.
+ */
+export function regressionShortcutEnded(timeline, since, event) {
+  if (event?.action === "labeled" && REGRESSION_ENDING_STATUSES.includes(canonical(event.label))) return true;
+  const after = (time) => Number.isFinite(time) && time > since;
+  if (normalizeTimeline(timeline).some((entry) => entry.kind === "labeled" && REGRESSION_ENDING_STATUSES.includes(entry.label) && after(entry.time))) return true;
+  return Array.isArray(timeline) && timeline.some((item) => (item?.event ?? item?.kind) === "closed" && after(timeOf(item.createdAt ?? item.created_at)));
+}
+
+/**
  * Accepts a REST issue (`labels` as objects or names, `user.login`, `updated_at`, `pull_request`) or an
- * already normalized one, and returns `{number, state, labels, names, author, updatedAt, isPullRequest}`. `labels` reads a literal old
+ * already normalized one, and returns `{number, state, labels, names, author, updatedAt, createdAt, body, isPullRequest}` (`body` only for `regressionRunRef`). `labels` reads a literal old
  * status name (`status:new`, see LEGACY_STATUS) as its current name, once; `names` keeps the literal names, because that is what a
  * label removal must send. Between a merge and the label sync the old label can still be on an issue, and it already counts as its status.
  */
@@ -153,6 +254,8 @@ export function normalizeIssue(raw) {
     rawLabels: names,
     author: issue.user?.login ?? issue.author ?? null,
     updatedAt: issue.updated_at ?? issue.updatedAt ?? null,
+    createdAt: issue.created_at ?? issue.createdAt ?? null,
+    body: typeof issue.body === "string" ? issue.body : "",
     isPullRequest: Boolean(issue.pull_request ?? issue.isPullRequest),
   };
 }
@@ -232,15 +335,15 @@ export const canonicalStatus = canonical;
 export const isStatusName = (label) => isStatus(canonical(label));
 
 /**
- * True when the labels alone cannot settle the status: several status labels, an approval or a rework whose author matters, or an
- * opened/reopened event that must not override a status labeled after it.
+ * True when the labels alone cannot settle the issue: several status labels, an approval or a rework whose author matters, an
+ * opened/reopened event that must not override a status labeled after it, or a `source:regression` whose author matters.
  */
 export function needsTimeline(rawIssue, event) {
   const issue = normalizeIssue(rawIssue);
   if (issue.state !== "open") return false;
   const statuses = issue.labels.filter(isStatus);
   const opening = event?.action === "opened" || event?.action === "reopened";
-  return statuses.length > 1 || statuses.some((label) => OWNER_ONLY_STATUSES.includes(label)) || (opening && statuses.length > 0);
+  return statuses.length > 1 || statuses.some((label) => OWNER_ONLY_STATUSES.includes(label)) || (opening && statuses.length > 0) || issue.labels.includes(SOURCE_REGRESSION);
 }
 
 /**
@@ -298,8 +401,39 @@ function reconcile(issue, { timeline, owners, event }) {
   return actions;
 }
 
-function onIssues(event, issue, owners, timeline) {
-  if (isBot(event.actor)) return [];
+/** Removes `source:regression` (its literal name) and says why, once per `comment`'s key. */
+function dropRegression(issue, comment) {
+  return [...issue.rawLabels.filter((name) => name === SOURCE_REGRESSION).map(removeLabel), comment];
+}
+
+/**
+ * Removes `source:regression` from an open issue unless it is trusted (see SOURCE_REGRESSION). The label's actors are its latest
+ * `labeled` event in the timeline and, when this run handles a `labeled source:regression` event, the payload's actor too (the timeline
+ * can lag; the workflow's own events never get here, so that actor is never `github-actions[bot]`): any actor that is not a regression
+ * writer, or none at all, is untrusted. An ended shortcut (`regressionShortcutEnded`) removes it with its own comment. A run that is
+ * still in progress (`"pending"`) decides nothing yet. `regression` missing (not read) counts as an unreadable run: untrusted.
+ */
+function regressionLabelActions(issue, { timeline, event, regression, repo }) {
+  if (issue.state !== "open" || !issue.labels.includes(SOURCE_REGRESSION)) return [];
+  const clicks = normalizeTimeline(timeline).filter((entry) => entry.kind === "labeled" && entry.label === SOURCE_REGRESSION);
+  const last = clicks.length > 0 ? clicks[clicks.length - 1] : null;
+  const actors = last ? [{ id: last.id, actor: last.actor }] : [];
+  if (event?.action === "labeled" && event.label === SOURCE_REGRESSION) actors.push({ id: "event", actor: event.actor ?? null });
+  const untrusted = actors.find((entry) => !isRegressionWriter(entry.actor));
+  const id = untrusted?.id ?? last?.id ?? "event";
+  if (!isRegressionWriter(issue.author) || last === null || untrusted !== undefined) return dropRegression(issue, regressionComment(id));
+  if (regressionShortcutEnded(timeline, last.time, event)) return dropRegression(issue, regressionEndedComment(id));
+  return regressionRunVerdict(issue, regression, { repo, labeledAt: last.time }) === "untrusted" ? dropRegression(issue, regressionComment(id)) : [];
+}
+
+const ISSUE_ACTIONS = new Set(["opened", "reopened", "closed", "labeled", "unlabeled"]);
+
+function onIssues(event, issue, owners, timeline, regression, repo) {
+  if (isBot(event.actor) || !ISSUE_ACTIONS.has(event.action)) return [];
+  return [...statusOnIssues(event, issue, owners, timeline), ...regressionLabelActions(issue, { timeline, event, regression, repo })];
+}
+
+function statusOnIssues(event, issue, owners, timeline) {
   if (event.action === "opened" || event.action === "reopened") {
     if (issue.state !== "open") return clearStatus(issue);
     // `todo` unless a current status was labeled after this event (that run's label wins, whichever run is first).
@@ -351,7 +485,9 @@ function onPullRequest(event, issue, owners) {
     if (kind === "fixes") return issue.state === "closed" ? clearStatus(issue) : [];
     return issue.state === "open" && has(IN_REVIEW) ? setStatus(issue, PLANNED) : [];
   }
-  return issue.state === "open" && has(IN_REVIEW) ? setStatus(issue, BLOCKED) : [];
+  if (!(issue.state === "open" && has(IN_REVIEW))) return [];
+  // Closed unmerged: blocked, which also ends a regression issue's shortcut for good (the owner stopped the batch).
+  return [...setStatus(issue, BLOCKED), ...(has(SOURCE_REGRESSION) ? dropRegression(issue, regressionEndedComment("pr")) : [])];
 }
 
 /** The stale status an open issue carries (`needs-info` first), or null. */
@@ -381,16 +517,17 @@ function onStale(issue, owners) {
  *   - `stale`: the daily job found the issue (in `needs-info` or `declined`; `owners` are mentioned on a declined one).
  * issue: a REST issue or a normalized one (`normalizeIssue`), as read now.
  * options: `owners` (logins that may approve), `agents` (logins of the issue agents' GitHub App; their marker comments are
- *   not replies, and they are not owners), and `timeline` (the issue's label events, see `normalizeTimeline`; read it
- *   when `needsTimeline(issue)`).
+ *   not replies, and they are not owners), `timeline` (the issue's events, see `normalizeTimeline`; read it when `needsTimeline(issue)`),
+ *   and for an open issue with `source:regression`: `regression` (`{run, onMain}`, see `regressionRunVerdict`; missing counts as an
+ *   unreadable run) and `repo` (`owner/repo`).
  * Returns `[{op: "addLabel" | "removeLabel", label} | {op: "comment", body} | {op: "close", reason}]`, in the order to apply.
  */
-export function decide(event, issue, { owners = [], agents = [], timeline = [] } = {}) {
+export function decide(event, issue, { owners = [], agents = [], timeline = [], regression, repo = "" } = {}) {
   const current = normalizeIssue(issue);
   if (current.isPullRequest || !event) return [];
   switch (event.name) {
     case "issues":
-      return onIssues(event, current, owners, timeline);
+      return onIssues(event, current, owners, timeline, regression, repo);
     case "issue_comment":
       return onComment(event, current, owners, agents);
     case "pull_request":

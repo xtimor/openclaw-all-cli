@@ -1,4 +1,5 @@
 .spike/
+.regression/
 _bmad/custom/*.user.toml
 _bmad/render/
 __pycache__/

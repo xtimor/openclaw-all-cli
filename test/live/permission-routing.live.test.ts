@@ -3,13 +3,14 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterAll, expect, it } from "vitest";
 import { cursorAdapter } from "../../src/adapters/cursor/index.ts";
-import { createExecute } from "../../src/core/execute.ts";
+import { HOST_SHELL_ARG, createExecute } from "../../src/core/execute.ts";
 import type { CliAdapter, CliSession, NormalizedEvent, PermissionDecision } from "../../src/core/ports.ts";
 import type { ExecuteContext } from "../../src/core/sdk-types.ts";
 import { STUB_EXEC_TOOL, startStubMcpHost } from "../fixtures/stub-mcp-host.ts";
 import {
   LIVE_TIMEOUT_MS,
   describeLive,
+  freshDir,
   liveHostEnv,
   makeLiveSession,
   openclaw,
@@ -20,7 +21,8 @@ import {
 
 // Parity rows P8, P9, P10 (permission routing, tool availability, abort; AD-9, AD-11). Real
 // cursor-agent with a stub host. The production home denies Shell, so Cursor never asks about
-// it; these tests use a home that leaves shell to ask, the case permission routing exists for.
+// it: the fallback test uses that home; the approval and abort tests use a home that leaves shell
+// to ask, the case permission routing exists for (a request the static file leaves open).
 describeLive("permission requests go to the host (P8, P9)", () => {
   const root = mkdtempSync(join(tmpdir(), "oac-live-perm-"));
   afterAll(() => rmSync(root, { recursive: true, force: true }));
@@ -38,10 +40,11 @@ describeLive("permission requests go to the host (P8, P9)", () => {
     return { dir, env: { CURSOR_CONFIG_DIR: dir, CURSOR_DATA_DIR: join(dir, "data") } };
   }
 
-  /** Records the decisions the core gave the CLI and the sessions it opened. */
+  /** Records the decisions the core gave the CLI, the sessions it opened, and whether each opened with the host's shell. */
   function observed() {
     const decisions: Array<{ tool: string; decision: PermissionDecision }> = [];
     const sessions: CliSession[] = [];
+    const hostShell: boolean[] = [];
     const adapter: CliAdapter = {
       ...cursorAdapter,
       open: async (params) => {
@@ -54,16 +57,19 @@ describeLive("permission requests go to the host (P8, P9)", () => {
           },
         });
         sessions.push(session);
+        hostShell.push(params.hostShell === true);
         return session;
       },
     };
-    return { adapter, decisions, sessions };
+    return { adapter, decisions, sessions, hostShell };
   }
 
-  function turnContext(name: string, host: { url: string }, workspace: string, overrides: Partial<ExecuteContext>): ExecuteContext {
+  /** `hostShell`: the marker the backend adds when OpenClaw serves its own `exec` for the run (`HOST_SHELL_ARG`). */
+  function turnContext(name: string, host: { url: string }, workspace: string, overrides: Partial<ExecuteContext>, hostShell = false): ExecuteContext {
+    const settings = writeSettingsFile(root, `settings-${name}`, host.url, `token-${name}`, `capture-${name}`);
     return {
       command: process.env.CURSOR_AGENT_BIN ?? cursorAdapter.command,
-      args: [...cursorAdapter.launchArgs, ...hostMcpArgs(writeSettingsFile(root, `settings-${name}`, host.url, `token-${name}`, `capture-${name}`))],
+      args: [...cursorAdapter.launchArgs, ...hostMcpArgs(settings), ...(hostShell ? [HOST_SHELL_ARG] : [])],
       cwd: workspace,
       env: liveHostEnv(),
       prompt: "",
@@ -79,37 +85,60 @@ describeLive("permission requests go to the host (P8, P9)", () => {
   }
 
   it(
-    "falls back to OpenClaw exec when the host denies the native shell",
+    "falls back to OpenClaw exec when the native shell is denied, in the production home with OpenClaw serving exec",
     async () => {
+      // Production: both static profiles deny `Shell(*)`, so Cursor blocks a native shell call without asking the
+      // host; no production turn routes a native shell request to the host for a decision. OpenClaw serves `exec`
+      // (the backend's marker), so the turn runs in Cursor's agent mode and the first prompt carries the shell
+      // sentence (#76). The user asks for the built-in shell and says nothing about any other tool.
       const workspace = join(root, "workspace-deny");
-      mkdirSync(workspace);
-      const { adapter, decisions } = observed();
-      const execute = createExecute(adapter, { home: askingHome("home-deny"), warn: (message) => console.warn(message) });
+      freshDir(workspace);
+      const homeDir = freshDir(join(root, "home-deny"));
+      const home = { dir: homeDir, env: await cursorAdapter.prepareHome(homeDir) };
+      const { adapter, decisions, hostShell } = observed();
+      const execute = createExecute(adapter, { home, warn: (message) => console.warn(message) });
       const host = await startStubMcpHost({ execTool: true });
-      const asked: Array<{ toolName: string; toolInput: Record<string, unknown> }> = [];
-      const ctx = turnContext("deny", host, workspace, {
-        prompt: "Run the shell command `echo oac-fallback-7f3a` and reply with its output only. Use whichever tool works.",
-        requestToolPermission: async (request) => {
-          asked.push({ toolName: request.toolName, toolInput: request.toolInput });
-          return { behavior: "deny", message: "Use OpenClaw exec; the native shell is unavailable." };
+      const asked: string[] = [];
+      /** Tool calls in the order the model made them: Cursor's native shell is `exec`, OpenClaw's `mcp__openclaw__exec`. */
+      const calls: Array<{ name: string; args: string }> = [];
+      const results: Array<{ name: string; isError: boolean }> = [];
+      const ctx = turnContext(
+        "deny",
+        host,
+        workspace,
+        {
+          prompt: "Run the shell command `echo oac-fallback-7f3a` with your built-in shell tool and reply with its output only.",
+          requestToolPermission: async (request) => {
+            asked.push(request.toolName);
+            return { behavior: "deny", message: "no" };
+          },
         },
-      });
+        true,
+      );
       try {
         let reply = "";
         for await (const record of execute(ctx)) {
           const event = (record as unknown as { event: NormalizedEvent }).event;
+          if (event.kind === "toolStart") calls.push({ name: event.name, args: JSON.stringify(event.args ?? {}) });
+          if (event.kind === "toolResult") results.push({ name: event.name ?? "", isError: event.isError === true });
           if (event.kind === "result") reply = event.text;
           if (event.kind === "error") throw new Error(`turn failed: ${event.error.message}`);
         }
-        // Cursor asked, the host said no, and the shell never ran.
-        expect(asked.map((request) => request.toolName)).toContain("exec");
-        expect(JSON.stringify(asked[0]!.toolInput)).toContain("oac-fallback-7f3a");
-        expect(decisions.every((entry) => entry.decision === "reject_once")).toBe(true);
-        // The model fell back to OpenClaw's exec, reached through the proxy.
+        const evidence = JSON.stringify({ reply, asked, calls, results });
+        // A host-shell turn: agent mode, the shell sentence sent.
+        expect(hostShell).toEqual([true]);
+        // The static deny blocked the native shell without asking the host.
+        expect(asked, evidence).toEqual([]);
+        expect(decisions, evidence).toEqual([]);
+        // The model tried the native shell first, then ran the command through OpenClaw exec (the proxy).
+        const native = calls.findIndex((call) => call.name === "exec" && call.args.includes("oac-fallback-7f3a"));
+        const fallback = calls.findIndex((call) => call.name === `mcp__openclaw__${STUB_EXEC_TOOL}` && call.args.includes("oac-fallback-7f3a"));
+        expect(native, evidence).toBeGreaterThanOrEqual(0);
+        expect(fallback, evidence).toBeGreaterThan(native);
         const execCalls = host.toolCalls().filter((call) => (call.rpc?.params as { name?: string }).name === STUB_EXEC_TOOL);
-        expect(execCalls.length).toBeGreaterThanOrEqual(1);
+        expect(execCalls.length, evidence).toBeGreaterThanOrEqual(1);
         expect(JSON.stringify(execCalls[0]!.rpc)).toContain("oac-fallback-7f3a");
-        expect(reply).toContain("stub-exec-ran:");
+        expect(reply, evidence).toContain("stub-exec-ran:");
       } finally {
         ctx.liveSession?.current()?.close("abort");
         await host.close();
@@ -124,7 +153,7 @@ describeLive("permission requests go to the host (P8, P9)", () => {
       // Cursor's ask mode (the session's second lock, see the adapter) makes the model refuse
       // commands that change files even when the host approves, so the command only reads.
       const workspace = join(root, "workspace-allow");
-      mkdirSync(workspace);
+      freshDir(workspace);
       const { adapter, decisions } = observed();
       const execute = createExecute(adapter, { home: askingHome("home-allow"), warn: (message) => console.warn(message) });
       const host = await startStubMcpHost();
@@ -159,7 +188,7 @@ describeLive("permission requests go to the host (P8, P9)", () => {
     "ends the turn cleanly when it is aborted while the host waits for a human",
     async () => {
       const workspace = join(root, "workspace-abort");
-      mkdirSync(workspace);
+      freshDir(workspace);
       const { adapter, decisions, sessions } = observed();
       const execute = createExecute(adapter, { home: askingHome("home-abort"), warn: (message) => console.warn(message) });
       const host = await startStubMcpHost();

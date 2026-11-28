@@ -250,6 +250,12 @@ export type OpenParams = {
    * not, the CLI has no shell at all, and an adapter should keep its most restrictive mode.
    */
   hostShell?: boolean;
+  /**
+   * The host serves no shell in this turn, but its tool list holds an OpenClaw tool that changes files or records
+   * (`write`, `edit`, ...). An adapter whose restrictive mode makes the model refuse every change should open in its
+   * acting mode then, as long as the CLI's own shell and write stay denied by its permissions (issue #102).
+   */
+  hostWrites?: boolean;
   /** The native session ID to resume. Set only when OpenClaw says to resume. */
   resumeSessionId?: string;
   /** MCP servers for the native session, given at both new and resumed sessions. */

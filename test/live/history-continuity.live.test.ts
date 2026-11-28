@@ -1,14 +1,13 @@
 import { type ChildProcess, spawn } from "node:child_process";
-import { existsSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, readdirSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { randomBytes } from "node:crypto";
 import { afterAll, beforeAll, expect, it } from "vitest";
 import { MOCK_API_SCRIPT } from "../fixtures/paths.ts";
-import { ISOLATED_STATE_DIR, LIVE_TIMEOUT_MS, describeLive, openclaw, startGateway, type TestGateway } from "./harness.ts";
+import { ISOLATED_STATE_DIR, LIVE_TIMEOUT_MS, describeLive, gatewayLogFile, openclaw, startGateway, waitFor, type TestGateway } from "./harness.ts";
 
 const PORT = 18_913;
-const LOG_DIR = "/tmp/openclaw";
 const PROFILE = "cursor-cli:manual";
 
 // Parity row P15 (history reseed and the continuity note). Real cursor-agent and a local mock API
@@ -27,14 +26,8 @@ describeLive("chat continuity across a model switch (P15)", () => {
 
   /** The newest Gateway log file, and its size now: what a step appends to it is that step's evidence. */
   function hostLog() {
-    const file = existsSync(LOG_DIR)
-      ? readdirSync(LOG_DIR)
-          .filter((name) => /^openclaw-.*\.log$/.test(name))
-          .sort()
-          .at(-1)
-      : undefined;
-    const path = file ? join(LOG_DIR, file) : undefined;
-    return { path, offset: path ? statSync(path).size : 0 };
+    const { file, offset } = gatewayLogFile();
+    return { path: file, offset };
   }
   function logSince(mark: ReturnType<typeof hostLog>): string {
     if (!mark.path) return "";
@@ -74,6 +67,22 @@ describeLive("chat continuity across a model switch (P15)", () => {
   }
 
   const cursorExecLines = (log: string) => log.split("\n").filter((line) => line.includes("cli exec: provider=cursor-cli"));
+
+  /** The pids in the plugin's pid locks (`<home>/pids/<pid>.json`). */
+  const lockedPids = (dir: string): number[] =>
+    (existsSync(dir) ? readdirSync(dir) : [])
+      .filter((name) => name.endsWith(".json"))
+      .map((name) => (JSON.parse(readFileSync(join(dir, name), "utf8")) as { pid?: unknown }).pid)
+      .filter((pid): pid is number => typeof pid === "number");
+  /** Whether a pid (or, negative, a process group) still exists. */
+  const running = (pid: number): boolean => {
+    try {
+      process.kill(pid, 0);
+      return true;
+    } catch (error) {
+      return (error as NodeJS.ErrnoException).code === "EPERM";
+    }
+  };
 
   beforeAll(async () => {
     const key = process.env.CURSOR_API_KEY;
@@ -188,23 +197,53 @@ describeLive("chat continuity across a model switch (P15)", () => {
 
   it(
     "(c) with a profile, a lost cursor-cli chat gets the host's history prompt (the fresh retry itself is recorded)",
-    () => {
+    async () => {
       expect(profileAdded, "step (b) must run first").toBe(true);
       const id = `agent:main:${sessionId("c")}`;
       const fact = word("FIG");
-      const sessions = join(ISOLATED_STATE_DIR, "agents", "main", "agent", "openclaw-all-cli", "cursor-cli", "acp-sessions");
+      const cursorHome = join(ISOLATED_STATE_DIR, "agents", "main", "agent", "openclaw-all-cli", "cursor-cli");
+      const sessions = join(cursorHome, "acp-sessions");
       const before = new Set(existsSync(sessions) ? readdirSync(sessions) : []);
       const first = ask("cursor-cli/auto", id, `Remember this: the code word is ${fact}. Say ok.`, "--session-key");
       expect(first.status, first.raw).toBe(0);
-      // The new native chat is the new directory that holds the fact (a model listing may add another).
-      const holdsFact = (dir: string) =>
-        readdirSync(join(sessions, dir), { recursive: true, withFileTypes: true }).some(
-          (entry) => entry.isFile() && readFileSync(join(entry.parentPath, entry.name)).includes(fact),
-        );
-      const created = readdirSync(sessions).filter((name) => !before.has(name) && holdsFact(name));
-      const added = readdirSync(sessions).filter((name) => !before.has(name));
-      expect(created, `new chat dirs: ${JSON.stringify(added)}; holding the fact: ${JSON.stringify(created)}; first reply: ${first.raw}`).toHaveLength(1);
-      rmSync(join(sessions, created[0]!), { recursive: true, force: true });
+      // The chat is lost only once no process holds it: the turn's cursor-agent stays warm for the next turn and
+      // answers it from memory (`reuse=reusable`, the fact in the reply), whatever is on disk. Stop the Gateway (and
+      // its warm process) before the chat goes, start it again after: the host's binding stays in its session store.
+      // The processes the plugin started are in its pid locks (AD-14); every one, and the Gateway's process group,
+      // must be gone before the chat is deleted and the port is used again. The Gateway starts again whatever fails.
+      const agentPids = lockedPids(join(cursorHome, "pids"));
+      expect(agentPids.length, "the first turn left no cursor-agent pid lock").toBeGreaterThan(0);
+      const stopped = gateway;
+      await stopped.stop();
+      let restarted = false;
+      try {
+        const gone = await waitFor(() => !running(-stopped.pid) && agentPids.every((pid) => !running(pid)), 30_000, 250);
+        const left = [...(running(-stopped.pid) ? [`Gateway process group ${stopped.pid}`] : []), ...agentPids.filter(running).map((pid) => `cursor-agent ${pid}`)];
+        expect(gone, `still running 30 s after the Gateway stop: ${left.join(", ")}`).toBe(true);
+        // The new native chat is the new directory that holds the fact (a model listing may add another).
+        const holdsFact = (dir: string) =>
+          readdirSync(join(sessions, dir), { recursive: true, withFileTypes: true }).some(
+            (entry) => entry.isFile() && readFileSync(join(entry.parentPath, entry.name)).includes(fact),
+          );
+        const created = readdirSync(sessions).filter((name) => !before.has(name) && holdsFact(name));
+        const added = readdirSync(sessions).filter((name) => !before.has(name));
+        expect(created, `new chat dirs: ${JSON.stringify(added)}; holding the fact: ${JSON.stringify(created)}; first reply: ${first.raw}`).toHaveLength(1);
+        rmSync(join(sessions, created[0]!), { recursive: true, force: true });
+        gateway = await startGateway(PORT);
+        restarted = true;
+      } finally {
+        if (!restarted) {
+          // A later try, and afterAll, need a Gateway on the port: end whatever is left, then start one.
+          for (const pid of [-stopped.pid, ...agentPids]) {
+            try {
+              process.kill(pid, "SIGKILL");
+            } catch {
+              // Already gone.
+            }
+          }
+          gateway = await startGateway(PORT);
+        }
+      }
       const next = ask("cursor-cli/auto", id, question, "--session-key");
       // reseedFromRawTranscriptWhenUncompacted: the host builds its history prompt for the resumed turn
       // (without the flag the log says historyPrompt=none), the native chat is gone, and the turn is classified session_expired.

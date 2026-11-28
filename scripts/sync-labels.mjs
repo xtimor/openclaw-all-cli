@@ -16,6 +16,10 @@ import { fileURLToPath } from "node:url";
 const DEFAULT_FILE = resolve(dirname(fileURLToPath(import.meta.url)), "..", ".github", "labels.yml");
 const KEYS = ["name", "color", "description"];
 const OPTIONAL_KEYS = ["renamed_from"];
+// A rename moves every issue of the old label to the new one as github-actions[bot]. A label that grants trust or authority is never a
+// rename target: `source:*` (`source:regression` lets an issue skip triage and approval), the owner's own-click statuses, the
+// `Upstream post` workflow's status, and the owner's `upstream:post`.
+const NO_RENAME_TARGET = /^(?:source:.*|status:approved|status:rework|status:upstream|upstream:post)$/;
 const MAX_DESCRIPTION = 100; // GitHub's limit
 const PAGE_SIZE = 100;
 const REQUEST_TIMEOUT_MS = 30_000;
@@ -87,6 +91,7 @@ function validateLabels(entries) {
     if (Object.hasOwn(entry, "renamed_from")) {
       const from = entry.renamed_from.trim();
       if (from === "") throw new SyncError(`label "${name}" (line ${entry.line}): empty renamed_from`);
+      if (NO_RENAME_TARGET.test(key)) throw new SyncError(`label "${name}" (line ${entry.line}): renamed_from is not allowed on a source:, owner-only, or workflow-only label (a rename would add it to every issue of the old label)`);
       if (from.toLowerCase() === key) throw new SyncError(`label "${name}" (line ${entry.line}): renamed_from is the label's own name`);
       if (formers.has(from.toLowerCase())) throw new SyncError(`label "${name}" (line ${entry.line}): renamed_from "${from}" is already the former name of another entry (line ${formers.get(from.toLowerCase())})`);
       formers.set(from.toLowerCase(), entry.line);

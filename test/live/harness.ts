@@ -1,5 +1,5 @@
 import { spawn, spawnSync } from "node:child_process";
-import { writeFileSync } from "node:fs";
+import { appendFileSync, closeSync, existsSync, mkdirSync, openSync, readdirSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { createServer, type Server } from "node:http";
 import { connect, type Socket } from "node:net";
 import { join } from "node:path";
@@ -135,11 +135,77 @@ export function writeSettingsFile(dir: string, name: string, url: string, token:
   return file;
 }
 
-/** The isolated OpenClaw's state directory (`.spike/state`), where agent homes live. */
-export const ISOLATED_STATE_DIR = fileURLToPath(new URL("../../.spike/state", import.meta.url));
+/**
+ * The isolated OpenClaw's folder: `SPIKE_DIR` when set (the live regression tier sets `.regression/openclaw-<version>`),
+ * else `.spike/`, the same rule as `scripts/dev-openclaw.sh`.
+ */
+export const ISOLATED_DIR = process.env.SPIKE_DIR || fileURLToPath(new URL("../../.spike", import.meta.url));
 
-/** The isolated OpenClaw's config file (`.spike/openclaw.json`). */
-export const ISOLATED_CONFIG_PATH = fileURLToPath(new URL("../../.spike/openclaw.json", import.meta.url));
+/** The isolated OpenClaw's state directory (`<isolated>/state`), where agent homes live. */
+export const ISOLATED_STATE_DIR = join(ISOLATED_DIR, "state");
+
+/** The isolated OpenClaw's config file (`<isolated>/openclaw.json`). */
+export const ISOLATED_CONFIG_PATH = join(ISOLATED_DIR, "openclaw.json");
+
+/**
+ * Records a number a live test measured (a latency) as one JSON line in `OAC_LIVE_MEASURE_FILE`, which
+ * `scripts/regression.sh live` sets and copies into the tier's result as `measurements`. A no-op without it.
+ */
+export function recordMeasurement(name: string, value: number): void {
+  const file = process.env.OAC_LIVE_MEASURE_FILE;
+  if (!file) return;
+  try {
+    appendFileSync(file, `${JSON.stringify({ name, value, at: Date.now() })}\n`);
+  } catch {
+    // A measurement that cannot be written must not fail the test.
+  }
+}
+
+let isolatedVersion: [number, number, number] | undefined;
+/** The isolated OpenClaw's version as `[year, month, patch]`: `OPENCLAW_VERSION` (the regression tiers export it), else `openclaw --version`. */
+export function openclawVersion(): [number, number, number] {
+  if (!isolatedVersion) {
+    const text = process.env.OPENCLAW_VERSION || openclaw(["--version"], { timeoutMs: 60_000 }).stdout;
+    const match = /(\d{4})\.(\d+)\.(\d+)/.exec(text);
+    isolatedVersion = match ? [Number(match[1]), Number(match[2]), Number(match[3])] : [0, 0, 0];
+  }
+  return isolatedVersion;
+}
+
+/**
+ * Tells the live tier's token reader (scripts/live-tokens.mjs) that the turns which ended between `from` and `to`
+ * (epoch ms) failed on purpose before reaching a model, so Cursor's usage ledger has no event for them. Written to the
+ * turn meter's log (`OAC_LIVE_TURN_LOG`); nothing outside the tier.
+ */
+export function markUnbilled(from: number, to: number): void {
+  const log = process.env.OAC_LIVE_TURN_LOG;
+  if (log) appendFileSync(log, `${JSON.stringify({ at: Date.now(), kind: "unbilled", from, to })}\n`);
+}
+
+/**
+ * An empty folder at `path`, made fresh: what an earlier try of the test left there is removed first. The live tier
+ * gives each test up to 3 tries in the same file state (Vitest `retry`), so a test that makes a fixed folder makes it
+ * with this.
+ */
+export function freshDir(path: string): string {
+  rmSync(path, { recursive: true, force: true });
+  mkdirSync(path, { recursive: true });
+  return path;
+}
+
+/** The folder the isolated Gateway writes its log files to: `$TMPDIR/openclaw` on OpenClaw 2026.10, `<state>/logs` from 2026.11. */
+export function gatewayLogDir(): string {
+  const [year, month] = openclawVersion();
+  return year > 2026 || (year === 2026 && month >= 11) ? join(ISOLATED_STATE_DIR, "logs") : join(process.env.TMPDIR || "/tmp", "openclaw");
+}
+
+/** The Gateway's newest log file (`openclaw-<date>.log`, JSON lines, in `gatewayLogDir()`) and its size now. */
+export function gatewayLogFile(): { file: string | undefined; offset: number } {
+  const dir = gatewayLogDir();
+  const files = existsSync(dir) ? readdirSync(dir).filter((name) => /^openclaw-.*\.log$/.test(name)).sort() : [];
+  const file = files.length > 0 ? join(dir, files.at(-1)!) : undefined;
+  return { file, offset: file ? statSync(file).size : 0 };
+}
 
 export type TestGateway = {
   port: number;
@@ -160,11 +226,12 @@ export type TestGateway = {
  * Runs an isolated Gateway and waits until it answers. Chat commands reach it through
  * `OPENCLAW_GATEWAY_PORT`; `models list` and `/model` read the catalog it prepares. The plugin
  * loads at startup only when the config names it, for example as the default model
- * (OpenClaw #148584), so set `agents.defaults.model.primary` first.
+ * (OpenClaw #148584), so set `agents.defaults.model.primary` first. With `logFile`, the Gateway's
+ * stdout and stderr (its console log) are appended to that file; otherwise they are dropped.
  */
 export async function startGateway(
   port: number,
-  options: { timeoutMs?: number; env?: Record<string, string>; omitEnv?: string[] } = {},
+  options: { timeoutMs?: number; env?: Record<string, string>; omitEnv?: string[]; logFile?: string } = {},
 ): Promise<TestGateway> {
   const env = {
     ...Object.fromEntries(
@@ -175,12 +242,15 @@ export async function startGateway(
     ),
     ...options.env,
   };
+  const log = options.logFile === undefined ? undefined : openSync(options.logFile, "a");
   const child = spawn(DEV_SCRIPT, ["run", "gateway", "run", "--allow-unconfigured", "--auth", "none", "--port", String(port)], {
     env,
-    stdio: "ignore",
+    stdio: log === undefined ? "ignore" : ["ignore", log, log],
     // Its own process group, so one signal reaches every process the Gateway started.
     detached: true,
   });
+  // The child holds its own copy of the descriptor.
+  if (log !== undefined) closeSync(log);
   const exited = new Promise<void>((resolve) => child.once("exit", () => resolve()));
   const stop = async () => {
     if (child.exitCode === null && child.pid) {

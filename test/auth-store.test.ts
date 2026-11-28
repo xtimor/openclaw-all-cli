@@ -14,7 +14,7 @@ import {
   type AuthStoreRuntime,
   type StoredKey,
 } from "../src/core/auth-store.ts";
-import { HOST_DIST, hostAvailable } from "./fixtures/host-code.ts";
+import { HOST_DIST, hostAvailable, hostExport } from "./fixtures/host-code.ts";
 
 const KEY = "key_store_0123456789abcdef";
 const PROFILE = "cursor-cli:default";
@@ -144,6 +144,49 @@ describe("any key of the provider in an agent's store (the sweep's lookup)", () 
   });
 });
 
+describe("settling the shared store's location at Gateway start (issue #106)", () => {
+  const store = (profiles: Record<string, unknown>) => ({ profiles });
+
+  it("runs one no-op locked update of the main store on OpenClaw 2026.10.3, which changes no profile", async () => {
+    const calls: unknown[] = [];
+    const before = store({ [PROFILE]: apiKey(KEY) });
+    const { settleSharedStore } = createAuthStore(async () => ({
+      ensureAuthProfileStore: () => store({}),
+      updateAuthProfileStoreWithLock: async (params) => {
+        calls.push(Object.keys(params));
+        const changed = params.updater(before);
+        expect(changed).toBe(false);
+        return before;
+      },
+    }));
+    expect(await settleSharedStore()).toBe("settled");
+    // No agent directory: the update is a write of the shared (main) store, which is what settles its location.
+    expect(calls).toEqual([["updater"]]);
+    expect(before).toEqual(store({ [PROFILE]: apiKey(KEY) }));
+  });
+
+  it("does nothing on a host with the async reader (2026.11.x) or without the updater", async () => {
+    let updates = 0;
+    const update = async () => (updates++, store({}));
+    expect(await createAuthStore(async () => ({ ensureAuthProfileStoreAsync: async () => store({}), updateAuthProfileStoreWithLock: update })).settleSharedStore()).toBe(
+      "skipped",
+    );
+    expect(await createAuthStore(async () => ({ ensureAuthProfileStore: () => store({}) })).settleSharedStore()).toBe("skipped");
+    expect(updates).toBe(0);
+  });
+
+  it("never throws: a failed load, a failing update, or one that could not run (null) reads as failed", async () => {
+    expect(await createAuthStore(async () => Promise.reject(new Error("no host"))).settleSharedStore()).toBe("failed");
+    const throwing = createAuthStore(async () => ({
+      updateAuthProfileStoreWithLock: async () => {
+        throw new Error("locked");
+      },
+    }));
+    expect(await throwing.settleSharedStore()).toBe("failed");
+    expect(await createAuthStore(async () => ({ updateAuthProfileStoreWithLock: async () => null })).settleSharedStore()).toBe("failed");
+  });
+});
+
 describe("the key a CLI process gets", () => {
   const store = (keys: Record<string, string>, unreadable = false) => async ({ profileId }: { profileId: string }): Promise<StoredKey> =>
     unreadable ? { kind: "unreadable" } : keys[profileId] ? { kind: "key", key: keys[profileId] } : { kind: "absent" };
@@ -221,6 +264,42 @@ describe.skipIf(!hostAvailable)("OpenClaw's auth store (host contract)", () => {
     await auth.upsertAuthProfileWithLock({ profileId: PROFILE, credential: apiKey("key_own_agent_0123"), agentDir: other });
     expect(await read({ agentDir: other, profileId: PROFILE, provider: "cursor-cli" })).toEqual(found("key_own_agent_0123"));
     expect(existsSync(state)).toBe(true);
+  }, 60_000);
+});
+
+/**
+ * Issue #106 against OpenClaw's own store: on a fresh state the shared store's location is unsettled
+ * (`legacy-main`) until the first auth write. The plugin's start-time no-op update settles it, as that
+ * write would, and saves no profile. A host with the async reader (2026.11.x) is skipped.
+ */
+describe.skipIf(!hostAvailable)("settling a fresh state's auth store location (host contract, issue #106)", () => {
+  const state = mkdtempSync(join(tmpdir(), "oac-auth-settle-"));
+  const previous = process.env.OPENCLAW_STATE_DIR;
+  afterAll(() => {
+    if (previous === undefined) delete process.env.OPENCLAW_STATE_DIR;
+    else process.env.OPENCLAW_STATE_DIR = previous;
+    rmSync(state, { recursive: true, force: true });
+  });
+
+  it("moves the location to the state database and writes no profile, on 2026.10.3 only", async () => {
+    process.env.OPENCLAW_STATE_DIR = state;
+    const load = async () => (await import(pathToFileURL(join(HOST_DIST, "plugin-sdk", "provider-auth.js")).href)) as AuthStoreRuntime;
+    const host = await load();
+    const { settleSharedStore, findAnyKey } = createAuthStore(load);
+    if (typeof host.ensureAuthProfileStoreAsync === "function") {
+      expect(await settleSharedStore()).toBe("skipped");
+      return;
+    }
+    const ownership = await hostExport<(env?: NodeJS.ProcessEnv) => { location: string }>("inspectSharedAuthStoreOwnership");
+    expect(ownership(process.env)).toEqual({ location: "legacy-main" });
+    expect(await settleSharedStore()).toBe("settled");
+    expect(ownership(process.env)).toEqual({ location: "state-db" });
+    expect(Object.keys(host.ensureAuthProfileStore!(undefined, STORE_READ_OPTIONS).profiles ?? {})).toEqual([]);
+    expect(await findAnyKey({ provider: "cursor-cli" })).toEqual(ABSENT);
+    // Again on a settled state: the host returns at once, and still nothing is saved.
+    expect(await settleSharedStore()).toBe("settled");
+    expect(ownership(process.env)).toEqual({ location: "state-db" });
+    expect(Object.keys(host.ensureAuthProfileStore!(undefined, STORE_READ_OPTIONS).profiles ?? {})).toEqual([]);
   }, 60_000);
 });
 

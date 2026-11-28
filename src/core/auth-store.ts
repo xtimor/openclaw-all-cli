@@ -9,7 +9,8 @@
  * in 2026.11.x). That store includes the main agent's profiles, and an agent's own profile wins. The
  * reader never throws. Its answer has three states: a key, no key (`absent`), or `unreadable` (the
  * module or the store failed). A turn treats `unreadable` like `absent` and falls back to the plugin
- * config and the environment; the sweep keeps the managed CLI.
+ * config and the environment; the sweep keeps the managed CLI. Its one write, on 2026.10.3 only, is a
+ * no-op locked update at Gateway start that changes no profile (`settleSharedStore`, issue #106).
  */
 
 /** OpenClaw's auth store as `ensureAuthProfileStore[Async]` returns it. */
@@ -26,7 +27,12 @@ export type AuthStoreRuntime = {
   /** 2026.10.3 (deprecated in 2026.11.x). */
   ensureAuthProfileStore?: (agentDir?: string, options?: StoreReadOptions) => AuthProfileStore;
   listProfilesForProvider?: (store: AuthProfileStore, provider: string) => string[];
+  /** One locked update of the main store; `null` when it could not run (the SDK's wrapper catches). Used on 2026.10.3 only. */
+  updateAuthProfileStoreWithLock?: (params: { updater: (store: AuthProfileStore) => boolean }) => Promise<AuthProfileStore | null>;
 };
+
+/** What the start-time settle did: ran the host's no-op update, had nothing to do, or could not run it. */
+export type SettleOutcome = "settled" | "skipped" | "failed";
 
 export type StoredKeyQuery = {
   /** The agent whose store is read; absent: the main agent's (OpenClaw falls back to it anyway). */
@@ -74,7 +80,7 @@ export function keyOfCredential(credential: unknown, provider: string): string |
 
 const asStored = (key: string | undefined): StoredKey => (key ? { kind: "key", key } : ABSENT);
 
-export type AuthStore = { readKey: ReadStoredKey; findAnyKey: FindAnyStoredKey };
+export type AuthStore = { readKey: ReadStoredKey; findAnyKey: FindAnyStoredKey; settleSharedStore: () => Promise<SettleOutcome> };
 
 /** The auth store over `load` (tests inject one; the default imports OpenClaw's provider-auth subpath once). */
 export function createAuthStore(
@@ -125,7 +131,26 @@ export function createAuthStore(
       return UNREADABLE;
     }
   };
-  return { readKey, findAnyKey };
+  /**
+   * Issue #106, OpenClaw 2026.10.3 only. On a state with no auth store yet, the shared store's location
+   * is settled by the first auth write, which moves it into the state database and records that in the
+   * writing thread only. The host's model-catalog worker thread caches the old location at its first
+   * read and keeps reading that empty store, so its auth view, which `models.authStatus` shows, misses
+   * a key saved later through Connect provider until a restart. One locked update that changes nothing
+   * makes the host settle the location now, before that worker starts. It writes no profile; on a
+   * state already settled the host returns at once. A host with the async reader (2026.11.x) is left
+   * alone. Never throws.
+   */
+  const settleSharedStore = async (): Promise<SettleOutcome> => {
+    try {
+      const host = await loadOnce();
+      if (typeof host.ensureAuthProfileStoreAsync === "function" || typeof host.updateAuthProfileStoreWithLock !== "function") return "skipped";
+      return (await host.updateAuthProfileStoreWithLock({ updater: () => false })) ? "settled" : "failed";
+    } catch {
+      return "failed";
+    }
+  };
+  return { readKey, findAnyKey, settleSharedStore };
 }
 
 /** A reader over `load` (tests inject one). */
@@ -139,6 +164,8 @@ const pluginStore = createAuthStore();
 export const readStoredKey: ReadStoredKey = pluginStore.readKey;
 /** The plugin's "any key of the provider" lookup. */
 export const findAnyStoredKey: FindAnyStoredKey = pluginStore.findAnyKey;
+/** The plugin's start-time settle of the shared store's location (issue #106, 2026.10.3). */
+export const settleSharedAuthStore: () => Promise<SettleOutcome> = pluginStore.settleSharedStore;
 
 export type KeySource = "store" | "config" | "env";
 

@@ -441,7 +441,7 @@ describe("operations wiring (P17, P19)", () => {
     expect(warnings).toEqual([]);
   });
 
-  it("reaps the homes of the configured agents when fully loaded, and only then", async () => {
+  it("reaps the homes of the configured agents and settles the auth store's location when fully loaded, and only then", async () => {
     const agentRoot = mkdtempSync(join(scratch, "reg-"));
     const agentDirOf = (id: string) => join(agentRoot, id);
     const lock = (id: string) => {
@@ -461,18 +461,46 @@ describe("operations wiring (P17, P19)", () => {
         registerCliBackend: () => {},
         registerProvider: () => {},
       }) as never;
+    let settles = 0;
+    const settleAuthStore = async () => (settles++, "settled" as const);
     const discovery = [lock("main-d"), lock("work-d")];
-    registerAdapters(api("discovery"), ADAPTERS);
+    registerAdapters(api("discovery"), ADAPTERS, { settleAuthStore });
     await sleep(300);
     expect(discovery.every((file) => existsSync(file))).toBe(true);
+    expect(settles).toBe(0);
 
     const files = [lock("main"), lock("work"), lock("other")];
-    registerAdapters(api("full"), ADAPTERS);
+    registerAdapters(api("full"), ADAPTERS, { settleAuthStore });
+    // Issue #106: a full load settles the auth store's location once, for all adapters.
+    expect(settles).toBe(1);
     await sleep(500);
     expect(existsSync(files[0]!)).toBe(false);
     expect(existsSync(files[1]!)).toBe(false);
     // An agent the config does not name waits for its first use.
     expect(existsSync(files[2]!)).toBe(true);
+  });
+
+  it("logs one line when the auth store's location could not be settled, and none when it was or there was nothing to settle (issue #106)", async () => {
+    const warningsFor = async (outcome: "settled" | "skipped" | "failed") => {
+      const warnings: string[] = [];
+      const api = {
+        pluginConfig: {},
+        registrationMode: "full",
+        config: {},
+        runtime: { agent: { resolveAgentDir: () => join(scratch, "settle-none") } },
+        logger: { warn: (message: string) => warnings.push(message) },
+        registerCliBackend: () => {},
+        registerProvider: () => {},
+      } as never;
+      registerAdapters(api, ADAPTERS, { settleAuthStore: async () => outcome });
+      await sleep(50);
+      return warnings.filter((message) => message.includes("auth store location"));
+    };
+    expect(await warningsFor("settled")).toEqual([]);
+    expect(await warningsFor("skipped")).toEqual([]);
+    expect(await warningsFor("failed")).toEqual([
+      "could not settle the auth store location on OpenClaw 2026.10.3; a key saved before the next restart may show as Not configured",
+    ]);
   });
 });
 

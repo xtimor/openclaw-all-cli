@@ -1,7 +1,7 @@
 import { spawnSync } from "node:child_process";
 import { afterAll, beforeAll, expect, it } from "vitest";
 import { parseStatusOutput } from "../../src/adapters/cursor/index.ts";
-import { LIVE, LIVE_TIMEOUT_MS, describeLive, openclawAsync, startToggleProxy, type ToggleProxy } from "./harness.ts";
+import { LIVE, LIVE_TIMEOUT_MS, describeLive, markUnbilled, openclawAsync, startToggleProxy, type ToggleProxy } from "./harness.ts";
 
 // Errors (AD-11, ticket 20). A failed Cursor turn is one final reply chunk with `end_turn`
 // (cursor-agent 2026.10.19); the plugin must turn it into an OpenClaw error turn. A CONNECT proxy
@@ -44,7 +44,10 @@ describeLive("Cursor errors are error turns, not reply text (AD-11)", () => {
       expect(control.status, control.stderr + control.stdout).toBe(0);
 
       proxy.block();
+      const blockedFrom = Date.now();
       const failed = await ask("Say hi again");
+      // The refused turn never reached a model: Cursor bills nothing for it.
+      markUnbilled(blockedFrom, Date.now());
       const output = failed.stderr + failed.stdout;
       // The model host was reached for, and refused.
       expect(proxy.seen.some((entry) => entry.blocked), `no refused connection: ${JSON.stringify(proxy.seen)}`).toBe(true);

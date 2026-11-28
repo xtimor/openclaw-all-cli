@@ -76,6 +76,7 @@ async function openProcess(
       ...(thinkingLevel ? { thinkingLevel } : {}),
       executionMode: mode,
       hostShell,
+      ...(entry.hostWrites && !hostShell ? { hostWrites: true } : {}),
       // The transport can fail right after the handshake, before it creates or loads a chat.
       ...(required.length > 0 ? { requiredCapabilities: required } : {}),
       ...(resumeSessionId ? { resumeSessionId } : {}),

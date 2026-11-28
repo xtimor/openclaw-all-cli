@@ -2,10 +2,10 @@ import { lstat } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join, resolve } from "node:path";
 import { API_KEY_METHOD_ID } from "./auth-ids.ts";
-import { findAnyStoredKey, type FindAnyStoredKey } from "./auth-store.ts";
+import { findAnyStoredKey, settleSharedAuthStore, type FindAnyStoredKey, type SettleOutcome } from "./auth-store.ts";
 import { backendIdFor, buildCliBackend } from "./backend.ts";
 import { closeListings } from "./catalog.ts";
-import { RELEASING_REASONS } from "./conversation.ts";
+import { RELEASING_REASONS, releaseConversationEverywhere, shareConversationPool } from "./conversation.ts";
 import { buildConfigSchema, capsOf, readBackendConfig, type BackendConfig } from "./config.ts";
 import { withoutKeys } from "./env.ts";
 import { homeDirFor } from "./home.ts";
@@ -209,13 +209,29 @@ function configuredAgentIds(config: unknown): string[] {
   return [...ids];
 }
 
+/** What `registerAdapters` takes besides the host's API (tests). */
+export type RegisterOptions = {
+  /** Settles the auth store's location at a full load (issue #106). Default: `settleSharedAuthStore`. */
+  settleAuthStore?: () => Promise<SettleOutcome>;
+};
+
 /**
  * Registers one CLI backend per adapter (AD-1), each with its own process pool (AD-14). The pools
  * close when the plugin unloads, and a full load reaps what a killed Gateway left in the homes of
  * the configured agents (any other agent's home is reaped at its first use).
  */
-export function registerAdapters(api: OpenClawPluginApi, adapters: readonly CliAdapter[]): void {
+export function registerAdapters(api: OpenClawPluginApi, adapters: readonly CliAdapter[], options: RegisterOptions = {}): void {
   const warn = (message: string) => api.logger.warn(message);
+  // Issue #106: on OpenClaw 2026.10.3 a fresh state's auth store location is settled at a full load, so
+  // a key saved later shows in `models.authStatus`. It runs in the background and races the host's
+  // model-catalog worker, which reads the location when it starts: in one probe the settle took about
+  // 6 ms and the worker read 4.5 s later, but nothing orders them. Not settled means the key may show
+  // only after a restart, so that is logged once; on 2026.11.x there is nothing to settle.
+  if (api.registrationMode === "full") {
+    void (options.settleAuthStore ?? settleSharedAuthStore)().then((outcome) => {
+      if (outcome === "failed") warn("could not settle the auth store location on OpenClaw 2026.10.3; a key saved before the next restart may show as Not configured");
+    });
+  }
   // Hosts without a debug channel drop the per-turn timing line.
   const debug = (message: string) => api.logger.debug?.(message);
   const pools: ProcessPool[] = [];
@@ -275,7 +291,11 @@ export function registerAdapters(api: OpenClawPluginApi, adapters: readonly CliA
       void dropStaleKeyCaches(adapter, { settings, homes });
     }
   }
+  // Every loaded copy's conversation end reaches these pools (issue #105): the host may run this copy's turns while
+  // its `session_end` runs in another copy. Any registration mode: a turn can run in a copy the host did not activate.
+  const unshare = pools.map((pool) => shareConversationPool(pool));
   const closeAll = async () => {
+    for (const stop of unshare) stop();
     for (const [id, pool] of livePools) if (pools.includes(pool as ProcessPool)) livePools.delete(id);
     // The model listings live outside the pools: abort them too, or their processes outlive the unload.
     await Promise.all([...pools.map((pool) => pool.closeAll()), closeListings()]);
@@ -284,12 +304,12 @@ export function registerAdapters(api: OpenClawPluginApi, adapters: readonly CliA
   // `lifecycle.onDispose`; `registerRuntimeLifecycle.dispose` does not run. `closeAll` is
   // idempotent, so a host version that runs both is fine.
   api.lifecycle?.onDispose?.(closeAll);
-  // A finished conversation releases its process (AD-14). `session_end` is a metadata hook: it needs
-  // no conversation access. A host without hooks keeps the idle close.
+  // A finished conversation releases its process (AD-14), in whichever loaded copy of the plugin holds it.
+  // `session_end` is a metadata hook: it needs no conversation access. A host without hooks keeps the idle close.
   api.on?.("session_end", (event, ctx) => {
     const key = event.sessionKey || ctx.sessionKey;
     if (!key || !event.reason || !RELEASING_REASONS.has(event.reason)) return;
-    for (const pool of pools) pool.releaseConversation(key);
+    releaseConversationEverywhere(key);
   });
   api.registerService?.({ id: "openclaw-all-cli-processes", start: () => {}, stop: closeAll });
 }

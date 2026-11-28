@@ -78,9 +78,19 @@
 - name: "source:agent"
   color: "ededed"
   description: "Filed by an agent"
+# Set only by the regression workflows on an issue they open; the issue-flow automation removes anyone else's (docs/issues.md).
+- name: "source:regression"
+  color: "d93f0b"
+  description: "Filed by a regression run; built at once, no triage or approval (only its workflows set it)"
 
 # The owner's approval to publish an agent's upstream draft (docs/agents/identity.md, "Upstream issues"). Only the owner adds it;
 # the relay refuses it for agents. The Upstream post workflow removes it after it acts.
 - name: "upstream:post"
   color: "6f42c1"
   description: "Owner only: publish the agent's draft in openclaw/openclaw"
+
+# The weekly Gateway regression run on OpenClaw beta (.github/workflows/regression-beta.yml, scripts/regression-beta-issue.mjs)
+# marks the issue it opens with it; while one is open, later red runs comment there instead of opening another.
+- name: "regression:beta"
+  color: "f9d0c4"
+  description: "Weekly regression run on OpenClaw beta is red; later red runs comment here while it is open"

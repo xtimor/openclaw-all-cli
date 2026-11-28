@@ -51,20 +51,26 @@ function warmHost(): LiveSessionCapability {
 }
 
 /**
- * `names` null: the host's tool list cannot be read; a function: the list for each turn (0-based).
- * `marker` false: the host did not flag a host shell.
+ * `names` null: the host's tool list cannot be read; a function: the list for each turn (0-based), null for a turn
+ * whose list cannot be read. `marker` false: the host did not flag a host shell. `ctx`: more turn context fields
+ * (e.g. `executionMode`). `noTarget`: the turns whose MCP config file names no usable target (a missing file).
+ * `continuity`: the core's continuity note for a fresh chat (`ExecuteOptions.continuity`).
  */
-export async function turnWithHostTools(names: string[] | null | ((turn: number) => string[]), { marker = true, turns = 1 } = {}) {
+export async function turnWithHostTools(
+  names: string[] | null | ((turn: number) => string[] | null),
+  { marker = true, turns = 1, ctx: extra = {} as Record<string, unknown>, noTarget = (_turn: number): boolean => false, continuity = false } = {},
+) {
   let turn = 0;
   const server = createServer((req, res) => {
     req.resume();
     req.on("end", () => {
-      if (names === null) {
+      const list = typeof names === "function" ? names(turn) : names;
+      if (list === null) {
         res.writeHead(500);
         return void res.end();
       }
       res.writeHead(200, { "Content-Type": "application/json" });
-      res.end(JSON.stringify({ jsonrpc: "2.0", id: 1, result: { tools: (typeof names === "function" ? names(turn) : names).map((name) => ({ name })) } }));
+      res.end(JSON.stringify({ jsonrpc: "2.0", id: 1, result: { tools: list.map((name) => ({ name })) } }));
     });
   });
   await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
@@ -75,16 +81,17 @@ export async function turnWithHostTools(names: string[] | null | ((turn: number)
   const prompts: string[] = [];
   const opens: OpenParams[] = [];
   try {
-    const host = withHostMcp(marker ? ["serve", HOST_SHELL_ARG] : ["serve"], { PATH: "/bin", [MCP_CONFIG_TEST_KEY]: file });
+    const hostFor = (configFile: string) => withHostMcp(marker ? ["serve", HOST_SHELL_ARG] : ["serve"], { PATH: "/bin", [MCP_CONFIG_TEST_KEY]: configFile });
     const liveSession = warmHost();
-    const execute = createExecute(adapterRecording(prompts, opens), { home: HOME });
+    const execute = createExecute(adapterRecording(prompts, opens), { home: HOME, continuity });
     for (turn = 0; turn < turns; turn += 1) {
       const ctx = {
         command: "acme", cwd: "/work", prompt: `do it ${turn}`, modelId: "auto", systemPrompt: "", timeoutMs: 60_000,
         useResume: turn > 0, ...(turn > 0 ? { sessionId: "native-1" } : {}), liveSession,
         requestToolPermission: async () => ({ behavior: "deny", message: "no" }),
         requestUserInput: async () => ({ status: "cancelled", message: "no" }),
-        ...host,
+        ...hostFor(noTarget(turn) ? join(dir, "missing.json") : file),
+        ...extra,
       } as never;
       for await (const r of execute(ctx)) void r;
     }

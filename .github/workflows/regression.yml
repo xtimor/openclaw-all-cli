@@ -1,0 +1,518 @@
+name: Regression
+
+# A regression tier on one or more OpenClaw versions (epic-regression-gate ticket 4): `gateway` (the default,
+# `scripts/regression.sh gateway`: a real Gateway with the packed plugin and the fake cursor-agent), `ui` (ticket 4.6,
+# `scripts/regression.sh ui`: the Control UI of such a Gateway in Playwright's headless Chromium), or `live` (ticket 4.5,
+# `scripts/regression.sh live`: test/live/ against the pinned real cursor-agent and Cursor, with the owner's key).
+# `resolve` turns the requests into versions with the script's own rules (min from package.json, tags through npm) and
+# one matrix entry per distinct version; `tier` (gateway, ui) or `live` runs the tier once per version, named
+# `<tier> (<requests> = <version>)`; `summary` writes the table of results to the job summary and the `results` output.
+# Callers: ci.yml (gateway on min and latest, ui on latest), regression-beta.yml (beta, weekly), and release.yml from
+# ticket 4.7 (with its packed `.tgz` through `tgz_artifact`). Only a dispatch (or a release) runs live: no pull request,
+# push or schedule does. Artifacts are named per tier (`regression-…` for gateway, `regression-ui-…` for ui,
+# `regression-live-…` for live), so tiers can run in one workflow run. One secret, `CURSOR_API_KEY` of the environment
+# `regression`, and only in the `live` job; the gateway and ui tiers run on the fake cursor-agent and the script unsets
+# any Cursor key.
+on:
+  workflow_call:
+    inputs:
+      versions:
+        description: "OpenClaw versions to test, space or comma separated: min, latest, extended-stable, beta, or X.Y.Z (empty: min latest; live: latest)"
+        type: string
+        default: ""
+      tier:
+        description: "The tier to run: gateway, ui or live"
+        type: string
+        default: gateway
+      live_turn_cap:
+        description: "live: the most cursor-agent turns one version may start; later ones fail with \"turn cap N reached\""
+        type: number
+        default: 400
+      tgz_artifact:
+        description: "Name of an artifact of this run holding exactly one packed openclaw-all-cli .tgz to test instead of packing"
+        type: string
+        default: ""
+      force_red:
+        description: "Fail every version on purpose after its tier ran (to exercise a caller's red path)"
+        type: boolean
+        default: false
+    outputs:
+      results:
+        description: "JSON array, one entry per distinct version: version, requests, result, seconds, sha256, failed"
+        value: ${{ jobs.summary.outputs.results }}
+  workflow_dispatch:
+    inputs:
+      versions:
+        description: "OpenClaw versions to test, space or comma separated: min, latest, extended-stable, beta, or X.Y.Z (empty: min latest; live: latest)"
+        type: string
+        default: ""
+      tier:
+        description: "The tier to run (live: the real cursor-agent and Cursor, with the key of the environment regression)"
+        type: choice
+        options: [gateway, ui, live]
+        default: gateway
+      live_turn_cap:
+        description: "live: the most cursor-agent turns one version may start"
+        type: number
+        default: 400
+      force_red:
+        description: "Fail every version on purpose after its tier ran"
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+env:
+  # Same default as ci.yml and scripts/dev-openclaw.sh (the isolated Node the tier runs on).
+  NODE_VERSION: 24.22.0
+  # The prefix of this run's artifact names, and the tier's title in step names and the summary.
+  ARTIFACTS: ${{ inputs.tier == 'ui' && 'regression-ui' || inputs.tier == 'live' && 'regression-live' || 'regression' }}
+  TIER_TITLE: ${{ inputs.tier == 'ui' && 'Control UI' || inputs.tier == 'live' && 'Live' || 'Gateway' }}
+
+# An explicit bash runs every step with `-eo pipefail` (the implicit default is `bash -e`, without pipefail), so the
+# tier's exit code survives `| tee`.
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  resolve:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    outputs:
+      matrix: ${{ steps.resolve.outputs.matrix }}
+      versions: ${{ steps.resolve.outputs.versions }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+      # An unknown tag fails here with the script's message, before any tier job starts.
+      - id: resolve
+        name: Resolve the OpenClaw versions
+        env:
+          VERSIONS: ${{ inputs.versions }}
+          TIER: ${{ inputs.tier }}
+        run: |
+          set -f # the requests are words, never globs
+          if [ "$TIER" != gateway ] && [ "$TIER" != ui ] && [ "$TIER" != live ]; then
+            echo "::error title=Regression tier::unknown tier '$TIER' (gateway, ui or live)"
+            exit 1
+          fi
+          # No versions: the tier's default (live spends Cursor turns, so one version).
+          if [ -z "${VERSIONS//[ ,]/}" ]; then
+            if [ "$TIER" = live ]; then VERSIONS=latest; else VERSIONS="min latest"; fi
+          fi
+          read -r -a requests <<<"${VERSIONS//,/ }"
+          if ! versions="$(scripts/regression.sh resolve "${requests[@]}" 2>"$RUNNER_TEMP/resolve.err")"; then
+            cat "$RUNNER_TEMP/resolve.err" >&2
+            echo "::error title=Regression versions::$(tr '\n' ' ' <"$RUNNER_TEMP/resolve.err")"
+            exit 1
+          fi
+          # A request that is the version itself (X.Y.Z) is not repeated in the job name.
+          matrix="$(jq -c '{include: map({version, requests: (.requests | join(", ")), label: ((.requests - [.version]) as $named | if ($named | length) == 0 then .version else "\($named | join(", ")) = \(.version)" end)})}' <<<"$versions")"
+          echo "versions=$versions" >>"$GITHUB_OUTPUT"
+          echo "matrix=$matrix" >>"$GITHUB_OUTPUT"
+          {
+            echo "### OpenClaw versions"
+            echo
+            echo "| Requested | OpenClaw |"
+            echo "| --- | --- |"
+            jq -r '.[] | "| \(.requests | join(", ")) | \(.version) |"' <<<"$versions"
+          } >>"$GITHUB_STEP_SUMMARY"
+
+  tier:
+    needs: resolve
+    if: inputs.tier != 'live'
+    name: ${{ inputs.tier }} (${{ matrix.label }})
+    runs-on: ubuntu-latest
+    # About 10 minutes of tier, plus Node, OpenClaw, npm ci, the build, and (ui) Chromium on a cold cache.
+    timeout-minutes: 35
+    permissions:
+      contents: read
+    strategy:
+      # A red version fails its own job; the others still run.
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.resolve.outputs.matrix) }}
+    env:
+      OPENCLAW: ${{ matrix.version }}
+      RESULT: .regression/logs/result-${{ matrix.version }}.json
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+      - id: build
+        name: OpenClaw the plugin builds against
+        run: echo "version=$(node -p 'require("./package.json").openclaw.build.openclawVersion')" >>"$GITHUB_OUTPUT"
+      # Node and OpenClaw per version, like the .spike cache in ci.yml; the state is always fresh (the script wipes it).
+      # Restore and save are separate so a red leg saves too (actions/cache saves only after a green job): the save runs
+      # once the setup is complete (the tier ran), whatever its result.
+      - id: cache-tested
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            .regression/openclaw-${{ matrix.version }}/node
+            .regression/openclaw-${{ matrix.version }}/openclaw
+          key: regression-${{ runner.os }}-node${{ env.NODE_VERSION }}-openclaw${{ matrix.version }}
+      # The script builds against the pinned OpenClaw whatever version it tests; not needed with a given .tgz.
+      - id: cache-build
+        if: steps.build.outputs.version != matrix.version && !inputs.tgz_artifact
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            .regression/openclaw-${{ steps.build.outputs.version }}/node
+            .regression/openclaw-${{ steps.build.outputs.version }}/openclaw
+          key: regression-${{ runner.os }}-node${{ env.NODE_VERSION }}-openclaw${{ steps.build.outputs.version }}
+      - if: inputs.tgz_artifact
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: ${{ inputs.tgz_artifact }}
+          path: ${{ runner.temp }}/regression-tgz
+      # ui: the pinned Playwright (package-lock.json) and its Chromium. The browser download is cached per Playwright
+      # version; `--with-deps` installs the system libraries Chromium needs either way (they are not cached).
+      - id: playwright
+        if: inputs.tier == 'ui'
+        name: Playwright version
+        run: |
+          npm ci --no-audit --no-fund
+          echo "version=$(node -p 'require("playwright/package.json").version')" >>"$GITHUB_OUTPUT"
+      - id: cache-browsers
+        if: inputs.tier == 'ui'
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ~/.cache/ms-playwright
+          key: playwright-${{ runner.os }}-${{ steps.playwright.outputs.version }}-chromium
+      - if: inputs.tier == 'ui'
+        name: Chromium for Playwright
+        run: npx playwright install --with-deps chromium
+      - if: inputs.tier == 'ui' && steps.cache-browsers.outputs.cache-hit != 'true'
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ~/.cache/ms-playwright
+          key: ${{ steps.cache-browsers.outputs.cache-primary-key }}
+      - id: tier
+        name: ${{ env.TIER_TITLE }} tier (OpenClaw ${{ matrix.version }})
+        env:
+          REQUESTS: ${{ matrix.requests }}
+          TIER: ${{ inputs.tier }}
+          TGZ_DIR: ${{ inputs.tgz_artifact && format('{0}/regression-tgz', runner.temp) || '' }}
+          FORCE_RED: ${{ inputs.force_red }}
+        run: |
+          mkdir -p .regression/logs
+          args=("$TIER" --openclaw "$OPENCLAW" --result "$RESULT")
+          if [ -n "$TGZ_DIR" ]; then
+            shopt -s nullglob
+            tgz=("$TGZ_DIR"/*.tgz)
+            if [ "${#tgz[@]}" -ne 1 ]; then
+              echo "::error title=Regression tgz::the artifact must hold exactly one .tgz, found ${#tgz[@]}"
+              exit 1
+            fi
+            args+=(--tgz "${tgz[0]}")
+          fi
+          # The script's own exit code, not tee's, with or without pipefail.
+          set +e
+          scripts/regression.sh "${args[@]}" 2>&1 | tee .regression/logs/tier.log
+          status="${PIPESTATUS[0]}"
+          set -e
+          if [ ! -f "$RESULT" ]; then
+            jq -n --arg v "$OPENCLAW" '{version: $v, result: "error", failed: []}' >"$RESULT"
+          fi
+          # passed or failed: the tier ran, so Node and OpenClaw are complete and worth caching.
+          if jq -e '.result == "passed" or .result == "failed"' "$RESULT" >/dev/null; then
+            echo "setup=done" >>"$GITHUB_OUTPUT"
+          fi
+          if [ "$FORCE_RED" = true ]; then
+            echo "::warning title=Regression::force_red: this version fails on purpose"
+            jq '.result = "failed" | .failed += ["force_red: failed on purpose (workflow_dispatch input)"]' "$RESULT" >"$RESULT.tmp"
+            mv "$RESULT.tmp" "$RESULT"
+            status=1
+          fi
+          jq --arg r "$REQUESTS" '.requests = ($r | split(", "))' "$RESULT" >"$RESULT.tmp"
+          mv "$RESULT.tmp" "$RESULT"
+          exit "$status"
+      - if: always() && steps.tier.outputs.setup == 'done' && steps.cache-tested.outputs.cache-hit != 'true'
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            .regression/openclaw-${{ matrix.version }}/node
+            .regression/openclaw-${{ matrix.version }}/openclaw
+          key: ${{ steps.cache-tested.outputs.cache-primary-key }}
+      - if: always() && steps.tier.outputs.setup == 'done' && steps.cache-build.outcome == 'success' && steps.cache-build.outputs.cache-hit != 'true'
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            .regression/openclaw-${{ steps.build.outputs.version }}/node
+            .regression/openclaw-${{ steps.build.outputs.version }}/openclaw
+          key: ${{ steps.cache-build.outputs.cache-primary-key }}
+      - if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: ${{ env.ARTIFACTS }}-result-${{ matrix.version }}
+          path: ${{ env.RESULT }}
+          if-no-files-found: ignore
+          retention-days: 7
+      # The Gateway logs the scenario files keep: OpenClaw 2026.11 and later write them to the state's logs/, 2026.10 to
+      # $TMPDIR/openclaw/. With the tier's console output (tier.log) and the Vitest JSON report.
+      - if: failure()
+        name: Collect the failure logs
+        run: |
+          mkdir -p .regression/logs/gateway
+          cp -r ".regression/openclaw-$OPENCLAW/state/logs" .regression/logs/gateway/state-logs 2>/dev/null || true
+          cp "${TMPDIR:-/tmp}"/openclaw/*.log .regression/logs/gateway/ 2>/dev/null || true
+      - if: failure()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: ${{ env.ARTIFACTS }}-logs-${{ matrix.version }}
+          path: .regression/logs
+          if-no-files-found: ignore
+          retention-days: 7
+      # ui: the screenshot and page text of every failing check (test/regression/ui/browser.ts), named in its message.
+      - if: failure() && inputs.tier == 'ui'
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: regression-ui-screenshots-${{ matrix.version }}
+          path: .regression/ui-screenshots/${{ matrix.version }}
+          if-no-files-found: ignore
+          retention-days: 7
+
+  # The live tier runs only the code of `main` or of a tag (a release, ticket 4.7): on any other ref this job fails with
+  # one line and the `live` job, the only one with the key, never starts. For `workflow_call`, `github.ref` is the
+  # caller's. The real control is the `regression` environment's deployment branches (main and release tags,
+  # docs/release.md); this makes a dispatch from another branch fail clearly instead of waiting on that rule.
+  live-ref:
+    needs: resolve
+    if: inputs.tier == 'live' && github.ref != 'refs/heads/main' && !startsWith(github.ref, 'refs/tags/')
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions: {}
+    steps:
+      - name: Live tier on main or a tag only
+        env:
+          REF: ${{ github.ref }}
+        run: |
+          echo "::error title=Live tier::the live tier runs only on main or a tag, not on $REF: dispatch it from main"
+          exit 1
+
+  # The live tier (ticket 4.5): the only job with the Cursor key, from the environment `regression`. The key is in the
+  # env of the steps that need it, never in an output; the result and the logs it uploads are scrubbed of it first. One
+  # version at a time (the turns share one Cursor account). About an hour and a half of tier; the turn cap and
+  # `timeout-minutes` bound the cost.
+  live:
+    needs: resolve
+    if: inputs.tier == 'live' && (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/'))
+    name: live (${{ matrix.label }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    environment: regression
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      max-parallel: 1
+      matrix: ${{ fromJSON(needs.resolve.outputs.matrix) }}
+    env:
+      OPENCLAW: ${{ matrix.version }}
+      RESULT: .regression/logs/result-${{ matrix.version }}.json
+    steps:
+      # First, before any install: without the key the job fails here, with one clear line and no turn.
+      - name: Cursor key
+        env:
+          CURSOR_API_KEY: ${{ secrets.CURSOR_API_KEY }}
+        run: |
+          if [ -z "${CURSOR_API_KEY//[[:space:]]/}" ]; then
+            echo "::error title=Live tier::CURSOR_API_KEY is not set: the live tier needs the \`regression\` environment"
+            exit 1
+          fi
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+      - id: build
+        name: OpenClaw the plugin builds against
+        run: echo "version=$(node -p 'require("./package.json").openclaw.build.openclawVersion')" >>"$GITHUB_OUTPUT"
+      - id: cache-tested
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            .regression/openclaw-${{ matrix.version }}/node
+            .regression/openclaw-${{ matrix.version }}/openclaw
+          key: regression-${{ runner.os }}-node${{ env.NODE_VERSION }}-openclaw${{ matrix.version }}
+      - id: cache-build
+        if: steps.build.outputs.version != matrix.version && !inputs.tgz_artifact
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            .regression/openclaw-${{ steps.build.outputs.version }}/node
+            .regression/openclaw-${{ steps.build.outputs.version }}/openclaw
+          key: regression-${{ runner.os }}-node${{ env.NODE_VERSION }}-openclaw${{ steps.build.outputs.version }}
+      # The pinned cursor-agent, keyed by the pin's file. scripts/install-cursor-agent.mjs reuses a copy only when its
+      # recorded sha256 is the pin's, and checks every download against the pin.
+      - id: cache-agent
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: .regression/cursor-agent
+          key: cursor-agent-${{ runner.os }}-${{ hashFiles('src/adapters/cursor/install.ts') }}
+      - if: inputs.tgz_artifact
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: ${{ inputs.tgz_artifact }}
+          path: ${{ runner.temp }}/regression-tgz
+      - id: tier
+        name: Live tier (OpenClaw ${{ matrix.version }})
+        env:
+          CURSOR_API_KEY: ${{ secrets.CURSOR_API_KEY }}
+          REQUESTS: ${{ matrix.requests }}
+          TURN_CAP: ${{ inputs.live_turn_cap }}
+          TGZ_DIR: ${{ inputs.tgz_artifact && format('{0}/regression-tgz', runner.temp) || '' }}
+          FORCE_RED: ${{ inputs.force_red }}
+        run: |
+          mkdir -p .regression/logs
+          args=(live --openclaw "$OPENCLAW" --result "$RESULT" --turn-cap "${TURN_CAP:-400}")
+          if [ -n "$TGZ_DIR" ]; then
+            shopt -s nullglob
+            tgz=("$TGZ_DIR"/*.tgz)
+            if [ "${#tgz[@]}" -ne 1 ]; then
+              echo "::error title=Regression tgz::the artifact must hold exactly one .tgz, found ${#tgz[@]}"
+              exit 1
+            fi
+            args+=(--tgz "${tgz[0]}")
+          fi
+          set +e
+          scripts/regression.sh "${args[@]}" 2>&1 | tee .regression/logs/tier.log
+          status="${PIPESTATUS[0]}"
+          set -e
+          if [ ! -f "$RESULT" ]; then
+            jq -n --arg v "$OPENCLAW" '{version: $v, tier: "live", result: "error", failed: []}' >"$RESULT"
+          fi
+          if jq -e '.result == "passed" or .result == "failed"' "$RESULT" >/dev/null; then
+            echo "setup=done" >>"$GITHUB_OUTPUT"
+          fi
+          if [ "$FORCE_RED" = true ]; then
+            echo "::warning title=Regression::force_red: this version fails on purpose"
+            jq '.result = "failed" | .failed += ["force_red: failed on purpose (workflow_dispatch input)"]' "$RESULT" >"$RESULT.tmp"
+            mv "$RESULT.tmp" "$RESULT"
+            status=1
+          fi
+          jq --arg r "$REQUESTS" '.requests = ($r | split(", "))' "$RESULT" >"$RESULT.tmp"
+          mv "$RESULT.tmp" "$RESULT"
+          exit "$status"
+      - if: always() && steps.tier.outputs.setup == 'done' && steps.cache-tested.outputs.cache-hit != 'true'
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            .regression/openclaw-${{ matrix.version }}/node
+            .regression/openclaw-${{ matrix.version }}/openclaw
+          key: ${{ steps.cache-tested.outputs.cache-primary-key }}
+      - if: always() && steps.tier.outputs.setup == 'done' && steps.cache-build.outcome == 'success' && steps.cache-build.outputs.cache-hit != 'true'
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            .regression/openclaw-${{ steps.build.outputs.version }}/node
+            .regression/openclaw-${{ steps.build.outputs.version }}/openclaw
+          key: ${{ steps.cache-build.outputs.cache-primary-key }}
+      - if: always() && steps.tier.outputs.setup == 'done' && steps.cache-agent.outputs.cache-hit != 'true'
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: .regression/cursor-agent
+          key: ${{ steps.cache-agent.outputs.cache-primary-key }}
+      # The result's failure messages quote Gateway answers and stderr, and the summary job prints them: whatever the
+      # outcome, it is scrubbed of the key again before it leaves the job (the writer already scrubs it). Nothing to do
+      # when the job stopped before the checkout (no key) or before the tier wrote a result.
+      - if: always()
+        name: Scrub the key from the result
+        env:
+          CURSOR_API_KEY: ${{ secrets.CURSOR_API_KEY }}
+        run: |
+          if [ -f scripts/scrub-key.mjs ] && [ -f "$RESULT" ]; then node scripts/scrub-key.mjs "$RESULT"; fi
+      - if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: ${{ env.ARTIFACTS }}-result-${{ matrix.version }}
+          path: ${{ env.RESULT }}
+          if-no-files-found: ignore
+          retention-days: 7
+      # The Gateway logs (as in the tier job), the run's own records (.regression/live/<version>: the turn log, tries,
+      # tokens, measurements), and the console output (tier.log). A Gateway log could quote the key (the Test connection
+      # check saves it as an auth profile), so every collected file is scrubbed of it before the upload; the state,
+      # which holds that profile, is never uploaded.
+      - if: failure()
+        name: Collect the failure logs
+        env:
+          CURSOR_API_KEY: ${{ secrets.CURSOR_API_KEY }}
+        run: |
+          # The key check failed before the checkout: there is nothing to collect, and no scrubber.
+          if [ ! -f scripts/scrub-key.mjs ]; then
+            echo "No checkout (the job stopped at the key check): no logs to collect."
+            exit 0
+          fi
+          mkdir -p .regression/logs/gateway .regression/logs/live
+          cp -r ".regression/openclaw-$OPENCLAW/state/logs" .regression/logs/gateway/state-logs 2>/dev/null || true
+          cp "${TMPDIR:-/tmp}"/openclaw/*.log .regression/logs/gateway/ 2>/dev/null || true
+          cp -r ".regression/live/$OPENCLAW/." .regression/logs/live/ 2>/dev/null || true
+          node scripts/scrub-key.mjs .regression/logs
+      - if: failure()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: ${{ env.ARTIFACTS }}-logs-${{ matrix.version }}
+          path: .regression/logs
+          if-no-files-found: ignore
+          retention-days: 7
+
+  summary:
+    needs: [resolve, tier, live]
+    if: ${{ !cancelled() && needs.resolve.result == 'success' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    outputs:
+      results: ${{ steps.summary.outputs.results }}
+    steps:
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          pattern: ${{ env.ARTIFACTS }}-result-*
+          path: results
+          merge-multiple: true
+      - id: summary
+        name: Results per version
+        env:
+          VERSIONS: ${{ needs.resolve.outputs.versions }}
+        run: |
+          shopt -s nullglob
+          files=(results/result-*.json)
+          # One row per resolved version, in the requested order; a job that wrote no result (cancelled, timed out) shows so.
+          results="$(jq -c -s --argjson versions "$VERSIONS" '. as $rows | $versions | map(. as $v | (($rows | map(select(.version == $v.version)) | first) // {version: $v.version, result: "no result", failed: []}) + {requests: $v.requests})' /dev/null "${files[@]}")"
+          echo "results=$results" >>"$GITHUB_OUTPUT"
+          {
+            echo "### $TIER_TITLE regression tier"
+            echo
+            echo "| Requested | OpenClaw | Result | Time | Plugin sha256 |"
+            echo "| --- | --- | --- | --- | --- |"
+            jq -r '.[] | "| \(.requests | join(", ")) | \(.version) | \(.result) | \(if (.seconds | type) == "number" then "\(.seconds / 60 | floor)m \(.seconds % 60)s" else "-" end) | \(if .sha256 then "`\(.sha256)`" else "-" end) |"' <<<"$results"
+            jq -r '.[] | select((.failed // []) | length > 0) | "\nFailing on OpenClaw \(.version):\n", (.failed[] | "- `\(gsub("`"; "'"'"'"))`")' <<<"$results"
+            # live: the totals (time, turns, Cursor tokens), each file's result, tries and time, and the needed retries.
+            jq -r '
+              def dur: if type == "number" then "\(. / 60 | floor)m \(. % 60 | floor)s" else "-" end;
+              def count: if type == "number" then tostring else "unknown" end;
+              .[] | select(.tier == "live") |
+              "\n#### Live on OpenClaw \(.version)\n",
+              "Time \(.seconds | dur), turns \(.turns | count) (cap \(.turnCap | count)\(if (.refusedTurns // 0) > 0 then ", \(.refusedTurns) refused" else "" end)), tokens \(.tokens.total | count)\(if .tokens then " (input \(.tokens.input), output \(.tokens.output), cache read \(.tokens.cacheRead), cache write \(.tokens.cacheWrite))" else "" end)\n",
+              "| File | Result | Tests | Tries | Time |",
+              "| --- | --- | --- | --- | --- |",
+              ((.files // [])[] | "| `\(.file)` | \(.result) | \(.tests) | \(.tries) | \(.seconds | dur) |"),
+              (if ((.neededRetries // []) | length) > 0 then "\nNeeded retries:\n", (.neededRetries[] | "- `\(gsub("`"; "'"'"'"))`") else empty end),
+              (if ((.skipped // []) | length) > 0 then "\nSkipped:\n", (.skipped[] | "- `\(gsub("`"; "'"'"'"))`") else empty end)
+            ' <<<"$results"
+          } >>"$GITHUB_STEP_SUMMARY"

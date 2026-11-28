@@ -1,0 +1,75 @@
+name: Regression beta
+
+# The Gateway regression tier on OpenClaw `beta`, weekly (epic-regression-gate ticket 4), so a break in the next
+# OpenClaw shows before it is `latest`. Red: the `issue` job opens one issue labelled `regression:beta`, `source:regression`,
+# `type:bug`, and `status:todo` (no triage, no approval: the next implementation run builds it, or hands it to the owner when
+# OpenClaw is at fault; docs/agents/implement.md "Regression issues"), or comments on the open one; green changes nothing. All logic is in
+# scripts/regression-beta-issue.mjs. `force_red` (dispatch only) fails the run on purpose to exercise the issue path; its issue is
+# marked `forced` and gets no source:regression (never trusted). The issue flow trusts source:regression only for a run of this file on
+# main (scripts/issue-flow/transitions.mjs, REGRESSION_WORKFLOWS).
+# A scheduled or dispatched workflow runs only once this file is on the default branch.
+on:
+  schedule:
+    - cron: "37 5 * * 1" # Mondays 05:37 UTC
+  workflow_dispatch:
+    inputs:
+      force_red:
+        description: "Fail the run on purpose after the tier ran, to exercise the issue path"
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+# One run at a time, so two red runs never both find no open issue and open two.
+concurrency:
+  group: regression-beta
+  cancel-in-progress: false
+
+env:
+  # Same default as ci.yml and scripts/dev-openclaw.sh.
+  NODE_VERSION: 24.22.0
+
+# An explicit bash runs every step with `-eo pipefail` (the implicit default is `bash -e`, without pipefail).
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  regression:
+    permissions:
+      contents: read
+    uses: ./.github/workflows/regression.yml
+    with:
+      versions: beta
+      # Never on the schedule.
+      force_red: ${{ github.event_name == 'workflow_dispatch' && inputs.force_red }}
+
+  issue:
+    needs: regression
+    # The script decides: only a red (`failure`) run writes anything.
+    if: ${{ !cancelled() }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      issues: write # opens the beta issue or comments on it
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+      - name: Open or comment on the beta issue
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+          OUTCOME: ${{ needs.regression.result }}
+          RESULTS: ${{ needs.regression.outputs.results }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          # A forced red is no finding: the script marks its issue `forced` and gives it no source:regression.
+          FORCED: ${{ github.event_name == 'workflow_dispatch' && inputs.force_red && 'true' || 'false' }}
+        run: |
+          printf '%s' "$RESULTS" >"$RUNNER_TEMP/results.json"
+          node scripts/regression-beta-issue.mjs report --outcome "$OUTCOME" --results "$RUNNER_TEMP/results.json" --run-url "$RUN_URL" --forced "$FORCED"

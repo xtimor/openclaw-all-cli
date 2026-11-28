@@ -96,6 +96,7 @@ An agent declines on its own but never closes (a reporter without write access c
   - `priority:p2`: a real defect with a workaround, or an idea that fits the spec.
   - `priority:p3`: polish, docs, nice to have.
 - `source:agent`: filed by an agent (form field or the body line `Filed by: agent`).
+- `source:regression` (owner decision 2026-11-28, epic-regression-gate ticket 11): filed by a regression run (today the weekly beta run), which fixes at once: a trusted one in `todo` skips triage and the owner's approval, and the next implementation run builds it like an approved issue. Trusted only when `github-actions[bot]` opened the issue and made the label's latest `labeled` event in the run its first line names, a run of an allowed workflow (`regression-beta.yml`) on `main` (schedule or dispatch, not `force_red`), and no block, decline, or close came after the label (that ends the shortcut for good); the state automation removes any other, the relay never adds it, and the own-click rule, the ticket, the reproduction test, the ledger entry, and `Batch merge` stay as for every issue (`docs/agents/implement.md`, "Regression issues").
 
 ## Triage run (twice a day)
 

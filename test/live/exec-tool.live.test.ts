@@ -172,6 +172,26 @@ describeLive("OpenClaw exec is the model's shell (P8, P10)", () => {
     LIVE_TIMEOUT_MS * 3,
   );
 
+  // Issue #76: in agent mode Cursor's native shell is denied, and the model got only Cursor's generic refusal, so a
+  // model asked to run something gave up. The plugin now tells it once that commands run through OpenClaw exec. The
+  // ask names no tool (unlike `runIt`), so only that note can lead the model to exec. No `retrying` here: whether the
+  // model finds exec is the scenario itself, and the live config's 3 tries are all it gets.
+  it(
+    "#76: a command asked for without naming a tool runs through OpenClaw exec in agent mode",
+    async () => {
+      const id = token();
+      const marker = path(`unnamed-${id}.marker`);
+      const file = script("unnamed", `${RUNTIME_SECRET}\nprintf '%s' $S > ${marker}\necho "out:$S"`);
+      const turn = await ask(sessionId("unnamed"), `Please run the shell script ${file} and tell me exactly what it printed.`);
+      expect(turn.raw, "OpenClaw's budget compaction failed the turn (not #76)").not.toMatch(/transcript compaction failed/);
+      expect(turn.status, turn.raw.slice(-2_000)).toBe(0);
+      expect(existsSync(marker), `the script never ran (tools: ${turn.tools.join(", ") || "none"}); reply: ${turn.reply.slice(0, 500)}`).toBe(true);
+      expect(calledExec(turn), `tools: ${turn.tools.join(", ")}`).toBe(true);
+      expect(turn.reply).toContain(readFileSync(marker, "utf8"));
+    },
+    LIVE_TIMEOUT_MS,
+  );
+
   it(
     "keeps Cursor's native shell, write, edit and delete blocked in agent mode, after Cursor really tried them",
     async () => {

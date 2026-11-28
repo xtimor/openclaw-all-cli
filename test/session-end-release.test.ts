@@ -2,10 +2,11 @@ import { randomUUID } from "node:crypto";
 import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterAll, describe, expect, it } from "vitest";
+import { afterAll, describe, expect, it, vi } from "vitest";
 import type { CliBackendPlugin, LiveSessionCapability, LiveSessionHandle } from "../src/core/sdk-types.ts";
 import { FAKE_CURSOR_AGENT, fakeEnv } from "./fixtures/paths.ts";
 import { MCP_CONFIG_TEST_KEY, withHostMcp } from "./fixtures/host-mcp.ts";
+import { startEmptyToolList } from "./fixtures/empty-tool-list.ts";
 import { registerAdapters } from "../src/core/register.ts";
 import { ADAPTERS } from "../src/registry.ts";
 
@@ -27,9 +28,14 @@ it("registers a session_end hook, so a finished conversation releases its proces
 // Ticket 22 (issue #74): each criterion against the real adapter and the ACP stand-in, through the registered backend and hook.
 
 const scratch = mkdtempSync(join(tmpdir(), "oac-session-end-"));
-afterAll(() => rmSync(scratch, { recursive: true, force: true }));
+// A readable, empty tool list: a no-exec process whose list cannot be read is not reused (#102).
+const target = await startEmptyToolList();
+afterAll(() => {
+  target.close();
+  rmSync(scratch, { recursive: true, force: true });
+});
 const mcpFile = join(scratch, "mcp.json");
-writeFileSync(mcpFile, JSON.stringify({ mcpServers: { openclaw: { url: "http://127.0.0.1:1/mcp", headers: {} } } }));
+writeFileSync(mcpFile, JSON.stringify({ mcpServers: { openclaw: { url: target.url, headers: {} } } }));
 
 type EndEvent = { sessionId: string; sessionKey?: string; reason?: string };
 type Host = {
@@ -42,12 +48,15 @@ type Host = {
   pids: () => number[];
 };
 
-function host(extraEnv: Record<string, string> = {}): Host {
+/** One loaded copy of the plugin: its own module instances of the registration code and the adapters. */
+type PluginCopy = { registerAdapters: typeof registerAdapters; adapters: typeof ADAPTERS };
+
+function host(extraEnv: Record<string, string> = {}, copy: PluginCopy = { registerAdapters, adapters: ADAPTERS }): Host {
   const log = join(scratch, `${randomUUID()}.jsonl`);
   let backend!: CliBackendPlugin;
   let hook!: (event: EndEvent, ctx: { sessionId: string; sessionKey?: string }) => void;
   let stop!: () => Promise<void>;
-  registerAdapters(
+  copy.registerAdapters(
     {
       pluginConfig: {},
       registerProvider: () => {},
@@ -58,7 +67,7 @@ function host(extraEnv: Record<string, string> = {}): Host {
         if (name === "session_end") hook = handler;
       },
     } as never,
-    ADAPTERS,
+    copy.adapters,
   );
   const lives = new Map<string, LiveSessionHandle | undefined>();
   const runtimeLine = (key: string) => `Runtime: agent=main | session=${key} | host=openclaw | os=Linux`;
@@ -233,5 +242,58 @@ describe("a finished conversation releases its process (ticket 22)", () => {
         ADAPTERS,
       ),
     ).not.toThrow();
+  });
+});
+
+// Issue #105: OpenClaw 2026.10.3 with a second agent in the config loads the plugin twice in one Gateway. A turn runs in
+// one copy (its pool holds the process), and `session_end` runs in the Gateway's own copy. Each copy here is a fresh
+// module graph of the registration code and the adapters, as each captured build is in the host.
+describe("a conversation end reaches every loaded copy of the plugin (issue #105)", () => {
+  async function loadCopy(): Promise<PluginCopy> {
+    vi.resetModules();
+    const [register, registry] = await Promise.all([import("../src/core/register.ts"), import("../src/registry.ts")]);
+    return { registerAdapters: register.registerAdapters, adapters: registry.ADAPTERS };
+  }
+
+  it("closes the idle process another copy started for the ended conversation, and only that one", async () => {
+    // A chat store gives each chat its own Cursor ID, so the second chat does not take over the first one's process.
+    const store = mkdtempSync(join(scratch, "store-"));
+    const gatewayModules = await loadCopy();
+    const turnModules = await loadCopy();
+    // Two module instances, as two captured builds are: neither shares the other's (or the static import's) module state.
+    expect(new Set([gatewayModules.registerAdapters, turnModules.registerAdapters, registerAdapters]).size).toBe(3);
+    expect(new Set([gatewayModules.adapters, turnModules.adapters, ADAPTERS]).size).toBe(3);
+    const gatewayCopy = host({ FAKE_CURSOR_STORE: store }, gatewayModules);
+    const turnCopy = host({ FAKE_CURSOR_STORE: store }, turnModules);
+    try {
+      await turnCopy.turn("agent:main:explicit:a");
+      await turnCopy.turn("agent:main:explicit:b");
+      const [a, b] = turnCopy.pids();
+      expect(gatewayCopy.pids()).toEqual([]);
+      expect([alive(a!), alive(b!)]).toEqual([true, true]);
+      gatewayCopy.end({ sessionId: "s1", sessionKey: "agent:main:explicit:a", reason: "reset" });
+      expect(await gone(a!)).toBe(true);
+      expect(alive(b!)).toBe(true);
+    } finally {
+      await Promise.all([gatewayCopy.stop(), turnCopy.stop()]);
+    }
+  });
+
+  it("takes a copy's pools out of the shared registry when the copy unloads", async () => {
+    const shared = () =>
+      [...((globalThis as unknown as Record<symbol, Set<WeakRef<object>> | undefined>)[Symbol.for("openclaw-all-cli.conversation-pools")] ?? [])]
+        .map((ref) => ref.deref())
+        .filter((pool) => pool !== undefined);
+    const before = new Set(shared());
+    const copy = host({}, await loadCopy());
+    try {
+      const added = shared().filter((pool) => !before.has(pool));
+      // One pool per adapter of the copy.
+      expect(added).toHaveLength(ADAPTERS.length);
+      await copy.stop();
+      expect(shared().filter((pool) => added.includes(pool))).toEqual([]);
+    } finally {
+      await copy.stop();
+    }
   });
 });

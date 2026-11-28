@@ -1,7 +1,7 @@
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
-import { structuredOutputNote } from "../src/core/turn-prompt.ts";
+import { CONTINUITY_NOTE, structuredOutputNote } from "../src/core/turn-prompt.ts";
 import { turnWithHostTools } from "./fixtures/host-tools-turn.ts";
 
 // Issue #75 (ticket 24): a run with an outputSchema succeeds only if the model calls the host's
@@ -12,7 +12,7 @@ describe("structured_output hint", () => {
     expect(prompts.join("\n")).toContain("structured_output");
     expect(prompts).toHaveLength(1);
     expect(prompts[0]).toMatch(/final answer.*`structured_output`.*prose alone fails the run/s);
-    expect(prompts[0]).toMatch(/do it 0$/);
+    expect(prompts[0]).toMatch(/^do it 0\n\n\[OpenClaw\] Give your final answer/);
   });
 
   it("says nothing without structured_output in the host's tool list", async () => {
@@ -29,13 +29,41 @@ describe("structured_output hint", () => {
     expect(prompts[0]).not.toMatch(/native shell/);
   });
 
-  it("goes after the shell sentence and before the user's text", async () => {
+  it("goes after the shell sentence and after the user's text", async () => {
     const { prompts } = await turnWithHostTools(["exec", "structured_output"]);
     const shell = prompts[0]!.indexOf("native shell");
+    const user = prompts[0]!.indexOf("do it 0");
     const structured = prompts[0]!.indexOf("structured_output");
     expect(shell).toBeGreaterThanOrEqual(0);
-    expect(structured).toBeGreaterThan(shell);
-    expect(prompts[0]).toMatch(/do it 0$/);
+    expect(user).toBeGreaterThan(shell);
+    expect(structured).toBeGreaterThan(user);
+  });
+
+  it("ends the prompt with the sentence, after the host's appended reply guidance (bug 40)", async () => {
+    // A collector child's prompt ends with the host's "reply normally in your final assistant message"; a codex
+    // model obeyed that last instruction and never called the tool (live, 2026-11-28).
+    const guidance = "For the current source conversation, reply normally in your final assistant message.";
+    const ctx = { promptContext: { appendContext: guidance } };
+    // With exec: the continuity and shell sentences stay before the user's text.
+    const shellTurn = await turnWithHostTools(["exec", "structured_output"], { ctx, continuity: true });
+    expect(shellTurn.prompts).toHaveLength(1);
+    const prompt = shellTurn.prompts[0]!;
+    expect(prompt.indexOf("do it 0")).toBeLessThan(prompt.indexOf(guidance));
+    expect(prompt.endsWith(structuredOutputNote())).toBe(true);
+    expect(prompt.indexOf(CONTINUITY_NOTE)).toBeGreaterThanOrEqual(0);
+    expect(prompt.indexOf(CONTINUITY_NOTE)).toBeLessThan(prompt.indexOf("do it 0"));
+    expect(prompt.indexOf("native shell")).toBeLessThan(prompt.indexOf("do it 0"));
+    // Without exec, with an OpenClaw writer: the ask-mode sentence stays before the user's text too.
+    const askTurn = await turnWithHostTools(["write", "structured_output"], { ctx, marker: false });
+    const askPrompt = askTurn.prompts[0]!;
+    expect(askPrompt.endsWith(structuredOutputNote())).toBe(true);
+    expect(askPrompt.indexOf("does not make this chat")).toBeGreaterThanOrEqual(0);
+    expect(askPrompt.indexOf("does not make this chat")).toBeLessThan(askPrompt.indexOf("do it 0"));
+  });
+
+  it("tells the model a prose final answer fails even where the text before says to reply normally", () => {
+    expect(structuredOutputNote()).toMatch(/`structured_output`/);
+    expect(structuredOutputNote()).toMatch(/reply normally/);
   });
 
   it("sends the sentence once per process, not on every turn", async () => {
@@ -49,7 +77,7 @@ describe("structured_output hint", () => {
     const { prompts, opens } = await turnWithHostTools((turn) => (turn >= 1 ? ["read", "structured_output"] : ["read"]), { turns: 3 });
     expect(opens).toHaveLength(1);
     expect(prompts[0]).toBe("do it 0");
-    expect(prompts[1]).toMatch(/`structured_output`.*do it 1$/s);
+    expect(prompts[1]).toMatch(/^do it 1\n\n.*`structured_output`/s);
     expect(prompts[2]).toBe("do it 2");
   });
 

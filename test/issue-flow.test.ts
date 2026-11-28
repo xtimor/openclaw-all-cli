@@ -19,6 +19,8 @@ interface IssueIn {
   user?: { login: string };
   author?: string;
   updated_at?: string;
+  created_at?: string;
+  body?: string;
   pull_request?: object;
 }
 interface Event {
@@ -43,6 +45,15 @@ interface Transitions {
   OWNER_ONLY_STATUSES: string[];
   NON_OWNER_REWORK_COMMENT: string;
   reworkComment(eventId: unknown): Action;
+  SOURCE_REGRESSION: string;
+  UNTRUSTED_REGRESSION_COMMENT: string;
+  regressionComment(eventId: unknown): Action;
+  regressionEndedComment(eventId: unknown): Action;
+  ENDED_REGRESSION_COMMENT: string;
+  REGRESSION_WORKFLOWS: Array<{ path: string; marker: RegExp }>;
+  isRegressionWriter(login: unknown): boolean;
+  regressionRunRef(body: unknown): { runId: string; path: string } | null;
+  regressionRunVerdict(issue: IssueIn, regression: unknown, options?: { repo?: string; labeledAt?: number }): "trusted" | "pending" | "untrusted";
   LEGACY_STATUS: Record<string, string>;
   AWAITING_POST: string;
   UPSTREAM: string;
@@ -55,7 +66,7 @@ interface Transitions {
   staleStatus(issue: IssueIn): string | null;
   statusSince(events: unknown, label?: string): number | null;
   needsInfoSince(events: unknown): number | null;
-  decide(event: Event, issue: IssueIn, options?: { owners?: string[]; agents?: string[]; timeline?: unknown[] }): Action[];
+  decide(event: Event, issue: IssueIn, options?: { owners?: string[]; agents?: string[]; timeline?: unknown[]; regression?: unknown; repo?: string }): Action[];
   approvalComment(eventId: unknown): Action;
   needsTimeline(issue: IssueIn, event?: Event): boolean;
   normalizeTimeline(raw: unknown): Array<{ id: unknown; label: string; actor: string | null }>;
@@ -1065,7 +1076,14 @@ interface FakeIssue extends IssueIn {
 }
 function fakeGithub(
   issues: FakeIssue[],
-  options: { missingLabels?: Set<string>; failOn?: (call: string) => Error | undefined; events?: Record<number, unknown[]>; comments?: Record<number, Array<string | { body: string; login: string }>> } = {},
+  options: {
+    missingLabels?: Set<string>;
+    failOn?: (call: string) => Error | undefined;
+    events?: Record<number, unknown[]>;
+    comments?: Record<number, Array<string | { body: string; login: string }>>;
+    runs?: Record<number, object>;
+    compare?: Record<string, string>;
+  } = {},
 ) {
   const calls: string[] = [];
   const byNumber = new Map(issues.map((i) => [i.number, structuredClone(i)]));
@@ -1106,6 +1124,22 @@ function fakeGithub(
           byNumber.get(issue_number)!.state = state;
         }),
       listForRepo: Symbol("listForRepo"),
+    },
+    actions: {
+      getWorkflowRun: ({ run_id }: { run_id: number }) =>
+        record(`run ${run_id}`, () => {
+          const found = options.runs?.[run_id];
+          if (!found) throw Object.assign(new Error("Not Found"), { status: 404 });
+          return { data: structuredClone(found) };
+        }),
+    },
+    repos: {
+      compareCommitsWithBasehead: ({ basehead }: { basehead: string }) =>
+        record(`compare ${basehead}`, () => {
+          const status = options.compare?.[basehead.split("...")[0] ?? ""];
+          if (!status) throw Object.assign(new Error("Not Found"), { status: 404 });
+          return { data: { status } };
+        }),
     },
   };
   const github = {
@@ -1698,7 +1732,7 @@ describe("workflow file", () => {
       expect(rest).toMatch(/# v\d/);
     }
     expect(text).toContain("actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0");
-    expect(text).toMatch(/permissions:\n {2}issues: write\n {2}pull-requests: read\n {2}contents: read\n/);
+    expect(text).toMatch(/permissions:\n {2}issues: write\n {2}pull-requests: read\n {2}contents: read\n {2}actions: read #[^\n]*\n\n/);
   });
 
   it("keeps the owner list in the workflow and never in the module", () => {
@@ -1718,5 +1752,238 @@ describe("workflow file", () => {
     const scripts = [...text.matchAll(/script: \|\n((?: {12}.*\n?)+)/g)].map((m) => m[1]);
     expect(scripts).toHaveLength(2);
     for (const script of scripts) expect([...(script ?? "").matchAll(/\$\{\{([^}]*)\}\}/g)].map((m) => m[1]?.trim())).toEqual(["github.workspace"]);
+  });
+});
+
+describe("source:regression (epic-regression-gate ticket 11)", () => {
+  // A regression run's finding goes straight to work: a trusted `source:regression` in `status:todo` is skipped by triage and built by
+  // the next implementation run with no approval. Trusted: github-actions[bot] opened the issue and made the label's latest labeled
+  // event, the issue's first line names a regression-beta run on main (schedule or dispatch, a commit of main) that was running when
+  // the issue was opened, and no blocked, declined, or close came after the label. The automation removes any other.
+  const SOURCE = "source:regression";
+  const BOT = "github-actions[bot]";
+  const AGENT = "openclaw-all-cli-agent[bot]";
+  const RUN = 4242;
+  const BODY = `<!-- regression-beta run=${RUN} -->\nThe weekly Gateway regression tier is red.`;
+  const CREATED = "2026-10-20T10:00:00.000Z"; // = labeledAt(..., 0, ...)
+  const goodRun = (extra: Record<string, unknown> = {}) => ({
+    id: RUN,
+    path: ".github/workflows/regression-beta.yml",
+    head_branch: "main",
+    event: "schedule",
+    status: "completed",
+    head_sha: "a".repeat(40),
+    run_started_at: "2026-10-20T09:40:00Z",
+    updated_at: "2026-10-20T10:10:00Z",
+    repository: { full_name: REPO },
+    head_repository: { full_name: REPO },
+    ...extra,
+  });
+  const trustedRun = (extra: Record<string, unknown> = {}, onMain = true) => ({ run: goodRun(extra), onMain });
+  const opts = (timeline: unknown[] = [], regression: unknown = trustedRun()) => ({ owners: OWNERS, agents: [AGENT], timeline, regression, repo: REPO });
+  const filed = (labels: string[], author = BOT, extra: IssueIn = {}) => issue(labels, { user: { login: author }, body: BODY, created_at: CREATED, ...extra });
+  const removed = (id: unknown): Action[] => [remove(SOURCE), t.regressionComment(id)];
+  const ended = (id: unknown): Action[] => [remove(SOURCE), t.regressionEndedComment(id)];
+  const labeled = (label: string, actor: string) => ({ name: "issues", action: "labeled", actor, label });
+  const unlabeledAt = (label: string, actor: string, minutes: number, id: number) => ({ ...labeledAt(label, actor, minutes, id), event: "unlabeled" });
+  const closedAt = (minutes: number, id: number) => ({ id, event: "closed", actor: { login: "xtimor" }, created_at: new Date(Date.parse(CREATED) + minutes * 60_000).toISOString() });
+  /** The beta workflow's own label events at creation. */
+  const created = (): Record<string, unknown>[] => [labeledAt(SOURCE, BOT, 0, 1), labeledAt("status:todo", BOT, 0, 2)];
+  const LABELS = ["status:todo", SOURCE, "type:bug", "regression:beta"];
+  const later = labeled("priority:p1", "xtimor");
+
+  it("is a label, not a status; only github-actions[bot] writes it (never the agent app, an owner, or a person)", () => {
+    expect(t.SOURCE_REGRESSION).toBe(SOURCE);
+    expect(t.STATUS_LABELS).not.toContain(SOURCE);
+    expect(readFileSync(join(ROOT, ".github", "labels.yml"), "utf8")).toContain(`- name: "${SOURCE}"`);
+    expect(t.isRegressionWriter(BOT)).toBe(true);
+    expect(t.isRegressionWriter("GitHub-Actions[bot]")).toBe(true);
+    for (const login of [AGENT, "xtimor", "mallory", "", null, undefined, "github-actions", "claude[bot]"]) expect(t.isRegressionWriter(login), String(login)).toBe(false);
+    expect(t.regressionComment(5)).toEqual({ op: "comment", body: `${t.UNTRUSTED_REGRESSION_COMMENT}\n<!-- issue-flow:regression:5 -->`, once: "<!-- issue-flow:regression:5 -->" });
+    expect(t.regressionEndedComment(5)).toEqual({ op: "comment", body: `${t.ENDED_REGRESSION_COMMENT}\n<!-- issue-flow:regression-ended:5 -->`, once: "<!-- issue-flow:regression-ended:5 -->" });
+    expect(JSON.stringify(t.regressionComment(5))).not.toContain("issue-flow:approval:");
+    expect(t.REGRESSION_WORKFLOWS.map((entry) => entry.path)).toEqual([".github/workflows/regression-beta.yml"]);
+  });
+
+  it("regressionRunRef reads only an exact first-line marker; a forced, trailing, quoted, or later-line marker names no run", () => {
+    expect(t.regressionRunRef(BODY)).toEqual({ runId: String(RUN), path: ".github/workflows/regression-beta.yml" });
+    expect(t.regressionRunRef(`<!-- regression-beta run=${RUN} -->\r\nx`)).toEqual({ runId: String(RUN), path: ".github/workflows/regression-beta.yml" });
+    for (const body of [`<!-- regression-beta run=${RUN} forced -->`, `<!-- regression-beta run=${RUN} --> x`, ` <!-- regression-beta run=${RUN} -->`, `x\n<!-- regression-beta run=${RUN} -->`, "<!-- regression-beta run=abc -->", "", undefined, 7]) {
+      expect(t.regressionRunRef(body), String(body)).toBeNull();
+    }
+  });
+
+  it("needsTimeline: an open issue with source:regression needs the label history; a closed one does not", () => {
+    expect(t.needsTimeline(filed(["status:todo", SOURCE]))).toBe(true);
+    expect(t.needsTimeline(filed(["status:todo", SOURCE], BOT, { state: "closed" }))).toBe(false);
+  });
+
+  it("TRUSTED: the beta workflow's issue keeps the label and status:todo (the ready-to-build state) through later people's events", () => {
+    expect(t.decide(later, filed(LABELS), opts(created()))).toEqual([]);
+    expect(t.decide({ name: "issues", action: "unlabeled", actor: "xtimor", label: "regression:beta" }, filed(LABELS), opts(created()))).toEqual([]);
+    // A dispatched run of the same workflow on main counts too; a commit that main has moved past is still on main.
+    expect(t.decide(later, filed(LABELS), opts(created(), trustedRun({ event: "workflow_dispatch" })))).toEqual([]);
+    expect(t.regressionRunVerdict(filed(LABELS), trustedRun(), { repo: REPO })).toBe("trusted");
+  });
+
+  it("PENDING: a run still in progress decides nothing yet, but only once every other check passed", () => {
+    expect(t.regressionRunVerdict(filed(LABELS), trustedRun({ status: "in_progress", updated_at: "2026-10-20T09:45:00Z" }), { repo: REPO })).toBe("pending");
+    expect(t.decide(later, filed(LABELS), opts(created(), trustedRun({ status: "in_progress" })))).toEqual([]);
+    expect(t.regressionRunVerdict(filed(LABELS), trustedRun({ status: "in_progress", head_branch: "feature" }), { repo: REPO })).toBe("untrusted");
+  });
+
+  it("RUN_REJECTED: every check of the run binds; each failure removes the label with one comment and leaves the status", () => {
+    const cases: Array<[string, unknown, IssueIn?]> = [
+      ["the run could not be read", { run: null, onMain: false }],
+      ["another run id", trustedRun({ id: RUN + 1 })],
+      ["another workflow (a pull request's own workflow)", trustedRun({ path: ".github/workflows/evil.yml" })],
+      ["a branch other than main (dispatch --ref feature)", trustedRun({ head_branch: "feature" })],
+      ["a pull_request event", trustedRun({ event: "pull_request" })],
+      ["a pull_request_target event", trustedRun({ event: "pull_request_target" })],
+      ["a push event", trustedRun({ event: "push" })],
+      ["another repository", trustedRun({ repository: { full_name: "other/repo" } })],
+      ["a fork's head", trustedRun({ head_repository: { full_name: "mallory/openclaw-all-cli" } })],
+      ["a commit that is not on main", trustedRun({}, false)],
+      ["an issue opened before the run started", trustedRun({ run_started_at: "2026-10-20T10:30:00Z" })],
+      ["an issue opened after the run ended", trustedRun({ updated_at: "2026-10-20T09:59:00Z" })],
+      ["no start time", trustedRun({ run_started_at: null })],
+      ["a forced run's marker", trustedRun(), { body: `<!-- regression-beta run=${RUN} forced -->\nforced` }],
+      ["no marker", trustedRun(), { body: "a bug" }],
+      ["a marker that is not on the first line", trustedRun(), { body: `hello\n<!-- regression-beta run=${RUN} -->` }],
+    ];
+    for (const [name, regression, extra] of cases) {
+      expect(t.decide(later, filed(LABELS, BOT, extra), opts(created(), regression)), name).toEqual(removed(1));
+    }
+    // Not read at all (no `regression` option) counts as unreadable.
+    expect(t.decide(later, filed(LABELS), { owners: OWNERS, timeline: created(), repo: REPO })).toEqual(removed(1));
+    // A label added after the run ended does not count, even by the bot.
+    const lateLabel = [labeledAt("status:todo", BOT, 0, 2), labeledAt(SOURCE, BOT, 20, 3)];
+    expect(t.decide(later, filed(LABELS), opts(lateLabel))).toEqual(removed(3));
+    expect(t.regressionRunVerdict(filed(LABELS), trustedRun(), {})).toBe("untrusted");
+  });
+
+  it("UNTRUSTED_ACTOR: set by an outsider, the owner (own click or through an app), or the agent app is removed with one comment; the status is untouched", () => {
+    for (const actor of ["mallory", "xtimor", AGENT]) {
+      const timeline = [labeledAt("status:todo", BOT, 0, 1), labeledAt(SOURCE, actor, 5, 7)];
+      expect(t.decide(labeled(SOURCE, actor), filed(["status:todo", SOURCE]), opts(timeline)), actor).toEqual(removed(7));
+      expect(t.decide(labeled("priority:p2", "bob"), filed(["status:todo", SOURCE]), opts(timeline)), actor).toEqual(removed(7));
+    }
+    const viaApp = [{ ...labeledAt(SOURCE, "xtimor", 5, 8), performed_via_github_app: { slug: "claude" } }];
+    expect(t.decide(labeled(SOURCE, "xtimor"), filed(["status:todo", SOURCE]), opts(viaApp))).toEqual(removed(8));
+  });
+
+  it("UNTRUSTED_AUTHOR: on an issue a person or the agent app opened the label is removed, even when the bot set it", () => {
+    for (const author of ["alice", AGENT]) {
+      expect(t.decide(later, filed(["status:todo", SOURCE], author), opts(created())), author).toEqual(removed(1));
+      expect(t.decide({ name: "issues", action: "opened", actor: author }, filed(["status:todo", SOURCE], author), opts([])), author).toEqual(removed("event"));
+    }
+  });
+
+  it("NO_LABEL_EVENT: a label with no labeled event and no actor in the handled event is unproven, so it goes", () => {
+    expect(t.decide({ name: "issues", action: "unlabeled", actor: "bob", label: "type:bug" }, filed(["status:todo", SOURCE]), opts([]))).toEqual(removed("event"));
+  });
+
+  it("LATEST_WINS: a person's re-add after a removal is untrusted; the bot's own label is judged by its latest event", () => {
+    const reAdded = [labeledAt(SOURCE, BOT, 0, 1), unlabeledAt(SOURCE, "bob", 5, 2), labeledAt(SOURCE, "bob", 6, 3)];
+    expect(t.decide(later, filed(["status:todo", SOURCE]), opts(reAdded))).toEqual(removed(3));
+  });
+
+  it("EVENT_LAG: a person's labeled event not yet in the events beside an older bot one is untrusted (the untrusted actor wins)", () => {
+    expect(t.decide(labeled(SOURCE, "mallory"), filed(["status:todo", SOURCE]), opts(created()))).toEqual(removed("event"));
+  });
+
+  it("ENDED: a blocked or declined status, or a close, after the label ends the shortcut for good; anyone's later status:todo cannot revive it", () => {
+    // The owner's block (todo goes, as on any issue) and an agent's decline.
+    const blocked = [...created(), labeledAt("status:blocked", "xtimor", 5, 3)];
+    expect(t.decide(labeled("status:blocked", "xtimor"), filed(["status:todo", SOURCE, "status:blocked"]), opts(blocked))).toEqual([remove("status:todo"), ...ended(1)]);
+    const declined = [...created(), labeledAt("status:declined", AGENT, 5, 3)];
+    expect(t.decide(labeled("status:declined", AGENT), filed([SOURCE, "status:declined"]), opts(declined))).toEqual(ended(1));
+    // The handled block not in the events yet.
+    expect(t.decide(labeled("status:blocked", "xtimor"), filed([SOURCE, "status:blocked"]), opts(created()))).toEqual(ended(1));
+    // Someone with triage rights moves a blocked issue back to todo (or the removal had failed): still over.
+    const revived = [...blocked, unlabeledAt("status:blocked", "mallory", 10, 4), labeledAt("status:todo", "mallory", 10, 5)];
+    expect(t.decide(labeled("status:todo", "mallory"), filed([SOURCE, "status:todo"]), opts(revived))).toEqual(ended(1));
+    // Closed and reopened (by the owner, or an agent through the relay's reopen).
+    const reopened = [...created(), closedAt(5, 3)];
+    expect(t.decide({ name: "issues", action: "reopened", actor: AGENT, at: "2026-10-20T10:06:00Z" }, filed(LABELS), opts(reopened))).toEqual(ended(1));
+    // The agent's own in-progress and in-review moves do not end it.
+    const working = [...created(), labeledAt("status:in-progress", AGENT, 5, 3), labeledAt("status:in-review", AGENT, 6, 4)];
+    expect(t.decide(labeled("status:in-review", AGENT), filed([SOURCE, "status:in-progress", "status:in-review"]), opts(working))).toEqual([remove("status:in-progress")]);
+  });
+
+  it("ENDED by the batch: a pull request closed unmerged moves the issue to blocked and ends its shortcut", () => {
+    const event = { name: "pull_request", action: "closed", merged: false, prState: "closed", link: "fixes", repo: REPO, headRepo: REPO, author: AGENT };
+    expect(t.decide(event, filed([SOURCE, "status:in-review"]), opts())).toEqual([add("status:blocked"), remove("status:in-review"), ...ended("pr")]);
+    expect(t.decide(event, filed(["status:in-review"]), opts())).toEqual([add("status:blocked"), remove("status:in-review")]);
+  });
+
+  it("only issue events of the flow act on it: closed issues, comments, and the bot's own events leave it alone", () => {
+    const outsider = [labeledAt(SOURCE, "mallory", 0, 1)];
+    expect(t.decide({ name: "issues", action: "closed", actor: "xtimor" }, filed([SOURCE, "type:bug"], BOT, { state: "closed" }), opts(outsider))).toEqual([]);
+    expect(t.decide({ name: "issue_comment", action: "created", actor: "mallory" }, filed(["status:todo", SOURCE]), opts(outsider))).toEqual([]);
+    expect(t.decide(labeled(SOURCE, BOT), filed(["status:todo", SOURCE], "alice"), opts(outsider))).toEqual([]);
+    expect(t.decide({ name: "issues", action: "edited", actor: "mallory" }, filed(["status:todo", SOURCE], "alice"), opts(outsider))).toEqual([]);
+  });
+
+  it("OWN_CLICK_UNCHANGED: a trusted regression issue gives no one an approval or a rework", () => {
+    const timeline = [...created(), labeledAt("status:approved", AGENT, 5, 3)];
+    expect(t.decide(labeled("status:approved", AGENT), filed(["status:todo", SOURCE, "status:approved"]), opts(timeline))).toEqual([remove("status:approved"), revert(3)]);
+    const rework = [...created(), labeledAt("status:in-review", AGENT, 3, 3), { ...labeledAt("status:rework", "xtimor", 5, 4), performed_via_github_app: { slug: "claude" } }];
+    expect(t.decide(labeled("status:rework", "xtimor"), filed(["status:in-review", SOURCE, "status:rework"]), opts(rework))).toEqual([remove("status:rework"), t.reworkComment(4)]);
+  });
+
+  it("an untrusted label and a stranger's approval on one issue: the status is settled first, then the label goes", () => {
+    const timeline = [labeledAt("status:todo", "alice", 0, 1), labeledAt(SOURCE, "mallory", 1, 2), labeledAt("status:approved", "mallory", 2, 3)];
+    expect(t.decide(labeled("status:approved", "mallory"), filed(["status:todo", SOURCE, "status:approved"], "alice"), opts(timeline))).toEqual([remove("status:approved"), revert(3), ...removed(2)]);
+  });
+
+  describe("runEvent", () => {
+    const env = { ISSUE_FLOW_OWNERS: "xtimor", ISSUE_FLOW_AGENTS: AGENT, ISSUE_FLOW_EVENT_DELAY_MS: "0" };
+    const betaIssue = (extra: Partial<FakeIssue> = {}): FakeIssue => ({ number: 12, state: "open", labels: [...LABELS], user: { login: BOT }, body: BODY, created_at: CREATED, ...extra });
+    const payload = { action: "labeled", label: { name: "priority:p1" }, sender: { login: "xtimor" }, issue: { number: 12 } };
+
+    it("a trusted beta issue is kept: it reads the run and compares its commit with main", async () => {
+      const fake = fakeGithub([betaIssue()], { events: { 12: created() }, runs: { [RUN]: goodRun() }, compare: { ["a".repeat(40)]: "ahead" } });
+      expect(await apply.runEvent({ github: fake.github, context: ctx("issues", payload), core: fakeCore(), env })).toEqual([]);
+      expect(fake.calls).toEqual(["get 12", "events 12", `run ${RUN}`, `compare ${"a".repeat(40)}...main`]);
+    });
+
+    it("an unreadable run, a commit not on main, or an unreadable compare makes it untrusted: the label goes, with a warning", async () => {
+      const variants: Array<[string, Parameters<typeof fakeGithub>[1]]> = [
+        ["no run", { runs: {} }],
+        ["diverged", { runs: { [RUN]: goodRun() }, compare: { ["a".repeat(40)]: "diverged" } }],
+        ["behind", { runs: { [RUN]: goodRun() }, compare: { ["a".repeat(40)]: "behind" } }],
+        ["compare fails", { runs: { [RUN]: goodRun() }, compare: {} }],
+      ];
+      for (const [name, extra] of variants) {
+        const fake = fakeGithub([betaIssue()], { events: { 12: created() }, ...extra });
+        const result = await apply.runEvent({ github: fake.github, context: ctx("issues", payload), core: fakeCore(), env });
+        expect(result, name).toEqual([{ issue: 12, actions: removed(1) }]);
+        expect(fake.labelsOf(12), name).toEqual(["status:todo", "type:bug", "regression:beta"]);
+      }
+    });
+
+    it("no marker: no run is read, and the label goes", async () => {
+      const fake = fakeGithub([betaIssue({ body: "hello" })], { events: { 12: created() } });
+      await apply.runEvent({ github: fake.github, context: ctx("issues", payload), core: fakeCore(), env });
+      expect(fake.calls).toEqual(["get 12", "events 12", `remove 12 ${SOURCE}`, "comments 12", "comment 12 Only this repository"]);
+    });
+
+    it("an outsider's label: removed through the API with one comment; the status stays", async () => {
+      const fake = fakeGithub([betaIssue()], { events: { 12: [...created(), unlabeledAt(SOURCE, "mallory", 4, 3), labeledAt(SOURCE, "mallory", 5, 4)] }, runs: { [RUN]: goodRun() }, compare: { ["a".repeat(40)]: "ahead" } });
+      const byMallory = { action: "labeled", label: { name: SOURCE }, sender: { login: "mallory" }, issue: { number: 12 } };
+      expect(await apply.runEvent({ github: fake.github, context: ctx("issues", byMallory), core: fakeCore(), env })).toEqual([{ issue: 12, actions: removed(4) }]);
+      expect(fake.labelsOf(12)).toEqual(["status:todo", "type:bug", "regression:beta"]);
+      await apply.applyActions(fake.github, ctx("issues", byMallory), 12, [t.regressionComment(4)]);
+      expect(fake.comments(12)).toHaveLength(1);
+    });
+
+    it("reads the events again while the handled labeled event is missing, then judges by the payload's actor", async () => {
+      const fake = fakeGithub([betaIssue()], { events: { 12: [labeledAt("status:todo", BOT, 0, 2)] }, runs: { [RUN]: goodRun() }, compare: { ["a".repeat(40)]: "ahead" } });
+      const byMallory = { action: "labeled", label: { name: SOURCE }, sender: { login: "mallory" }, issue: { number: 12 } };
+      await apply.runEvent({ github: fake.github, context: ctx("issues", byMallory), core: fakeCore(), env });
+      expect(fake.calls.filter((call) => call === "events 12")).toHaveLength(4);
+      expect(fake.labelsOf(12)).not.toContain(SOURCE);
+    });
   });
 });

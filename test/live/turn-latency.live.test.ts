@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterAll, expect, it } from "vitest";
@@ -11,11 +11,14 @@ import { startStubMcpHost } from "../fixtures/stub-mcp-host.ts";
 import {
   LIVE_TIMEOUT_MS,
   describeLive,
+  gatewayLogFile,
   hostMcpArgs,
   liveHostEnv,
   makeLiveSession,
   openclaw,
   openclawAsync,
+  openclawVersion,
+  recordMeasurement,
   startGateway,
   waitFor,
   watchGatewayEvents,
@@ -119,14 +122,6 @@ describeLive("per-turn latency of a plain cursor-cli turn (P4)", () => {
   );
 });
 
-/** The Gateway's newest log file (`/tmp/openclaw/openclaw-<date>.log`, JSON lines) and its size now. */
-function gatewayLog(): { file: string | undefined; offset: number } {
-  const dir = "/tmp/openclaw";
-  const files = existsSync(dir) ? readdirSync(dir).filter((name) => /^openclaw-.*\.log$/.test(name)).sort() : [];
-  const file = files.length > 0 ? join(dir, files.at(-1)!) : undefined;
-  return { file, offset: file ? statSync(file).size : 0 };
-}
-
 /** How many live CLI processes the host registered since `offset` (one log line each; the Gateway writes its log a moment late). */
 async function liveSessionStarts(log: { file: string | undefined; offset: number }): Promise<number> {
   await new Promise((resolve) => setTimeout(resolve, 3_000));
@@ -145,7 +140,7 @@ describeLive("per-turn latency through the real Gateway (P4)", () => {
       const gateway = await startGateway(18972);
       const watcher = await watchGatewayEvents(gateway.port);
       const sessionId = `latency-${Date.now()}`;
-      const log = gatewayLog();
+      const log = gatewayLogFile();
       const timings: Array<{ wallMs: number; firstAssistantMs: number; chatFinalMs: number }> = [];
       let startsAfterTwo = 0;
       try {
@@ -199,7 +194,7 @@ describeLive("per-turn latency through the real Gateway (P4)", () => {
         for (let attempt = 0; attempt < 3 && !usable; attempt += 1) {
           const sessionId = `warm-tools-${Date.now()}`;
           const nonce = `nonce${Date.now().toString(36)}`;
-          const log = gatewayLog();
+          const log = gatewayLogFile();
           const turn = async (n: number, message: string, mustContain: string[]): Promise<boolean> => {
             const run = await openclawAsync(["agent", "--session-id", sessionId, "--message", message, "--json"], { timeoutMs: 240_000, env: gateway.env });
             if (/transcript compaction failed/.test(run.stderr + run.stdout)) return false;
@@ -293,7 +288,7 @@ describeLive("a new agent on a Gateway whose model catalog has loaded (P4)", () 
           3_000,
         );
         expect(loaded, "the Gateway's model catalog never listed cursor-cli").toBe(true);
-        const log = gatewayLog();
+        const log = gatewayLogFile();
         const sessionId = `fresh-agent-${Date.now()}`;
         for (let n = 1; n <= 4; n += 1) {
           const run = await openclawAsync(["agent", "--agent", agent, "--session-id", sessionId, "--message", "Reply with the single word OK."], {
@@ -310,6 +305,61 @@ describeLive("a new agent on a Gateway whose model catalog has loaded (P4)", () 
         else openclaw(["config", "set", "agents.defaults.model.primary", priorPrimary, "--strict-json"]);
         rmSync(root, { recursive: true, force: true });
       }
+    },
+    LIVE_TIMEOUT_MS * 3,
+  );
+});
+
+/**
+ * The absolute bound on a new session's first reply (issues #38 and #44: first replies took 15-20 s and more), from the
+ * `openclaw agent` call to the Gateway's first assistant frame: the CLI's own start, the plugin's process start, and the
+ * model's thinking over the main agent's bootstrap. Set per OpenClaw line from measured runs plus a margin (MEMORY.md,
+ * "Live regression tier"), and below the 15 s the issues reported, so the bug coming back fails it: FIRST_REPLY_BUDGET
+ * says which.
+ */
+function firstReplyBudget(): { ms: number; note: string } {
+  const [year, month] = openclawVersion();
+  return year > 2026 || (year === 2026 && month >= 11)
+    ? { ms: 14_000, note: "OpenClaw 2026.11+: measured 2026-11-28 in a loaded 4-core container at 11.4-13.2 s (median 12.4 s) on 2026.11.11; 14 s, under the 15 s of #38/#44" }
+    : {
+        ms: 14_000,
+        note: "OpenClaw 2026.10: measured 2026-11-28 in a loaded 4-core container, medians 9.1, 9.4 and 13.8 s over three runs on 2026.10.3 (8.8-14.7 s; 12 s failed the 13.8 s run); 14 s, under the 15 s of #38/#44",
+      };
+}
+
+// Issues #38 and #44 at the live tier: a new session's first reply through the real Gateway on the main agent (its
+// bootstrap in the prompt), after one warm-up turn so the plugin has loaded. Three new sessions; their median must stay
+// within the budget, so one slow model answer does not fail the run and a real slowdown does.
+describeLive("first reply of a new session through the real Gateway (#38, #44)", () => {
+  it(
+    "#38/#44: the first reply of a new session arrives within the absolute budget",
+    async () => {
+      expect(openclaw(["config", "set", "agents.defaults.model.primary", "cursor-cli/auto"]).status).toBe(0);
+      const gateway = await startGateway(18975);
+      const watcher = await watchGatewayEvents(gateway.port);
+      const firsts: number[] = [];
+      try {
+        const firstReplyMs = async (sessionId: string) => {
+          const mark = watcher.frames.length;
+          const start = Date.now();
+          const run = await openclawAsync(["agent", "--session-id", sessionId, "--message", "Reply with the single word OK."], { timeoutMs: 240_000, env: gateway.env });
+          expect(run.status, run.stderr).toBe(0);
+          const frame = watcher.frames.slice(mark).find((entry) => entry.event === "agent" && entry.payload?.stream === "assistant");
+          expect(frame, `no assistant frame for ${sessionId}`).toBeDefined();
+          return frame!.at - start;
+        };
+        await firstReplyMs(`first-reply-warmup-${Date.now()}`);
+        for (let n = 1; n <= 3; n += 1) {
+          firsts.push(await firstReplyMs(`first-reply-${Date.now()}-${n}`));
+          recordMeasurement("first-reply-ms", firsts.at(-1)!);
+        }
+      } finally {
+        watcher.close();
+        await gateway.stop();
+      }
+      const median = [...firsts].sort((a, b) => a - b)[1]!;
+      const budget = firstReplyBudget();
+      expect(median, `first replies ${firsts.join(", ")} ms; budget ${budget.ms} ms (${budget.note})`).toBeLessThanOrEqual(budget.ms);
     },
     LIVE_TIMEOUT_MS * 3,
   );

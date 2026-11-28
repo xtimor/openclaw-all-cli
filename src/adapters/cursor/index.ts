@@ -320,20 +320,25 @@ function toAcpMcpServer(server: McpServerSpec) {
 }
 
 /**
- * The Cursor mode for a turn. `agent` only when OpenClaw's `exec` is actually offered to the model
- * in this turn (`hostShell`: the core read it from the host's tool list, after all tool policy): in
- * `ask` mode the model refuses any command that changes files, even through OpenClaw's `exec` (live:
- * 2 of 3 refused), so `exec` needs `agent`. Everything else stays in `ask`, which has no edit tool: a
- * side question, and a normal run without `exec` (exec host `node`, `tools.deny` or `tools.allow`
- * leaving it out, a rooted run, or a tool list the core could not read). `agent` mode makes the model
- * far more eager (a trivial turn used about 105k tokens in one probe), so it is not the default.
+ * The Cursor mode for a turn. `agent` when OpenClaw's `exec` is actually offered to the model in this turn
+ * (`hostShell`: the core read it from the host's tool list, after all tool policy): in `ask` mode the model refuses
+ * any command that changes files, even through OpenClaw's `exec` (live: 2 of 3 refused). Also `agent` when there is
+ * no `exec` but the list holds an OpenClaw tool that changes files or records (`hostWrites`: `write`, `edit`,
+ * `file_write`, ...): Cursor's `ask` mode tells the model it is read-only, and it refused every such write whatever
+ * the prompt said, naming Ask mode as the reason (issue #102; live, 2026-11-28, with the core's `askToolsNote`: 0 of
+ * 12 written, 3 of them in a restricted chat offered OpenClaw `write` and `edit`; in `agent` mode 3 of 3 wrote through
+ * OpenClaw `write`). Everything else stays in `ask`, which has no edit
+ * tool: a side question, and a run with neither (no OpenClaw tool that changes anything, or a tool list the core
+ * could not read). `agent` mode makes the model more eager (a trivial turn used about 105k tokens in one probe), the
+ * same cost every ordinary chat with `exec` already pays.
  *
- * `agent` is safe because the static home blocks the native shell, write, edit and delete without
- * asking (checked live in `agent` mode). `WebFetch(*)` has no effect: a native web fetch asks the
- * host in either mode, and OpenClaw's tool policy decides.
+ * `agent` is safe because both static profiles block the native shell, write, edit and delete without asking
+ * (`Shell(*)`, `Write(**)`; checked live in `agent` mode for the default profile, and for the restricted one, whose
+ * deny list holds the same rules plus `Read(*)`). `WebFetch(*)` has no effect: a native web fetch asks the host in
+ * either mode, and OpenClaw's tool policy decides.
  */
-function modeFor(executionMode: ExecutionMode, hostShell: boolean): string {
-  return executionMode === "agent" && hostShell ? "agent" : "ask";
+function modeFor(executionMode: ExecutionMode, hostShell: boolean, hostWrites: boolean): string {
+  return executionMode === "agent" && (hostShell || hostWrites) ? "agent" : "ask";
 }
 
 const DISPLAY_NAME = "Cursor CLI";
@@ -353,8 +358,8 @@ function open(params: OpenParams): Promise<CliSession> {
     ...authMethodFor(params.env),
     // Cursor applies native edits without asking in agent mode, so only the per-agent `Write(**)`
     // deny stops them (checked against cursor-agent 2026.10.16). `ask` mode has no edit tool and is
-    // the second lock whenever the host serves no `exec`.
-    requiredModeId: modeFor(executionMode, params.hostShell === true),
+    // the second lock whenever the host serves neither `exec` nor a tool that changes files.
+    requiredModeId: modeFor(executionMode, params.hostShell === true, params.hostWrites === true),
     displayName: DISPLAY_NAME,
     ...(params.requiredCapabilities?.length ? { requiredCapabilities: params.requiredCapabilities } : {}),
     // The turn's model name maps onto the exact ID Cursor reports (brackets and commas included).
