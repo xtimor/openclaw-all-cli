@@ -3,7 +3,7 @@ title: 'In ask mode the model reads a missing native edit tool as a read-only se
 type: 'bugfix'
 ticket: '33'
 created: '2026-11-28'
-status: 'in-review'
+status: 'done'
 baseline_revision: 'cd8a412cd3177daefc602f47154ca2118ebb0e13'
 route: 'full'
 route_source: 'pinned'
@@ -125,7 +125,7 @@ Decision: the Gateway scenario reaches `ask` mode through a per-session exec hos
 
 ## Auto Run Result
 
-Status: in-review
+Status: done
 
 - Summary: a turn without OpenClaw `exec` (Cursor `ask` mode) now carries, on every prompt of its process, one neutral sentence: the native shell, write and edit tools are disabled, that does not make the chat read-only, and the named OpenClaw tools in the list (`write`, `edit`, `apply_patch`, `file_write`, `workboard_create`, `workboard_comment`, `wiki_apply`) change files and records. Left out when the turn's OpenClaw tools are unavailable; a warm process re-reads the list when it had no sentence yet.
 - Files: `src/core/turn-prompt.ts`, `src/core/live-entry.ts`, `src/core/execute.ts`, `src/adapters/cursor/manifest.ts`, `src/adapters/cursor/index.ts` (comment), `test/ask-tools-hint.test.ts`, `test/fixtures/host-tools-turn.ts`, `test/regression/gateway/reply-prompt.regression.test.ts`, `test/regression/ledger.toml`, `docs/providers/cursor.md`, the parity matrix, `CHANGELOG.md`, `MEMORY.md`.
