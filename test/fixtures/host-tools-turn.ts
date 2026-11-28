@@ -52,9 +52,9 @@ function warmHost(): LiveSessionCapability {
 
 /**
  * `names` null: the host's tool list cannot be read; a function: the list for each turn (0-based).
- * `marker` false: the host did not flag a host shell.
+ * `marker` false: the host did not flag a host shell. `ctx`: more turn context fields (e.g. `executionMode`).
  */
-export async function turnWithHostTools(names: string[] | null | ((turn: number) => string[]), { marker = true, turns = 1 } = {}) {
+export async function turnWithHostTools(names: string[] | null | ((turn: number) => string[]), { marker = true, turns = 1, ctx: extra = {} as Record<string, unknown> } = {}) {
   let turn = 0;
   const server = createServer((req, res) => {
     req.resume();
@@ -85,6 +85,7 @@ export async function turnWithHostTools(names: string[] | null | ((turn: number)
         requestToolPermission: async () => ({ behavior: "deny", message: "no" }),
         requestUserInput: async () => ({ status: "cancelled", message: "no" }),
         ...host,
+        ...extra,
       } as never;
       for await (const r of execute(ctx)) void r;
     }

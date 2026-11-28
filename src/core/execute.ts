@@ -11,7 +11,7 @@ import { requiredCapabilities } from "./manifest.ts";
 import { boundTurnUsage, contextReading, readTurnUsage } from "./usage.ts";
 import { DeliveredPrompts, deliveredFileFor, planDelivery } from "./system-prompt.ts";
 import { ProcessPool, type TurnSlot } from "./pool.ts";
-import { CONTINUITY_NOTE, HOST_PROCESS_TOOL, HOST_SHELL_TOOL, HOST_STRUCTURED_TOOL, composePrompt, modeOf, shellNote, splitHostShell, structuredOutputNote } from "./turn-prompt.ts";
+import { CONTINUITY_NOTE, HOST_PROCESS_TOOL, HOST_SHELL_TOOL, HOST_STRUCTURED_TOOL, askToolsNote, composePrompt, modeOf, shellNote, splitHostShell, structuredOutputNote } from "./turn-prompt.ts";
 import { ToolLedger } from "./tool-ledger.ts";
 import { CliError, type CliAdapter, type NormalizedEvent } from "./ports.ts";
 import type { CliBackendExecute, ExecuteContext, LiveSessionCapability } from "./sdk-types.ts";
@@ -272,6 +272,7 @@ export function createExecute(adapter: CliAdapter, options: ExecuteOptions): Cli
       const listed = turnTarget.ok ? await listToolNames(turnTarget.target, ctx.abortSignal) : undefined;
       const hostShell = marked && listed?.includes(HOST_SHELL_TOOL) === true;
       if (hostShell) fresh.shellNote = shellNote(listed?.includes(HOST_PROCESS_TOOL) === true);
+      else if (listed) fresh.askToolsNote = askToolsNote(listed);
       if (listed?.includes(HOST_STRUCTURED_TOOL)) fresh.structuredNote = structuredOutputNote();
       // The host may serve exec but the list could not be read (an error, a cold cache): this
       // process opened in the restrictive mode. Never reuse it, so the next turn reads the list again.
@@ -410,7 +411,8 @@ export function createExecute(adapter: CliAdapter, options: ExecuteOptions): Cli
     let closed = false;
     // Each event goes to the host as it arrives; nothing waits for the turn to end.
     // The note goes once, on the first prompt of a fresh chat; it is not part of the host's transcript.
-    // The shell sentence goes the same way: once per process, after the continuity note.
+    // The shell sentence goes the same way: once per process, after the continuity note. The ask-mode tools sentence
+    // (no `exec`) takes the shell sentence's place and goes with every prompt of the process (issue #102).
     // The `structured_output` sentence follows them, once per process (Decision, ticket 24): a warm process
     // whose first prompt lacked it reads the tool list again until the tool shows up, then sends it once.
     if (!opened && !active.structuredNote && !active.structuredSent && turnTarget.ok) {
@@ -418,7 +420,7 @@ export function createExecute(adapter: CliAdapter, options: ExecuteOptions): Cli
       if ((await listToolNames(target, ctx.abortSignal))?.includes(HOST_STRUCTURED_TOOL)) active.structuredNote = structuredOutputNote();
       ctx.abortSignal?.throwIfAborted();
     }
-    const note = [active.freshChat ? CONTINUITY_NOTE : undefined, active.shellNote, active.structuredNote].filter(Boolean).join("\n\n") || undefined;
+    const note = [active.freshChat ? CONTINUITY_NOTE : undefined, active.shellNote, active.askToolsNote, active.structuredNote].filter(Boolean).join("\n\n") || undefined;
     active.freshChat = false;
     active.shellNote = undefined;
     if (active.structuredNote) active.structuredSent = true;

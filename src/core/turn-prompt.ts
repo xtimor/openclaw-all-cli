@@ -38,6 +38,36 @@ export function shellNote(hasProcess: boolean): string {
   );
 }
 
+/**
+ * OpenClaw tools that change files or records, in the order the sentence below names them: the core file tools,
+ * the file-transfer plugin's writer, and the Workboard and memory-wiki writers. The host's tool list carries names
+ * only (no read-only hint), so this is a fixed list, not a classification of every tool.
+ */
+export const MUTATING_HOST_TOOLS: readonly string[] = ["write", "edit", "apply_patch", "file_write", "workboard_create", "workboard_comment", "wiki_apply"];
+
+/** `a`, `a and b`, `a, b and c`, each in backticks. */
+function namesInProse(names: readonly string[]): string {
+  const quoted = names.map((name) => `\`${name}\``);
+  return quoted.length > 1 ? `${quoted.slice(0, -1).join(", ")} and ${quoted.at(-1)}` : (quoted[0] ?? "");
+}
+
+/**
+ * AD-2: names OpenClaw and its tools, never a CLI. A turn without OpenClaw `exec` runs in a CLI mode that may offer no
+ * native edit tool, and the native shell, write and edit are denied anyway (AD-9); a model took that for a read-only
+ * session and refused changes the OpenClaw tools allow, on consecutive turns (issue #102). So every prompt of such a
+ * process says it. `listed` is the host's tool list for the turn; nothing when it holds no tool that changes things.
+ */
+export function askToolsNote(listed: readonly string[]): string | undefined {
+  const present = MUTATING_HOST_TOOLS.filter((name) => listed.includes(name));
+  if (present.length === 0) return undefined;
+  const one = present.length === 1;
+  return (
+    "[OpenClaw] The native shell, write and edit tools are disabled in this chat. That does not make this chat or this session read-only: " +
+    `every OpenClaw tool offered here stays usable, and ${namesInProse(present)} ${one ? "changes" : "change"} files and records. ` +
+    `Never refuse a change on the grounds that the chat is read-only; make it with ${one ? "that tool" : "those tools"}.`
+  );
+}
+
 /** The tool a run with an `outputSchema` must end by calling; the host fails the run without that call. */
 export const HOST_STRUCTURED_TOOL = "structured_output";
 

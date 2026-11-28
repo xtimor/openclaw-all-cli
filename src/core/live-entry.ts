@@ -47,6 +47,12 @@ export type LiveEntry = {
    */
   shellNote?: string;
   /**
+   * The process opened for a turn without the host's `exec` whose tool list holds OpenClaw tools that change files
+   * or records: the sentence that says the chat is not read-only. Unlike `shellNote` it goes with every prompt of the
+   * process, since the model refused on later turns too (issue #102).
+   */
+  askToolsNote?: string;
+  /**
    * The sentence that says the final answer goes through `structured_output`, until a prompt sends
    * it. Pending only when the host's tool list held the tool at open.
    */

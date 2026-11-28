@@ -3,7 +3,7 @@ import { mkdirSync, mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterAll, beforeAll, expect, it } from "vitest";
-import { shellNote } from "../../../src/core/turn-prompt.ts";
+import { MUTATING_HOST_TOOLS, shellNote } from "../../../src/core/turn-prompt.ts";
 import { replyLines } from "../../live/harness.ts";
 import {
   CURSOR_COMMAND_KEY,
@@ -138,16 +138,24 @@ describeRegression("Gateway scenarios: replies, prompts, and errors of a turn", 
       const lines = linesOf(all, chats[0]!);
       const prompts = lines.filter((line) => line.method === "session/prompt").map((line) => promptText(line));
       expect(prompts, methods).toHaveLength(2);
+      const named: string[] = [];
       for (const [turn, text] of prompts.entries()) {
         // The system block mentions "read-only" too: show the note, or the text before the user's message without it.
         const at = text.indexOf("does not make this chat");
         const user = text.indexOf(`ask${id}`);
         const around = JSON.stringify(at < 0 ? text.slice(Math.max(0, user - 1_500), user + 100) : text.slice(Math.max(0, at - 200), at + 400));
         expect(text, `turn ${turn + 1} prompt (note ${at < 0 ? "absent" : "found"}): ${around}`).toMatch(/\[OpenClaw\] [^\n]*does not make this chat or this session read-only/);
-        // OpenClaw's own file tools are on the loopback of a default run.
-        expect(text, `turn ${turn + 1} prompt: ${around}`).toMatch(/read-only: [^\n]*`write`[^\n]*`edit`/);
+        // It names the turn's tools that change files and records. On a default run (native readers on, no `exec`) the
+        // loopback has no `write` or `edit`, but the file-transfer plugin's `file_write`, which OpenClaw enables by default.
+        const listed = /stays usable, and ([^\n]*?) changes? files and records/.exec(text)?.[1] ?? "";
+        const names = [...listed.matchAll(/`([a-z_]+)`/g)].map((match) => match[1]!);
+        expect(names.length, `turn ${turn + 1} prompt: ${around}`).toBeGreaterThan(0);
+        expect(MUTATING_HOST_TOOLS, `turn ${turn + 1} names ${names.join(", ")}`).toEqual(expect.arrayContaining(names));
+        named.push(names.join(","));
         expect(text, `turn ${turn + 1}`).not.toContain("native shell is disabled");
       }
+      // One process, one tool list: both turns name the same tools.
+      expect(named[1], named.join(" | ")).toBe(named[0]);
       const modes = lines.filter((line) => line.method === "session/set_mode").map((line) => line.params?.modeId);
       expect(modes.filter((mode) => mode !== "ask"), methods).toEqual([]);
     },

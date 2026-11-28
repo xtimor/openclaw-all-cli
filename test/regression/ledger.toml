@@ -203,7 +203,7 @@ tests = [
 ]
 planned = "4.5"
 
-# Covered only Cursor's agent mode; the ask-mode half came back as #102 (open; its entry comes with its fix).
+# Covered only Cursor's agent mode; the ask-mode half came back as #102 (same family).
 [[bug]]
 issue = 76
 title = "A denied native shell call tells the model nothing about OpenClaw exec"
@@ -300,4 +300,16 @@ tests = [
   { file = "test/backend.test.ts", name = "logs one line when the auth store's location could not be settled, and none when it was or there was nothing to settle (issue #106)", tier = "unit", reproduces = false },
   { file = "test/regression/gateway/auth-setup.regression.test.ts", name = "#39: a working cursor-agent login with no key is usable, and a key saved with the API key method is a cursor-cli api_key profile", tier = "gateway", reproduces = true },
   { file = "test/regression/ui/provider-card.regression.test.ts", name = "#39: a key saved through Connect provider in the browser shows on the provider card with Remove key, not Not configured", tier = "ui", reproduces = false },
+]
+
+[[bug]]
+issue = 102
+title = "In ask mode (no OpenClaw exec) the model reads a missing native edit tool as a read-only session and refuses writes the OpenClaw tools allow"
+family = "native-tools-note"
+tier = "gateway"
+fixed = true
+tests = [
+  { file = "test/ask-tools-hint.test.ts", name = "tells the model the chat is not read-only and names the OpenClaw tools that change things, when the host serves no exec", tier = "unit", reproduces = false },
+  { file = "test/ask-tools-hint.test.ts", name = "sends the sentence on every prompt of the process, not only the first", tier = "unit", reproduces = false },
+  { file = "test/regression/gateway/reply-prompt.regression.test.ts", name = "#102: an ask-mode turn where the host serves no `exec` sends the not-read-only note on turn 1 and turn 2 of one process, and the mode stays `ask`", tier = "gateway", reproduces = true },
 ]

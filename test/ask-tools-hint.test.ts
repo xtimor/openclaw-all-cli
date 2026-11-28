@@ -1,3 +1,5 @@
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import { askToolsNote } from "../src/core/turn-prompt.ts";
 import { turnWithHostTools } from "./fixtures/host-tools-turn.ts";
@@ -47,12 +49,33 @@ describe("the ask-mode tools hint", () => {
       expect(prompts).toEqual(["do it 0"]);
     }
   });
+
+  it("says nothing of the kind to a side question, which has no OpenClaw tools", async () => {
+    const { prompts, opens } = await turnWithHostTools(["write", "edit"], { ctx: { executionMode: "side-question" } });
+    expect(opens[0]).toMatchObject({ executionMode: "side-question" });
+    expect(prompts).toHaveLength(1);
+    expect(prompts[0]).not.toMatch(NOT_READ_ONLY);
+  });
+});
+
+describe("the docs say what ships for a run without exec", () => {
+  const files = [
+    "src/adapters/cursor/manifest.ts",
+    "_bmad-output/initiative-openclaw-all-cli/spec-cursor-cli-provider/claude-cli-parity.md",
+    "docs/providers/cursor.md",
+  ];
+  it.each(files)("%s says every prompt of a run without exec says the chat is not read-only", (file) => {
+    const text = readFileSync(join(import.meta.dirname, "..", file), "utf8");
+    expect(text).toMatch(/every prompt/);
+    expect(text).toMatch(/not read-only/);
+    expect(text).not.toMatch(/in other runs the model is not told/);
+  });
 });
 
 describe("askToolsNote", () => {
   it("names only the tools that change files or records, in a fixed order, and nothing when none is listed", () => {
-    expect(askToolsNote(["wiki_apply", "read", "edit", "write"])).toMatch(/including `write`, `edit` and `wiki_apply`, which/);
-    expect(askToolsNote(["file_write"])).toMatch(/including `file_write`, which/);
+    expect(askToolsNote(["wiki_apply", "read", "edit", "write"])).toMatch(/usable, and `write`, `edit` and `wiki_apply` change files and records\. .* with those tools\.$/);
+    expect(askToolsNote(["file_write"])).toMatch(/usable, and `file_write` changes files and records\. .* with that tool\.$/);
     expect(askToolsNote(["read", "sessions_history", "web_fetch", "exec"])).toBeUndefined();
     expect(askToolsNote([])).toBeUndefined();
   });

@@ -326,7 +326,9 @@ function toAcpMcpServer(server: McpServerSpec) {
  * 2 of 3 refused), so `exec` needs `agent`. Everything else stays in `ask`, which has no edit tool: a
  * side question, and a normal run without `exec` (exec host `node`, `tools.deny` or `tools.allow`
  * leaving it out, a rooted run, or a tool list the core could not read). `agent` mode makes the model
- * far more eager (a trivial turn used about 105k tokens in one probe), so it is not the default.
+ * far more eager (a trivial turn used about 105k tokens in one probe), so it is not the default. In
+ * `ask` mode the model also took the missing edit tool for a read-only session and refused writes the
+ * OpenClaw tools allow (issue #102), so the core's `askToolsNote` tells it otherwise on every prompt.
  *
  * `agent` is safe because the static home blocks the native shell, write, edit and delete without
  * asking (checked live in `agent` mode). `WebFetch(*)` has no effect: a native web fetch asks the
